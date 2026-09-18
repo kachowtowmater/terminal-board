@@ -294,7 +294,18 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 _ => ("-", dim()),
             };
             let what = match app.agent_card(i) {
-                Some(c) => format!("#{} {}", c.id, c.title),
+                Some(c) => {
+                    let age = app
+                        .snap
+                        .last_event_at
+                        .get(&c.id)
+                        .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                        .unwrap_or_default();
+                    match app.snap.last_note.get(&c.id) {
+                        Some(n) => format!("#{} \"{}\"{age} {}", c.id, fit(n, 20), fit(&c.title, 12)),
+                        None => format!("#{} {}", c.id, c.title),
+                    }
+                }
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
             let text = if holds {

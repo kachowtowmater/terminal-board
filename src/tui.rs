@@ -1645,7 +1645,13 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
                     if holds {
                         spans.push(Span::styled("! idle, holds card", st));
                     } else if let Some(n) = app.snap.last_note.get(&c.id) {
-                        spans.push(Span::styled(format!("\"{n}\""), dim()));
+                        let age = app
+                            .snap
+                            .last_event_at
+                            .get(&c.id)
+                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                            .unwrap_or_default();
+                        spans.push(Span::styled(format!("\"{}\"{age}", fit(n, 24)), dim()));
                     }
                 }
                 None => spans.push(Span::styled(

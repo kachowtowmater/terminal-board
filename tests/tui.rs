@@ -180,6 +180,21 @@ fn board_renders_columns_cards_and_agents() {
 }
 
 #[test]
+fn agents_row_shows_last_note_and_age() {
+    let (_d, s) = seeded();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Agents(parse_agents(AGENTS, Some(PANES)).unwrap());
+    let (screen, buf) = render(&app, 140, 45);
+    // bot-2 holds the doing card whose last note is "patch applied, tests running":
+    // the row quotes the note and appends its age (the seed note is minutes old)
+    let row = screen.lines().find(|l| l.contains("bot-2") && l.contains("patch applied")).unwrap();
+    assert!(row.contains('"') && row.contains('m'), "note quoted with age: {row}");
+    assert!(colours_of(&screen, &buf, "patch applied").iter().all(|c| *c == palette("dark").fg), "note stays plain:\n{screen}");
+    // an agent whose card has no note shows title only, no quote
+    assert!(!screen.lines().any(|l| l.contains("bot-4") && l.contains('"')), "no quote without a note:\n{screen}");
+}
+
+#[test]
 fn narrow_hides_agents_and_detail() {
     let (_d, s) = seeded();
     let mut app = App::new(s.snapshot().unwrap(), "alice");

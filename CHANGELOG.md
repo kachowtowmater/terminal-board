@@ -5,6 +5,12 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Agents
+- The AGENTS row says what the agent is doing, in its own words: the held card's last note
+  and its age inside the existing row (e.g. `bot-2 #7 "tests pass, opening PR" 3m`). An
+  agent that never writes notes shows an old age — which is itself the signal. `tb agents
+  --json` adds `last_note` and `last_event_at` (unix seconds; the screen computes the age).
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,

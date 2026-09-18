@@ -135,9 +135,20 @@ fn golden_agents_shape() {
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     let id = s.add("x", "", &[], "me").unwrap();
     s.take(id, "bot").unwrap();
-    let v = serde_json::to_value(contract::agents(&agents, &s.list().unwrap())).unwrap();
-    assert_eq!(keys(&v[0]), sorted(&["name", "harness", "status", "pane_id", "job", "card_id"]));
+    let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
+    assert_eq!(
+        keys(&v[0]),
+        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at"])
+    );
     assert_eq!((v[0]["card_id"].as_i64(), v[0]["job"].as_str()), (Some(id), Some("fix #1")));
+    // no note yet: last_note null, last_event_at = the take event
+    assert!(v[0]["last_note"].is_null(), "{}", v[0]);
+    assert!(v[0]["last_event_at"].as_i64().unwrap() > 0);
+    s.note(id, "tests pass, opening PR", "bot").unwrap();
+    let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
+    assert_eq!(v[0]["last_note"], "tests pass, opening PR");
+    let at_note = v[0]["last_event_at"].as_i64().unwrap();
+    assert!(at_note > 0);
     // CLI: an array (empty without herdr)
     let o = tb(&dir.path().join("b.db"), &["agents", "--json"]);
     assert!(json(&o).as_array().is_some());

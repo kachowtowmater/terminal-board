@@ -116,7 +116,7 @@ or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it don
 herdr agent panes merged with the board (empty array when herdr is not available).
 
 ```json
-[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1 } ]
+[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036 } ]
 ```
 
 | field | type | notes |
@@ -127,6 +127,8 @@ herdr agent panes merged with the board (empty array when herdr is not available
 | `pane_id` | string | |
 | `job` | string\|null | the last `·` segment of the pane label |
 | `card_id` | int\|null | the card it holds (DOING first) |
+| `last_note` | string\|null | that card's last note text (what the agent says it is doing) |
+| `last_event_at` | int\|null | unix seconds of the card's last event — compute the age yourself; an agent that never notes shows an old age |
 
 ## Other read commands
 
