@@ -7,6 +7,8 @@ the same board, from the same keyboard-driven screen or from simple commands. It
 show your GitHub repository (open pull requests, issues, CI) right next to your cards, and
 the live status of your agents.
 
+![Terminal Board in a wide pane: four coloured columns, the GitHub panel and the agents panel](docs/images/view-half-horizontal.png)
+
 ```text
  TERMINAL BOARD · default · 9 cards · 3 agents (2 working, 1 idle)        refreshed 14:02:11
 ┏ o TODO (3) ━━━━━━━━━━┓┌ o DOING (2/3) ───────┐┌ o REVIEW (1) ────────┐┌ o DONE today (3) ─┐
@@ -391,6 +393,19 @@ redraws. Terminal cells are about 2.2 times taller than they are wide, so a wind
 | **third-v** (a third of the width) | tall, at most 62 columns, 30+ rows (e.g. 50×70) | the columns as stacked sections (each shows at least 2 cards before GITHUB grows past ~8 rows), then GITHUB (tidy block), then AGENTS |
 | **half-h** (half the height or more) | wide, 30+ rows (e.g. 126×41) | four columns of card boxes, GITHUB (tiles + tables) and AGENTS below, a detail line |
 | **half-v** (half the width) | tall, 63+ columns, 30+ rows (e.g. 70×70) | the columns as a 2×2 grid (TODO / DOING over REVIEW / DONE) sized to its cards, then GITHUB (tiles 2×2 + tables, at least 14 rows), then AGENTS |
+
+### What the views look like
+
+**half-h**: half the screen height, full width:
+
+![half-h view](docs/images/view-half-horizontal.png)
+
+<table>
+<tr>
+<td valign="top"><b>half-v</b>: half the screen width<br><br><img src="docs/images/view-half-vertical.png" alt="half-v view" width="420"></td>
+<td valign="top"><b>third-v</b>: a third of the screen width<br><br><img src="docs/images/view-third-vertical.png" alt="third-v view" width="292"></td>
+</tr>
+</table>
 
 The GitHub tables keep their TITLE column at least 30 characters wide: on a narrower pane
 they drop LABELS, then BRANCH, AGE, WHO and REVIEW, and below that they switch to the tidy
