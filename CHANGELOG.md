@@ -5,6 +5,13 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Board
+- Quiet work shows up: a DOING card with no event for **60 minutes** (fixed, documented; no
+  setting) shows `quiet 1h20m` inside its existing box, as plain dim text — the word is the
+  signal, red stays reserved for real problems. The idle-agent flag gains its duration
+  (`! bot-2 idle w/ card (1h20m)`). JSON exposes only timestamps (`card.last_event_at`,
+  unix seconds), never durations.
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,

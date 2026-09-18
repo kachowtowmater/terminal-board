@@ -32,7 +32,7 @@
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ AGENTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ * bot-1          aider   working  #4    gh#305 login form rejects emails       0m                                          │
-│ ! bot-2          aider   idle     #5    fix flaky upload test           0m ! idle, holds card                              │
+│ ! bot-2          aider   idle     #5    fix flaky upload test           0m ! idle, holds card(0m)                          │
 │ * bot-3          aider   working  #6    screenshots for README          0m                                                 │
 │ * bot-4          codex   working  -                                                                                        │
 │ * reviewer       claude  working  -                                                                                        │

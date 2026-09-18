@@ -41,6 +41,8 @@ pub struct CardJ {
     pub blocked: Option<String>,
     pub created_at: i64,
     pub column_since: i64,
+    /// Unix seconds of the card's last event (any kind); readers compute staleness themselves.
+    pub last_event_at: i64,
     pub checklist: Vec<CheckJ>,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
@@ -100,6 +102,7 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         blocked: c.blocked.clone(),
         created_at: c.created_at,
         column_since: c.column_since,
+        last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
         events: d
             .events

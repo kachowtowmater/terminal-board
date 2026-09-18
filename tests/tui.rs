@@ -274,6 +274,116 @@ fn narrow_columns_use_ellipsis_not_tilde() {
 }
 
 #[test]
+fn quiet_doing_card_warns_only_past_sixty_minutes() {
+    let (_d, s) = seeded();
+    // a DOING card whose last event is 2h old (seed notes none -> last event = the take)
+    s.seed(&Seed {
+        title: "widgets: stale upload fix",
+        desc: "",
+        column: "doing",
+        owner: Some("bot-2"),
+        age_secs: 2 * 3600,
+        due: None,
+        checks: &[],
+        notes: &[],
+    })
+    .unwrap();
+    // and one whose last event is 10 minutes old
+    s.seed(&Seed {
+        title: "widgets: fresh upload fix",
+        desc: "",
+        column: "doing",
+        owner: Some("bot-3"),
+        age_secs: 10 * 60,
+        due: None,
+        checks: &[],
+        notes: &[],
+    })
+    .unwrap();
+    // and a TODO card that has been quiet for 2h (wrong column: no marker)
+    s.seed(&Seed {
+        title: "widgets: old todo sits",
+        desc: "",
+        column: "todo",
+        owner: None,
+        age_secs: 2 * 3600,
+        due: None,
+        checks: &[],
+        notes: &[],
+    })
+    .unwrap();
+    let snap = s.snapshot().unwrap();
+    let stale = (*snap.in_column("doing").first().unwrap()).clone();
+    let q = terminal_board::plain::quiet(&stale, &snap);
+    assert!(q.starts_with("quiet ") && q.len() > "quiet ".len(), "2h-old doing card is quiet: {q:?}");
+    let fresh = (*snap.in_column("doing").last().unwrap()).clone();
+    assert!(terminal_board::plain::quiet(&fresh, &snap).is_empty(), "10m-old stays quiet-free");
+    let todo = (*snap.in_column("todo").last().unwrap()).clone();
+    assert!(terminal_board::plain::quiet(&todo, &snap).is_empty(), "quiet only in DOING");
+    // the board shows the text as plain/dim text — never red
+    let (screen, buf) = render(&App::new(snap.clone(), "x"), 140, 40);
+    assert!(screen.contains("quiet "), "board shows the marker:\n{screen}");
+    assert!(!colours_of(&screen, &buf, "quiet ").contains(&RED), "quiet is NOT red:\n{screen}");
+    assert!(colours_of(&screen, &buf, "quiet ").iter().all(|c| *c == palette("dark").fg), "quiet renders in the one fg colour:\n{screen}");
+    // red is still reserved for problems: the blocked marker stays red, quiet does not
+    assert!(screen.contains("x blocked"), "a blocked card is on the board");
+    let mut any_red = false;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if buf[(x, y)].fg == RED {
+                any_red = true;
+            }
+        }
+    }
+    assert!(any_red, "problems still render red");
+    // JSON: the card exposes the ts, never the duration
+    let j = serde_json::to_value(terminal_board::contract::card(&s, &s.card(stale.id).unwrap()).unwrap()).unwrap();
+    assert!(j["last_event_at"].as_i64().unwrap() > 0);
+}
+
+#[test]
+fn quiet_marker_negative_control_on_main_shape() {
+    // a board where every DOING card is fresh: no 'quiet' anywhere
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.add("widgets: fresh one", "", &[], "alice").unwrap();
+    let id = s.add("widgets: fresh two", "", &[], "alice").unwrap();
+    s.take(id, "alice").unwrap();
+    let snap = s.snapshot().unwrap();
+    assert!(!snap.in_column("doing").is_empty());
+    let (screen, buf) = render(&App::new(snap, "x"), 140, 40);
+    assert!(!screen.contains("quiet "), "no quiet marker on a fresh board:\n{screen}");
+    assert_palette(&buf, "dark");
+}
+
+#[test]
+fn idle_holder_flag_shows_how_long() {
+    let (_d, s) = seeded();
+    // alice is idle and holds the doing card 'vendor quote' (seeded owner = alice)
+    let agents = parse_agents(
+        r#"{"result":{"agents":[
+      {"name":"bot-2","agent":"aider","agent_status":"working","pane_id":"w:p5"},
+      {"name":"alice","agent":"claude","agent_status":"idle","pane_id":"w:p2"}
+    ]}}"#,
+        None,
+    )
+    .unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Agents(agents);
+    let (screen, buf) = render(&app, 140, 45);
+    let (row, line) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("idle w/ card") || l.contains("idle, holds card"))
+        .expect("an idle holder row");
+    let col = line.find("idle w/ card").or_else(|| line.find("idle, holds card")).unwrap();
+    let tail = &line[col..];
+    assert!(tail.contains('(') && (tail.contains('m') || tail.contains('h')), "flag has a duration: {line}");
+    let c = &buf[(col as u16, row as u16)];
+    assert_eq!(c.fg, RED, "the flag stays red");
+}
+
+#[test]
 fn done_column_shows_last_24h_only() {
     let (_d, s) = seeded();
     s.seed(&Seed {
