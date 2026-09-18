@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+      - name: cargo test
+        run: cargo test --locked
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: shellcheck
+        run: shellcheck install.sh tests/install_test.sh scripts/*.sh
+      - name: installer + setup tests
+        run: |
+          cargo build --locked
+          bash tests/install_test.sh target/debug/tb
+      - name: privacy check
+        run: bash scripts/privacy-check.sh

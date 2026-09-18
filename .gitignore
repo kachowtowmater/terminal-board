@@ -1,0 +1,9 @@
+/target
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+*.swp
+.env*
+*.log
+.privacy-words

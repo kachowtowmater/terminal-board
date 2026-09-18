@@ -1,0 +1,473 @@
+# Terminal Board
+
+**Terminal Board** (`tb`) is a to-do board that lives in your terminal. It has four
+columns — **TODO → DOING → REVIEW → DONE** — and you move cards across them as work
+progresses. It is made to be shared: you, your teammates and your AI coding agents all use
+the same board, from the same keyboard-driven screen or from simple commands. It can also
+show your GitHub repository (open pull requests, issues, CI) right next to your cards, and
+the live status of your agents.
+
+```text
+ TERMINAL BOARD · default · 9 cards · 3 agents (2 working, 1 idle)        refreshed 14:02:11
+┏ o TODO (3) ━━━━━━━━━━┓┌ o DOING (2/3) ───────┐┌ o REVIEW (1) ────────┐┌ o DONE today (3) ─┐
+┃┏━━━━━━━━━━━━━━━━━━━━┓┃│┌────────────────────┐││┌────────────────────┐││┌──────────────────┐│
+┃┃ #4 write install … ┃┃││ #2 fix login form  ││││ #6 dark theme      ││││ #1 renew domain  ││
+┃┃ docs - 2d          ┃┃││ web - bot-1 - 40m  ││││ web - alice - 3h   ││││ ops - alice      ││
+┃┗━━━━━━━━━━━━━━━━━━━━┛┃│└────────────────────┘││└────────────────────┘││└──────────────────┘│
+┗━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────┘└──────────────────────┘└────────────────────┘
+┌ GITHUB · acme/widgets · synced 14:01 ──────────────────────────────────────────────────────┐
+│ issues 10 (+3 new, 6 free) · PRs 2 (1 FAIL)       merged today 4 · main ok                │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+ a add  e edit  x del  enter open  shift+arrows move  ? help  q quit
+```
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Setup (`tb setup`)](#setup-tb-setup)
+- [Your first 5 minutes](#your-first-5-minutes)
+- [Keys](#keys)
+- [Boards](#boards)
+- [GitHub](#github)
+- [Agents](#agents)
+- [Command-line reference](#command-line-reference)
+- [Layouts and themes](#layouts-and-themes)
+- [Where your data lives](#where-your-data-lives)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+- [For app developers (JSON)](#for-app-developers-json)
+- [FAQ](#faq)
+- [Docs](#docs)
+- [License](#license)
+
+## Requirements
+
+- **macOS** (Apple silicon or Intel) or **Linux** (x86_64 or arm64; Arch/Omarchy,
+  Debian/Ubuntu and most others).
+- A terminal with colours and Unicode box drawing (almost all modern terminals).
+- `curl` (or `wget`) and `tar` for the installer. Nothing else: `tb` is one small program.
+- Optional: the **GitHub CLI** (`gh`) if you want the GitHub panel.
+- Optional: **herdr** if you run AI agents in herdr panes and want the AGENTS panel.
+- Only if you build from source: **Rust** (https://rustup.rs).
+
+## Install
+
+### The one command
+
+Paste this into a terminal:
+
+<!-- no-test -->
+```sh
+curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/install.sh | bash
+```
+
+What it does, step by step:
+
+1. **Finds the right download** for your computer (macOS or Linux, Apple silicon/arm64 or
+   Intel/x86_64) from the project's latest GitHub release.
+2. **Checks it**: every download comes with a SHA-256 checksum, and the installer refuses a
+   file that doesn't match.
+3. **Installs `tb`** into `~/.local/bin`. If that folder isn't on your `PATH`, it shows the
+   exact line it would add to your shell's startup file (`~/.zshrc`, `~/.bashrc` or fish
+   config) and asks first.
+4. **Runs `tb setup`**, the setup wizard (next section).
+
+If there is no ready-made download for your machine (or the download fails), the installer
+offers to build `tb` from source with Rust — it asks first — or tells you exactly how to.
+
+### Installer options
+
+Pass options after `bash -s --`, for example:
+
+<!-- no-test -->
+```sh
+curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/install.sh | bash -s -- --yes --no-github
+```
+
+| option | what it does |
+|---|---|
+| `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
+| `--version v1.0.0` | install that release instead of the latest |
+| `--no-setup` | install only; run `tb setup` yourself later |
+| `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
+| `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
+| `--no-build` | never fall back to building from source |
+| `--dry-run` | show what would happen, change nothing |
+| `--uninstall` | remove Terminal Board (asks separately before deleting your boards) |
+
+### From a clone (or to hack on it)
+
+<!-- no-test -->
+```sh
+git clone https://github.com/kachowtowmater/terminal-board
+cd terminal-board
+./install.sh
+```
+
+Inside a clone, with Rust installed, `./install.sh` builds that checkout
+(`cargo build --release`) instead of downloading. Fully by hand:
+
+<!-- no-test -->
+```sh
+cargo build --release
+mkdir -p ~/.local/bin
+cp target/release/tb ~/.local/bin/tb
+tb setup
+```
+
+## Setup (`tb setup`)
+
+`tb setup` is a short question-and-answer wizard. The installer runs it for you, and the
+very first time you type `tb` it runs by itself (press `s` at the first question to skip
+straight to the board). Run it again any time with `tb setup`.
+
+Every question is `[y]es / [s]kip`; press Enter to take the default shown in capitals.
+Anything that touches the outside world (installing `gh`, logging in, writing files outside
+Terminal Board) defaults to **skip** and is only done after you say yes.
+
+1. **Board.** Creates your default (empty) board.
+2. **GitHub** (optional). "Connect GitHub?" If yes, it checks that the GitHub CLI is
+   installed (if not, it shows the install command and asks before running it) and logged
+   in (logging in happens in GitHub's own `gh auth login`, after asking; Terminal Board never
+   sees your password or token). Then pick a repository from a numbered list or type
+   `owner/repo`; it is checked on GitHub, saved and synced. If you skip, the GitHub panel is
+   hidden; switch it on later with `R` on the board.
+3. **AGENTS panel.** Show the live view of your herdr agents? (The default is yes when
+   herdr is installed.)
+4. **Claude Code skill.** Install a skill so Claude Code knows how to use the board
+   (`~/.claude/skills/terminal-board/SKILL.md`).
+5. **Agent instructions.** Type the path of an `AGENTS.md` / `CLAUDE.md` and it adds a
+   marked block that teaches any AI agent the `tb` commands. Running it again replaces the
+   block instead of adding a second one.
+
+At the end you get a summary of what was done and what was skipped.
+
+| `tb setup` option | what it does |
+|---|---|
+| `--yes` | ask nothing; take the defaults (GitHub and agent extras are skipped unless you pass their options) |
+| `--github OWNER/REPO` | connect this repository (needs `gh`, logged in) |
+| `--no-github` | skip GitHub and hide its panel |
+| `--agents` | show the AGENTS panel and install the skill |
+| `--no-agents` | skip the agent extras and hide the AGENTS panel |
+| `--agents-md PATH` | add the agent instructions to this `AGENTS.md` / `CLAUDE.md` |
+| `--dry-run` | show what would happen, change nothing |
+
+```sh
+tb setup --dry-run --yes
+```
+
+## Your first 5 minutes
+
+1. **Open the board.** Type `tb` and press Enter. You see four empty columns.
+2. **Add a card.** Press `a`, type `home: water the plants` and press Enter. The part before
+   the colon (`home`) becomes the card's **tag**. The card appears in TODO.
+3. **Move it.** With the card selected, press **Shift+→** (or `>`) to move it to DOING.
+   The arrow keys select cards; Shift+arrows move them. Shift+↑/↓ reorder a column.
+4. **Open it.** Press **Enter**. A window shows the description, the checklist and the
+   history. Press `e` to edit the title and description.
+5. **Checklist.** In the open card, press `a` to add a checklist item ("kitchen"), Enter to
+   save. Use ↑/↓ to pick an item and Enter to tick it. `esc` closes the card.
+6. **Done.** Press `d`: DOING goes to REVIEW (someone checks it), and `d` again moves it to
+   DONE. Press `q` to quit.
+
+Everything you did can also be done from the command line — this is how scripts and AI
+agents use the board:
+
+```sh
+tb add "docs: write the install guide"
+tb add "home: water the plants" -d "the big fern too" --check "kitchen" --check "balcony"
+tb list
+tb take 2
+tb note 2 "kitchen done"
+tb check 2 1
+tb done 2
+tb done 2
+tb
+```
+
+(`tb` on its own, when not in an interactive terminal, just prints the board.)
+
+## Keys
+
+Press `?` on the board to see all keys at any time.
+
+| key | what it does |
+|---|---|
+| arrows | select a card (←→ column, ↑↓ card) |
+| `a` | add a card (`tag: title`) |
+| `e` | edit the title and description |
+| `x` | delete the card (asks y/n) |
+| `enter` | open the card: description, checklist, history |
+| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE |
+| Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
+| Shift+↑ / Shift+↓ (or `K` `J`) | move the card up / down in its column |
+| `n` | add a note to the card's history |
+| `+` / `-` | raise / lower the WIP limit (with DOING selected) |
+| `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
+| ↓ from the last card | into the GITHUB / AGENTS panels |
+| `R` | pick the GitHub repository |
+| `G` / `A` | show or hide the GITHUB / AGENTS panel |
+| `L` | view: auto, focus, third-h, third-v, half-h, half-v |
+| `T` | dark / light theme |
+| `?` | help |
+| `q` | quit |
+
+In an open card: ↑↓ select a checklist item, `enter` ticks it, `a` adds one, `d` deletes
+one, `n` adds a note, `e` edits, `esc` closes.
+
+In the GITHUB panel: ↑↓ select, `enter` on the repository line opens the repo picker,
+`enter` on a pull request or issue opens it; there `a` adds it to the board as a card and
+`o` opens it in your browser.
+
+**WIP limit.** DOING holds at most 3 cards by default ("work in progress" limit). When it is
+full, finish something first. Change it with `+`/`-` or `tb config wip 4`.
+
+## Boards
+
+You can have as many boards as you like. `tb` opens the one called `default`. Give a name
+to use another — it is created the first time you add to it:
+
+```sh
+tb home add "call the plumber"
+tb home list
+tb -b work list
+tb boards
+```
+
+You can also set `TB_BOARD=work` in your shell to change the default.
+
+## GitHub
+
+Terminal Board can show one GitHub repository per board: open pull requests with their CI
+status, the newest issues with who is working on them, what was merged today and whether
+`main` is green.
+
+**Setup.** Install the GitHub CLI (`brew install gh`, `sudo pacman -S github-cli` or
+`sudo apt install gh`) and log in with `gh auth login`. Then either press `R` on the board
+and pick your repository, or:
+
+<!-- no-test -->
+```sh
+tb config github acme/widgets
+tb github
+tb github repos
+tb sync
+```
+
+**The panel** shows four tiles (issues, pull requests, merged today, main CI), a table of
+pull requests (CI, review, branch and the issue it fixes) and a table of issues with their
+**state**: `PR #N` (a pull request is open for it), `in progress` (a card for it is in DOING
+or REVIEW), `on board` (a card waits in TODO) or `unclaimed`. Red only ever means a
+failure: a failing check (`FAIL`), a blocked card, or an idle agent holding a card.
+
+**Cards follow GitHub.** A card with `gh#N` in its title (e.g. `web: gh#123 fix login`) is
+linked to issue or pull request N:
+
+- an open pull request for it → the card moves to **REVIEW**;
+- the pull request is merged, or the issue is closed → the card moves to **DONE**;
+- cards never move backwards on their own. This happens on every refresh (every minute)
+  and whenever you run `tb sync`.
+
+If you mark such a card done yourself while its issue is still open, the board asks first
+(the command line needs `--force`).
+
+**Turn it off / on:**
+
+<!-- no-test -->
+```sh
+tb config github --off
+tb config github-panel hidden
+tb config github-panel shown
+```
+
+## Agents
+
+Terminal Board is designed so AI coding agents can take work from it, report progress and
+move cards with no extra explanation. Everything an agent needs is a `tb` command:
+
+| the agent wants to | it runs |
+|---|---|
+| take the next card | `tb next --as its-name` |
+| read the brief | `tb show ID` |
+| log progress | `tb note ID "what changed"` |
+| tick a checklist step | `tb check ID N` |
+| update the card | `tb edit ID --desc "Done = …"` · `tb check ID --add "step"` |
+| say it is stuck | `tb block ID "#N"` |
+| finish / hand back | `tb done ID` / `tb drop ID` |
+| move it anywhere | `tb move ID review` |
+
+**Teach your agents.** Three ways, pick any:
+
+- `tb guide` prints the complete agent manual ([docs/AGENTS.md](docs/AGENTS.md)): every
+  command, recipes, rules, GitHub and JSON.
+- `tb setup --agents-md AGENTS.md` (in your project) adds a block to that file with the
+  command table above, so every agent that reads `AGENTS.md` / `CLAUDE.md` knows the board.
+  The block is [integrations/AGENTS-snippet.md](integrations/AGENTS-snippet.md).
+- `tb setup --agents` installs a Claude Code skill
+  ([integrations/claude-code/SKILL.md](integrations/claude-code/SKILL.md)).
+
+```sh
+tb guide
+```
+
+**Brief line for orchestrators.** Paste this into an agent's instructions:
+
+> Your work is on Terminal Board: run `tb next --as <your-name>`, log each step with
+> `tb note`, tick `tb check`, and `tb done` when finished (`tb drop` if you stop,
+> `tb block` if stuck). Full manual: `tb guide`.
+
+**The AGENTS panel.** If you run agents in herdr panes (a terminal multiplexer for coding
+agents), the AGENTS panel shows each one, whether it is working or idle, and which card it
+holds. An agent that went idle while still holding a card is shown in red — it probably
+stopped halfway. Show or hide it with `A` or `tb config agents-panel shown|hidden`; list
+them with `tb agents`.
+
+## Command-line reference
+
+Every command prints a short answer and, when something is wrong, says what to run next.
+Add `--json` to any command for machine-readable output.
+
+```sh
+tb add "docs: fix typo in README"
+tb list
+tb show 4
+tb next --as alice
+tb take 4
+tb note 4 "found the typo"
+tb check 4 --add "proofread"
+tb check 4 1
+tb check 4 --rm 1
+tb block 1 "#4"
+tb block 1 --clear
+tb move 4 review
+tb done 4
+tb drop 1
+tb prio 1 top
+tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
+tb rm 1
+tb board --json
+tb config
+tb config wip 4
+tb config theme dark
+tb config layout auto
+tb agents
+tb --version
+```
+
+| command | what it does |
+|---|---|
+| `tb add "tag: title" [-d DESC] [--check ITEM]...` | add a card to TODO |
+| `tb list` / `tb show ID` | all cards / one card in full |
+| `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
+| `tb take ID` | take a specific TODO card |
+| `tb note ID "text"` | add a note to the card's history |
+| `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
+| `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
+| `tb move ID todo\|doing\|review\|done` | move a card |
+| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE |
+| `tb drop ID` | give a card back to TODO |
+| `tb prio ID top\|bottom\|up\|down` | reorder within the column |
+| `tb edit ID [--title T] [--desc D]` | change title/description |
+| `tb rm ID` | delete a card |
+| `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
+| `tb boards` | list your boards |
+| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
+| `tb agents` | the herdr agents and the card each holds |
+| `tb guide` | the manual for AI agents |
+| `tb setup` | the setup wizard (GitHub, panels, agent instructions) |
+
+Who you are: `--as NAME`, or `TB_AS`, or your herdr agent name, or your login name.
+
+## Layouts and themes
+
+Terminal Board picks one of five **views** from the shape of its window, every time it
+redraws. Terminal cells are about 2.2 times taller than they are wide, so a window counts as
+"tall" when its columns are fewer than its rows × 2.2.
+
+| view | when (auto) | what you see |
+|---|---|---|
+| **focus** | fewer than 40 columns, fewer than 16 rows, or too small for the others | ONE card, big: the card you hold in DOING (else the top TODO card, else your selection) with its checklist and last note, plus one-line GITHUB/AGENTS bars. ←→ previous/next card, ↑↓ switch column, `enter` ticks the next checklist item. |
+| **third-h** (a third of the height) | wide, fewer than 30 rows, at least 80 columns (e.g. 126×22) | the four columns on the left; on the right GITHUB (the tidy block) above AGENTS |
+| **third-v** (a third of the width) | tall, at most 62 columns, 30+ rows (e.g. 50×70) | the columns as stacked sections (each shows at least 2 cards before GITHUB grows past ~8 rows), then GITHUB (tidy block), then AGENTS |
+| **half-h** (half the height or more) | wide, 30+ rows (e.g. 126×41) | four columns of card boxes, GITHUB (tiles + tables) and AGENTS below, a detail line |
+| **half-v** (half the width) | tall, 63+ columns, 30+ rows (e.g. 70×70) | the columns as a 2×2 grid (TODO / DOING over REVIEW / DONE) sized to its cards, then GITHUB (tiles 2×2 + tables, at least 14 rows), then AGENTS |
+
+The GitHub tables keep their TITLE column at least 30 characters wide: on a narrower pane
+they drop LABELS, then BRANCH, AGE, WHO and REVIEW, and below that they switch to the tidy
+rows (kind, number, title, status).
+
+When space is tight, card boxes get denser (the title sits in the box's border) — all
+columns switch together. A panel that truly doesn't fit becomes a one-line bar
+(`GITHUB … tab >`); `tab` shows it full screen and `esc` comes back. The arrow keys move to
+whatever is next to you on the screen.
+
+Press `L` to pin a view (auto → focus → third-h → third-v → half-h → half-v → auto) or set
+it with `tb config layout auto`. Press `T` for the light theme (`tb config theme light`).
+
+## Where your data lives
+
+- Boards: `~/.local/state/terminal-board/boards/<name>.db` (one SQLite file per board).
+- **Back up** by copying that folder (ideally while `tb` is closed).
+- `TB_DB=/path/to/file.db` makes `tb` use a specific file.
+
+## Troubleshooting
+
+- **`tb: command not found`.** `~/.local/bin` isn't on your `PATH`. Add
+  `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc` (fish:
+  `fish_add_path ~/.local/bin`) and open a new terminal.
+- **GitHub panel says it can't fetch.** Run `gh auth status`; if you are not logged in, run
+  `gh auth login`. Check the repository name with `tb config github`.
+- **Shift+arrows don't move cards.** Some terminals and multiplexers (tmux, herdr) swallow
+  them. Use `<` `>` to move between columns and `K` `J` to move up and down.
+- **Colours look wrong.** Try the other theme with `T`. Terminal Board paints its own
+  background, so it looks the same in any terminal theme.
+- **The GITHUB or AGENTS panel is gone.** It was hidden: press `G` or `A`, or
+  `tb config github-panel shown`.
+
+## Uninstall
+
+<!-- no-test -->
+```sh
+curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/install.sh | bash -s -- --uninstall
+```
+
+(or `./install.sh --uninstall` from a clone). This removes `tb`, the Claude Code skill and
+the agent-instruction blocks it added. It asks separately before deleting your boards (the
+default is to keep them).
+
+## For app developers (JSON)
+
+`tb board --json`, `tb watch --json` (a live stream, one board per line) and `--json` on
+every command give stable JSON. The shapes are documented in [docs/JSON.md](docs/JSON.md).
+
+<!-- no-test -->
+```sh
+tb watch --json
+```
+
+## FAQ
+
+**Can two people (or agents) use the same board at once?** Yes. The board is a single file
+that handles concurrent writers, and `tb next` never hands the same card to two people.
+
+**Does it need the internet?** No. Only the optional GitHub panel talks to GitHub, through
+the `gh` tool.
+
+**Can I use it without GitHub or agents?** Yes. Skip both in `tb setup`; you get a plain
+four-column board.
+
+**Where are the settings?** Per board, in the board file. See them with `tb config`.
+
+**Is my GitHub token stored?** No. Terminal Board only runs the `gh` command; `gh` keeps
+your login.
+
+## Docs
+
+- [docs/HUMANS.md](docs/HUMANS.md) — using the board day to day (people).
+- [docs/AGENTS.md](docs/AGENTS.md) — the agent manual, also `tb guide` (AI agents).
+- [docs/JSON.md](docs/JSON.md) — the JSON contract for scripts and apps.
+- [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
