@@ -9,19 +9,31 @@ the live status of your agents.
 
 ![Terminal Board in a wide pane: four coloured columns, the GitHub panel and the agents panel](docs/images/view-half-horizontal.png)
 
-```text
- TERMINAL BOARD · default · 9 cards · 3 agents (2 working, 1 idle)        refreshed 14:02:11
-┏ o TODO (3) ━━━━━━━━━━┓┌ o DOING (2/3) ───────┐┌ o REVIEW (1) ────────┐┌ o DONE today (3) ─┐
-┃┏━━━━━━━━━━━━━━━━━━━━┓┃│┌────────────────────┐││┌────────────────────┐││┌──────────────────┐│
-┃┃ #4 write install … ┃┃││ #2 fix login form  ││││ #6 dark theme      ││││ #1 renew domain  ││
-┃┃ docs - 2d          ┃┃││ web - bot-1 - 40m  ││││ web - alice - 3h   ││││ ops - alice      ││
-┃┗━━━━━━━━━━━━━━━━━━━━┛┃│└────────────────────┘││└────────────────────┘││└──────────────────┘│
-┗━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────┘└──────────────────────┘└────────────────────┘
-┌ GITHUB · acme/widgets · synced 14:01 ──────────────────────────────────────────────────────┐
-│ issues 10 (+3 new, 6 free) · PRs 2 (1 FAIL)       merged today 4 · main ok                │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
- a add  e edit  x del  enter open  shift+arrows move  ? help  q quit
-```
+**What you get**
+
+- A four-column board you drive with the arrow keys: add, move, edit and finish cards.
+- Cards with descriptions, checklists and notes, so every piece of work has its own history.
+- Your GitHub repo beside the board: open issues, pull requests, CI, and who is on what.
+- A live view of your AI agents, and simple `tb` commands they use to take and finish work.
+- It fits whatever space you give it: half the screen, a third, or a small corner.
+
+## Why does this exist?
+
+Because we are terminal junkies.
+
+We live in the terminal. Our editor is there, our git is there, our AI agents are there,
+arguing with each other in split panes. Then someone says "just check the board", and we
+have to open a browser, find the tab among forty-seven other tabs, wait for a JavaScript
+framework to boot, log in again, get a cookie banner, and drag a card with a mouse.
+A *mouse*.
+
+So we did the reasonable thing and moved the whole board into the terminal. Now our to-do
+list sits in a pane next to the code, the agents can read and update it without asking us,
+and we never have to leave the place where we already spend twelve hours a day.
+
+Is this healthy? No. Is it faster? Absolutely.
+
+## Contents
 
 - [Requirements](#requirements)
 - [Install](#install)
@@ -382,42 +394,55 @@ Who you are: `--as NAME`, or `TB_AS`, or your herdr agent name, or your login na
 
 ## Layouts and themes
 
-Terminal Board picks one of five **views** from the shape of its window, every time it
-redraws. Terminal cells are about 2.2 times taller than they are wide, so a window counts as
-"tall" when its columns are fewer than its rows × 2.2.
+Give Terminal Board any pane you like: half the screen, a third, or a small corner. It picks
+the best layout for that shape and switches as soon as you resize.
 
-| view | when (auto) | what you see |
-|---|---|---|
-| **focus** | fewer than 40 columns, fewer than 16 rows, or too small for the others | ONE card, big: the card you hold in DOING (else the top TODO card, else your selection) with its checklist and last note, plus one-line GITHUB/AGENTS bars. ←→ previous/next card, ↑↓ switch column, `enter` ticks the next checklist item. |
-| **third-h** (a third of the height) | wide, fewer than 30 rows, at least 80 columns (e.g. 126×22) | the four columns on the left; on the right GITHUB (the tidy block) above AGENTS |
-| **third-v** (a third of the width) | tall, at most 62 columns, 30+ rows (e.g. 50×70) | the columns as stacked sections (each shows at least 2 cards before GITHUB grows past ~8 rows), then GITHUB (tidy block), then AGENTS |
-| **half-h** (half the height or more) | wide, 30+ rows (e.g. 126×41) | four columns of card boxes, GITHUB (tiles + tables) and AGENTS below, a detail line |
-| **half-v** (half the width) | tall, 63+ columns, 30+ rows (e.g. 70×70) | the columns as a 2×2 grid (TODO / DOING over REVIEW / DONE) sized to its cards, then GITHUB (tiles 2×2 + tables, at least 14 rows), then AGENTS |
+**Half the screen, wide.** All four columns side by side, with GitHub and your agents below.
 
-### What the views look like
-
-**half-h**: half the screen height, full width:
-
-![half-h view](docs/images/view-half-horizontal.png)
+![Half the screen, wide](docs/images/view-half-horizontal.png)
 
 <table>
 <tr>
-<td valign="top"><b>half-v</b>: half the screen width<br><br><img src="docs/images/view-half-vertical.png" alt="half-v view" width="420"></td>
-<td valign="top"><b>third-v</b>: a third of the screen width<br><br><img src="docs/images/view-third-vertical.png" alt="third-v view" width="292"></td>
+<td valign="top" width="58%">
+<b>Half the screen, tall.</b> The columns as a 2 × 2 grid, then GitHub and agents.<br><br>
+<img src="docs/images/view-half-vertical.png" alt="Half the screen, tall" width="100%">
+</td>
+<td valign="top">
+<b>A third of the screen, tall.</b> Everything stacked in one narrow column.<br><br>
+<img src="docs/images/view-third-vertical.png" alt="A third of the screen, tall" width="100%">
+</td>
 </tr>
 </table>
 
-The GitHub tables keep their TITLE column at least 30 characters wide: on a narrower pane
-they drop LABELS, then BRANCH, AGE, WHO and REVIEW, and below that they switch to the tidy
-rows (kind, number, title, status).
+Two more layouts cover the other shapes:
 
-When space is tight, card boxes get denser (the title sits in the box's border) — all
-columns switch together. A panel that truly doesn't fit becomes a one-line bar
-(`GITHUB … tab >`); `tab` shows it full screen and `esc` comes back. The arrow keys move to
-whatever is next to you on the screen.
+- **A third of the screen, wide** (a strip along the bottom): the columns on the left,
+  GitHub and agents in a column on the right.
+- **Focus** (a small corner): just the card you're working on, big, with its checklist.
 
-Press `L` to pin a view (auto → focus → third-h → third-v → half-h → half-v → auto) or set
-it with `tb config layout auto`. Press `T` for the light theme (`tb config theme light`).
+If something doesn't fit, it shrinks to a one-line bar instead of disappearing. Press
+`Tab` to open it full screen and `Esc` to come back.
+
+**Handy keys**
+
+- `L` pins a layout you like (press again to cycle, back to automatic).
+- `T` switches between the dark and light theme.
+- The arrow keys always move to whatever is next to you on screen.
+
+<details>
+<summary>Exact sizes (for the curious)</summary>
+
+| layout | picked when |
+|---|---|
+| focus | fewer than 40 columns or 16 rows |
+| third, wide | at least 80 columns and fewer than 30 rows |
+| third, tall | at most 62 columns and 30+ rows |
+| half, wide | wide and 30+ rows |
+| half, tall | 63+ columns, 30+ rows and taller than wide |
+
+The same settings from the command line: `tb config layout auto|focus|third-h|third-v|half-h|half-v`
+and `tb config theme dark|light`.
+</details>
 
 ## Where your data lives
 
