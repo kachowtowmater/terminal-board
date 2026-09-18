@@ -10,6 +10,15 @@
   error text stays in `tb github` and `--json` (`error`, `fails` = consecutive failures,
   snapshot `fetched_at` so readers can tell how stale the data is).
 
+### Identity
+- Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
+  `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
+  logged under the login name; now they are logged under their own. The login name is used
+  only outside herdr, or when herdr has no named agent for the pane.
+
+### JSON
+- Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,

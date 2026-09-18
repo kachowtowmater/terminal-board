@@ -31,7 +31,7 @@ generic() {
     scan '' '\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'
     # e-mail addresses, except the documentation and GitHub noreply domains
     scan '' '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
-        | grep -vE '@(example\.(com|org|net)|users\.noreply\.github\.com)\b' || true
+        | grep -vE '(@(example\.(com|org|net)|users\.noreply\.github\.com)\b|\bnoreply@github\.com\b)' || true
     # credentials
     scan '' '\bsk-[A-Za-z0-9_-]{8,}|\b(ghp|gho|ghs|ghu)_[A-Za-z0-9]{8,}|\bgithub_pat_|\bAKIA[0-9A-Z]{16}\b|-----BEGIN .*PRIVATE KEY|\bxox[bp]-'
 }
