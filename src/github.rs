@@ -377,7 +377,7 @@ pub fn repo_row(r: &RepoEntry, now: i64) -> String {
     let private = if r.is_private { "  (private)" } else { "" };
     let pushed = age_of(&r.pushed_at, now).map(|a| format!("  pushed {}", crate::store::coarse_age(a))).unwrap_or_default();
     let desc = if r.description.is_empty() { String::new() } else { format!("  {}", r.description) };
-    format!("{}{private}{pushed}{desc}", r.name_with_owner)
+    crate::text::sanitize(&format!("{}{private}{pushed}{desc}", r.name_with_owner))
 }
 
 /// Open/closed state of an issue or PR number (REST `repos/R/issues/N` covers both).
@@ -697,22 +697,24 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
 
 /// Plain-text snapshot for `ttyboard github` (up to `n` PRs/issues, full titles).
 pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n: usize, now: i64) -> String {
-    use std::fmt::Write;
-    let f = factory(s, cards, now);
     let mut out = String::new();
-    let _ = writeln!(out, "GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
+    // every line through the sanitizer: GitHub titles, names and branches are remote text
+    macro_rules! ln {
+        ($($a:tt)*) => { crate::text::push_line(&mut out, &format!($($a)*)) };
+    }
+    let f = factory(s, cards, now);
+    ln!("GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
     if let Some(e) = error {
-        let _ = writeln!(out, "github: {e} (showing the last good snapshot)");
+        ln!("github: {e} (showing the last good snapshot)");
     }
     let (head, ci) = summary(s);
-    let _ = writeln!(out, "{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
+    ln!("{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
     let age = |ts: &str| age_of(ts, now).map(crate::store::fmt_age).unwrap_or_else(|| "?".into());
-    let _ = writeln!(out, "\nOPEN PRS");
+    ln!("\nOPEN PRS");
     for (p, link) in s.prs.iter().zip(&f.pr_links).take(n) {
         let draft = if p.is_draft { " (draft)" } else { "" };
         let link = link.as_ref().map(|(i, w)| format!(" -> #{i} ({w})")).unwrap_or_default();
-        let _ = writeln!(
-            out,
+        ln!(
             "  #{} {}{draft} · CI {} · review {} · {} · {} · {}{link}",
             p.number,
             p.title,
@@ -723,20 +725,20 @@ pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n
             p.head_ref
         );
     }
-    let _ = writeln!(out, "\nISSUES (state · who)");
+    ln!("\nISSUES (state · who)");
     for r in f.issues.iter().take(n) {
         let labels = if r.labels.is_empty() { String::new() } else { format!(" [{}]", r.labels.join(",")) };
-        let _ = writeln!(out, "  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
+        ln!("  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
     }
     if f.issues.len() > n {
-        let _ = writeln!(out, "  +{} more", f.issues.len() - n);
+        ln!("  +{} more", f.issues.len() - n);
     }
-    let _ = writeln!(out, "\nMERGED TODAY");
+    ln!("\nMERGED TODAY");
     for m in s.merged_today.iter().take(n) {
-        let _ = writeln!(out, "  #{} {}", m.number, m.title);
+        ln!("  #{} {}", m.number, m.title);
     }
     if let Some(c) = &s.main_ci {
-        let _ = writeln!(out, "\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
+        ln!("\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
     }
     out
 }

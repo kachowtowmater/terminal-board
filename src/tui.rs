@@ -2127,6 +2127,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f, app),
         _ => {}
     }
+    // every cell of every view: displayed text never carries control characters or sequences
+    crate::text::sanitize_buffer(f.buffer_mut());
 }
 
 /// Text with a reversed cursor cell at char index `cursor` (a space when at the end).
