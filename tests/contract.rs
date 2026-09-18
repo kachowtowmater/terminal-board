@@ -32,7 +32,7 @@ fn json(o: &Output) -> serde_json::Value {
 }
 
 const CARD: &[&str] = &[
-    "id", "title", "tag", "description", "column", "position", "owner", "due", "gh_ref", "blocked", "created_at",
+    "id", "title", "tag", "description", "column", "position", "owner", "reviewer", "due", "gh_ref", "blocked", "created_at",
     "column_since", "checklist", "events",
 ];
 

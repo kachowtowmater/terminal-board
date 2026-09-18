@@ -42,6 +42,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
+| claim the top REVIEW card you did not do | `tb next --review --as NAME` |
 | take one specific TODO card | `tb take ID` |
 | see every card, by column | `tb list` |
 | one card in full (brief, checklist, notes, history) | `tb show ID` |
@@ -126,8 +127,9 @@ something else with `tb next`, or wait. `tb block ID --clear` when it moves agai
 **Card too big:** add the parts as new cards (`tb add`), note their IDs on the original, and
 narrow the original with `tb edit ID --desc "…"`.
 
-**Review someone's card (verifier):** `tb list` shows REVIEW; `tb show ID`; check the done
-criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
+**Review someone's card (verifier):** `tb next --review --as NAME` claims the top REVIEW
+card you did not do (atomic: two reviewers never get the same card; it skips your own work
+and cards another reviewer claimed). `tb show ID`; check the done criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
 `tb move ID todo` with a note of what is missing. You cannot approve a card you did
 yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
 `you did this work — another agent must review it`.
@@ -218,6 +220,7 @@ tb block 1 "#2"
 tb block 1 --clear
 tb prio 2 top
 tb done 1
+tb next --review --as bob
 tb done 1 --as bob
 tb take 2
 tb drop 2

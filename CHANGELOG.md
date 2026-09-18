@@ -5,6 +5,14 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Added
+- **Reviewers claim cards: `tb next --review --as NAME`.** Atomically claims the top unblocked
+  REVIEW card that NAME did not author and nobody else has claimed (same lock as `tb next`,
+  so two reviewers never get the same card; no WIP limit). The card shows `review NAME` next
+  to its owner; JSON cards gain a nullable `reviewer` field, and the database a nullable
+  `reviewer` column (added on open). The reviewer stays on a card that reaches DONE; any other
+  move clears it.
+
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —

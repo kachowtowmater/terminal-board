@@ -1672,6 +1672,9 @@ fn detail_strip(app: &App) -> Vec<Line<'static>> {
         rest.push(t.clone());
     }
     rest.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
+    if let Some(r) = &c.reviewer {
+        rest.push(format!("review {r}"));
+    }
     first.push(Span::styled(format!(" - {}", rest.join(" - ")), dim()));
     let events = app
         .snap
@@ -1754,6 +1757,9 @@ fn draw_popup(f: &mut Frame, app: &App, d: &CardDetail, full_width: bool) {
         meta.push(t.clone());
     }
     meta.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
+    if let Some(r) = &c.reviewer {
+        meta.push(format!("review {r}"));
+    }
     meta.push(format!("{} {}", c.column, fmt_age(app.snap.now - c.column_since)));
     let meta = format!(" {} ", meta.join(" - "));
     let hint = " up/down select  enter check  a add  d delete  n note  esc close ";

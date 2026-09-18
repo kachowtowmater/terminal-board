@@ -36,6 +36,9 @@ pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) 
     if let Some(o) = &card.owner {
         parts.push((1, o.clone()));
     }
+    if let Some(r) = &card.reviewer {
+        parts.push((1, format!("review {r}")));
+    }
     if card.column != "done" {
         parts.push((2, fmt_age(snap.now - card.column_since)));
     }
@@ -146,6 +149,9 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
         meta.push(t.clone());
     }
     meta.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
+    if let Some(r) = &c.reviewer {
+        meta.push(format!("review {r}"));
+    }
     meta.push(fmt_age(now - c.column_since));
     if let Some(due) = &c.due {
         meta.push(format!("due {due}"));

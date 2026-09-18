@@ -36,6 +36,8 @@ pub struct CardJ {
     pub column: String,
     pub position: i64,
     pub owner: Option<String>,
+    /// Who claimed it with `tb next --review`; null when unclaimed.
+    pub reviewer: Option<String>,
     pub due: Option<String>,
     pub gh_ref: Option<i64>,
     pub blocked: Option<String>,
@@ -95,6 +97,7 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         column: c.column.clone(),
         position: c.position,
         owner: c.owner.clone(),
+        reviewer: c.reviewer.clone(),
         due: c.due.clone(),
         gh_ref: c.gh_ref,
         blocked: c.blocked.clone(),

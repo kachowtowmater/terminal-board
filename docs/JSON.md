@@ -49,6 +49,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column": "doing",
   "position": 0,
   "owner": "bot-2",
+  "reviewer": null,
   "due": null,
   "gh_ref": 327,
   "blocked": null,
@@ -71,6 +72,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
+| `reviewer` | string\|null | who claimed it with `tb next --review`; kept when it reaches DONE, cleared by any other move |
 | `due` | string\|null | free text |
 | `gh_ref` | int\|null | GitHub issue/PR number (`gh#N` in the title) |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
