@@ -75,7 +75,7 @@ empty or DOING is full.
 | do this | run |
 |---|---|
 | finished your work: DOING → REVIEW | `tb done ID` |
-| verified: REVIEW → DONE | `tb done ID` |
+| verified someone else's work: REVIEW → DONE | `tb done ID` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
 
@@ -128,7 +128,9 @@ narrow the original with `tb edit ID --desc "…"`.
 
 **Review someone's card (verifier):** `tb list` shows REVIEW; `tb show ID`; check the done
 criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
-`tb move ID todo` with a note of what is missing.
+`tb move ID todo` with a note of what is missing. You cannot approve a card you did
+yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
+`you did this work — another agent must review it`.
 
 ## Rules
 
@@ -138,12 +140,15 @@ criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened".
 - Tick only what is really done. Never tick ahead.
 - Leave a note before you stop, drop or block a card.
+- Never approve your own work: REVIEW → DONE is another agent's `tb done`.
 - No `--force` unless a person told you to use it.
 
 ## Identity
 
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME` (set inside a herdr pane),
-then `$USER`. Use the same name every time. The board matches it to your herdr pane in the
+then `$USER`. Use the same name every time. Names are self-asserted: nothing checks that
+you are who you say. The review rule stops honest mistakes, not an agent that lies about
+its name — so never pass another agent's name to get past it. The board matches it to your herdr pane in the
 AGENTS panel. An idle agent that still holds a DOING card is shown as a warning.
 
 ## GitHub
@@ -186,6 +191,7 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue #N still open on GitHub` | close the issue / merge the PR first |
+| `you did this work — another agent must review it` | leave it in REVIEW for another agent |
 | `no card #ID` | `tb list` to find the right ID |
 
 ## Brief line for orchestrators
@@ -212,7 +218,7 @@ tb block 1 "#2"
 tb block 1 --clear
 tb prio 2 top
 tb done 1
-tb done 1
+tb done 1 --as bob
 tb take 2
 tb drop 2
 tb move 2 doing
