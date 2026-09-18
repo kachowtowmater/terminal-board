@@ -35,6 +35,7 @@ Is this healthy? No. Is it faster? Absolutely.
 
 ## Contents
 
+- [Why does this exist?](#why-does-this-exist)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Setup (`tb setup`)](#setup-tb-setup)
