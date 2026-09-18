@@ -161,6 +161,8 @@ pub enum Confirm {
     Delete(i64),
     /// Move a GitHub card to done although its issue/PR is still open.
     ForceDone(i64),
+    /// Approve a REVIEW card the actor moved to review themselves (the forced, logged path).
+    ApproveOwn(i64),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -562,8 +564,19 @@ impl App {
                             }
                         }
                         Confirm::ForceDone(id) => {
+                            if self.is_own_review(id, store) {
+                                self.mode = approve_own(id);
+                                return false;
+                            }
                             let r = store.move_to(id, "done", &actor);
                             if self.report(r, |c| format!("#{} -> done", c.id)).is_some() {
+                                self.reload(store);
+                                self.focus_card(id);
+                            }
+                        }
+                        Confirm::ApproveOwn(id) => {
+                            let r = store.move_to_forced(id, "done", &actor);
+                            if self.report(r, |c| format!("#{} -> done (own work, logged)", c.id)).is_some() {
                                 self.reload(store);
                                 self.focus_card(id);
                             }
@@ -696,8 +709,14 @@ impl App {
         github::still_open(snap, n).then_some(n)
     }
 
+    /// Is `id` a REVIEW card this actor authored (moved to review themselves)?
+    fn is_own_review(&self, id: i64, store: &Store) -> bool {
+        store.card(id).is_ok_and(|c| c.column == "review")
+            && store.author(id).ok().flatten().is_some_and(|a| a.eq_ignore_ascii_case(&self.actor))
+    }
+
     /// Move the selected card to `target` (None = `done` semantics), asking before a
-    /// done that GitHub doesn't back.
+    /// done that GitHub doesn't back, and before approving your own work.
     fn move_selected(&mut self, target: Option<&str>, store: &mut Store) {
         let Some((id, column)) = self.selected().map(|c| (c.id, c.column.clone())) else { return };
         let to = match target {
@@ -714,6 +733,10 @@ impl App {
                     action: Confirm::ForceDone(id),
                     prompt: format!("issue #{n} still open on GitHub — mark done anyway? y/n"),
                 };
+                return;
+            }
+            if self.is_own_review(id, store) {
+                self.mode = approve_own(id);
                 return;
             }
         }
@@ -1516,6 +1539,14 @@ fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, i
 }
 
 /// Trello-style: each card in its own box in the column colour; the selected one thick.
+/// The confirm line for approving your own REVIEW card (a solo person is not trapped).
+fn approve_own(id: i64) -> Mode {
+    Mode::Confirm {
+        action: Confirm::ApproveOwn(id),
+        prompt: "you moved this to review yourself — approve your own work? y/n".into(),
+    }
+}
+
 /// Scrolls so the selection is visible, with dim `+N more` hints for hidden cards.
 fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect, colour: Color, dense: bool) -> bool {
     let text_w = inner.width.saturating_sub(4) as usize; // borders + 1 space padding each side

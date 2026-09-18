@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Identity
+- Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
+  `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
+  logged under the login name; now they are logged under their own. The login name is used
+  only outside herdr, or when herdr has no named agent for the pane.
+
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
@@ -17,8 +23,10 @@
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —
   on every path (`tb done`, `tb move ID done`, the `d` key). The error is
-  `you did this work — another agent must review it`. `--force` still gets past it and is
-  logged on the card as a `force` event. **If one agent does both jobs in your setup**, give
+  `you did this work — ask another person or agent to review it`. `--force` still gets past
+  it and is logged on the card as a `force` event. In the full-screen board, `d` or a move
+  right on your own REVIEW card asks `you moved this to review yourself — approve your own
+  work? y/n` instead: `y` takes the same logged path, so a person working alone is not stuck. **If one agent does both jobs in your setup**, give
   the reviewing step its own name (`tb done ID --as reviewer`) or add `--force`. Names are
   self-asserted, so this stops mistakes, not a hostile agent.
 

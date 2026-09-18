@@ -393,7 +393,8 @@ tb --version
 | `tb guide` | the manual for AI agents |
 | `tb setup` | the setup wizard (GitHub, panels, agent instructions) |
 
-Who you are: `--as NAME`, or `TB_AS`, or your herdr agent name, or your login name.
+Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
+name herdr gives the agent in that pane, or your login name.
 
 ## Layouts and themes
 

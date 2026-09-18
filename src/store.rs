@@ -984,7 +984,7 @@ impl Store {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return err("you did this work — another agent must review it: 'tb next --review --as NAME'");
+                        return err("you did this work — ask another person or agent to review it");
                     }
                     Self::log(&tx, id, actor, "force", "approved own work")?;
                 }
