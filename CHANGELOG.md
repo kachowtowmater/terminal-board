@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### JSON
+- Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
+
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —

@@ -80,11 +80,25 @@ pub struct Card {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CheckItem {
     pub idx: i64,
     pub text: String,
     pub done: bool,
+}
+
+/// JSON shape of a checklist item, identical in `tb board --json` and `tb show --json`:
+/// `n` is the item number; `idx` is a deprecated alias kept so existing readers don't break.
+impl Serialize for CheckItem {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("CheckItem", 4)?;
+        st.serialize_field("n", &self.idx)?;
+        st.serialize_field("idx", &self.idx)?;
+        st.serialize_field("text", &self.text)?;
+        st.serialize_field("done", &self.done)?;
+        st.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

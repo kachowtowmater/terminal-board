@@ -79,6 +79,15 @@ fn verbs_and_json() {
     let chk: serde_json::Value = serde_json::from_str(&b.ok(&["show", "1", "--json"])).unwrap();
     let texts: Vec<_> = chk["checklist"].as_array().unwrap().iter().map(|c| (c["idx"].as_i64().unwrap(), c["text"].as_str().unwrap().to_string())).collect();
     assert_eq!(texts, [(1, "ch1".to_string()), (2, "ch3".to_string())]);
+    // `n` is the canonical key in both `show --json` and `board --json`; `idx` is its alias
+    for c in chk["checklist"].as_array().unwrap() {
+        assert_eq!(c["n"], c["idx"]);
+    }
+    let board: serde_json::Value = serde_json::from_str(&b.ok(&["board", "--json"])).unwrap();
+    let card1 = board["columns"]["doing"].as_array().unwrap().iter().find(|c| c["id"] == 1).unwrap();
+    let shown: Vec<_> = chk["checklist"].as_array().unwrap().iter().map(|c| (c["n"].clone(), c["text"].clone())).collect();
+    let boarded: Vec<_> = card1["checklist"].as_array().unwrap().iter().map(|c| (c["n"].clone(), c["text"].clone())).collect();
+    assert_eq!(shown, boarded);
     assert!(!b.run(&["check", "1"]).status.success());
     assert!(b.ok(&["config", "theme", "light"]).contains("light"));
     assert!(!b.run(&["config", "theme", "blue"]).status.success());
