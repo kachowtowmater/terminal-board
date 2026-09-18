@@ -379,14 +379,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;
             }
-            let c = store.move_to(id, &column, &actor)?;
+            let c = if force { store.move_to_forced(id, &column, &actor)? } else { store.move_to(id, &column, &actor)? };
             done_card(&store, j, id, format!("#{id} is now in {}", c.column))?;
         }
         Cmd::Done { id, force } => {
             if store.card(id)?.column != "doing" {
                 guard_done(&store, id, force, &format!("done {id}"))?;
             }
-            let c = store.done(id, &actor)?;
+            let c = if force { store.done_forced(id, &actor)? } else { store.done(id, &actor)? };
             let human = if c.column == "review" {
                 format!("#{id} is now in review — close it with 'tb done {id}' once verified")
             } else {

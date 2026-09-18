@@ -14,7 +14,7 @@ under the same name: `--as <your-name>` or `TB_AS=<your-name>`.
 | add / remove a checklist item | `tb check ID --add "text"` · `tb check ID --rm N` |
 | change title / description | `tb edit ID --title "tag: title"` · `tb edit ID --desc "Done = …"` |
 | stuck / unstuck | `tb block ID "#N or reason"` · `tb block ID --clear` |
-| finished (DOING → REVIEW; again REVIEW → DONE) | `tb done ID` |
+| finished (DOING → REVIEW; REVIEW → DONE only on someone else's card) | `tb done ID` |
 | stop and hand it back (→ TODO) | `tb drop ID` |
 | move to any column | `tb move ID todo\|doing\|review\|done` |
 | reorder | `tb prio ID top\|bottom\|up\|down` |

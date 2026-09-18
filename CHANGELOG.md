@@ -11,6 +11,17 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Changed
+- **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
+  author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —
+  on every path (`tb done`, `tb move ID done`, the `d` key). The error is
+  `you did this work — ask another person or agent to review it`. `--force` still gets past
+  it and is logged on the card as a `force` event. In the full-screen board, `d` or a move
+  right on your own REVIEW card asks `you moved this to review yourself — approve your own
+  work? y/n` instead: `y` takes the same logged path, so a person working alone is not stuck. **If one agent does both jobs in your setup**, give
+  the reviewing step its own name (`tb done ID --as reviewer`) or add `--force`. Names are
+  self-asserted, so this stops mistakes, not a hostile agent.
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,

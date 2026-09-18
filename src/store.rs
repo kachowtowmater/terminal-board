@@ -43,6 +43,20 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
+    let mover: Option<String> = conn
+        .query_row(
+            "SELECT actor FROM events WHERE card_id=? AND kind='moved' AND text LIKE '% -> review' ORDER BY id DESC LIMIT 1",
+            [c.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match mover {
+        Some(a) if a != "github" => Some(a),
+        _ => c.owner.clone(),
+    })
+}
+
 fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(BoardError(msg.into()))
 }
@@ -880,6 +894,22 @@ impl Store {
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
+        self.move_card(id, column, actor, false)
+    }
+
+    /// `move_to` that lets the author approve their own REVIEW card; logged as a `force` event.
+    pub fn move_to_forced(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
+        self.move_card(id, column, actor, true)
+    }
+
+    /// Who did the work on a card: the actor of its last move into review, or the owner when
+    /// that move was a GitHub sync (or there is none).
+    pub fn author(&self, id: i64) -> Result<Option<String>> {
+        let c = get_card(&self.conn, id)?;
+        author_of(&self.conn, &c)
+    }
+
+    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool) -> Result<Card> {
         let column = column.to_ascii_lowercase();
         if !COLUMNS.contains(&column.as_str()) {
             return err(format!(
@@ -890,6 +920,16 @@ impl Store {
         let c = get_card(&tx, id)?;
         if c.column == column {
             return Ok(c);
+        }
+        if column == "done" && c.column == "review" {
+            if let Some(author) = author_of(&tx, &c)? {
+                if author.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return err("you did this work — ask another person or agent to review it");
+                    }
+                    Self::log(&tx, id, actor, "force", "approved own work")?;
+                }
+            }
         }
         if column == "doing" {
             let wip = wip_of(&tx)?;
@@ -998,10 +1038,19 @@ impl Store {
 
     /// doing -> review; todo/review -> done.
     pub fn done(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.done_opts(id, actor, false)
+    }
+
+    /// `done` with `--force`: see `move_to_forced`.
+    pub fn done_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.done_opts(id, actor, true)
+    }
+
+    fn done_opts(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
         let c = self.card(id)?;
         match c.column.as_str() {
-            "doing" => self.move_to(id, "review", actor),
-            "todo" | "review" => self.move_to(id, "done", actor),
+            "doing" => self.move_card(id, "review", actor, force),
+            "todo" | "review" => self.move_card(id, "done", actor, force),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
             )),

@@ -195,7 +195,7 @@ tb take 2
 tb note 2 "kitchen done"
 tb check 2 1
 tb done 2
-tb done 2
+tb done 2 --as bob
 tb
 ```
 
@@ -354,7 +354,7 @@ tb check 4 --rm 1
 tb block 1 "#4"
 tb block 1 --clear
 tb move 4 review
-tb done 4
+tb done 4 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
@@ -378,7 +378,7 @@ tb --version
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card |
-| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE |
+| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb drop ID` | give a card back to TODO |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D]` | change title/description |

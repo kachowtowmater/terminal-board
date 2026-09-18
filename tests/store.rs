@@ -120,7 +120,7 @@ fn lifecycle_and_errors() {
     assert!(s.check(id, 5, "me").unwrap_err().to_string().contains("tb show"));
     s.note(id, "halfway", "me").unwrap();
     assert_eq!(s.done(id, "me").unwrap().column, "review");
-    assert_eq!(s.done(id, "me").unwrap().column, "done");
+    assert_eq!(s.done(id, "you").unwrap().column, "done");
     assert!(s.done(id, "me").unwrap_err().to_string().contains("tb move"));
     let d = s.drop_card(id, "me").unwrap();
     assert_eq!((d.column.as_str(), d.owner), ("todo", None));
