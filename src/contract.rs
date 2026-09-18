@@ -13,6 +13,8 @@ pub const CARD_EVENTS: usize = 10;
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckJ {
     pub n: i64,
+    /// Deprecated alias of `n` (what `tb show --json` used to call it); same value.
+    pub idx: i64,
     pub text: String,
     pub done: bool,
 }
@@ -98,7 +100,7 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         blocked: c.blocked.clone(),
         created_at: c.created_at,
         column_since: c.column_since,
-        checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, text: i.text.clone(), done: i.done }).collect(),
+        checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
         events: d
             .events
             .iter()
