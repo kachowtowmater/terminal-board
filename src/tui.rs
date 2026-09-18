@@ -1866,10 +1866,13 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let synced = gh.snap.as_ref().map(|s| crate::store::fmt_clock(s.fetched_at)).unwrap_or_else(|| "never".into());
+    let (suffix, is_red) = github::sync_suffix(gh.error.as_deref(), gh.fails);
+    let sync_text = format!("synced {synced}{suffix}");
+    let sync_style = if is_red { red() } else { bold() };
     let title = if focused && app.gh_sel == 0 {
-        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &format!("synced {synced}")], area.width), sel_style)
+        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &sync_text], area.width), sel_style)
     } else {
-        Span::styled(fit_title(&["GITHUB", &repo, &format!("synced {synced}")], area.width), bold())
+        Span::styled(fit_title(&["GITHUB", &repo, &sync_text], area.width), sync_style)
     };
     let block = frame(focused, None).title(title);
     let inner = block.inner(area);
@@ -1880,10 +1883,6 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
     let now = app.snap.now;
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
-    if let Some(e) = &gh.error {
-        f.render_widget(Paragraph::new(Line::raw(format!(" github: {e}"))), Rect { y, height: 1, ..inner });
-        y += 1;
-    }
     let Some(s) = &gh.snap else {
         if gh.error.is_none() {
             f.render_widget(Paragraph::new(Line::styled(" fetching...", dim())), Rect { y, height: 1, ..inner });
@@ -2069,7 +2068,7 @@ pub(crate) fn github_want(app: &App, width: u16) -> u16 {
     } else {
         s.prs.len() as u16 + issues
     };
-    2 + tiles + rows.max(1) + u16::from(app.gh.error.is_some())
+    2 + tiles + rows.max(1)
 }
 
 fn base_style(app: &App) -> Style {

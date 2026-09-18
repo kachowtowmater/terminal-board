@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### GitHub
+- A one-off `gh` failure no longer shakes the board: no extra row, the last good snapshot
+  stays, and the panel header quietly reads `synced HH:MM · offline, retrying` (network/
+  timeout errors) or `synced HH:MM · gh error` (everything else). The header turns red —
+  the same style as other problems — only after 3 consecutive failed refreshes. The full
+  error text stays in `tb github` and `--json` (`error`, `fails` = consecutive failures,
+  snapshot `fetched_at` so readers can tell how stale the data is).
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,
