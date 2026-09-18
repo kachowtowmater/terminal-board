@@ -195,6 +195,23 @@ fn run_herdr(args: &[&str]) -> Option<String> {
     reader.join().ok()
 }
 
+/// The herdr agent name of `pane_id` in `herdr agent list` output (None if unnamed or absent).
+pub fn name_for_pane(agents_json: &str, pane_id: &str) -> Option<String> {
+    parse_agents(agents_json, None)
+        .ok()?
+        .into_iter()
+        .find(|a| a.pane_id == pane_id)
+        .and_then(|a| a.agent_name)
+}
+
+/// Ask herdr which agent runs in `pane_id` (best effort: None when herdr is off or silent).
+pub fn agent_name_for_pane(pane_id: &str) -> Option<String> {
+    if pane_id.is_empty() || !herdr_enabled() {
+        return None;
+    }
+    name_for_pane(&run_herdr(&["agent", "list"])?, pane_id)
+}
+
 /// `herdr agent list` joined to `herdr pane list`; falls back to pane list alone.
 pub fn probe() -> AgentsState {
     let gone = || AgentsState::Unavailable("herdr not available".into());
@@ -285,6 +302,15 @@ mod tests {
         assert_eq!(a.len(), 3, "pane without agent is skipped");
         assert_eq!(a[0].name, "lead");
         assert_eq!(a[1].name, "builder 2");
+    }
+
+    #[test]
+    fn name_for_pane_uses_the_agent_name_only() {
+        assert_eq!(name_for_pane(AGENTS, "w:p2").as_deref(), Some("bot"));
+        assert_eq!(name_for_pane(AGENTS, "w:p3").as_deref(), Some("rev"));
+        assert_eq!(name_for_pane(AGENTS, "w:p1"), None, "unnamed agent: no guess from titles");
+        assert_eq!(name_for_pane(AGENTS, "w:p7"), None);
+        assert_eq!(name_for_pane("not json", "w:p2"), None);
     }
 
     #[test]
