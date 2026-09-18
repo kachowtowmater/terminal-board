@@ -402,24 +402,27 @@ the best layout for that shape and switches as soon as you resize.
 
 ![Half the screen, wide](docs/images/view-half-horizontal.png)
 
+**Half the screen, tall.** The columns as a 2 × 2 grid, then GitHub and agents.
+
+<img src="docs/images/view-half-vertical.png" alt="Half the screen, tall" width="440">
+
+**A third of the screen, wide.** A strip along the bottom: the columns on the left, GitHub
+and your agents stacked on the right.
+
+![A third of the screen, wide](docs/images/view-third-horizontal.png)
+
 <table>
 <tr>
-<td valign="top" width="58%">
-<b>Half the screen, tall.</b> The columns as a 2 × 2 grid, then GitHub and agents.<br><br>
-<img src="docs/images/view-half-vertical.png" alt="Half the screen, tall" width="100%">
+<td valign="top" width="50%">
+<b>A third of the screen, tall.</b> A side pane: everything in one column, cards first.<br><br>
+<img src="docs/images/view-third-vertical.png" alt="A third of the screen, tall" width="100%">
 </td>
 <td valign="top">
-<b>A third of the screen, tall.</b> Everything stacked in one narrow column.<br><br>
-<img src="docs/images/view-third-vertical.png" alt="A third of the screen, tall" width="100%">
+<b>Focus.</b> A small corner: just the card you're working on, big, with its checklist.<br><br>
+<img src="docs/images/view-focus.png" alt="Focus view" width="100%">
 </td>
 </tr>
 </table>
-
-Two more layouts cover the other shapes:
-
-- **A third of the screen, wide** (a strip along the bottom): the columns on the left,
-  GitHub and agents in a column on the right.
-- **Focus** (a small corner): just the card you're working on, big, with its checklist.
 
 If something doesn't fit, it shrinks to a one-line bar instead of disappearing. Press
 `Tab` to open it full screen and `Esc` to come back.
