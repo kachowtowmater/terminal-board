@@ -145,10 +145,13 @@ yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
 
 ## Identity
 
-You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME` (set inside a herdr pane),
-then `$USER`. Use the same name every time. Names are self-asserted: nothing checks that
-you are who you say. The review rule stops honest mistakes, not an agent that lies about
-its name — so never pass another agent's name to get past it. The board matches it to your herdr pane in the
+You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr
+pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`.
+Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command,
+because each command usually runs in a fresh shell and an exported `TB_AS` does not last.
+Use the same name every time. Names are self-asserted: nothing checks that you are who you
+say. The review rule stops honest mistakes, not an agent that lies about its name — so never
+pass another agent's name to get past it. The board matches it to your herdr pane in the
 AGENTS panel. An idle agent that still holds a DOING card is shown as a warning.
 
 ## GitHub
