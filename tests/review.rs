@@ -4,9 +4,9 @@ use std::path::Path;
 use std::process::{Command, Output};
 use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
-use terminal_board::tui::App;
+use terminal_board::tui::{App, Confirm, Mode};
 
-const REFUSED: &str = "you did this work — another agent must review it";
+const REFUSED: &str = "you did this work — ask another person or agent to review it";
 
 fn tb(db: &Path, who: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tb"))
@@ -43,7 +43,7 @@ fn store_refuses_the_author_and_accepts_another_agent() {
     assert_eq!(s.author(id).unwrap().as_deref(), Some("bot-1"));
     // both store paths refuse the author, case-insensitively
     let e = s.done(id, "bot-1").unwrap_err().to_string();
-    assert!(e.contains(REFUSED) && e.contains("tb next --review --as NAME"), "{e}");
+    assert!(e.contains(REFUSED) && !e.contains("--review"), "{e}");
     assert!(s.move_to(id, "done", "BOT-1").unwrap_err().to_string().contains(REFUSED));
     assert_eq!(s.card(id).unwrap().column, "review");
     // another agent approves; nothing is logged as forced
@@ -100,7 +100,7 @@ fn cli_refuses_on_done_and_move_and_force_is_logged() {
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], false);
     assert_eq!(v["error"], "you did this work");
-    assert!(v["hint"].as_str().unwrap().contains("tb next --review --as NAME"), "{v}");
+    assert_eq!(v["hint"], "ask another person or agent to review it");
     assert_eq!(s.card(id).unwrap().column, "review");
     // --force works on both paths and is logged
     assert!(tb(&db, "bot-1", &["move", &ids, "done", "--force"]).status.success());
@@ -118,21 +118,44 @@ fn cli_refuses_on_done_and_move_and_force_is_logged() {
 }
 
 #[test]
-fn tui_d_key_refuses_the_author() {
+fn tui_asks_the_author_before_approving_own_work() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
     let id = in_review(&mut s, "bot-1");
-    let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
     let mut app = App::new(s.snapshot().unwrap(), "bot-1");
     app.agents = AgentsState::Unavailable("x".into());
     app.reload(&s);
     app.focus_card(id);
-    app.handle_key(key, &mut s);
+    // d asks; n leaves the card alone
+    app.handle_key(key(KeyCode::Char('d')), &mut s);
+    let Mode::Confirm { action, prompt } = app.mode.clone() else { panic!("no confirm: {:?}", app.mode) };
+    assert_eq!(action, Confirm::ApproveOwn(id));
+    assert_eq!(prompt, "you moved this to review yourself — approve your own work? y/n");
+    app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(id).unwrap().column, "review");
-    let status = app.status.clone().map(|(t, _)| t).unwrap_or_default();
-    assert!(status.contains(REFUSED), "{status}");
-    // another agent's d approves it
-    app.actor = "bot-2".into();
-    app.handle_key(key, &mut s);
+    assert!(!kinds(&s, id).contains(&"force".to_string()));
+    // shift+right asks too
+    app.focus_card(id);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &mut s);
+    assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ApproveOwn(_), .. }), "{:?}", app.mode);
+    app.handle_key(key(KeyCode::Esc), &mut s);
+    assert_eq!(s.card(id).unwrap().column, "review");
+    // `>` asks too; y approves on the forced, logged path
+    app.focus_card(id);
+    app.handle_key(key(KeyCode::Char('>')), &mut s);
+    assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ApproveOwn(_), .. }));
+    app.handle_key(key(KeyCode::Char('y')), &mut s);
     assert_eq!(s.card(id).unwrap().column, "done");
+    let ev = s.show(id).unwrap().events;
+    assert!(ev.iter().any(|e| e.kind == "force" && e.actor == "bot-1"), "{ev:?}");
+    // another agent's d approves without asking and without a force event
+    let id = in_review(&mut s, "bot-1");
+    app.actor = "bot-2".into();
+    app.reload(&s);
+    app.focus_card(id);
+    app.handle_key(key(KeyCode::Char('d')), &mut s);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert_eq!(s.card(id).unwrap().column, "done");
+    assert!(!kinds(&s, id).contains(&"force".to_string()));
 }

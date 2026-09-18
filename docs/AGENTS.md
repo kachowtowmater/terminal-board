@@ -130,7 +130,8 @@ narrow the original with `tb edit ID --desc "…"`.
 criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
 `tb move ID todo` with a note of what is missing. You cannot approve a card you did
 yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
-`you did this work — another agent must review it`.
+`you did this work — ask another person or agent to review it`. (In the full-screen
+board a person approving their own card is asked `approve your own work? y/n` instead.)
 
 ## Rules
 
@@ -194,7 +195,7 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue #N still open on GitHub` | close the issue / merge the PR first |
-| `you did this work — another agent must review it` | leave it in REVIEW for another agent |
+| `you did this work — ask another person or agent to review it` | leave it in REVIEW for another agent |
 | `no card #ID` | `tb list` to find the right ID |
 
 ## Brief line for orchestrators
