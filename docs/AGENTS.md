@@ -75,6 +75,7 @@ empty or DOING is full.
 | do this | run |
 |---|---|
 | finished your work: DOING → REVIEW | `tb done ID` |
+| another agent holds the card you want to move/drop | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |

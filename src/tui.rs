@@ -163,6 +163,8 @@ pub enum Confirm {
     ForceDone(i64),
     /// Approve a REVIEW card the actor moved to review themselves (the forced, logged path).
     ApproveOwn(i64),
+    /// Move someone else's DOING card (done/drop/move): the forced, logged path.
+    NotMine(i64),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -574,6 +576,13 @@ impl App {
                                 self.focus_card(id);
                             }
                         }
+                        Confirm::NotMine(id) => {
+                            let r = store.move_to_forced(id, "review", &actor);
+                            if self.report(r, |c| format!("#{} -> {} (not yours, logged)", c.id, c.column)).is_some() {
+                                self.reload(store);
+                                self.focus_card(id);
+                            }
+                        }
                         Confirm::ApproveOwn(id) => {
                             let r = store.move_to_forced(id, "done", &actor);
                             if self.report(r, |c| format!("#{} -> done (own work, logged)", c.id)).is_some() {
@@ -717,7 +726,7 @@ impl App {
 
     /// Move the selected card to `target` (None = `done` semantics), asking before a
     /// done that GitHub doesn't back, and before approving your own work.
-    fn move_selected(&mut self, target: Option<&str>, store: &mut Store) {
+    pub fn move_selected(&mut self, target: Option<&str>, store: &mut Store) {
         let Some((id, column)) = self.selected().map(|c| (c.id, c.column.clone())) else { return };
         let to = match target {
             Some(t) => t.to_string(),
@@ -727,6 +736,19 @@ impl App {
                 _ => "done".into(),
             },
         };
+        // someone else's DOING card: ask y/n (the store refuses without --force)
+        if column == "doing" {
+            if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
+                let mine = c.owner.as_deref().is_none_or(|o| o.eq_ignore_ascii_case(&self.actor));
+                if !mine && self.actor != "github" {
+                    self.mode = Mode::Confirm {
+                        action: Confirm::NotMine(id),
+                        prompt: format!("#{} is held by {} — move it anyway? y/n (logged)", id, c.owner.clone().unwrap_or_default()),
+                    };
+                    return;
+                }
+            }
+        }
         if to == "done" && column != "done" {
             if let Some(n) = self.open_on_github(id) {
                 self.mode = Mode::Confirm {

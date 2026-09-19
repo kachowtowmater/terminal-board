@@ -43,6 +43,22 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The refusal for moving someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> BoardError {
+    let mine: Vec<i64> = {
+        let mut st = tx
+            .prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)
+            .unwrap();
+        let v = st.query_map([actor], |r| r.get::<_, i64>(0)).unwrap().map(|r| r.unwrap()).collect();
+        v
+    };
+    let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
+    BoardError(format!(
+        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+    ))
+}
+
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     let mover: Option<String> = conn
         .query_row(
@@ -921,6 +937,19 @@ impl Store {
         if c.column == column {
             return Ok(c);
         }
+        // Card ids are small shared integers: an off-by-one must not move someone else's
+        // work. Leaving DOING requires the owner (or --force, logged as its own event).
+        // The `github` automation is exempt: its moves are evidence-driven and logged.
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, &column));
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                }
+            }
+        }
         if column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
@@ -1057,10 +1086,38 @@ impl Store {
         }
     }
 
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
+        let c = self.card(id)?;
+        if c.column == "doing" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
+                    tx.commit()?;
+                }
+            }
+        }
+        self.drop_card_inner(id, actor)
+    }
+
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.drop_card_inner(id, actor)
+    }
+
+    fn drop_card_inner(&mut self, id: i64, actor: &str) -> Result<Card> {
         let c = self.card(id)?;
         if c.column == "todo" && c.owner.is_none() {
             return Ok(c);
+        }
+        // dropping someone else's DOING card is the same hazard as moving it (see move_card)
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    let tx = self.conn.unchecked_transaction()?;
+                    return Err(ownership_err(&tx, id, owner, actor, "todo"));
+                }
+            }
         }
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pos = bottom_of(&tx, "todo")?;

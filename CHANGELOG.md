@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Only the owner moves their DOING card
+- `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
+  `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is
+  logged as its own event; the TUI asks y/n instead of refusing. The `github` automation and
+  REVIEW→DONE reviewers are unaffected (card ids are small shared integers; an off-by-one
+  must not move someone else's work or hijack the author record).
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

@@ -404,3 +404,62 @@ fn help_overlay_and_footer() {
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
 }
+
+#[test]
+fn non_owner_done_drop_move_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // non-owner done: refused with holder + your-cards + force hint
+    let e = s.done(b, "bot-1").unwrap_err().to_string();
+    assert!(e.contains(&format!("#{b} is held by bot-2")), "{e}");
+    assert!(e.contains("your cards:"), "{e}");
+    assert!(e.contains("--force"), "{e}");
+    // owner path unaffected
+    let c = s.done(b, "bot-2").unwrap();
+    assert_eq!(c.column, "review");
+    // non-owner drop: refused
+    let e = s.drop_card(a, "bot-2").unwrap_err().to_string();
+    assert!(e.contains("is held by bot-1"), "{e}");
+    // non-owner move out of DOING: refused
+    let e = s.move_to(a, "review", "bot-2").unwrap_err().to_string();
+    assert!(e.contains("is held by bot-1"), "{e}");
+    // --force works and is logged as its own event
+    let c = s.move_to_forced(a, "review", "bot-2").unwrap();
+    assert_eq!(c.column, "review");
+    let ev = s.show(a).unwrap().events;
+    assert!(ev.iter().any(|e| e.kind == "force" && e.text.contains("held by bot-1")), "{ev:?}");
+    // REVIEW moves by reviewers are unaffected (another agent can review it to done)
+    let d = s.move_to(a, "done", "bot-3").unwrap();
+    assert_eq!(d.column, "done");
+}
+
+#[test]
+fn tui_asks_before_moving_another_agents_doing_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: theirs", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    let mut app = terminal_board::tui::App::new(s.snapshot().unwrap(), "bot-2");
+    app.reload(&s);
+    app.col = 1; // DOING
+    app.row[1] = 0;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    // move (shift+> equivalent: the done/move action) asks y/n
+    app.move_selected(Some("review"), &mut s);
+    assert!(matches!(app.mode, terminal_board::tui::Mode::Confirm { .. }), "asks y/n instead of refusing");
+    if let terminal_board::tui::Mode::Confirm { prompt, .. } = &app.mode {
+        assert!(prompt.contains("held by bot-1") && prompt.contains("y/n"), "{prompt}");
+    }
+    // y executes the forced, logged path
+    app.handle_key(key(KeyCode::Char('y')), &mut s);
+    let c = s.card(id).unwrap();
+    assert_eq!(c.column, "review");
+    let ev = s.show(id).unwrap().events;
+    assert!(ev.iter().any(|e| e.kind == "force"), "{ev:?}");
+}
