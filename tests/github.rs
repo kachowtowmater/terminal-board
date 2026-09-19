@@ -1,4 +1,20 @@
 //! GitHub panel + CLI, no network: fixtures and a fake `gh` script (TB_GH).
+/// Pin the test clock once: `TB_NOW` = local noon today (see tests/common/mod.rs).
+fn pin_clock() {
+    use std::sync::Once;
+    static PIN: Once = Once::new();
+    PIN.call_once(|| {
+        let noon = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .map(|t| t.timestamp())
+            .unwrap_or_else(terminal_board::store::now);
+        std::env::set_var("TB_NOW", noon.to_string());
+    });
+}
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
@@ -96,6 +112,7 @@ fn board() -> (tempfile::TempDir, Store) {
 
 #[test]
 fn parses_every_gh_shape() {
+    pin_clock();
     let prs = parse_prs(&prs_json()).unwrap();
     let nums: Vec<i64> = prs.iter().map(|p| p.number).collect();
     assert_eq!(nums, [335, 333, 332, 331], "newest first");
@@ -115,6 +132,7 @@ fn parses_every_gh_shape() {
 
 #[test]
 fn short_titles() {
+    pin_clock();
     let cases = [
         ("api: rate limit ignores burst setting", "rate limit ignores burst setting"),
         ("ui: totals overflow on wide tables (#315)", "totals overflow on wide tables"),
@@ -132,6 +150,7 @@ fn short_titles() {
 
 #[test]
 fn branch_fallback() {
+    pin_clock();
     for b in ["fix/315", "fix/315-flags", "fix-315", "315", "bot/315-x", "feat315", "feat/315/x"] {
         assert!(branch_matches(b, 315), "{b}");
     }
@@ -142,6 +161,7 @@ fn branch_fallback() {
 
 #[test]
 fn state_derivation_matrix() {
+    pin_clock();
     let (_d, s) = board();
     let f = factory(&snapshot("success"), &s.list().unwrap(), terminal_board::store::now());
     let by = |n: i64| f.issues.iter().find(|r| r.number == n).unwrap().clone();
@@ -176,6 +196,7 @@ fn state_derivation_matrix() {
 
 #[test]
 fn tile_contents() {
+    pin_clock();
     let (_d, s) = board();
     let snap = snapshot("failure");
     let now = terminal_board::store::now();
@@ -240,6 +261,7 @@ fn col_in(screen: &str, anchor: &str, needle: &str) -> usize {
 
 #[test]
 fn panel_tiles_tables_and_only_fail_is_red() {
+    pin_clock();
     for w in [120u16, 160] {
         let (_d, app) = board_app(on(Some(snapshot("success")), None));
         let (screen, buf) = screen_of(&app, w, 50);
@@ -305,6 +327,7 @@ fn panel_tiles_tables_and_only_fail_is_red() {
 
 #[test]
 fn panel_more_line_and_compact_fallback() {
+    pin_clock();
     let (_d, app) = board_app(on(Some(snapshot("success")), None));
     // full layout 160x44: panel 14 rows -> tiles + a few rows + "+N more"
     let (screen, _) = screen_of(&app, 160, 44);
@@ -318,6 +341,7 @@ fn panel_more_line_and_compact_fallback() {
 
 #[test]
 fn panel_hidden_when_unconfigured_toggled_or_narrow() {
+    pin_clock();
     let (_d, mut app) = board_app(GhView::default());
     let (screen, _) = screen_of(&app, 140, 45);
     assert!(screen.contains("GITHUB") && screen.contains("no repo — enter to pick one"), "discoverable:\n{screen}");
@@ -337,6 +361,7 @@ fn panel_hidden_when_unconfigured_toggled_or_narrow() {
 
 #[test]
 fn panel_shows_errors() {
+    pin_clock();
     let (_d, app) = board_app(on(None, Some("HTTP 401: Bad credentials")));
     let (screen, _) = screen_of(&app, 140, 45);
     assert!(screen.contains("github: HTTP 401: Bad credentials") && screen.contains("synced never"), "{screen}");
@@ -404,6 +429,7 @@ fn err(o: &Output) -> String {
 
 #[test]
 fn config_and_off_state() {
+    pin_clock();
     let e = Env::new();
     let none = Path::new("/nonexistent/gh");
     assert!(e.run(&["add", "x"], none).status.success());
@@ -420,6 +446,7 @@ fn config_and_off_state() {
 
 #[test]
 fn cli_serves_fresh_cache_without_calling_gh() {
+    pin_clock();
     let e = Env::new();
     {
         let s = Store::open(&e.db()).unwrap();
@@ -459,6 +486,7 @@ fn cli_serves_fresh_cache_without_calling_gh() {
 
 #[test]
 fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
+    pin_clock();
     let e = Env::new();
     let ok = e.fake_gh(&run_json("success"), false);
     let bad = e.fake_gh(&run_json("success"), true);

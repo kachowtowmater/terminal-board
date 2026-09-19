@@ -77,6 +77,7 @@ fn press(app: &mut App, s: &mut Store, c: KeyCode, n: usize) {
 
 #[test]
 fn arrows_walk_columns_github_agents_and_back() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app);
     press(&mut app, &mut s, KeyCode::Down, 3);
@@ -129,6 +130,7 @@ fn arrows_walk_columns_github_agents_and_back() {
 
 #[test]
 fn card_keys_do_nothing_while_a_panel_has_focus() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app);
     let before: Vec<(i64, String)> = s.list().unwrap().into_iter().map(|c| (c.id, c.column)).collect();
@@ -146,6 +148,7 @@ fn card_keys_do_nothing_while_a_panel_has_focus() {
 
 #[test]
 fn enter_on_repo_row_opens_the_picker() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app);
     press(&mut app, &mut s, KeyCode::Tab, 1);
@@ -158,6 +161,7 @@ fn enter_on_repo_row_opens_the_picker() {
 
 #[test]
 fn issue_popup_adds_a_card_once() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app);
     press(&mut app, &mut s, KeyCode::Tab, 1);
@@ -189,6 +193,7 @@ fn issue_popup_adds_a_card_once() {
 
 #[test]
 fn agent_popup_jumps_to_the_held_card() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app);
     press(&mut app, &mut s, KeyCode::BackTab, 1);
@@ -204,6 +209,7 @@ fn agent_popup_jumps_to_the_held_card() {
 
 #[test]
 fn unconfigured_github_panel_is_focusable() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     s.set_github(None).unwrap();
     app.reload(&s);

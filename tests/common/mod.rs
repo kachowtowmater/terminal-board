@@ -122,3 +122,23 @@ pub fn seed(store: &Store, you: &str) -> Result<Vec<i64>> {
     store.block(ids[1], Some(&format!("#{}", ids[6])), "seed")?;
     Ok(ids)
 }
+
+/// Pin the test clock: `TB_NOW` = local noon today, set once per process. Every fixture
+/// derived from `store::now()` is then stable regardless of when CI runs (a 00:00–03:00
+/// UTC clock used to push `now - 3h` fixtures into yesterday and flip the `+N today`
+/// counts in the golden/layout tests).
+pub fn pin_clock() {
+    use std::sync::Once;
+    static PIN: Once = Once::new();
+    PIN.call_once(|| {
+        let noon = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .map(|t| t.timestamp())
+            .unwrap_or_else(terminal_board::store::now);
+        std::env::set_var("TB_NOW", noon.to_string());
+    });
+}

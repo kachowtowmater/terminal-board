@@ -1,6 +1,22 @@
 //! Layouts from half a screen down to a third of it (TestBackend), with GitHub configured,
 //! 6 agents and 12 cards: FULL (unchanged), RAIL (wide-short), STACK (tall-narrow), bars,
 //! Tab views, TINY, and a size sweep.
+/// Pin the test clock once: `TB_NOW` = local noon today (see tests/common/mod.rs).
+fn pin_clock() {
+    use std::sync::Once;
+    static PIN: Once = Once::new();
+    PIN.call_once(|| {
+        let noon = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .map(|t| t.timestamp())
+            .unwrap_or_else(terminal_board::store::now);
+        std::env::set_var("TB_NOW", noon.to_string());
+    });
+}
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -113,6 +129,7 @@ fn count(screen: &str, pat: &str) -> usize {
 
 #[test]
 fn auto_shape_by_size() {
+    pin_clock();
     for (w, h, shape) in [
         (40, 12, Shape::Focus),
         (50, 14, Shape::Focus),
@@ -139,6 +156,7 @@ fn auto_shape_by_size() {
 
 #[test]
 fn half_screen_126x41_is_unchanged() {
+    pin_clock();
     let (_d, _s, app) = setup();
     let screen = render(&app, 126, 41);
     // boxed 4-row cards: the title is inside the box, under a plain top border
@@ -152,6 +170,7 @@ fn half_screen_126x41_is_unchanged() {
 
 #[test]
 fn third_height_rail_126x24_and_200x24() {
+    pin_clock();
     for (w, h) in [(126u16, 24u16), (200, 24), (260, 26)] {
         let (_d, _s, app) = setup();
         let screen = render(&app, w, h);
@@ -170,6 +189,7 @@ fn third_height_rail_126x24_and_200x24() {
 
 #[test]
 fn third_width_stack_42_60_85() {
+    pin_clock();
     for (w, h) in [(42u16, 73u16), (60, 73), (50, 70)] {
         let (_d, _s, app) = setup();
         let screen = render(&app, w, h);
@@ -187,6 +207,7 @@ fn third_width_stack_42_60_85() {
 
 #[test]
 fn stack_github_rows_are_focusable() {
+    pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app, 60, 73);
     // walk down through every card, then into GITHUB
@@ -204,6 +225,7 @@ fn stack_github_rows_are_focusable() {
 
 #[test]
 fn medium_bars_when_panels_do_not_fit() {
+    pin_clock();
     let (_d, _s, app) = setup();
     let screen = render(&app, 95, 35);
     assert!(screen.contains(" GITHUB acme/widgets · 10 issues") && screen.contains("tab >"), "{screen}");
@@ -212,6 +234,7 @@ fn medium_bars_when_panels_do_not_fit() {
 
 #[test]
 fn tiny_tab_pages_through_the_panels() {
+    pin_clock();
     let (_d, mut s, mut app) = setup();
     let screen = render(&app, 30, 10);
     assert!(screen.contains("GITHUB") && screen.contains("AGENTS"), "bars even when tiny:\n{screen}");
@@ -245,6 +268,7 @@ fn tiny_tab_pages_through_the_panels() {
 
 #[test]
 fn every_size_keeps_enabled_panels_and_never_panics() {
+    pin_clock();
     let (_d, s, mut app) = setup();
     for pref in LAYOUTS {
         s.set_layout(pref).unwrap();
@@ -274,6 +298,7 @@ fn every_size_keeps_enabled_panels_and_never_panics() {
 #[test]
 #[ignore]
 fn render_samples() {
+    pin_clock();
     let (_d, _s, app) = setup();
     for (w, h, n) in [(126u16, 22u16, 22usize), (50, 70, 70), (70, 70, 45), (50, 14, 14), (126, 41, 41)] {
         println!("===== {w}x{h} =====");
@@ -307,6 +332,7 @@ fn card_styles(screen: &str) -> Vec<&'static str> {
 
 #[test]
 fn one_card_style_per_render() {
+    pin_clock();
     // plenty of room: every column uses the 4-row boxes
     for (w, h) in [(126u16, 22u16), (200, 60)] {
         let (_d, _s, app) = setup();
@@ -329,6 +355,7 @@ fn one_card_style_per_render() {
 
 #[test]
 fn narrow_cards_move_gh_to_the_meta_line() {
+    pin_clock();
     let (_d, _s, app) = setup();
     // 126x22: rail columns are ~19 wide, so the title gets the full width
     let screen = render(&app, 126, 22);
@@ -341,6 +368,7 @@ fn narrow_cards_move_gh_to_the_meta_line() {
 
 #[test]
 fn panel_titles_drop_whole_tokens() {
+    pin_clock();
     let (_d, s, mut app) = setup();
     let long = "someorganisation/a-rather-long-repository-name";
     s.set_github(Some(long)).unwrap();
@@ -363,6 +391,7 @@ fn panel_titles_drop_whole_tokens() {
 
 #[test]
 fn arrows_are_spatial_in_every_layout() {
+    pin_clock();
     // RAIL (126x22): GITHUB and AGENTS sit to the right of DONE
     let (_d, mut s, mut app) = setup();
     render(&app, 126, 22);
@@ -453,6 +482,7 @@ fn normalize(screen: &str) -> String {
 
 #[test]
 fn half_h_126x41_golden() {
+    pin_clock();
     let (_d, _s, app) = setup();
     let got = normalize(&render(&app, 126, 41));
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/half_h_126x41.txt");
@@ -465,6 +495,7 @@ fn half_h_126x41_golden() {
 
 #[test]
 fn focus_view_picks_my_doing_card_then_top_todo_then_selection() {
+    pin_clock();
     // my DOING card first
     let (_d, mut s, mut app) = setup();
     app.actor = "bot-2".into();
@@ -490,6 +521,7 @@ fn focus_view_picks_my_doing_card_then_top_todo_then_selection() {
 
 #[test]
 fn focus_view_keys() {
+    pin_clock();
     let (_d, mut s, mut app) = setup();
     let id = s.add("docs: tidy up", "", &["one".into(), "two".into()], "alice").unwrap();
     s.move_to(id, "doing", "alice").unwrap();
@@ -533,6 +565,7 @@ fn tidy_geometry(screen: &str) -> (Vec<usize>, Vec<usize>) {
 
 #[test]
 fn tidy_github_block_aligns_at_62_48_40() {
+    pin_clock();
     for w in [62u16, 48, 40] {
         let (_d, _s, app) = setup();
         let screen = render(&app, w, 70);
@@ -556,6 +589,7 @@ fn tidy_github_block_aligns_at_62_48_40() {
 
 #[test]
 fn half_v_grid_boxes_and_tiles() {
+    pin_clock();
     for (w, h) in [(70u16, 70u16), (90, 60)] {
         let (_d, _s, app) = setup();
         let screen = render(&app, w, h);
@@ -574,6 +608,7 @@ fn half_v_grid_boxes_and_tiles() {
 
 #[test]
 fn l_cycles_the_six_views() {
+    pin_clock();
     let (_d, mut s, mut app) = setup();
     let mut seen = Vec::new();
     for _ in 0..6 {
@@ -589,6 +624,7 @@ fn l_cycles_the_six_views() {
 
 #[test]
 fn half_v_spatial_arrows() {
+    pin_clock();
     let (_d, mut s, mut app) = setup();
     render(&app, 70, 70);
     app.handle_key(key(KeyCode::Right), &mut s);
@@ -696,6 +732,7 @@ fn gh_row_titles(screen: &str) -> Vec<String> {
 
 #[test]
 fn live_sized_board_keeps_one_card_style_and_readable_github() {
+    pin_clock();
     for (w, h) in [(63u16, 73u16), (45, 70), (126, 22), (126, 41), (50, 14)] {
         let (_d, _s, app) = setup_live();
         let screen = render(&app, w, h);
@@ -717,6 +754,7 @@ fn live_sized_board_keeps_one_card_style_and_readable_github() {
 
 #[test]
 fn half_v_grid_sized_to_its_cards() {
+    pin_clock();
     let (_d, _s, app) = setup_live();
     let screen = render(&app, 63, 73);
     let lines: Vec<&str> = screen.lines().collect();
@@ -735,6 +773,7 @@ fn half_v_grid_sized_to_its_cards() {
 
 #[test]
 fn third_v_caps_github_until_every_section_shows_two_boxes() {
+    pin_clock();
     let (_d, _s, app) = setup_live();
     let screen = render(&app, 45, 70);
     let styles = app.drawn_styles.borrow().clone();
@@ -754,6 +793,7 @@ fn third_v_caps_github_until_every_section_shows_two_boxes() {
 
 #[test]
 fn github_wide_tables_drop_columns_before_the_title() {
+    pin_clock();
     let (_d, _s, mut app) = setup_live();
     app.view = View::Github;
     // wide: every column
@@ -774,6 +814,7 @@ fn github_wide_tables_drop_columns_before_the_title() {
 #[test]
 #[ignore]
 fn live_samples() {
+    pin_clock();
     let (_d, _s, app) = setup_live();
     for (w, h, from, to) in [(63u16, 73u16, 30usize, 73usize), (45, 70, 1, 40)] {
         println!("===== {w}x{h} lines {from}-{to} =====");
