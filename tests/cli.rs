@@ -119,7 +119,7 @@ fn cli_wip_refusal_and_errors() {
     let o = b.run(&["next"]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("doing is full (1/1)") && err.contains("tb done"), "{err}");
+    assert!(err.contains("doing is full (1/1:") && err.contains("finish #1 with 'tb done 1' first"), "{err}");
     let o = b.run(&["show", "77"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("tb list"));

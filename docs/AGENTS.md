@@ -136,7 +136,10 @@ board a person approving their own card is asked `approve your own work? y/n` in
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
-- `doing is full (3/3)` is the WIP limit: finish or drop a card first. Do not raise it.
+- `doing is full (3/3: #1 a, #2 b, #3 c)` is the WIP limit (board-wide). The message names
+  the holders and what YOU can do: if you hold a card it says `finish #1 with 'tb done 1' first`;
+  if you hold none it says `you hold none; wait, or ask one of them to finish`. Never finish
+  or drop someone else's card. Do not raise the limit.
 - Every error message ends with what to run next. Read it and do that.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened".
 - Tick only what is really done. Never tick ahead.
@@ -191,7 +194,7 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 
 | error says | do this |
 |---|---|
-| `doing is full` | `tb done` or `tb drop` a card you hold, then retry |
+| `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue #N still open on GitHub` | close the issue / merge the PR first |

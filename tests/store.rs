@@ -90,8 +90,8 @@ fn wip_limit_refuses() {
     s.next("a").unwrap();
     s.next("b").unwrap();
     let e = s.next("c").unwrap_err().to_string();
-    assert!(e.contains("doing is full (2/2)"), "{e}");
-    assert!(e.contains("tb done"), "names the next command: {e}");
+    assert!(e.contains("doing is full (2/2: #1 a, #2 b)"), "{e}");
+    assert!(e.contains("you hold none; wait, or ask one of them to finish"), "actor-aware: {e}");
     let e = s.take(3, "c").unwrap_err().to_string();
     assert!(e.contains("doing is full"), "{e}");
     let e = s.move_to(3, "doing", "c").unwrap_err().to_string();

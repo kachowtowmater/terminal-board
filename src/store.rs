@@ -43,6 +43,37 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The actor-aware WIP message: the board-wide limit with who holds what, and what the
+/// actor can actually do (finish their own card, or wait — never finish someone else's).
+fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
+    let holders: Vec<String> = {
+        let mut st = conn
+            .prepare(r#"SELECT id, owner FROM cards WHERE "column"='doing' ORDER BY id"#)
+            .unwrap();
+        st.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let owner: Option<String> = r.get(1)?;
+            Ok(format!("#{id} {}", owner.unwrap_or_else(|| "?".into())))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let mine = conn
+        .query_row(
+            r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE LIMIT 1"#,
+            [actor],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let tail = match mine {
+        Some(id) => format!("finish #{id} with 'tb done {id}' first"),
+        None => "you hold none; wait, or ask one of them to finish".to_string(),
+    };
+    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
+}
+
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     let mover: Option<String> = conn
         .query_row(
@@ -780,9 +811,7 @@ impl Store {
             }
         };
         if doing >= wip {
-            return err(format!(
-                "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-            ));
+            return Err(wip_full_err(&tx, doing, wip, actor));
         }
         let pos = bottom_of(&tx, "doing")?;
         let changed = tx.execute(
@@ -939,9 +968,7 @@ impl Store {
                 |r| r.get(0),
             )?;
             if doing >= wip {
-                return err(format!(
-                    "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-                ));
+                return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
         let owner = match column.as_str() {
