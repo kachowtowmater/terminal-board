@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Installer: no `sudo` when it cannot help
+- The setup wizard's gh-install suggestion (`sudo apt install gh` and friends) now omits the
+  `sudo` prefix when `sudo` is not on the PATH, or when the process already runs as root —
+  the clean-container case. A regular user with sudo sees the same commands as before.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
