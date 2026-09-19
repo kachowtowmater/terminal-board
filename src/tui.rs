@@ -1771,12 +1771,21 @@ fn footer(app: &App, width: u16) -> Line<'static> {
             }
             // the essentials; `?` has the rest. The focus view keeps its own arrow axis
             // (left/right = card, up/down = column): say so here, so the help agrees.
-            let mut hints = if app.last_shape.get() == Shape::Focus && app.view == View::Board {
-                // the focus view's own arrow axis, stated where the keys are used
-                vec![("a", "add"), ("enter", "open"), ("arrows", "card/col"), ("shift+<>", "move")]
-            } else {
-                vec![("a", "add"), ("e", "edit"), ("x", "del"), ("enter", "open"), ("shift+arrows", "move")]
-            };
+            let focus_view = app.last_shape.get() == Shape::Focus && app.view == View::Board;
+            if focus_view {
+                // the focus view's own arrow axis, stated where the keys are used; it is what
+                // this footer must never lose, so the extras are dropped first (a, enter, then
+                // q) and the limit / pick-repo hints stay in `?`
+                let mut hints = vec![("a", "add"), ("enter", "open"), ("arrows", "card/col"), ("shift+<>", "move"), ("?", "help"), ("q", "quit")];
+                for drop in ["enter", "a", "q"] {
+                    if hints_len(&hints) <= width as usize {
+                        break;
+                    }
+                    hints.retain(|(k, _)| *k != drop);
+                }
+                return Line::from(hint_spans(&hints));
+            }
+            let mut hints = vec![("a", "add"), ("e", "edit"), ("x", "del"), ("enter", "open"), ("shift+arrows", "move")];
             if app.col == 1 {
                 hints.push(("+/-", "limit"));
             }

@@ -254,6 +254,20 @@ fn focus_view_shift_arrows_move_and_help_says_the_axis() {
     let screen = render_small(&app, 72, 14);
     let footer = screen.lines().last().unwrap_or("");
     assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move"), "footer: {footer}\n{screen}");
+    // the axis hints survive what used to push them out: no repo configured (a first run)
+    // and a DOING card selected, at small widths
+    s.set_github(None).unwrap();
+    app.reload(&s);
+    app.col = 1;
+    app.row[1] = 0;
+    for (w, h) in [(72, 14), (60, 14), (60, 20), (72, 24), (44, 14)] {
+        let screen = render_small(&app, w, h);
+        let footer = screen.lines().last().unwrap_or("");
+        assert!(
+            footer.contains("arrows card/col") && footer.contains("shift+<> move"),
+            "{w}x{h} footer: {footer}\n{screen}"
+        );
+    }
     // and the full help still documents shift+arrows as the mover (same in every view)
     use terminal_board::tui::Mode;
     app.mode = Mode::Help;

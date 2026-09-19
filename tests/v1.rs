@@ -388,8 +388,12 @@ fn help_overlay_and_footer() {
     let (_d, mut s, mut app) = board(&["a"]);
     let screen = render(&app, 160, 50);
     assert!(screen.contains("a add  e edit  x del  enter open  shift+arrows move") && screen.contains("? help  q quit"), "{screen}");
+    // 60 columns is the focus shape: its footer keeps the focus arrow axis (issue: arrow
+    // behaviour and help text agree in every view), dropping `enter open` to fit
     let narrow = render(&app, 60, 25);
-    assert!(narrow.contains("a add  enter open  ? help  q quit") && !narrow.contains("shift+arrows"), "{narrow}");
+    let footer = narrow.lines().last().unwrap_or("");
+    assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move") && footer.contains("? help"), "{narrow}");
+    assert!(!footer.contains("shift+arrows"), "{narrow}");
     app.handle_key(key(KeyCode::Char('?')), &mut s);
     assert_eq!(app.mode, Mode::Help);
     let screen = render(&app, 160, 50);
