@@ -48,6 +48,7 @@ fn gh_snapshot() -> GhSnapshot {
             review: "-".into(),
             ci: "ok".into(),
             created_at: now.clone(),
+            updated_at: now.clone(),
             author: noisy("author"),
             closes: vec![21],
         }],

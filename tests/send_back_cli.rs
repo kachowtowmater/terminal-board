@@ -94,7 +94,7 @@ fn send_back_is_not_blocked_by_a_full_doing_column() {
     // doing is full (1/1): new work is refused …
     let fresh = s.add("new work", "", &[], "lead").unwrap();
     let o = tb(&db, gh, "bot-3", &["take", &fresh.to_string()]);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("doing is full (1/1)"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("doing is full (1/1:"));
     // … but a returned card is the owner's existing work
     let o = tb(&db, gh, "rev", &["move", &id.to_string(), "doing", "missing test"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
