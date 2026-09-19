@@ -846,7 +846,7 @@ impl Store {
         }
         let pos = bottom_of(&tx, "doing")?;
         let changed = tx.execute(
-            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=? WHERE id=? AND "column"='todo'"#,
+            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=?, reviewer=NULL WHERE id=? AND "column"='todo'"#,
             params![actor, now(), pos, target],
         )?;
         if changed != 1 {
@@ -1136,7 +1136,7 @@ impl Store {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
-            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=? WHERE id=?"#,
+            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=?, reviewer=NULL WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
