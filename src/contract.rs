@@ -42,6 +42,8 @@ pub struct CardJ {
     pub created_at: i64,
     pub column_since: i64,
     pub checklist: Vec<CheckJ>,
+    /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
+    pub round: i64,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
 }
@@ -105,6 +107,7 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         created_at: c.created_at,
         column_since: c.column_since,
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
+        round: crate::store::round_of(&d.events),
         events: d
             .events
             .iter()

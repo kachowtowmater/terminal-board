@@ -182,7 +182,8 @@ tb setup --dry-run --yes
 5. **Checklist.** In the open card, press `a` to add a checklist item ("kitchen"), Enter to
    save. Use ↑/↓ to pick an item and Enter to tick it. `esc` closes the card.
 6. **Done.** Press `d`: DOING goes to REVIEW (someone checks it), and `d` again moves it to
-   DONE. Press `q` to quit.
+   DONE. Because you moved it to review yourself, the board first asks `approve your own
+   work? y/n` — press `y` (on a shared board, someone else does this step). Press `q` to quit.
 
 Everything you did can also be done from the command line — this is how scripts and AI
 agents use the board:
@@ -195,7 +196,7 @@ tb take 2
 tb note 2 "kitchen done"
 tb check 2 1
 tb done 2
-tb done 2
+tb done 2 --as bob
 tb
 ```
 
@@ -212,7 +213,7 @@ Press `?` on the board to see all keys at any time.
 | `e` | edit the title and description |
 | `x` | delete the card (asks y/n) |
 | `enter` | open the card: description, checklist, history |
-| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE |
+| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
 | Shift+↑ / Shift+↓ (or `K` `J`) | move the card up / down in its column |
 | `n` | add a note to the card's history |
@@ -280,7 +281,8 @@ linked to issue or pull request N:
 - an open pull request for it → the card moves to **REVIEW**;
 - the pull request is merged, or the issue is closed → the card moves to **DONE**;
 - cards never move backwards on their own. This happens on every refresh (every minute)
-  and whenever you run `tb sync`.
+  and whenever you run `tb sync`. A card a reviewer sent back stays in DOING until its pull
+  request is updated after that.
 
 If you mark such a card done yourself while its issue is still open, the board asks first
 (the command line needs `--force`).
@@ -354,7 +356,7 @@ tb check 4 --rm 1
 tb block 1 "#4"
 tb block 1 --clear
 tb move 4 review
-tb done 4
+tb done 4 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
@@ -378,7 +380,8 @@ tb --version
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card |
-| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE |
+| `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
+| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb drop ID` | give a card back to TODO |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D]` | change title/description |
@@ -391,7 +394,8 @@ tb --version
 | `tb guide` | the manual for AI agents |
 | `tb setup` | the setup wizard (GitHub, panels, agent instructions) |
 
-Who you are: `--as NAME`, or `TB_AS`, or your herdr agent name, or your login name.
+Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
+name herdr gives the agent in that pane, or your login name.
 
 ## Layouts and themes
 
