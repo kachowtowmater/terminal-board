@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### `TB_DB` and board names no longer mix silently
+- With `TB_DB=/path/file.db` set, every board name opened the SAME file while JSON and the
+  header reported the name you typed — a script could blend boards with no sign of it. Now
+  an explicit non-default name under `TB_DB` is refused: `TB_DB is set — board names are
+  ignored; unset TB_DB to use boards`. Bare `tb` and the `default` name keep working, and
+  JSON reports the board actually opened.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

@@ -172,3 +172,38 @@ fn config_lists_all_and_sets_panels() {
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
 }
+
+#[test]
+fn a_board_name_with_tb_db_is_refused() {
+    let b = Board::new();
+    b.ok(&["add", "plain: on the pinned file"]);
+    for args in [
+        vec!["other", "add", "plain: mixed in"],
+        vec!["-b", "other", "add", "plain: mixed in"],
+        vec!["--board", "other", "list"],
+        vec!["other", "list"],
+    ] {
+        let o = b.run(&args);
+        assert!(!o.status.success(), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(err.contains("TB_DB is set") && err.contains("unset TB_DB"), "{args:?}: {err}");
+    }
+    // nothing mixed in: the pinned file holds only the default board's card
+    let list = b.ok(&["list"]);
+    assert!(list.contains("on the pinned file") && !list.contains("mixed in"), "{list}");
+    // TB_BOARD env: same refusal
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["list"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "other")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("TB_DB is set"));
+    // bare and default name keep working under TB_DB
+    b.ok(&["default", "list"]);
+    let v: serde_json::Value = serde_json::from_str(&b.ok(&["board", "--json"])).unwrap();
+    assert_eq!(v["board"], "default", "JSON reports the board actually opened");
+}

@@ -63,7 +63,8 @@ Select DOING and press `+` / `-`, or run `tb config wip 4`.
 ## Boards
 
 Keep separate boards for separate things. `tb` opens `default`; any other name opens (and
-creates on first use) that board:
+creates on first use) that board. (With `TB_DB` set there is one file only — board names are
+refused; unset `TB_DB` to use boards.)
 
 ```sh
 tb home                      # open the board called "home"
