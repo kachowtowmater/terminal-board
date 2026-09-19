@@ -262,10 +262,10 @@ fn auto_move_matrix() {
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR #30 open → review"),
-            (branch, "review", "github: PR #31 open → review"),
-            (merged, "done", "github: PR #20 merged → done"),
-            (closed, "done", "github: issue #21 closed → done"),
+            (linked, "review", "PR gh#30 open → review"),
+            (branch, "review", "PR gh#31 open → review"),
+            (merged, "done", "PR gh#20 merged → done"),
+            (closed, "done", "issue gh#21 closed → done"),
         ]
     );
     let untouched = [open_rev, unmerged, done_open, plain];
@@ -273,7 +273,7 @@ fn auto_move_matrix() {
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
     let ev = s.show(merged).unwrap().events;
-    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
+    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "PR gh#20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
     let moves = plan_moves(&snap, &s.list().unwrap(), &states);
     assert!(moves.is_empty(), "{moves:?}");
@@ -355,7 +355,7 @@ fn forced_done_prompt_and_cli_force() {
     // TUI: d on a todo gh card whose issue is open asks first
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ForceDone(1), .. }));
-    assert!(render(&app, 140, 40).contains("issue #11 still open on GitHub — mark done anyway? y/n"));
+    assert!(render(&app, 140, 40).contains("issue gh#11 still open on GitHub — mark done anyway? y/n"));
     app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(1).unwrap().column, "todo");
     app.handle_key(key(KeyCode::Char('d')), &mut s);
@@ -371,7 +371,7 @@ fn forced_done_prompt_and_cli_force() {
     let o = tb(&db, gh, &["done", "1"]);
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("issue #11 still open on GitHub") && e.contains("--force"), "{e}");
+    assert!(e.contains("issue gh#11 still open on GitHub") && e.contains("--force"), "{e}");
     let o = tb(&db, gh, &["move", "1", "done", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], false);
@@ -403,4 +403,19 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn auto_move_event_text_carries_no_repeated_source() {
+    // the actor is `github` and the kind is `github`; the text must not repeat "github:"
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: merge me", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    let _ = s.note_kind(id, "github", "PR gh#9 merged → done", "github");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().find(|e| e.actor == "github" && e.kind == "github").unwrap();
+    assert!(!e.text.starts_with("github: "), "no triple 'github' in one line: {}", e.text);
+    assert!(e.text.starts_with("PR gh#"), "{}", e.text);
 }

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{error::ErrorKind, Parser, Subcommand};
 use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -80,6 +80,10 @@ enum Cmd {
         id: i64,
         #[arg(long)]
         force: bool,
+        /// Record your approval without moving the card (REVIEW stays in REVIEW; the gh#
+        /// card still waits for its merge to reach done).
+        #[arg(long, conflicts_with = "force")]
+        approve: bool,
     },
     Block {
         id: i64,
@@ -165,7 +169,7 @@ fn guard_done(store: &Store, id: i64, force: bool, cmd: &str) -> Result<(), Boar
     let (Some(n), Some(snap)) = (c.gh_ref, store.github_view()?.snap) else { return Ok(()) };
     if github::still_open(&snap, n) {
         return Err(BoardError(format!(
-            "issue #{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
+            "issue gh#{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
         )));
     }
     Ok(())
@@ -382,7 +386,18 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let c = if force { store.move_to_forced(id, &column, &actor)? } else { store.move_to(id, &column, &actor)? };
             done_card(&store, j, id, format!("#{id} is now in {}", c.column))?;
         }
-        Cmd::Done { id, force } => {
+        Cmd::Done { id, force, approve } => {
+            if approve {
+                if store.card(id)?.column != "review" {
+                    return Err(BoardError(format!(
+                        "#{id} is not in review — approval records a review pass; move it to review first"
+                    )));
+                }
+                store.note_kind(id, &actor, "approved (the card stays in review; done waits for the merge)", "approved")?;
+                let human = format!("#{id} approved by {actor} — it stays in review until the gh# PR merges");
+                done_card(&store, j, id, human)?;
+                return Ok(());
+            }
             if store.card(id)?.column != "doing" {
                 guard_done(&store, id, force, &format!("done {id}"))?;
             }
@@ -593,6 +608,19 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
     match first {
         Some(a) if !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()) => {
             boards::validate(&a)?;
+            // a bare first word is a board name (`tb work`); a first word followed by a
+            // non-command word is a typo'd command — say so instead of silently opening a
+            // board that will not exist (`tb frobnicate x`)
+            if args.len() > 2
+                && args
+                    .get(2)
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| !x.starts_with('-') && !boards::COMMANDS.contains(&x))
+            {
+                return Err(BoardError(format!(
+                    "unknown command '{a}' — run 'tb --help' for every command or 'tb guide' for the manual"
+                )));
+            }
             args.remove(1);
             Ok((Some(a), args))
         }
@@ -603,7 +631,13 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
-    let parsed = split_board(args).and_then(|(board, args)| run(Cli::parse_from(args), board));
+    let parsed = match split_board(args.clone()) {
+        Ok((board, rest)) => match Cli::try_parse_from(rest) {
+            Ok(cli) => run(cli, board),
+            Err(e) => Err(argument_error(e)),
+        },
+        Err(e) => Err(e),
+    };
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -615,4 +649,25 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A clap parse failure reads like every other tb error: what went wrong plus what to run
+/// next (`--help` / `tb guide`). `DisplayHelp`/`DisplayVersion` still print their text and
+/// succeed, as clap does by default.
+fn argument_error(e: clap::error::Error) -> BoardError {
+    if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+        let _ = e.print();
+        std::process::exit(0);
+    }
+    if e.kind() == ErrorKind::InvalidSubcommand {
+        if let Some(s) = e.get(clap::error::ContextKind::InvalidSubcommand) {
+            return BoardError(format!(
+                "unknown command '{s}' — run 'tb --help' for every command or 'tb guide' for the manual"
+            ));
+        }
+    }
+    let msg = e.to_string();
+    BoardError(format!(
+        "{msg} — run 'tb --help' for every command or 'tb guide' for the manual"
+    ))
 }

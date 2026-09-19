@@ -76,6 +76,7 @@ empty or DOING is full.
 |---|---|
 | finished your work: DOING → REVIEW | `tb done ID` |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
+| pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
 

@@ -172,3 +172,22 @@ fn config_lists_all_and_sets_panels() {
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
 }
+
+#[test]
+fn mistyped_commands_get_a_next_step_hint() {
+    let b = Board::new();
+    let o = b.run(&["start", "4", "1"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("tb --help") && err.contains("tb guide"), "hint present: {err}");
+    let o = b.run(&["frobnicate", "x"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("unknown command 'frobnicate'") && err.contains("tb --help"), "{err}");
+    // a bare unknown word stays the documented board-open behavior (`tb myboard`)
+    let o = b.run(&["myboard"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // --help still prints its text and succeeds
+    let o = b.run(&["--help"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"), "{}", String::from_utf8_lossy(&o.stderr));
+}

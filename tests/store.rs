@@ -132,3 +132,40 @@ fn lifecycle_and_errors() {
     let kinds: Vec<_> = s.show(id).unwrap().events.into_iter().map(|e| e.kind).collect();
     assert!(kinds.contains(&"taken".to_string()) && kinds.contains(&"dropped".to_string()));
 }
+
+#[test]
+fn done_clears_a_block_and_records_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: blocked in review", "", &[], "me").unwrap();
+    s.move_to(id, "review", "me").unwrap();
+    s.block(id, Some("#9"), "me").unwrap();
+    assert_eq!(s.card(id).unwrap().blocked.as_deref(), Some("#9"));
+    let c = s.done(id, "rev").unwrap();
+    assert_eq!(c.column, "done");
+    assert_eq!(c.blocked, None, "the block must not survive into done");
+    let d = s.show(id).unwrap();
+    let kinds: Vec<_> = d.events.iter().map(|e| (e.kind.as_str(), e.text.as_str())).collect();
+    assert!(kinds.contains(&("unblocked", "cleared on done")), "{kinds:?}");
+    // a todo→doing move keeps the block behaviour untouched (blocks clear only via block --clear)
+    let id2 = s.add("plain: blocked still", "", &[], "me").unwrap();
+    s.block(id2, Some("#1"), "me").unwrap();
+    s.take(id2, "me").unwrap();
+    assert_eq!(s.card(id2).unwrap().blocked.as_deref(), Some("#1"));
+}
+
+#[test]
+fn done_approve_records_without_moving() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: awaiting merge", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    s.done(id, "me").unwrap();
+    assert_eq!(s.card(id).unwrap().column, "review");
+    let _ = s.note_kind(id, "rev", "approved (the card stays in review; done waits for the merge)", "approved");
+    assert_eq!(s.card(id).unwrap().column, "review", "approval must not move the card");
+    let ev = s.show(id).unwrap().events;
+    let a = ev.iter().find(|e| e.kind == "approved").unwrap();
+    assert_eq!(a.actor, "rev");
+    assert!(a.text.contains("approved"), "{a:?}");
+}

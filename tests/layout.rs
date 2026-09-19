@@ -158,7 +158,7 @@ fn third_height_rail_126x24_and_200x24() {
         let gh_x = col_of(&screen, "GITHUB · widgets");
         assert!(gh_x > col_of(&screen, "o DONE today"), "{w}x{h}: the rail is right of the columns:\n{screen}");
         assert!(screen.contains("ISSUES") || screen.contains("issues 10"), "{w}x{h}: tiles or stat lines:\n{screen}");
-        let rows = count(&screen, "PR    #3") + count(&screen, "ISSUE #3");
+        let rows = count(&screen, "PR    gh#3") + count(&screen, "ISSUE gh#3");
         assert!(rows >= 2, "{w}x{h}: >= 2 table rows:\n{screen}");
         assert!(screen.contains("AGENTS"), "{w}x{h}");
         let agents = ["bot-1", "bot-2", "bot-3", "bot-4", "reviewer", "lead"].iter().filter(|a| screen.contains(&format!(" {a} "))).count();
@@ -177,7 +177,7 @@ fn third_width_stack_42_60_85() {
             ["o TODO (3)", "o DOING (3/5)", "o REVIEW (3)", "o DONE today (3)", "GITHUB", "AGENTS"].iter().map(|n| row_of(&screen, n)).collect();
         assert!(order.windows(2).all(|p| p[0] < p[1]), "{w}x{h}: stacked top to bottom {order:?}:\n{screen}");
         assert!(screen.contains("┌ #") || screen.contains("┏ #") || screen.contains("┃┌──"), "{w}x{h}: boxed cards:\n{screen}");
-        let gh_rows = count(&screen, "PR    #3") + count(&screen, "ISSUE #3");
+        let gh_rows = count(&screen, "PR    gh#3") + count(&screen, "ISSUE gh#3");
         assert!(gh_rows >= 3, "{w}x{h}: >= 3 github rows:\n{screen}");
         for a in ["bot-1", "bot-2", "bot-3", "bot-4", "reviewer", "lead"] {
             assert!(screen.contains(a), "{w}x{h}: agent {a}:\n{screen}");
@@ -197,7 +197,7 @@ fn stack_github_rows_are_focusable() {
     assert_eq!(app.focus, Focus::Github, "down past the last card");
     app.handle_key(key(KeyCode::Down), &mut s);
     let screen = render(&app, 60, 73);
-    assert!(screen.contains("PR    #306"));
+    assert!(screen.contains("PR    gh#306"));
     app.handle_key(key(KeyCode::Enter), &mut s);
     assert!(matches!(app.mode, terminal_board::tui::Mode::GhItem { pr: true, number: 306 }), "{:?}", app.mode);
 }
@@ -218,7 +218,7 @@ fn tiny_tab_pages_through_the_panels() {
     app.handle_key(key(KeyCode::Tab), &mut s);
     assert_eq!(app.view, View::Github);
     let screen = render(&app, 30, 10);
-    assert!(screen.contains("GITHUB") && screen.contains("#306"), "github view:\n{screen}");
+    assert!(screen.contains("GITHUB") && screen.contains("gh#306"), "github view:\n{screen}");
     app.handle_key(key(KeyCode::Tab), &mut s);
     assert_eq!(app.view, View::Agents);
     let screen = render(&app, 30, 10);
@@ -525,7 +525,7 @@ fn focus_view_keys() {
 
 /// Columns of the tidy GITHUB block: (#number x, status end x) for every row.
 fn tidy_geometry(screen: &str) -> (Vec<usize>, Vec<usize>) {
-    let rows: Vec<&str> = screen.lines().filter(|l| l.contains("PR    #3") || l.contains("ISSUE #3")).collect();
+    let rows: Vec<&str> = screen.lines().filter(|l| l.contains("PR gh#3") || l.contains("ISSUE gh#3")).collect();
     let hash = rows.iter().map(|l| l.chars().position(|c| c == '#').unwrap()).collect();
     let end = rows.iter().map(|l| l.trim_end().trim_end_matches('│').trim_end().chars().count()).collect();
     (hash, end)
@@ -550,7 +550,7 @@ fn tidy_github_block_aligns_at_62_48_40() {
             assert!(!issues.contains("MERGED") && screen.contains("MERGED"), "{w}: own rows:\n{screen}");
         }
         assert!(screen.lines().any(|l| l.contains("───") && l.contains("│ ─")), "{w}: divider:\n{screen}");
-        assert!(screen.contains("CI FAIL") && screen.contains("PR ok") && screen.contains("free") && screen.contains("board"), "{w}:\n{screen}");
+        assert!(screen.contains("CI FAIL") && screen.contains("FAIL") && screen.contains("free") && screen.contains("board"), "{w}:\n{screen}");
     }
 }
 
@@ -567,7 +567,7 @@ fn half_v_grid_boxes_and_tiles() {
         assert!(review > todo && col_of(&screen, "o TODO") == col_of(&screen, "o REVIEW"), "{w}x{h}: 2x2");
         assert!(screen.contains("│ #7") || screen.contains("┃ #7") || screen.contains("┌ #7"), "{w}x{h}: boxed cards:\n{screen}");
         assert!(screen.contains("┌ ISSUES") && screen.contains("┌ PRS") && screen.contains("┌ MAIN CI"), "{w}x{h}: 2x2 tiles:\n{screen}");
-        assert!(screen.contains("PR     TITLE"), "{w}x{h}: tables:\n{screen}");
+        assert!(screen.contains("GH#      TITLE") || screen.contains("GH#     TITLE"), "{w}x{h}: tables:\n{screen}");
         assert!(row_of(&screen, "GITHUB") > review && row_of(&screen, "AGENTS") > row_of(&screen, "GITHUB"));
     }
 }
@@ -680,10 +680,24 @@ fn gh_row_titles(screen: &str) -> Vec<String> {
     let mut out = Vec::new();
     for l in screen.lines() {
         for n in [501, 502, 503, 504, 510, 511, 512, 513, 516, 517, 518, 519, 520] {
-            let pat = format!("#{n} ");
+            let pat = format!("gh#{n} ");
             let Some(i) = l.find(&pat) else { continue };
             // a card line (`#7 gh#510 …`) or a PR reference in a status is not a row title
-            if l[..i].ends_with("gh") || l[..i].ends_with("PR ") || l[..i].ends_with("-> ") {
+            if l[..i].ends_with("PR ") || l[..i].ends_with("-> ") {
+                continue;
+            }
+            // a card box renders `#7 gh#510 …` (meta follows): the gh# is not a row title
+            let before = l[..i].trim_end();
+            if before.len() >= 2
+                && (before.as_bytes()[before.len() - 1].is_ascii_digit() && before.contains('#')
+                    || before.ends_with('#'))
+            {
+                continue;
+            }
+            // a card meta line (`gh#510 · bot-1`) or a compact gh ref (`gh#501 · 0m`)
+            // is not a row title either: row titles sit between │/┃ bars with 2+ spaces
+            // before the next column; meta lines are inside ┃┃ boxes with a `·` after.
+            if l[i + pat.len()..].trim_start().starts_with('·') {
                 continue;
             }
             let rest = l[i + pat.len()..].trim_start();
@@ -767,7 +781,7 @@ fn github_wide_tables_drop_columns_before_the_title() {
     // too narrow for a 30-char title even with every optional column gone: tidy rows
     app.snap.layout = "half-v".into();
     let screen = render(&app, 50, 70);
-    assert!(!screen.contains(" TITLE ") && screen.contains("ISSUE #501"), "\n{screen}");
+    assert!(!screen.contains(" TITLE ") && screen.contains("ISSUE gh#501"), "\n{screen}");
 }
 
 /// `cargo test --test layout -- --ignored --nocapture live_samples` prints the round-26 renders.

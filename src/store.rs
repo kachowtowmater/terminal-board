@@ -949,11 +949,17 @@ impl Store {
             "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
+        // a block set while in REVIEW must not survive into DONE (or it renders as a live
+        // problem on a finished card); reaching done clears it, logged as part of the move
+        let block_cleared = column == "done" && c.blocked.is_some();
         let pos = bottom_of(&tx, &column)?;
         tx.execute(
-            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=? WHERE id=?"#,
+            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, blocked=NULL WHERE id=?"#,
             params![column, owner, now(), pos, id],
         )?;
+        if block_cleared {
+            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        }
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
         let c = get_card(&tx, id)?;
         tx.commit()?;

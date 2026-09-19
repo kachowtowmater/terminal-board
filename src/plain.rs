@@ -151,7 +151,9 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
         meta.push(format!("due {due}"));
     }
     if let Some(b) = &c.blocked {
-        meta.push(format!("x blocked by {b}"));
+        if c.column != "done" {
+            meta.push(format!("x blocked by {b}"));
+        }
     }
     let _ = writeln!(out, "{}", meta.join(" - "));
     if !c.description.is_empty() {
