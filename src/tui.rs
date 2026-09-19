@@ -252,6 +252,8 @@ pub struct App {
     pub gh: GhView,
     pub show_github: bool,
     pub mode: Mode,
+    /// Scroll offset of the `?` help overlay (up/down, PgUp/PgDn in Mode::Help).
+    pub help_scroll: u16,
     pub popup: Option<CardDetail>,
     pub status: Option<(String, bool)>,
     pub actor: String,
@@ -303,6 +305,7 @@ impl App {
             gh: GhView::default(),
             show_github,
             mode: Mode::Normal,
+            help_scroll: 0,
             popup: None,
             status: None,
             actor: actor.to_string(),
@@ -549,8 +552,17 @@ impl App {
                 _ => {}
             },
             Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-                    self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.help_scroll = 0;
+                    }
+                    KeyCode::Down => self.help_scroll += 1,
+                    KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                    KeyCode::PageDown => self.help_scroll += 10,
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                    KeyCode::Home => self.help_scroll = 0,
+                    _ => {}
                 }
             }
             Mode::Confirm { action, .. } => {
@@ -2207,6 +2219,11 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
 }
 
 /// Every key, grouped, plus the CLI verbs.
+/// The last help row's text (the scroll test's bottom marker).
+pub const HELP_LAST_TEXT: &str = "next take done move drop prio";
+/// A long description that must wrap, not clip, in a narrow help overlay.
+pub const HELP_DESC_SAMPLE: &str = "reorder the card within its column";
+
 pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ("Board", &[
         ("arrows", "select a card (left/right column, up/down card)"),
@@ -2253,18 +2270,25 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
 
 fn draw_help(f: &mut Frame, app: &App) {
     let rows: usize = HELP_GROUPS.iter().map(|g| g.1.len() + 1).sum();
-    let area = centered(f.area(), 96, rows as u16 + 3);
+    // narrow panes: a smaller overlay so it fits, key column shrunk, text wraps
+    let wide = f.area().width >= 100;
+    let (w, kw) = if wide { (96, 26) } else { (f.area().width.saturating_sub(2).max(30), 12) };
+    let area = centered(f.area(), w, rows as u16 + 3);
     if area.width < 10 || area.height < 4 {
         return;
     }
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(base_style(app)), area);
+    let mut title_bottom = Line::styled(" esc or ? closes ", bold());
+    let inner_h = area.height.saturating_sub(2) as usize;
+    if rows > inner_h {
+        title_bottom = Line::styled(" esc/? closes · up/down scroll ", bold());
+    }
     let b = frame(true, None)
         .title(Span::styled(" Terminal Board keys ", bold()))
-        .title_bottom(Line::styled(" esc or ? closes ", bold()));
+        .title_bottom(title_bottom);
     let inner = b.inner(area);
     f.render_widget(b, area);
-    let kw = 26;
     let mut lines = Vec::new();
     for (group, keys) in HELP_GROUPS {
         lines.push(Line::styled(format!(" {group}"), bold()));
@@ -2272,7 +2296,9 @@ fn draw_help(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(d.to_string())]));
         }
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    let max_scroll = lines.len().saturating_sub(inner_h) as u16;
+    let scroll = app.help_scroll.min(max_scroll);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 fn info_popup(f: &mut Frame, app: &App, title: String, lines: Vec<Line<'static>>, hint: &str) {

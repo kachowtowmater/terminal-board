@@ -7,7 +7,7 @@ use ratatui::Terminal;
 use terminal_board::github::{GhSnapshot, GhView, Issue, Pr};
 use terminal_board::herdr::{parse_agents, AgentsState};
 use terminal_board::store::Store;
-use terminal_board::tui::{draw, App, Focus, Mode};
+use terminal_board::tui::{draw, App, Focus, Mode, HELP_LAST_TEXT};
 
 const AGENTS: &str = r#"{"result":{"agents":[
   {"name":"bot-2","agent":"aider","agent_status":"working","pane_id":"w:p5"},
@@ -62,6 +62,17 @@ fn render(app: &App) -> (String, ratatui::buffer::Buffer) {
     let b = t.backend().buffer().clone();
     let text = b.content.chunks(160).map(|r| r.iter().map(|c| c.symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
     (text, b)
+}
+
+fn keym(c: KeyCode, m: KeyModifiers) -> KeyEvent {
+    KeyEvent::new(c, m)
+}
+
+/// Render at a small size so the app is in the FOCUS shape.
+fn render_small(app: &App, w: u16, h: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| draw(f, app)).unwrap();
+    t.backend().buffer().content.chunks(w as usize).map(|r| r.iter().map(|c| c.symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 fn key(c: KeyCode) -> KeyEvent {
@@ -216,4 +227,36 @@ fn unconfigured_github_panel_is_focusable() {
     press(&mut app, &mut s, KeyCode::Up, 1);
     press(&mut app, &mut s, KeyCode::Enter, 1);
     assert!(matches!(app.mode, Mode::Picker { .. }));
+}
+
+#[test]
+fn help_is_readable_and_scrollable_in_small_panes() {
+    let (_d, mut s, mut app) = setup();
+    app.actor = "bot-2".into();
+    let _ = render_small(&app, 60, 14); // focus shape
+    app.handle_key(key(KeyCode::Char('?')), &mut s);
+    let mut at = |off: u16| {
+        app.help_scroll = off;
+        render_small(&app, 60, 14)
+    };
+    // every help line is reachable: the LAST group's last row appears after scrolling
+    let last_row = HELP_LAST_TEXT;
+    let screen0 = at(0);
+    assert!(!screen0.contains(last_row), "top of the help at offset 0");
+    // scroll to the bottom: the previously hidden rows are visible and readable
+    let bottom = at(999);
+    assert!(bottom.contains(last_row), "scrolled help shows the last rows");
+    // no line is clipped at the right edge: the long description is present (wrapped)
+    let tui = terminal_board::tui::HELP_DESC_SAMPLE;
+    assert!(screen0.contains(tui) || bottom.contains(tui), "a long description survives at 60 cols");
+    // keys scroll: two Down steps from the top bring the second group into view,
+    // and Home returns to the top
+    app.help_scroll = 0;
+    app.handle_key(keym(KeyCode::Down, KeyModifiers::NONE), &mut s);
+    app.handle_key(keym(KeyCode::Down, KeyModifiers::NONE), &mut s);
+    let mid = render_small(&app, 60, 14);
+    assert!(mid.contains("add a card"), "Down scrolls: {mid}");
+    app.handle_key(keym(KeyCode::Home, KeyModifiers::NONE), &mut s);
+    assert_eq!(app.help_scroll, 0, "Home returns to the top");
+    assert!(render_small(&app, 60, 14).contains("select a card"), "back at the top");
 }

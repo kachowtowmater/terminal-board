@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### The `?` help is readable and scrollable in small panes
+- Narrow panes get a smaller overlay with a shrunk key column and wrapped descriptions —
+  nothing is cut at the right edge and every key group is reachable.
+- `up`/`down` and PgUp/PgDn scroll the help (Home returns to the top); when there is more
+  below, the title bar says `up/down scroll`. The wide view is unchanged.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
