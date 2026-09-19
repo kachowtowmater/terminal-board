@@ -2091,7 +2091,7 @@ fn holds_card(app: &App, a: &Agent) -> bool {
         })
 }
 
-/// How long an idle card-holder's card has been quiet (`(1h20m)`), from the card's last event.
+/// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
 pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
     let agents = agent_list(app);
     let held = app
@@ -2100,7 +2100,7 @@ pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
         .iter()
         .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
     held.and_then(|c| app.snap.last_event_at.get(&c.id))
-        .map(|ts| format!("({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
+        .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
         .unwrap_or_default()
 }
 

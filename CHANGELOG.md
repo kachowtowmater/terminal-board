@@ -9,7 +9,8 @@
 - Quiet work shows up: a DOING card with no event for **60 minutes** (fixed, documented; no
   setting) shows `quiet 1h20m` inside its existing box, as plain dim text — the word is the
   signal, red stays reserved for real problems. The idle-agent flag gains its duration
-  (`! bot-2 idle w/ card (1h20m)`). JSON exposes only timestamps (`card.last_event_at`,
+  (`! bot-2 idle w/ card (1h20m)`): how long its card has been quiet, i.e. since the card's
+  last event — a proxy for how long the agent has been idle. JSON exposes only timestamps (`card.last_event_at`,
   unix seconds), never durations.
 
 ## 1.0.0 — 2026-09-18
