@@ -25,6 +25,7 @@ fn pr(n: i64, title: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: vec![],
+        updated_at: String::new(),
     }
 }
 
@@ -62,6 +63,17 @@ fn render(app: &App) -> (String, ratatui::buffer::Buffer) {
     let b = t.backend().buffer().clone();
     let text = b.content.chunks(160).map(|r| r.iter().map(|c| c.symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
     (text, b)
+}
+
+fn keym(c: KeyCode, m: KeyModifiers) -> KeyEvent {
+    KeyEvent::new(c, m)
+}
+
+/// Render at a small size so the app is in the FOCUS shape (the shift-arrow fix targets it).
+fn render_small(app: &App, w: u16, h: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| draw(f, app)).unwrap();
+    t.backend().buffer().content.chunks(w as usize).map(|r| r.iter().map(|c| c.symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 fn key(c: KeyCode) -> KeyEvent {
@@ -216,4 +228,93 @@ fn unconfigured_github_panel_is_focusable() {
     press(&mut app, &mut s, KeyCode::Up, 1);
     press(&mut app, &mut s, KeyCode::Enter, 1);
     assert!(matches!(app.mode, Mode::Picker { .. }));
+}
+
+#[test]
+fn focus_view_shift_arrows_move_and_help_says_the_axis() {
+    let (_d, mut s, mut app) = setup();
+    app.actor = "bot-2".into();
+    // a small pane puts the app in the FOCUS shape, whose key path this fixes
+    let _ = render_small(&app, 72, 14);
+    // bot-2 holds a DOING card; select it (row 1 in DOING: bot-1's is row 0)
+    app.col = 1;
+    app.row[1] = 1;
+    let id = app.selected().unwrap().id;
+    assert_eq!(s.card(id).unwrap().owner.as_deref(), Some("bot-2"), "selecting bot-2's own card");
+    app.handle_key(keym(KeyCode::Right, KeyModifiers::SHIFT), &mut s);
+    assert_eq!(s.card(id).unwrap().column, "review", "shift+right moves the card");
+    app.reload(&s);
+    // plain arrows keep the focus axis: right steps to the next CARD (not the column)
+    app.col = 0;
+    let before = app.col;
+    app.handle_key(key(KeyCode::Right), &mut s);
+    assert_eq!(app.col, before, "plain right stays in the column (steps cards)");
+    // the footer says so in this view (render small to stay in the focus shape);
+    // clear the move's status line first, or it replaces the hints
+    app.handle_key(key(KeyCode::Esc), &mut s);
+    let screen = render_small(&app, 72, 14);
+    let footer = screen.lines().last().unwrap_or("");
+    assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move"), "footer: {footer}\n{screen}");
+    // the axis hints survive what used to push them out: no repo configured (a first run)
+    // and a DOING card selected, at small widths
+    s.set_github(None).unwrap();
+    app.reload(&s);
+    app.col = 1;
+    app.row[1] = 0;
+    for (w, h) in [(72, 14), (60, 14), (60, 20), (72, 24), (44, 14)] {
+        let screen = render_small(&app, w, h);
+        let footer = screen.lines().last().unwrap_or("");
+        assert!(
+            footer.contains("arrows card/col") && footer.contains("shift+<> move"),
+            "{w}x{h} footer: {footer}\n{screen}"
+        );
+    }
+    // and the full help still documents shift+arrows as the mover (same in every view)
+    use terminal_board::tui::Mode;
+    app.mode = Mode::Help;
+    let (help, _) = render(&app);
+    assert!(help.contains("move the card to the next column"), "{help}");
+    assert!(help.contains("focus view arrows") && help.contains("left/right card, up/down column"), "help names the focus axis: {help}");
+}
+
+/// `?` at 60x14 and 40x14: every key stands apart from its description, every word of every
+/// description can be scrolled into view whole, and Up works right after scrolling past the
+/// end. Driven by keys and rendered text only.
+#[test]
+fn help_is_readable_and_scrollable_in_small_panes() {
+    use terminal_board::tui::HELP_GROUPS;
+    let frame = |c: char| "─│┌┐└┘┏┓┗┛━┃".contains(c);
+    for (w, h) in [(60u16, 14u16), (40, 14)] {
+        let (_d, mut s, mut app) = setup();
+        let _ = render_small(&app, w, h);
+        app.handle_key(key(KeyCode::Char('?')), &mut s);
+        assert_eq!(app.mode, Mode::Help);
+        // every scroll position, top to bottom (and well past it)
+        let mut seen = String::new();
+        let mut bottom = String::new();
+        for _ in 0..120 {
+            bottom = render_small(&app, w, h);
+            seen.push_str(&bottom);
+            seen.push('\n');
+            app.handle_key(key(KeyCode::Down), &mut s);
+        }
+        let clean: String = seen.chars().map(|c| if frame(c) { ' ' } else { c }).collect();
+        let tokens: std::collections::HashSet<&str> = clean.split_whitespace().collect();
+        for (_, keys) in HELP_GROUPS {
+            for (k, d) in keys.iter() {
+                for word in d.split_whitespace() {
+                    assert!(tokens.contains(word), "{w}x{h}: '{word}' of \"{d}\" is never shown whole");
+                }
+                let apart = clean.lines().map(str::trim_start).any(|l| {
+                    l.strip_prefix(k).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+                });
+                assert!(apart, "{w}x{h}: key '{k}' runs into its description");
+            }
+        }
+        // past the end, Up scrolls back at once
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Up), &mut s);
+        }
+        assert_ne!(render_small(&app, w, h), bottom, "{w}x{h}: Up does nothing after scrolling past the end");
+    }
 }

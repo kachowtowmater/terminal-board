@@ -33,6 +33,7 @@ fn pr(n: i64, title: &str, ci: &str) -> Pr {
         created_at: ago(2 * 3600),
         author: "bot-1".into(),
         closes: vec![n - 1],
+        updated_at: String::new(),
     }
 }
 
@@ -795,4 +796,48 @@ fn live_samples() {
             println!("{}", l.trim_end());
         }
     }
+}
+
+#[test]
+fn thirdv_spare_rows_go_to_github_not_to_a_gap() {
+    // the issue's repro: 8 cards, 52x66 — the old split left ~5 blank rows between
+    // DONE and GITHUB
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(9).unwrap();
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 3,
+        issues: vec![issue(305, "login form rejects"), issue(307, "search index lags"), issue(301, "csv export drops the header row")],
+        prs: vec![pr(306, "fix login form validation", "FAIL"), pr(308, "speed up search indexing", "ok")],
+        ..Default::default()
+    }))
+    .unwrap();
+    for i in 0..8 {
+        let id = s.add(&format!("widgets: card number {i} to fill the board"), "", &[], "alice").unwrap();
+        if i >= 3 {
+            s.take(id, "bot-1").unwrap();
+        }
+        if i >= 6 {
+            s.move_to(id, "review", "bot-1").unwrap();
+        }
+    }
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    let screen = render(&app, 52, 66);
+    // every row between the top and the footer belongs to a section: no fully blank row
+    // between DONE's last box and the GITHUB panel
+    let blank_run = screen
+        .lines()
+        .filter(|l| !l.contains("┌") && !l.contains("│") && !l.contains("┃") && !l.contains("┗") && !l.contains("┛") && l.trim().is_empty())
+        .count();
+    assert!(blank_run == 0, "{blank_run} fully blank rows in the body:\n{screen}");
+    // the GITHUB panel actually grew into the spare space
+    assert!(screen.contains("GITHUB"), "{screen}");
+    // negative control: at 52x56 (the no-gap size from the issue) everything still renders
+    let screen56 = render(&app, 52, 56);
+    assert!(screen56.contains("GITHUB") && screen56.contains("DONE"), "{screen56}");
 }

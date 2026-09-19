@@ -185,17 +185,18 @@ pub(super) fn draw_gh_compact(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let name = repo.rsplit('/').next().unwrap_or(&repo).to_string();
+    let (suffix, is_red) = github::sync_suffix(app.gh.error.as_deref(), app.gh.fails);
     let left = if focused && app.gh_sel == 0 {
         Span::styled(fit_title(&["GITHUB", &format!("{name} (enter to change)")], area.width), sel_style)
     } else {
-        Span::styled(fit_title(&["GITHUB", &name], area.width), bold().fg(fg))
+        Span::styled(fit_title(&["GITHUB", &name], area.width), if is_red { red().fg(fg) } else { bold().fg(fg) })
     };
     let mut b = frame(focused, None).title(left.clone());
     if let Some(snap) = &app.gh.snap {
-        let t = format!(" {} ", crate::store::fmt_clock(snap.fetched_at));
-        // the time only when it fits next to the title
-        if left.content.chars().count() + t.len() + 4 <= area.width as usize {
-            b = b.title(Line::styled(t, dim()).right_aligned());
+        let t = format!(" {}{suffix} ", crate::store::fmt_clock(snap.fetched_at));
+        // the time (and, when failing, the suffix) only when it fits next to the title
+        if left.content.chars().count() + t.chars().count() + 4 <= area.width as usize {
+            b = b.title(Line::styled(t, if is_red { red() } else { dim() }).right_aligned());
         }
     }
     let inner = b.inner(area);
@@ -203,12 +204,6 @@ pub(super) fn draw_gh_compact(f: &mut Frame, app: &App, area: Rect) {
     let w = inner.width as usize;
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
-    if let Some(e) = &app.gh.error {
-        if y < bottom {
-            f.render_widget(Paragraph::new(Line::raw(fit(&format!(" github: {e}"), w))), Rect { y, height: 1, ..inner });
-            y += 1;
-        }
-    }
     let Some(s) = &app.gh.snap else {
         if app.gh.error.is_none() && y < bottom {
             f.render_widget(Paragraph::new(Line::styled(" fetching...", dim())), Rect { y, height: 1, ..inner });
@@ -295,7 +290,25 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 _ => ("-", dim()),
             };
             let what = match app.agent_card(i) {
-                Some(c) => format!("#{} {}", c.id, c.title),
+                Some(c) => {
+                    let age = app
+                        .snap
+                        .last_event_at
+                        .get(&c.id)
+                        .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                        .unwrap_or_default();
+                    // the note gets what the row has left after the name, status, id and a
+                    // short title; the age is shown even without a note
+                    let id = format!("#{} ", c.id);
+                    let title = format!(" {}", fit(&c.title, 12));
+                    let fixed = 3 + 11 + if holds { 15 } else { 9 } + id.chars().count() + title.chars().count();
+                    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
+                    if act.is_empty() {
+                        format!("{id}{}", c.title)
+                    } else {
+                        format!("{id}{act}{title}")
+                    }
+                }
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
             let text = if holds {
@@ -444,13 +457,14 @@ pub(super) fn draw_stack(f: &mut Frame, app: &App, area: Rect) {
         gh_h = gh_cap;
         ag_h = ag_min;
         let mut left = bh - cards_min - gh_h - ag_h;
-        // cards up to ~55% first, then AGENTS, then the rest of GITHUB; leftovers to cards
+        // cards up to ~55% first, then the rest of GITHUB (issue #4: spare rows must not
+        // sit unused between DONE and GITHUB), then AGENTS; whatever remains goes to cards
         let cards_target = (bh * 55 / 100).clamp(cards_min, cards_full.max(cards_min));
         left -= (cards_target - cards_min).min(left);
-        let add = (ag_full - ag_h).min(left);
-        ag_h += add;
+        let add = (gh_full - gh_h).min(left);
+        gh_h += add;
         left -= add;
-        gh_h += (gh_full - gh_h).min(left);
+        ag_h += (ag_full - ag_h).min(left);
     } else {
         // tight: the cards keep their minimum, panels shrink, then become bars (never dropped)
         ag_h = if ag_on { 3 } else { 0 };
@@ -523,6 +537,13 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             let add = column_height(app, c, w, dense).saturating_sub(heights[c]).min(left);
             heights[c] += add;
             left -= add;
+        }
+    }
+    // spare height must not sit as a blank band between sections and the panels
+    // (issue #4): stretch the LAST boxed section to absorb what is left
+    if left > 0 {
+        if let Some(&c) = order.iter().rev().find(|&&c| counts[c] > 0 && heights[c] > 1) {
+            heights[c] += left;
         }
     }
     let boxed = |c: usize| counts[c] > 0 && heights[c] > 1;
@@ -601,7 +622,7 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     let inner = b.inner(body);
     f.render_widget(b, body);
     let mut lines: Vec<Line> = Vec::new();
-    let title = match card.gh_ref {
+    let title = match crate::store::shown_ref(card) {
         Some(n) => format!("{} (gh#{n})", card.title),
         None => card.title.clone(),
     };

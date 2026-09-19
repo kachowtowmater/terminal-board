@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use terminal_board::github::{
     branch_matches, factory, parse_issues, parse_main_ci, parse_merged, parse_prs, short_title, tiles, GhSnapshot,
-    GhView, StateKind,
+    GhView, StateKind, RED_AFTER_FAILS,
 };
 use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
@@ -229,7 +229,7 @@ fn board_app(view: GhView) -> (tempfile::TempDir, App) {
 }
 
 fn on(snap: Option<GhSnapshot>, error: Option<&str>) -> GhView {
-    GhView { repo: Some("acme/widgets".into()), snap, error: error.map(str::to_string) }
+    GhView { repo: Some("acme/widgets".into()), snap, error: error.map(str::to_string), fails: error.is_some() as i64 }
 }
 
 /// Column x of `needle` in the first line containing `anchor`.
@@ -336,13 +336,42 @@ fn panel_hidden_when_unconfigured_toggled_or_narrow() {
 }
 
 #[test]
-fn panel_shows_errors() {
+fn panel_hiccup_keeps_layout_and_goes_red_only_after_three() {
+    // one-off failure: no extra row, last good snapshot stays, quiet words in the header
+    let (_d, app) = board_app(on(Some(snapshot("success")), Some("gh pr timed out")));
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(screen.contains("synced") && screen.contains("offline, retrying"), "{screen}");
+    assert!(!screen.contains("github: gh pr timed out"), "no raw error row:\n{screen}");
+    assert!(screen.contains("PULL REQUESTS"), "stale data stays:\n{screen}");
+    assert!(red_runs(&buf).iter().all(|r| r == "FAIL"), "1 failure: nothing new is red:\n{screen}");
+    // a non-network error gets the other quiet wording
+    let (_d, app) = board_app(on(Some(snapshot("success")), Some("HTTP 401: Bad credentials")));
+    let (screen, _) = screen_of(&app, 160, 50);
+    assert!(screen.contains("gh error") && !screen.contains("offline, retrying"), "{screen}");
+    // never-synced: still no extra row — the header carries the quiet wording; the raw
+    // error lives in `tb github` / `--json`
     let (_d, app) = board_app(on(None, Some("HTTP 401: Bad credentials")));
     let (screen, _) = screen_of(&app, 140, 45);
-    assert!(screen.contains("github: HTTP 401: Bad credentials") && screen.contains("synced never"), "{screen}");
-    let (_d, app) = board_app(on(Some(snapshot("success")), Some("gh pr timed out")));
-    let (screen, _) = screen_of(&app, 160, 50);
-    assert!(screen.contains("github: gh pr timed out") && screen.contains("PULL REQUESTS"), "stale data stays:\n{screen}");
+    assert!(screen.contains("synced never · gh error") && !screen.contains("github: HTTP 401"), "{screen}");
+}
+
+#[test]
+fn panel_third_consecutive_failure_turns_header_red() {
+    let base = GhView {
+        repo: Some("acme/widgets".into()),
+        snap: Some(snapshot("success")),
+        error: Some("Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout".into()),
+        fails: RED_AFTER_FAILS,
+    };
+    let (_d, app) = board_app(base.clone());
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(screen.contains("offline, retrying"), "{screen}");
+    let reds = red_runs(&buf);
+    assert!(reds.iter().any(|r| r.contains("offline, retrying")), "header is red now: {reds:?}\n{screen}");
+    // and not at 2
+    let (_d, app) = board_app(GhView { fails: RED_AFTER_FAILS - 1, ..base });
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(red_runs(&buf).iter().all(|r| r == "FAIL"), "2 failures: header not red yet:\n{screen}");
 }
 
 // ---------- CLI ----------
@@ -481,4 +510,17 @@ fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
     let o = e.run(&["github", "--refresh"], &bad);
     assert!(o.status.success());
     assert!(out(&o).contains("github: HTTP 401") && out(&o).contains("gh#334"), "{}", out(&o));
+    // --json exposes the full error, the fail count and the snapshot's age
+    let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--json"], &bad))).unwrap();
+    assert!(j["error"].as_str().unwrap().contains("HTTP 401"), "{}", j);
+    assert_eq!(j["fails"], 1);
+    assert!(j["fetched_at"].as_i64().unwrap() > 0);
+    // two more failing refreshes -> 3 in a row (the UI threshold); a success resets it
+    for want in [2, 3] {
+        let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--refresh", "--json"], &bad))).unwrap();
+        assert_eq!(j["fails"], want, "{}", j);
+    }
+    let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--refresh", "--json"], &ok))).unwrap();
+    assert_eq!(j["fails"], 0, "success resets the counter: {}", j);
+    assert!(j["error"].is_null());
 }
