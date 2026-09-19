@@ -184,6 +184,31 @@ fn config_lists_all_and_sets_panels() {
 }
 
 #[test]
+fn blank_as_is_refused_not_silently_replaced() {
+    let b = Board::new();
+    b.ok(&["--as", "lead", "add", "plain: x"]);
+    // empty string
+    let o = b.run(&["note", "1", "empty", "--as", ""]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("--as is empty") && err.contains("--as bot-1"), "{err}");
+    // whitespace only
+    let o = b.run(&["note", "1", "spacey", "--as", "  "]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--as is empty"));
+    // json: the standard object
+    let o = b.run(&["note", "1", "empty", "--as", "", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    // nothing was written
+    let show = b.ok(&["show", "1"]);
+    assert!(!show.contains("empty") && !show.contains("spacey"), "no note landed: {show}");
+    // absent flag: the fallback chain still works (TB_AS=tester in the harness)
+    b.ok(&["note", "1", "logged as tester"]);
+    assert!(b.ok(&["show", "1"]).contains("logged as tester"));
+}
+
+#[test]
 fn parse_errors_answer_json_under_json_flag() {
     let b = Board::new();
     b.ok(&["add", "docs: target card"]);

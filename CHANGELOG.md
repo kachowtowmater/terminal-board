@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Identity: a blank `--as` is refused, never silently replaced
+- `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
+  before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
+  `--json`). An absent flag keeps the fallback chain (`TB_AS`, the herdr pane's agent, the
+  login name) unchanged.
 ### The WIP-full message is actor-aware
 - `doing is full` is a board-wide limit, but the old hint told every actor to `tb done ID` —
   including an agent holding nothing, whose only obedience path was finishing someone else's

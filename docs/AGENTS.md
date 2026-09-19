@@ -48,8 +48,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | the whole board as JSON | `tb board --json` |
 | follow changes live (one JSON line per change) | `tb watch --json` |
 
-`tb next` takes the top TODO card that is not blocked. It fails with a hint when TODO is
-empty or DOING is full.
+`tb next` skips blocked cards; when TODO is empty or DOING is full it fails with a hint.
 
 ### Report progress
 
@@ -80,9 +79,8 @@ empty or DOING is full.
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
 
-`tb move ID doing` respects the WIP limit and makes you the owner if nobody owns the card.
-`tb move ID todo` clears the owner. Sending a REVIEW card back needs the reason, keeps its
-owner and is not blocked by the WIP limit (it is the owner's existing work).
+`tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move
+ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, skips the WIP limit.
 
 ### Create and delete cards
 
@@ -202,6 +200,7 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 
 | error says | do this |
 |---|---|
+| `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
