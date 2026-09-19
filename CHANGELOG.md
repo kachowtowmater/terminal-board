@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Hints carry an explicitly named board
+- Every success and error hint names the board when it was chosen by name or `-b` (anywhere
+  on the command line) and is not `default`: `added #1 — take it with 'tb work take 1'`,
+  `no card #99 — see 'tb work list' for ids`, and an empty board's `'tb work add …'` (text
+  and `--json` `hint`). Copying a hint into a fresh shell can no longer act on the
+  default board. A board picked by `TB_BOARD` travels in the environment, so its hints stay
+  bare; default-board output is unchanged byte-for-byte.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that

@@ -319,3 +319,102 @@ fn parse_errors_answer_json_under_json_flag() {
     let o = b.run(&["--help", "--json"]);
     assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"));
 }
+
+#[test]
+fn hints_carry_an_explicitly_named_board() {
+    let b = Board::new();
+    // add on a named board (the CLI has no named add here, use -b): hint names the board
+    b.ok(&["-b", "work", "add", "docs: guide"]);
+    let out = b.ok(&["-b", "work", "next"]);
+    assert!(out.contains("'tb work note"), "note hint carries the board: {out}");
+    assert!(out.contains("'tb work done"), "done hint carries the board: {out}");
+    // error hint: same
+    let o = b.run(&["-b", "work", "done", "99"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb work list'"), "error hint carries the board: {err}");
+    // --json hint: same
+    let o = b.run(&["-b", "work", "done", "99", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["hint"].as_str().unwrap().contains("'tb work list'"), "{}", v);
+    // a config hint on the named board carries it
+    let o = b.run(&["-b", "work", "github"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb work config github"), "{err}");
+    // default board: byte-identical bare hints (negative control on main behaviour)
+    b.ok(&["add", "default board card"]);
+    let out = b.ok(&["next"]);
+    assert!(out.contains("'tb note ") && !out.contains("'tb default note"), "default board stays bare: {out}");
+    let o = b.run(&["done", "99"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb list'") && !err.contains("'tb default list'"), "default error stays bare: {err}");
+}
+
+#[test]
+fn hints_stay_bare_when_the_board_comes_from_the_env() {
+    let b = Board::new();
+    b.ok(&["-b", "envb", "add", "docs: env guide"]);
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["next"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "envb")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("'tb note "), "TB_BOARD travels in the env: bare hint {out}");
+}
+
+/// Review fixes: an empty board's hint, `-b` after the subcommand on the error path, and one
+/// TB_BOARD rule (bare) on both paths.
+
+#[test]
+fn hints_name_the_board_on_every_path() {
+    let b = Board::new();
+    let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).to_string();
+    // (1) empty board: list, board and the positional form all hint at the named board
+    for args in [&["work", "list"][..], &["-b", "work", "list"], &["work", "board"], &["list", "-b", "work"]] {
+        let out = b.ok(args);
+        assert!(out.contains("'tb work add \"tag: title\"'"), "{args:?}: {out}");
+    }
+    assert!(b.ok(&["list"]).contains("'tb add \"tag: title\"'"), "default board stays bare");
+    // (2) a -b after the subcommand counts on the error path as it does on success
+    let o = b.run(&["done", "99", "-b", "work"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("see 'tb work list' for ids"), "{}", stderr(&o));
+    let o = b.run(&["done", "99", "-b", "work", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["hint"], "see 'tb work list' for ids");
+    // (2b) an argument error under --json (the parser fails before a board is opened):
+    // its hint names the board too, positional or -b
+    for args in [&["work", "note", "1", "--json"][..], &["note", "1", "-b", "work", "--json"]] {
+        let o = b.run(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        let hint = v["hint"].as_str().unwrap();
+        assert!(hint.contains("'tb work --help'") && hint.contains("usage: tb note"), "{args:?}: {v}");
+    }
+    let v: serde_json::Value = serde_json::from_slice(&b.run(&["note", "1", "--json"]).stdout).unwrap();
+    assert!(v["hint"].as_str().unwrap().contains("'tb --help'"), "default board stays bare: {v}");
+    // hints already naming the board are not prefixed twice
+    b.ok(&["-b", "work", "add", "one"]);
+    let o = b.run(&["check", "1", "-b", "work"]);
+    let e = stderr(&o);
+    assert!(e.contains("'tb work check 1 1'") && !e.contains("work work"), "{e}");
+    // (3) TB_BOARD: bare on the error path, as on the success path
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["done", "99"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "work")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("see 'tb list' for ids") && !stderr(&o).contains("tb work"), "{}", stderr(&o));
+}

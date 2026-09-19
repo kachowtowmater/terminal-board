@@ -127,6 +127,9 @@ An argument error names what is missing and gives the usage line, e.g. `tb note 
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
+When the board was chosen **explicitly by name or `-b`** and is not `default`, the command in a
+hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
+the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
 
 ## `tb agents --json`
 
