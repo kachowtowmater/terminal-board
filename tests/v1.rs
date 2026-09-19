@@ -235,18 +235,21 @@ fn auto_move_matrix() {
         id
     };
     s.set_wip(99).unwrap();
+    // TODO cards have no owner: an open PR leaves them in TODO, a closed issue still moves
+    // them to DONE; DOING cards (owned by 'me') move on an open PR as before
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
     let closed = mk(&mut s, "gh#21 a closed issue", "todo");
     let open_rev = mk(&mut s, "gh#11 open, in review", "review");
     let unmerged = mk(&mut s, "gh#22 closed unmerged pr", "doing");
+    let linked_owned = mk(&mut s, "gh#13 linked by closes, taken", "doing");
     let done_open = mk(&mut s, "gh#10 already done", "done");
     let plain = mk(&mut s, "no gh ref", "doing");
     let snap = GhSnapshot {
         repo: "o/r".into(),
-        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing")],
-        issues: vec![issue(10), issue(11), issue(12)],
+        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing"), pr(32, &[13], "y")],
+        issues: vec![issue(10), issue(11), issue(12), issue(13)],
         ..Default::default()
     };
     let cards = s.list().unwrap();
@@ -263,13 +266,14 @@ fn auto_move_matrix() {
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR #30 open → review"),
             (branch, "review", "github: PR #31 open → review"),
             (merged, "done", "github: PR #20 merged → done"),
             (closed, "done", "github: issue #21 closed → done"),
+            (linked_owned, "review", "github: PR #32 open → review"),
         ]
     );
-    let untouched = [open_rev, unmerged, done_open, plain];
+    // the unowned TODO card with an open PR stays in TODO
+    let untouched = [linked, open_rev, unmerged, done_open, plain];
     assert!(moves.iter().all(|m| !untouched.contains(&m.card_id)), "no backwards, no evidence, no move");
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
@@ -329,6 +333,8 @@ esac
     for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
         tb(&db, &gh, &["add", t]);
     }
+    // an open PR moves only work someone took; merged/closed move unowned TODO cards too
+    tb(&db, &gh, &["take", "1"]);
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -408,6 +414,42 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn sync_never_moves_an_unowned_todo_card_to_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // unowned todo card linked to an issue that has an open PR
+    let unowned = s.add("plain: gh#60 nobody took it", "", &[], "lead").unwrap();
+    // an owned one, for the positive control
+    let owned = s.add("plain: gh#61 taken", "", &[], "lead").unwrap();
+    s.take(owned, "bot-1").unwrap();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 2,
+        // each card's issue has its own open PR: the unowned one (#62 closes #60) moved on main
+        prs: vec![pr(62, &[60], "fix/60"), pr(61, &[61], "fix/61")],
+        issues: vec![issue(60), issue(61)],
+        ..Default::default()
+    };
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> = [
+        (60, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+        (61, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+    ]
+    .into();
+    let moves = terminal_board::github::plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
+    assert!(moves.iter().all(|m| m.card_id != unowned), "unowned card stays in todo: {moves:?}");
+    assert!(moves.iter().any(|m| m.card_id == owned && m.to == "review"), "owned card moves: {moves:?}");
+    terminal_board::github::apply_moves(&mut s, &moves).unwrap();
+    assert_eq!(s.card(unowned).unwrap().column, "todo", "still todo, still unowned");
+    assert_eq!(s.card(unowned).unwrap().owner, None);
+    assert_eq!(s.card(owned).unwrap().column, "review");
+    // and the self-approval check has an author for every synced REVIEW card
+    for c in s.list().unwrap().into_iter().filter(|c| c.column == "review") {
+        assert!(s.author(c.id).unwrap().is_some(), "#{} in review without an author", c.id);
+    }
 }
 
 #[test]

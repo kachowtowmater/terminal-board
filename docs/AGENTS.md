@@ -175,7 +175,8 @@ tb sync                      # apply GitHub evidence to the board now
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW,
   a merged PR or a closed issue moves it to DONE. Cards never move backwards. A card sent
   back from REVIEW stays in DOING until its PR is updated (a push, a comment) after the
-  send-back.
+  send-back. **Sync only moves cards someone took**: an unowned TODO card stays in TODO
+  even when its PR is open — take the card and the next sync moves it.
 - Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR, so
   the link is found.
 - `tb done` will not move a `gh#N` card to DONE while its issue is still open. Close the

@@ -502,15 +502,21 @@ pub fn plan_moves(
             }
         }
         if c.column == "todo" || c.column == "doing" {
-            let own_pr = s.prs.iter().find(|p| p.number == n);
-            let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
-            if let Some(p) = own_pr.or(linked) {
-                let updated_since_return = match returned.get(&c.id) {
-                    None => true,
-                    Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
-                };
-                if updated_since_return {
-                    out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+            // An UNOWNED card stays put: sync never moves work nobody took into REVIEW —
+            // there it would have no owner and no author, so anyone could approve it and
+            // nobody would be accountable. (Doing cards always have an owner; the hole is
+            // a todo card linked to an issue that already has an open PR.)
+            if c.owner.is_some() {
+                let own_pr = s.prs.iter().find(|p| p.number == n);
+                let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
+                if let Some(p) = own_pr.or(linked) {
+                    let updated_since_return = match returned.get(&c.id) {
+                        None => true,
+                        Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
+                    };
+                    if updated_since_return {
+                        out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                    }
                 }
             }
         }
