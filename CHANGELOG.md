@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### GitHub
+- A one-off `gh` failure no longer shakes the board: no extra row, the last good snapshot
+  stays, and the panel header quietly reads `synced HH:MM · offline, retrying` (network/
+  timeout errors) or `synced HH:MM · gh error` (everything else). The header turns red —
+  the same style as other problems — only after 3 consecutive failed refreshes. The full
+  error text stays in `tb github` and `--json` (`error`, `fails` = consecutive failures,
+  snapshot `fetched_at` so readers can tell how stale the data is).
 ### Identity: a blank `--as` is refused, never silently replaced
 - `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
   before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
