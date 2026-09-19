@@ -9,6 +9,12 @@
   `finish #3 with 'tb done 3' first` when they hold one, `you hold none; wait, or ask one of
   them to finish` when they don't. Both `next` and `take`, text and `--json`.
 ## 1.1.0 — 2026-09-18
+### Display
+- Control characters and terminal sequences in displayed text (card titles, descriptions,
+  notes, names, checklist items, GitHub titles and branches, agent labels, echoed errors) are
+  removed before they reach the terminal, in the board and in plain CLI output. Tabs and line
+  breaks in one-line fields show as spaces, so every card stays on its own line. The store and
+  `--json` output keep the text as it was written.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no

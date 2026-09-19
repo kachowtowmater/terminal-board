@@ -1,7 +1,13 @@
 //! Plain-text output for CLI commands and non-TTY bare runs.
 
 use crate::store::{fmt_age, fmt_clock, Card, CardDetail, Snapshot, COLUMNS};
-use std::fmt::Write;
+use crate::text::{sanitize, sanitize_lines};
+
+/// Append one output line; `s` is shown on exactly one line, whatever the stored text holds.
+fn line(out: &mut String, s: impl AsRef<str>) {
+    out.push_str(&sanitize(s.as_ref()));
+    out.push('\n');
+}
 
 
 pub fn column_header(col: &str, n: usize, wip: i64) -> String {
@@ -89,36 +95,40 @@ pub fn card_head(card: &Card) -> String {
 pub fn board(snap: &Snapshot) -> String {
     let mut out = String::new();
     let doing = snap.on_board("doing").len();
-    let _ = writeln!(
-        out,
-        "TERMINAL BOARD · {} · {} cards · doing {}/{} · {}",
-        if snap.board.is_empty() { "default" } else { &snap.board },
-        snap.cards.len(),
-        doing,
-        snap.wip,
-        fmt_clock(snap.now)
+    line(
+        &mut out,
+        format!(
+            "TERMINAL BOARD · {} · {} cards · doing {}/{} · {}",
+            if snap.board.is_empty() { "default" } else { &snap.board },
+            snap.cards.len(),
+            doing,
+            snap.wip,
+            fmt_clock(snap.now)
+        ),
     );
     for col in COLUMNS {
         let cards = snap.on_board(col);
-        let _ = writeln!(out, "\n{}", column_header(col, cards.len(), snap.wip));
+        out.push('\n');
+        line(&mut out, column_header(col, cards.len(), snap.wip));
         if cards.is_empty() {
-            let _ = writeln!(out, "  -");
+            line(&mut out, "  -");
         }
         for c in cards {
-            let _ = writeln!(out, "  {}", card_head(c));
+            line(&mut out, format!("  {}", card_head(c)));
             let m = meta(c, snap);
             if !m.is_empty() {
-                let _ = writeln!(out, "      {m}");
+                line(&mut out, format!("      {m}"));
             }
             if c.column == "doing" {
                 if let Some(n) = snap.last_note.get(&c.id) {
-                    let _ = writeln!(out, "      \"{n}\"");
+                    line(&mut out, format!("      \"{n}\""));
                 }
             }
         }
     }
     if snap.cards.is_empty() {
-        let _ = writeln!(out, "\nempty board — add a card with 'tb add \"tag: title\"'");
+        out.push('\n');
+        line(&mut out, "empty board — add a card with 'tb add \"tag: title\"'");
     }
     out
 }
@@ -128,7 +138,7 @@ pub fn list(snap: &Snapshot) -> String {
     let mut out = String::new();
     for col in COLUMNS {
         for c in snap.in_column(col) {
-            let _ = writeln!(out, "{:<7} {}  [{}]", col, card_head(c), meta(c, snap));
+            line(&mut out, format!("{:<7} {}  [{}]", col, card_head(c), meta(c, snap)));
         }
     }
     if out.is_empty() {
@@ -140,7 +150,7 @@ pub fn list(snap: &Snapshot) -> String {
 pub fn detail(d: &CardDetail, now: i64) -> String {
     let c = &d.card;
     let mut out = String::new();
-    let _ = writeln!(out, "{}", card_head(c));
+    line(&mut out, card_head(c));
     let mut meta = vec![c.column.clone()];
     if let Some(t) = &c.tag {
         meta.push(t.clone());
@@ -153,20 +163,22 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
     if let Some(b) = &c.blocked {
         meta.push(format!("x blocked by {b}"));
     }
-    let _ = writeln!(out, "{}", meta.join(" - "));
+    line(&mut out, meta.join(" - "));
     if !c.description.is_empty() {
-        let _ = writeln!(out, "\n{}", c.description);
+        out.push('\n');
+        out.push_str(&sanitize_lines(&c.description));
+        out.push('\n');
     }
     if !d.checklist.is_empty() {
-        let _ = writeln!(out);
+        out.push('\n');
         for i in &d.checklist {
-            let _ = writeln!(out, "[{}] {} {}", if i.done { "x" } else { " " }, i.idx, i.text);
+            line(&mut out, format!("[{}] {} {}", if i.done { "x" } else { " " }, i.idx, i.text));
         }
     }
     if !d.events.is_empty() {
-        let _ = writeln!(out);
+        out.push('\n');
         for e in &d.events {
-            let _ = writeln!(out, "{}", event_line(e));
+            line(&mut out, event_line(e));
         }
     }
     out

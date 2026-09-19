@@ -142,6 +142,21 @@ impl Cmd {
     }
 }
 
+/// Human output goes through the sanitizer: stored, typed and remote text is data, never
+/// terminal control. `say!` is one line; the `_lines` forms keep line breaks. JSON is untouched.
+macro_rules! say {
+    ($($a:tt)*) => { println!("{}", terminal_board::text::sanitize(&format!($($a)*))) };
+}
+macro_rules! say_lines {
+    ($($a:tt)*) => { println!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+macro_rules! print_lines {
+    ($($a:tt)*) => { print!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+macro_rules! warn {
+    ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+
 fn pretty<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
 }
@@ -151,7 +166,7 @@ fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(),
     if jsonout {
         println!("{}", pretty(&json!({"ok": true, "card": contract::card_by_id(store, id)?})));
     } else {
-        println!("{human}");
+        say_lines!("{human}");
     }
     Ok(())
 }
@@ -209,7 +224,7 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let existed = path.exists();
     let store = Store::open(&path)?.named(name);
     if !existed {
-        eprintln!("created board '{name}'");
+        warn!("created board '{name}'");
     }
     Ok(store)
 }
@@ -236,16 +251,16 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
             .collect();
         println!("{}", pretty(&v));
     } else if rows.is_empty() {
-        println!("no boards yet — 'tb add \"title\"' creates '{def}', 'tb home add \"title\"' creates 'home'");
+        say!("no boards yet — 'tb add \"title\"' creates '{def}', 'tb home add \"title\"' creates 'home'");
     } else {
         for (n, d, c) in &rows {
-            println!(
+            say!(
                 "{} {n:<16} todo {:<3} doing {:<3} review {:<3} done {}",
                 if *d { "*" } else { " " },
                 c[0], c[1], c[2], c[3]
             );
         }
-        println!("* = default (plain 'tb'); open another with 'tb NAME'");
+        say!("* = default (plain 'tb'); open another with 'tb NAME'");
     }
     Ok(())
 }
@@ -257,10 +272,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
             Ok(notes) => {
                 for n in notes {
-                    eprintln!("tb: {n}");
+                    warn!("tb: {n}");
                 }
             }
-            Err(e) => eprintln!("tb: could not migrate the legacy board: {e}"),
+            Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
     if matches!(cli.cmd, Some(Cmd::Boards)) {
@@ -290,7 +305,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         if j {
             println!("{}", pretty(&contract::board(&store)?));
         } else {
-            print!("{}", plain::board(&store.snapshot()?));
+            print_lines!("{}", plain::board(&store.snapshot()?));
         }
         return Ok(());
     };
@@ -305,7 +320,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&snap.cards));
             } else {
-                print!("{}", plain::list(&snap));
+                print_lines!("{}", plain::list(&snap));
             }
         }
         Cmd::Show { id } => {
@@ -313,14 +328,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&d));
             } else {
-                print!("{}", plain::detail(&d, now));
+                print_lines!("{}", plain::detail(&d, now));
             }
         }
         Cmd::Board => {
             if j {
                 println!("{}", pretty(&contract::board(&store)?));
             } else {
-                print!("{}", plain::board(&store.snapshot()?));
+                print_lines!("{}", plain::board(&store.snapshot()?));
             }
         }
         Cmd::Watch => watch(&store, j)?,
@@ -329,11 +344,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&list));
             } else if list.is_empty() {
-                println!("no agents (herdr not available or no agent panes)");
+                say!("no agents (herdr not available or no agent panes)");
             } else {
                 for a in list {
                     let card = a.card_id.map(|c| format!("#{c}")).unwrap_or_else(|| "-".into());
-                    println!("{:<16} {:<8} {:<8} {:<8} {card}  {}", a.name, a.harness, a.status, a.pane_id, a.job.unwrap_or_default());
+                    say!("{:<16} {:<8} {:<8} {:<8} {card}  {}", a.name, a.harness, a.status, a.pane_id, a.job.unwrap_or_default());
                 }
             }
         }
@@ -422,7 +437,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&json!({"ok": true, "card": before})));
             } else {
-                println!("deleted #{id} \"{}\"", c.title);
+                say!("deleted #{id} \"{}\"", c.title);
             }
         }
         Cmd::Prio { id, how } => {
@@ -450,10 +465,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&json!({"ok": true, "moves": moves})));
             } else if moves.is_empty() {
-                println!("synced {repo}: nothing to move");
+                say!("synced {repo}: nothing to move");
             } else {
                 for m in &moves {
-                    println!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
+                    say!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
                 }
             }
         }
@@ -465,7 +480,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 println!("{}", pretty(&json!({"ok": true, "config": m})));
             } else {
                 for (k, v) in all {
-                    println!("{k:<13} {v}");
+                    say!("{k:<13} {v}");
                 }
             }
         }
@@ -479,8 +494,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     let r = store.github_repo()?;
                     if !j {
                         match &r {
-                            Some(r) => println!("{r}"),
-                            None => println!(
+                            Some(r) => say!("{r}"),
+                            None => say!(
                                 "github is off for board '{}' — 'tb config github owner/repo', or press R on the board",
                                 store.name
                             ),
@@ -522,10 +537,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 println!("{}", pretty(&json!({"ok": true, "config": {"key": k, "value": v}})));
             } else {
                 match (k.as_str(), &v) {
-                    ("github", serde_json::Value::Null) => println!("github panel off for board '{}'", store.name),
-                    ("github", r) => println!("github panel on: {} — see it with 'tb github' or 'G' on the board", r.as_str().unwrap_or("")),
-                    ("wip", n) => println!("wip limit is now {n}"),
-                    (k, v) => println!("{k} is now {}", v.as_str().unwrap_or("")),
+                    ("github", serde_json::Value::Null) => say!("github panel off for board '{}'", store.name),
+                    ("github", r) => say!("github panel on: {} — see it with 'tb github' or 'G' on the board", r.as_str().unwrap_or("")),
+                    ("wip", n) => say!("wip limit is now {n}"),
+                    (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }
         }
@@ -537,9 +552,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let cur = store.github_repo()?;
                 for r in &repos {
                     let mark = if cur.as_deref() == Some(r.name_with_owner.as_str()) { "*" } else { " " };
-                    println!("{mark} {}", github::repo_row(r, now));
+                    say!("{mark} {}", github::repo_row(r, now));
                 }
-                println!("pick one with 'tb config github owner/repo' or R on the board");
+                say!("pick one with 'tb config github owner/repo' or R on the board");
             }
         }
         Cmd::Github { what: Some(w), .. } => {
@@ -579,7 +594,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 println!("{}", pretty(&v));
             } else if let Some(s) = &view.snap {
-                print!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
+                print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
             }
         }
         Cmd::Boards | Cmd::Setup { .. } => unreachable!("handled above"),
@@ -610,7 +625,7 @@ fn main() -> ExitCode {
             if jsonout {
                 println!("{}", pretty(&contract::error(&e.to_string())));
             } else {
-                eprintln!("tb: {e}");
+                warn!("tb: {e}");
             }
             ExitCode::FAILURE
         }
