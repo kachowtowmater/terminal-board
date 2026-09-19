@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Focus view: shift+arrows move, and the help names the axis
+- In the focus view (small panes) shift+left/right were swallowed by navigation and did
+  nothing — a person thought the card moved when it had not. Now shift+left/right moves the
+  card and shift+up/down reorders it, same as every other view (`>`/`<` still work).
+- The footer in the focus view states its arrow axis (`arrows card/col · shift+<> move`) and
+  the full help gains a `focus view arrows` row, so what the keys do agrees in every view.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
