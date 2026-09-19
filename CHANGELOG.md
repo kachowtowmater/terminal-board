@@ -25,6 +25,13 @@
   and the GITHUB panel. Now: spare height first grows the GitHub rows (then AGENTS) up to
   their natural size, and anything still left stretches the last card section instead of
   sitting as a blank band. At 52×56 the render is unchanged.
+### JSON: argument errors follow the JSON contract
+- With `--json` anywhere in argv, argument-parse failures (bad value, missing argument,
+  unknown flag) answer `{"ok":false,"error":…,"hint":…}` on **stdout** with exit 2, instead
+  of plain text on stderr and an empty stdout. `error` names what is wrong (including the
+  missing argument, e.g. `<TEXT>`) and `hint` carries the usage line (`usage: tb note <ID>
+  <TEXT> — …`). Without `--json` nothing changes (the parser's message, exit 2);
+  `--help`/`--version` are unchanged; runtime failures keep exit 1.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
