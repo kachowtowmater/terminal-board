@@ -102,7 +102,10 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "github: PR #20 merged → done" } ] }`.
 
-Failure (non-zero exit), for any command run with `--json`:
+Failure (non-zero exit), for any command run with `--json` — including **argument errors**
+(bad value, missing argument, unknown flag): the parser's plain text never replaces the JSON
+object; parse failures answer on stdout with the same shape and exit **2** (usage) instead
+of 1 (runtime):
 
 ```json
 { "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids" }

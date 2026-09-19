@@ -603,7 +603,35 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
-    let parsed = split_board(args).and_then(|(board, args)| run(Cli::parse_from(args), board));
+    let parsed = match split_board(args.clone()) {
+        Ok((board, rest)) => match Cli::try_parse_from(rest) {
+            Ok(cli) => run(cli, board),
+            // --help/--version print their text and succeed, with or without --json
+            Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
+                let _ = e.print();
+                return ExitCode::SUCCESS;
+            }
+            // a parse failure is still a documented `--json` failure: the error object on
+            // stdout (non-zero exit), not plain text on stderr with empty stdout
+            Err(e) if jsonout => {
+                let msg = e.to_string();
+                let hint = match e.kind() {
+                    clap::error::ErrorKind::InvalidSubcommand => e
+                        .get(clap::error::ContextKind::InvalidSubcommand)
+                        .map(|c| format!("unknown command — see 'tb --help' for every command (got '{c}')"))
+                        .unwrap_or_else(|| "see 'tb --help'".into()),
+                    _ => "see 'tb --help' for every command or 'tb guide' for the manual".into(),
+                };
+                let v = contract::error(&format!("argument error: {} — {hint}", first_line(&msg)));
+                println!("{}", pretty(&v));
+                return ExitCode::from(2); // usage error (documented; non-zero either way)
+            }
+            Err(e) => Err(BoardError(format!(
+                "{msg} — run 'tb --help' for every command or 'tb guide' for the manual", msg = first_line(&e.to_string())
+            ))),
+        },
+        Err(e) => Err(e),
+    };
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -615,4 +643,9 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The parser's message can be multi-line (usage block); the JSON `error` takes the first.
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).trim().to_string()
 }

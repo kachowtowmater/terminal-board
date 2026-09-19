@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### JSON: argument errors follow the JSON contract
+- With `--json` anywhere in argv, argument-parse failures (bad value, missing argument,
+  unknown flag) answer `{"ok":false,"error":…,"hint":…}` on **stdout** with exit 2, instead
+  of plain text on stderr and an empty stdout. `--help`/`--version` are unchanged; runtime
+  failures keep exit 1.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
