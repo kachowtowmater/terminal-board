@@ -369,7 +369,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Next { review: true } => {
             let card = store.next_review(&actor)?;
             let human = format!(
-                "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} todo' with a note of what is missing",
+                "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
                 plain::detail(&store.show(card.id)?, now).trim_end(),
                 id = card.id
             );

@@ -46,6 +46,14 @@ fn cli_two_reviewers_author_refused_and_claims_cleared() {
     let (ok, v) = cli_json(&db, "rev-2", &["next", "--review", "--json"]);
     assert!(ok, "rev-2 claims the other card: {v}");
     assert_eq!((v["card"]["id"].as_i64(), v["card"]["reviewer"].as_str()), (Some(two), Some("rev-2")));
+    // the plain claim text tells the reviewer how to send the card back (since the send-back
+    // rule: `move N doing "why"`, never `move N todo`)
+    let three = cli_in_review(&db, "third");
+    let o = tb(&db, "rev-4", &["next", "--review"]);
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(text.contains(&format!("tb move {three} doing \"what is missing\"")), "{text}");
+    assert!(!text.contains(&format!("tb move {three} todo")), "{text}");
     let (ok, v) = cli_json(&db, "rev-3", &["next", "--review", "--json"]);
     assert!(!ok && v["error"] == "no review cards waiting", "{v}");
     // drop clears the claim, and so does the next take
