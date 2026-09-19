@@ -8,6 +8,7 @@
   card. Now: `doing is full (3/3: #3 bot-1, #1 bot-2, #2 bot-3)` plus what the actor can do —
   `finish #3 with 'tb done 3' first` when they hold one, `you hold none; wait, or ask one of
   them to finish` when they don't. Both `next` and `take`, text and `--json`.
+## 1.1.0 — 2026-09-18
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
