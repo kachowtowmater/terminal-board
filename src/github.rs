@@ -78,19 +78,31 @@ pub const RED_AFTER_FAILS: i64 = 3;
 
 /// Header suffix for the GITHUB panel title: quiet words, red only after RED_AFTER_FAILS.
 /// `(error, fails)` -> `(suffix, red)`; `(None, _)` -> `(empty, false)`.
+/// Error text (lower-case) that means the network is down or flaky, not that gh is broken.
+const OFFLINE: [&str; 14] = [
+    "timed out",
+    "timeout",
+    "tls handshake",
+    "connection refused",
+    "temporary failure",
+    "getaddrinfo",
+    "error connecting to",
+    "no such host",
+    "network is unreachable",
+    "no route to host",
+    "connection reset",
+    "broken pipe",
+    "i/o timeout",
+    "check your internet connection",
+];
+
 pub fn sync_suffix(error: Option<&str>, fails: i64) -> (String, bool) {
     match error {
         None => (String::new(), false),
         Some(e) => {
-            let word = if e.contains("timed out") || e.contains("timeout") || e.contains("TLS handshake")
-                || e.contains("connection refused") || e.contains("Temporary failure")
-                || e.contains("getaddrinfo") || e.contains("Network is unreachable")
-                || e.contains("Connection reset") || e.contains("Broken pipe")
-            {
-                "offline, retrying"
-            } else {
-                "gh error"
-            };
+            // gh relays Go network errors, which are lower-case; compare lower-case anyway
+            let e = e.to_ascii_lowercase();
+            let word = if OFFLINE.iter().any(|w| e.contains(w)) { "offline, retrying" } else { "gh error" };
             (format!(" · {word}"), fails >= RED_AFTER_FAILS)
         }
     }
@@ -824,6 +836,24 @@ mod tests {
         assert_eq!(sync_suffix(Some(net), 2), (" · offline, retrying".into(), false), "not red yet");
         assert_eq!(sync_suffix(Some(other), RED_AFTER_FAILS), (" · gh error".into(), true), "red at 3");
         assert_eq!(sync_suffix(Some(net), 10), (" · offline, retrying".into(), true), "still red past the threshold");
+        // gh's own offline message and Go's lower-case network errors, as gh prints them
+        for e in [
+            "error connecting to api.github.com",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host",
+            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: connect: network is unreachable",
+            "Post \"https://api.github.com/graphql\": read tcp 10.0.0.2:51234->140.82.112.6:443: read: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": write tcp 10.0.0.2:51234->140.82.112.6:443: write: broken pipe",
+            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: connect: no route to host",
+            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: i/o timeout",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.53:53: Temporary failure in name resolution",
+            "Get \"https://api.github.com/zen\": dial tcp 140.82.112.6:443: connect: Connection Refused",
+            "NETWORK IS UNREACHABLE",
+        ] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · offline, retrying".into(), false), "{e}");
+        }
+        for e in ["HTTP 404: Not Found (https://api.github.com/repos/acme/nope)", "GraphQL: Could not resolve to a Repository"] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · gh error".into(), false), "{e}");
+        }
     }
 
     #[test]
