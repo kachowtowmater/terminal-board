@@ -86,7 +86,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force` |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`); the set is open — see the forward-compatibility rule above |
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -110,7 +110,7 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 ```
 
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
-`sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "github: PR #20 merged → done" } ] }`.
+`sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
 Failure (non-zero exit), for any command run with `--json` — including **argument errors**
 (bad value, missing argument, unknown flag): the parser's plain text never replaces the JSON

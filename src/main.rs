@@ -92,6 +92,10 @@ enum Cmd {
         id: i64,
         #[arg(long)]
         force: bool,
+        /// Record your approval without moving the card (REVIEW stays in REVIEW; the gh#
+        /// card still waits for its merge to reach done).
+        #[arg(long, conflicts_with = "force")]
+        approve: bool,
     },
     Block {
         id: i64,
@@ -192,7 +196,7 @@ fn guard_done(store: &Store, id: i64, force: bool, cmd: &str) -> Result<(), Boar
     let (Some(n), Some(snap)) = (c.gh_ref, store.github_view()?.snap) else { return Ok(()) };
     if github::still_open(&snap, n) {
         return Err(BoardError(format!(
-            "issue #{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
+            "issue gh#{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
         )));
     }
     Ok(())
@@ -442,7 +446,25 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Done { id, force } => {
+        Cmd::Done { id, force, approve } => {
+            if approve {
+                if store.card(id)?.column != "review" {
+                    return Err(BoardError(format!(
+                        "#{id} is not in review — approval records a review pass; move it to review first"
+                    )));
+                }
+                // the self-approval rule (#11) applies to --approve too: the card's author
+                // cannot record their own approval
+                if store.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(&actor)) {
+                    return Err(BoardError(format!(
+                        "you did this work — ask another person or agent to approve #{id}"
+                    )));
+                }
+                store.note_kind(id, &actor, "approved (the card stays in review; done waits for the merge)", "approved")?;
+                let human = format!("#{id} approved by {actor} — it stays in review until the gh# PR merges");
+                done_card(&store, j, id, human)?;
+                return Ok(());
+            }
             if store.card(id)?.column != "doing" {
                 guard_done(&store, id, force, &format!("done {id}"))?;
             }
@@ -659,6 +681,19 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
     match first {
         Some(a) if !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()) => {
             boards::validate(&a)?;
+            // a bare first word is a board name (`tb work`); a first word followed by a
+            // non-command word is a typo'd command — say so instead of silently opening a
+            // board that will not exist (`tb frobnicate x`)
+            if args.len() > 2
+                && args
+                    .get(2)
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| !x.starts_with('-') && !boards::COMMANDS.contains(&x))
+            {
+                return Err(BoardError(format!(
+                    "unknown command '{a}' — run 'tb --help' for every command or 'tb guide' for the manual"
+                )));
+            }
             args.remove(1);
             Ok((Some(a), args))
         }
@@ -694,8 +729,19 @@ fn main() -> ExitCode {
                 println!("{}", pretty(&v));
                 return ExitCode::from(2); // usage error, as without --json
             }
-            // without --json: the parser's own message and exit code, unchanged
-            Err(e) => e.exit(),
+            // without --json: the parser's own message and exit code, then one line saying
+            // what to run next (an unknown command is named)
+            Err(e) => {
+                let _ = e.print();
+                let more = "run 'tb --help' for every command or 'tb guide' for the manual";
+                match e.get(clap::error::ContextKind::InvalidSubcommand) {
+                    Some(c) if e.kind() == clap::error::ErrorKind::InvalidSubcommand => {
+                        eprintln!("tb: unknown command '{c}' — {more}")
+                    }
+                    _ => eprintln!("tb: {more}"),
+                }
+                return ExitCode::from(e.exit_code().clamp(1, 255) as u8);
+            }
         },
         Err(e) => Err(e),
     };

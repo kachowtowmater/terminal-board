@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Polish (from running several agents on one board)
+- GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
+  text/JSON fields already carried the number; the panel never shows a bare `#N` for a
+  GitHub number next to card ids).
+- Mistyped commands fail with the usual tb error shape plus a next step
+  (`tb --help` / `tb guide`); `--help` still prints and succeeds.
+- A block set while in REVIEW is cleared when the card reaches DONE (logged
+  `unblocked: cleared on done`), and `tb show` hides the marker on done cards.
+- GitHub auto-move event texts drop the repeated `github:` prefix (the actor and kind
+  already say it): `PR gh#9 merged → done`.
+- `tb done ID --approve` records a reviewer's approval as an `approved` event without
+  moving the card — REVIEW stays REVIEW and DONE still waits for the merge.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that
