@@ -614,21 +614,22 @@ fn main() -> ExitCode {
             // a parse failure is still a documented `--json` failure: the error object on
             // stdout (non-zero exit), not plain text on stderr with empty stdout
             Err(e) if jsonout => {
-                let msg = e.to_string();
-                let hint = match e.kind() {
-                    clap::error::ErrorKind::InvalidSubcommand => e
+                let (what, usage) = parse_error_parts(&e.to_string());
+                let more = "see 'tb --help' for every command or 'tb guide' for the manual";
+                let hint = match (e.kind(), usage) {
+                    (clap::error::ErrorKind::InvalidSubcommand, _) => e
                         .get(clap::error::ContextKind::InvalidSubcommand)
-                        .map(|c| format!("unknown command — see 'tb --help' for every command (got '{c}')"))
-                        .unwrap_or_else(|| "see 'tb --help'".into()),
-                    _ => "see 'tb --help' for every command or 'tb guide' for the manual".into(),
+                        .map(|c| format!("unknown command '{c}' — {more}"))
+                        .unwrap_or_else(|| more.into()),
+                    (_, Some(u)) => format!("usage: {u} — {more}"),
+                    (_, None) => more.into(),
                 };
-                let v = contract::error(&format!("argument error: {} — {hint}", first_line(&msg)));
+                let v = contract::error(&format!("argument error: {what} — {hint}"));
                 println!("{}", pretty(&v));
-                return ExitCode::from(2); // usage error (documented; non-zero either way)
+                return ExitCode::from(2); // usage error, as without --json
             }
-            Err(e) => Err(BoardError(format!(
-                "{msg} — run 'tb --help' for every command or 'tb guide' for the manual", msg = first_line(&e.to_string())
-            ))),
+            // without --json: the parser's own message and exit code, unchanged
+            Err(e) => e.exit(),
         },
         Err(e) => Err(e),
     };
@@ -645,7 +646,19 @@ fn main() -> ExitCode {
     }
 }
 
-/// The parser's message can be multi-line (usage block); the JSON `error` takes the first.
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).trim().to_string()
+/// The parser's message as (what went wrong, usage line): the first line without its
+/// `error: ` prefix plus any indented detail lines under it (e.g. the missing `<TEXT>`), and
+/// the `Usage:` line when there is one.
+fn parse_error_parts(msg: &str) -> (String, Option<String>) {
+    let mut lines = msg.lines();
+    let first = lines.next().unwrap_or("").trim();
+    let first = first.strip_prefix("error:").unwrap_or(first).trim();
+    let detail: Vec<&str> = lines.by_ref().take_while(|l| !l.trim().is_empty()).map(str::trim).collect();
+    let what = if detail.is_empty() { first.to_string() } else { format!("{first} {}", detail.join(", ")) };
+    // the parser echoes the global flags it saw; the usage hint is about the command itself
+    let usage = msg
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Usage:"))
+        .map(|u| u.split_whitespace().filter(|w| *w != "--json").collect::<Vec<_>>().join(" "));
+    (what, usage)
 }

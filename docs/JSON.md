@@ -111,6 +111,10 @@ of 1 (runtime):
 { "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids" }
 ```
 
+An argument error names what is missing and gives the usage line, e.g. `tb note 1 --json` →
+`"error": "argument error: the following required arguments were not provided: <TEXT>"`,
+`"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"` (exit 2).
+
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
 
