@@ -301,9 +301,16 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         .get(&c.id)
                         .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
                         .unwrap_or_default();
-                    match app.snap.last_note.get(&c.id) {
-                        Some(n) => format!("#{} \"{}\"{age} {}", c.id, fit(n, 20), fit(&c.title, 12)),
-                        None => format!("#{} {}", c.id, c.title),
+                    // the note gets what the row has left after the name, status, id and a
+                    // short title; the age is shown even without a note
+                    let id = format!("#{} ", c.id);
+                    let title = format!(" {}", fit(&c.title, 12));
+                    let fixed = 3 + 11 + if holds { 15 } else { 9 } + id.chars().count() + title.chars().count();
+                    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
+                    if act.is_empty() {
+                        format!("{id}{}", c.title)
+                    } else {
+                        format!("{id}{act}{title}")
                     }
                 }
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
