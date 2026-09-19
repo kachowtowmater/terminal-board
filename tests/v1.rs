@@ -426,12 +426,28 @@ fn approve_refuses_the_author() {
     let db = dir.path().join("b.db");
     let mut s = Store::open(&db).unwrap();
     let id = s.add("plain: mine", "", &[], "lead").unwrap();
-    s.take(id, "bot-1").unwrap(); // bot-1 is the owner -> the author of the review move
-    s.done(id, "bot-1").unwrap(); // bot-1 moved it to review
-    // the author cannot approve their own work via --approve (CLI-level gate asserted here
-    // via the store author record the gate reads)
-    assert_eq!(s.author(id).unwrap().as_deref(), Some("bot-1"));
-    // a different actor records the approval without moving the card
-    let _ = s.note_kind(id, "rev", "approved (the card stays in review; done waits for the merge)", "approved");
+    s.take(id, "bot-1").unwrap();
+    s.done(id, "bot-1").unwrap(); // bot-1 moved it to review: the author
+    let gh = Path::new("/nonexistent/gh");
+    let ids = id.to_string();
+    let as_ = |who: &str| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(["done", &ids, "--approve"])
+            .env("TB_DB", &db)
+            .env("TB_GH", gh)
+            .env("TB_AS", who)
+            .env("TB_NO_HERDR", "1")
+            .output()
+            .unwrap()
+    };
+    // the author is refused through the CLI, and nothing is recorded
+    let o = as_("BOT-1");
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("you did this work"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!s.show(id).unwrap().events.iter().any(|e| e.kind == "approved"));
+    // another agent's approval is recorded; the card stays in review
+    let o = as_("rev");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(s.show(id).unwrap().events.iter().any(|e| e.kind == "approved" && e.actor == "rev"));
     assert_eq!(s.card(id).unwrap().column, "review");
 }
