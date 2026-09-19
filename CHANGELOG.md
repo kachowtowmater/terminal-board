@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### First-run empty states
+- A fresh board's empty TODO column reads `press a to add your first card` instead of a bare
+  `-`; a connected repo with zero open issues and PRs reads `no open issues or PRs` instead of
+  two 0-open rows. Every view shows the hints; a board with cards keeps today's look.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that

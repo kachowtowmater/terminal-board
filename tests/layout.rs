@@ -827,3 +827,46 @@ fn thirdv_spare_rows_go_to_github_not_to_a_gap() {
     let screen56 = render(&app, 52, 56);
     assert!(screen56.contains("GITHUB") && screen56.contains("DONE"), "{screen56}");
 }
+
+#[test]
+fn first_run_empty_states_show_hints() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    // a fresh board, GitHub connected to a quiet repo
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 0,
+        ..Default::default()
+    }))
+    .unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    let frame = |c: char| "─│┌┐└┘┏┓┗┛━┃┃".contains(c);
+    // every shape: the TODO hint is readable whole (wrapped, never cut mid-word), and the
+    // quiet repo says so wherever the GitHub panel has room for its list
+    for (w, h, shape) in [(50u16, 14u16, "focus"), (110, 22, "third-h"), (110, 45, "third-v"), (140, 45, "half-h"), (90, 45, "half-v")] {
+        let screen = render(&app, w, h);
+        let text: String = screen.chars().map(|c| if frame(c) { ' ' } else { c }).collect();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if shape == "focus" {
+            // the focus view has its own one-line empty state
+            assert!(screen.contains("press a to add a card"), "{shape}:\n{screen}");
+        } else {
+            for word in terminal_board::tui::FIRST_CARD_HINT.split(' ') {
+                assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
+            }
+            let at = words.iter().position(|w| *w == "press").expect(shape);
+            assert_eq!(&words[at..at + 4], ["press", "a", "to", "add"], "{shape}: hint starts whole:\n{screen}");
+            assert!(screen.contains("no open issues or PRs") || screen.contains("no open PRs or issues"), "{shape}: quiet-repo hint:\n{screen}");
+            assert!(screen.contains("MAIN"), "{shape}: main CI stays visible:\n{screen}");
+        }
+    }
+    // third-h: the rail keeps its stats rows (a quiet repo can still have a failing main CI)
+    let screen = render(&app, 110, 22);
+    for row in ["ISSUES", "PRS", "MAIN CI", "no open PRs or issues"] {
+        assert!(screen.contains(row), "third-h rail keeps '{row}':\n{screen}");
+    }
+}

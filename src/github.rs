@@ -748,8 +748,13 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         Some(c) => (c.state.clone(), format!("{} · {}", c.workflow, age(&c.created_at))),
         None => ("-".into(), "no runs".into()),
     };
+    let issues2 = if s.issues_open == 0 && s.prs.is_empty() {
+        "no open issues or PRs".to_string()
+    } else {
+        format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)
+    };
     [
-        ("ISSUES".into(), format!("{} open", s.issues_open), format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)),
+        ("ISSUES".into(), format!("{} open", s.issues_open), issues2),
         ("PULL REQUESTS".into(), format!("{} open{drafts}", s.prs.len()), pr2),
         ("MERGED".into(), format!("{} today", s.merged_today.len()), merged2),
         ("MAIN CI".into(), ci, ci2),

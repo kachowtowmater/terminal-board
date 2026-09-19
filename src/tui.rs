@@ -1572,7 +1572,21 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     f.render_widget(block, area);
     let sel = if focused { Some(app.row[ci].min(n.saturating_sub(1))) } else { None };
     if cards.is_empty() {
-        f.render_widget(Paragraph::new(Line::styled(" -", dim())), inner);
+        // first-run hint: a bare '-' told a new user nothing. It wraps at words to fit the
+        // column; a column too small for that gets the short form, never a cut sentence.
+        let lines: Vec<Line> = if ci == 0 && app.snap.cards.is_empty() {
+            let w = (inner.width as usize).saturating_sub(1);
+            let wrapped = wrap_words(FIRST_CARD_HINT, w);
+            let fits = wrapped.len() <= inner.height as usize && wrapped.iter().all(|l| l.chars().count() <= w);
+            if fits {
+                wrapped.into_iter().map(|l| Line::styled(format!(" {l}"), dim())).collect()
+            } else {
+                vec![Line::styled(format!(" {}", fit(FIRST_CARD_SHORT, w)), dim())]
+            }
+        } else {
+            vec![Line::styled(" -", dim())]
+        };
+        f.render_widget(Paragraph::new(lines), inner);
     } else if inner.height < 3 || inner.width < 8 {
         app.drawn_styles.borrow_mut().push((ci, "compact"));
         draw_compact(f, app, &cards, sel, inner);
@@ -2086,6 +2100,11 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         layouts::draw_tidy_list(f, app, s, Rect { y, height: bottom - y, ..inner }, focused);
         return;
     };
+    if s.prs.is_empty() && s.issues.is_empty() {
+        // first-run hint: a quiet repo says so instead of an empty table area
+        f.render_widget(Paragraph::new(Line::styled(" no open issues or PRs", dim())), Rect { y, height: 1, ..inner });
+        return;
+    }
     let age = |ts: &str| github::age_of(ts, now).map(crate::store::coarse_age).unwrap_or_else(|| "?".into());
     // row budget: PRs get up to a third (min 1 if any), issues the rest (+1 for "+N more")
     let pr_rows = if s.prs.is_empty() { 0 } else { s.prs.len().min((avail.saturating_sub(2) / 3).max(1)) };
@@ -2378,6 +2397,10 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("apps", "board --json · watch --json · every write takes --json"),
     ]),
 ];
+
+/// The empty-TODO hint on a board with no cards, and its form for tiny columns.
+pub const FIRST_CARD_HINT: &str = "press a to add your first card";
+pub const FIRST_CARD_SHORT: &str = "a: add a card";
 
 /// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
 fn wrap_words(text: &str, width: usize) -> Vec<String> {
