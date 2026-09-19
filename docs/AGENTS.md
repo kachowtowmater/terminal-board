@@ -17,7 +17,7 @@ bare `tb` prints the board once and exits. `tb guide` prints this manual.
 | part | what it is | how you change it |
 |---|---|---|
 | `#ID` | the number every command takes | — |
-| title | `tag: short title`, e.g. `docs: install guide`; `gh#N` links a GitHub issue | `tb edit ID --title "…"` |
+| title | `tag: short title`, e.g. `docs: install guide`; a leading `gh#N` links a GitHub issue (a mid-title `gh#N` stays in the text and still links) | `tb edit ID --title "…"` |
 | description | the brief: what to do and what "done" means | `tb edit ID --desc "…"` |
 | checklist | numbered steps, each open or ticked | `tb check ID N` · `--add` · `--rm` |
 | notes | the progress log people read | `tb note ID "…"` |

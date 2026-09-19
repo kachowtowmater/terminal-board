@@ -608,7 +608,7 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     let inner = b.inner(body);
     f.render_widget(b, body);
     let mut lines: Vec<Line> = Vec::new();
-    let title = match card.gh_ref {
+    let title = match crate::store::shown_ref(card) {
         Some(n) => format!("{} (gh#{n})", card.title),
         None => card.title.clone(),
     };

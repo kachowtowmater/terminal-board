@@ -32,6 +32,10 @@
   missing argument, e.g. `<TEXT>`) and `hint` carries the usage line (`usage: tb note <ID>
   <TEXT> — …`). Without `--json` nothing changes (the parser's message, exit 2);
   `--help`/`--version` are unchanged; runtime failures keep exit 1.
+### A mid-title `gh#N` keeps its words
+- Only a **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored
+  title. A `gh#N` later in the sentence stays in the text verbatim — the board and JSON keep
+  the original wording — and still sets the link (the first such ref wins).
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no

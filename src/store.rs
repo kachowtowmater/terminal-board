@@ -222,16 +222,26 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
             rest = tail.trim();
         }
     }
+    // Only a LEADING gh#N (the first word of the rest) is moved out of the title — the
+    // conventional link token. A gh#N later in the sentence stays in the text; it still
+    // sets the link when no leading one exists (documented in JSON.md).
     let mut gh = None;
-    let mut words = Vec::new();
-    for w in rest.split_whitespace() {
-        if gh.is_none() {
-            if let Some(n) = w.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            gh = Some(n);
+            words.remove(0);
+        }
+    }
+    if gh.is_none() {
+        for w in &words {
+            let lower = w.to_ascii_lowercase();
+            if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
-                continue;
+                break; // the link is set, the words stay
             }
         }
-        words.push(w);
     }
     let title = if words.is_empty() { rest.to_string() } else { words.join(" ") };
     (tag, gh, title)
@@ -1158,13 +1168,21 @@ fn bottom_of(conn: &Connection, column: &str) -> Result<i64> {
     Ok(conn.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"=?"#, [column], |r| r.get(0))?)
 }
 
+/// The card's `gh#N` when it is not already in the title text (a mid-title ref stays there),
+/// i.e. the ref a display should put in front of the title.
+pub fn shown_ref(c: &Card) -> Option<i64> {
+    let n = c.gh_ref?;
+    let token = format!("gh#{n}");
+    (!c.title.split_whitespace().any(|w| w.eq_ignore_ascii_case(&token))).then_some(n)
+}
+
 /// The raw title as typed: `tag: gh#N title` (what `edit` pre-fills).
 pub fn raw_title(c: &Card) -> String {
     let mut s = String::new();
     if let Some(t) = &c.tag {
         s.push_str(&format!("{t}: "));
     }
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = shown_ref(c) {
         s.push_str(&format!("gh#{n} "));
     }
     s.push_str(&c.title);
