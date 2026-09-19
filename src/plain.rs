@@ -69,9 +69,11 @@ pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) 
     (base, warn)
 }
 
-/// `tag - owner - age - x/y  ! warnings`, unfitted (CLI output).
+/// `tag - owner - age - x/y  ! warnings  quiet 1h20m`, unfitted (CLI output).
 pub fn meta(card: &Card, snap: &Snapshot) -> String {
     let (base, warn) = meta_fit(card, snap, usize::MAX);
+    let q = quiet(card, snap);
+    let (base, warn) = (base, if warn.is_empty() && q.is_empty() { String::new() } else if q.is_empty() { warn } else if warn.is_empty() { q } else { format!("{warn} {q}") });
     match (base.is_empty(), warn.is_empty()) {
         (_, true) => base,
         (true, false) => warn,
@@ -79,7 +81,24 @@ pub fn meta(card: &Card, snap: &Snapshot) -> String {
     }
 }
 
-/// The problem markers on a card (all shown in red): only `x blocked by ...`.
+/// A DOING card with no event for this long is quietly stale: the meta line says so in the
+/// existing warning style. Fixed (documented); no setting.
+pub const QUIET_SECS: i64 = 60 * 60;
+
+/// `quiet 1h20m` for a DOING card whose last event is at least QUIET_SECS ago; empty otherwise.
+/// Rendered as plain dim text (not red): red is reserved for real problems; the word is the signal.
+pub fn quiet(card: &Card, snap: &Snapshot) -> String {
+    if card.column != "doing" {
+        return String::new();
+    }
+    match snap.last_event_at.get(&card.id) {
+        Some(ts) if snap.now - ts >= QUIET_SECS => format!("quiet {}", fmt_age(snap.now - ts)),
+        _ => String::new(),
+    }
+}
+
+/// The problem markers on a card (all shown in red): only `x blocked by ...`. Quiet work is
+/// NOT a problem — it renders as plain dim text (`quiet()`), so red stays reserved.
 pub fn warnings(card: &Card) -> Vec<String> {
     match (&card.blocked, card.column.as_str()) {
         (Some(b), c) if c != "done" => vec![format!("x blocked by {b}")],

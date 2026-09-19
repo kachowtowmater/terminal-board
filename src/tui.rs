@@ -1487,7 +1487,8 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let sep = if base.is_empty() || warn.is_empty() { "" } else { " " };
+    let q = crate::plain::quiet(card, &app.snap);
+    let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
         second.push(Span::raw(meta_gh));
@@ -1495,7 +1496,11 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
     if !warn.is_empty() {
-        second.push(Span::styled(warn, red()));
+        second.push(Span::styled(warn.clone(), red()));
+    }
+    if !q.is_empty() {
+        second.push(Span::raw(if warn.is_empty() { "" } else { " " }));
+        second.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(second));
     if card.column == "doing" {
@@ -1772,7 +1777,8 @@ fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
-                        spans.push(Span::styled("! idle, holds card", st));
+                        let age = idle_hold_age(app, a);
+                        spans.push(Span::styled(format!("! idle, holds card{age}"), st));
                     } else {
                         let age = app
                             .snap
@@ -2239,6 +2245,19 @@ fn holds_card(app: &App, a: &Agent) -> bool {
         && app.snap.cards.iter().any(|c| {
             c.column == "doing" && herdr::find_owner(agent_list(app), c).is_some_and(|o| o.pane_id == a.pane_id)
         })
+}
+
+/// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
+pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
+    let agents = agent_list(app);
+    let held = app
+        .snap
+        .cards
+        .iter()
+        .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
+    held.and_then(|c| app.snap.last_event_at.get(&c.id))
+        .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
+        .unwrap_or_default()
 }
 
 

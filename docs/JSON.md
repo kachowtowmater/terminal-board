@@ -84,6 +84,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
+| `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
 | `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force` |

@@ -96,6 +96,13 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Board
+- Quiet work shows up: a DOING card with no event for **60 minutes** (fixed, documented; no
+  setting) shows `quiet 1h20m` inside its existing box, as plain dim text — the word is the
+  signal, red stays reserved for real problems. The idle-agent flag gains its duration
+  (`! bot-2 idle w/ card (1h20m)`): how long its card has been quiet, i.e. since the card's
+  last event — a proxy for how long the agent has been idle. JSON exposes only timestamps (`card.last_event_at`,
+  unix seconds), never durations.
 ### Agents
 - The AGENTS row says what the agent is doing, in its own words: the held card's last note
   and its age inside the existing row (e.g. `bot-2 #7 "tests pass, opening PR" 3m`). An

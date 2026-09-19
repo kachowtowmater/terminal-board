@@ -48,7 +48,11 @@ pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
             let working = list.iter().filter(|a| a.status == "working").count();
             let idle = list.iter().filter(|a| a.is_idle()).count();
             spans.push(Span::styled(format!("{working} working · {idle} idle"), base));
-            let holders: Vec<String> = list.iter().filter(|a| holds_card(app, a)).map(|a| a.name.clone()).collect();
+            let holders: Vec<String> = list
+                .iter()
+                .filter(|a| holds_card(app, a))
+                .map(|a| format!("{}{}", a.name, crate::tui::idle_hold_age(app, a)))
+                .collect();
             if !holders.is_empty() {
                 spans.push(Span::styled(" (", base));
                 spans.push(Span::styled(format!("! {} idle w/ card", holders.join(", ")), red().patch(base)));
@@ -300,7 +304,9 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     // short title; the age is shown even without a note
                     let id = format!("#{} ", c.id);
                     let title = format!(" {}", fit(&c.title, 12));
-                    let fixed = 3 + 11 + if holds { 15 } else { 9 } + id.chars().count() + title.chars().count();
+                    // holders end in ` · idle w/ card` plus how long they have been idle
+                    let tail = if holds { 15 + crate::tui::idle_hold_age(app, a).chars().count() } else { 9 };
+                    let fixed = 3 + 11 + tail + id.chars().count() + title.chars().count();
                     let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
                     if act.is_empty() {
                         format!("{id}{}", c.title)
@@ -311,7 +317,7 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
             let text = if holds {
-                format!(" {:<10} {} · idle w/ card", fit(&a.name, 10), what)
+                format!(" {:<10} {} · idle w/ card{}", fit(&a.name, 10), what, crate::tui::idle_hold_age(app, a))
             } else {
                 format!(" {:<10} {:<8} {}", fit(&a.name, 10), a.status, what)
             };
@@ -631,6 +637,11 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     if !warn.is_empty() {
         meta.push(Span::raw(" "));
         meta.push(Span::styled(warn, red()));
+    }
+    let q = crate::plain::quiet(card, &app.snap);
+    if !q.is_empty() {
+        meta.push(Span::raw(" "));
+        meta.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(meta));
     let detail = app.popup.as_ref().filter(|d| d.card.id == card.id).cloned();
