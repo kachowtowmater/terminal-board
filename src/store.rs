@@ -292,7 +292,8 @@ CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
     json TEXT,
-    error TEXT
+    error TEXT,
+    fails INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS board_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,6 +396,19 @@ impl Store {
                 }
                 Err(e) if e.to_string().contains("duplicate column") => {}
                 Err(e) => return Err(e.into()),
+            }
+        }
+        // migration: github fail counter (red only after 3 consecutive failed refreshes)
+        let has_fails: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_fails == 0 {
+            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.into()),
+                _ => {}
             }
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
@@ -526,21 +540,21 @@ impl Store {
     }
 
     /// Store a fetch result: a snapshot replaces the cache and clears the error; an error is
-    /// recorded next to the last good snapshot.
+    /// recorded next to the last good snapshot, and counted (red only after 3 in a row).
     pub fn save_github(&self, r: &std::result::Result<crate::github::GhSnapshot, String>) -> Result<()> {
         match r {
             Ok(s) => {
                 let json = serde_json::to_string(s).unwrap_or_default();
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, fetched_at, json, error) VALUES (1, ?, ?, NULL)
-                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, ?, ?, NULL, 0)
+                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL, fails=0",
                     params![s.fetched_at, json],
                 )?;
             }
             Err(e) => {
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, error) VALUES (1, ?)
-                     ON CONFLICT(key) DO UPDATE SET error=excluded.error",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, 0, NULL, ?, 1)
+                     ON CONFLICT(key) DO UPDATE SET error=excluded.error, fails=fails+1",
                     params![e],
                 )?;
             }
@@ -548,23 +562,25 @@ impl Store {
         Ok(())
     }
 
-    /// Raw cached snapshot JSON and its error, if any.
-    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>)> {
+    /// Raw cached snapshot JSON, its error (if any) and consecutive fail count.
+    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>, i64)> {
         Ok(self
             .conn
-            .query_row("SELECT json, error FROM github_snapshot WHERE key=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT json, error, fails FROM github_snapshot WHERE key=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?
-            .unwrap_or((None, None)))
+            .unwrap_or((None, None, 0)))
     }
 
-    /// Repo + cached snapshot (only if it is for that repo) + last error.
+    /// Repo + cached snapshot (only if it is for that repo) + last error + fail count.
     pub fn github_view(&self) -> Result<crate::github::GhView> {
         let repo = self.github_repo()?;
-        let (json, error) = self.github_cache()?;
+        let (json, error, fails) = self.github_cache()?;
         let snap = json
             .and_then(|j| serde_json::from_str::<crate::github::GhSnapshot>(&j).ok())
             .filter(|s| Some(&s.repo) == repo.as_ref());
-        Ok(crate::github::GhView { repo, snap, error })
+        Ok(crate::github::GhView { repo, snap, error, fails })
     }
 
     /// `github-panel` / `agents-panel`: shown (default) or hidden.
@@ -1097,11 +1113,50 @@ impl Store {
     }
 
     /// Edit title (re-parsing `tag:` and `gh#N`; an absent gh#N keeps the old ref) and/or description.
-    pub fn edit(&mut self, id: i64, raw_title: Option<&str>, desc: Option<&str>, actor: &str) -> Result<Card> {
+    /// Edit a card. `raw_title`/`desc` of `None` leave that field alone (only the fields
+    /// the caller changed are written). `baseline` = what the caller saw when they started
+    /// (the TUI form): a field the caller changed that someone else changed since the form
+    /// opened is refused instead of overwritten — the form never puts old values back.
+    pub fn edit(
+        &mut self,
+        id: i64,
+        raw_title: Option<&str>,
+        desc: Option<&str>,
+        actor: &str,
+        baseline: Option<(&str, &str)>,
+    ) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let (mut skip_title, mut skip_desc) = (false, false);
+        if let Some((base_title, base_desc)) = baseline {
+            // Only fields the caller CHANGED are written. A field typed back at its
+            // open-time value is skipped (never written — no stale overwrite). A field
+            // they changed that someone else changed since the form opened is refused.
+            let conflict = |field: &str, base: &str, now: &str, typed: &str| -> Option<String> {
+                (now != base && typed != now).then(|| {
+                    format!("#{id} changed while you were editing — {field} has newer text; reopen with e")
+                })
+            };
+            if let Some(t) = raw_title {
+                // the baseline for titles is the raw `tag: gh#N title` string, not the
+                // parsed title the card stores
+                let now_raw = crate::store::raw_title(&c);
+                if t == base_title {
+                    skip_title = true;
+                } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
+                    return err(e);
+                }
+            }
+            if let Some(d) = desc {
+                if d == base_desc {
+                    skip_desc = true;
+                } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
+                    return err(e);
+                }
+            }
+        }
         let mut what = Vec::new();
-        if let Some(t) = raw_title {
+        if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
                 return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
             }
@@ -1112,7 +1167,7 @@ impl Store {
             )?;
             what.push("title");
         }
-        if let Some(d) = desc {
+        if let (Some(d), false) = (desc, skip_desc) {
             tx.execute("UPDATE cards SET description=? WHERE id=?", params![d.trim(), id])?;
             what.push("description");
         }
