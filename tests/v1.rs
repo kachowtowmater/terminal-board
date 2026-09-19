@@ -262,8 +262,8 @@ fn auto_move_matrix() {
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR #30 open → review"),
-            (branch, "review", "github: PR #31 open → review"),
+            (linked, "review", "github: PR gh#30 open → review"),
+            (branch, "review", "github: PR gh#31 open → review"),
             (merged, "done", "github: PR #20 merged → done"),
             (closed, "done", "github: issue #21 closed → done"),
         ]
@@ -403,4 +403,46 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn a_ref_outside_the_newest_page_still_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: gh#777 old issue with an open PR", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    // the snapshot page holds PRs 900..; the board's ref 777 is NOT in it
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 63,
+        prs: (900..920)
+            .map(|n| Pr {
+                number: n,
+                title: format!("pr {n}"),
+                head_ref: format!("fix/{n}"),
+                is_draft: false,
+                review: "-".into(),
+                ci: "ok".into(),
+                created_at: "2026-09-18T07:00:00Z".into(),
+                author: "x".into(),
+                closes: vec![],
+            })
+            .collect(),
+        issues: vec![],
+        ..Default::default()
+    };
+    let cards = s.list().unwrap();
+    // needs_state: 777 is not on the page, so a per-number lookup is planned
+    assert_eq!(terminal_board::github::needs_state(&snap, &cards), vec![777]);
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> =
+        [(777, terminal_board::github::RefState { closed: false, pr: true, merged: false })].into();
+    let moves = terminal_board::github::plan_moves(&snap, &cards, &states);
+    assert!(moves.iter().any(|m| m.card_id == id && m.to == "review"), "off-page open PR moves: {moves:?}");
+    // and a page-sized repo is labelled "newest" so 20 never reads as the total
+    let (head, _) = terminal_board::github::summary(&snap);
+    assert!(head.contains("PRs 20 open newest"), "{head}");
+    let small = GhSnapshot { prs: snap.prs[..3].to_vec(), ..snap.clone() };
+    let (head, _) = terminal_board::github::summary(&small);
+    assert!(head.contains("PRs 3 open ·") && !head.contains("newest"), "{head}");
 }

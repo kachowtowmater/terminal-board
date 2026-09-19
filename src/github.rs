@@ -458,10 +458,19 @@ pub fn plan_moves(
             }
         }
         if c.column == "todo" || c.column == "doing" {
-            let own_pr = s.prs.iter().find(|p| p.number == n);
-            let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
-            if let Some(p) = own_pr.or(linked) {
-                out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+            // An open PR outside the newest-20 page still counts: the per-number state
+            // lookup (needs_state/fetch_states) already fetched {pr, merged, closed} for
+            // the board's own refs.
+            let page_pr = s
+                .prs
+                .iter()
+                .find(|p| p.number == n)
+                .or_else(|| s.prs.iter().find(|p| p.closes.contains(&n)))
+                .or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
+            let state_pr = states.get(&n).is_some_and(|st| st.pr && !st.merged && !st.closed);
+            if page_pr.is_some() || state_pr {
+                let pnum = page_pr.map(|p| p.number).unwrap_or(n);
+                out.push(mv("review", format!("github: PR gh#{pnum} open → review")));
             }
         }
     }
@@ -488,13 +497,22 @@ pub fn age_of(ts: &str, now: i64) -> Option<i64> {
 }
 
 /// `issues 42 open · PRs 5 open (1 draft) · merged today 4 · main CI ok` as (text, main_ci_failed).
+/// The panel fetches one page of 20; when the page is full the repo has at least that many
+/// (or exactly) — label it "newest" so a bigger repo never reads as "all of them".
+pub const PAGE: usize = 20;
+
+fn page_word(len: usize) -> &'static str {
+    if len >= PAGE { " newest" } else { "" }
+}
+
 pub fn summary(s: &GhSnapshot) -> (String, String) {
     let drafts = s.prs.iter().filter(|p| p.is_draft).count();
     let draft = if drafts > 0 { format!(" ({drafts} draft)") } else { String::new() };
     let head = format!(
-        "issues {} open · PRs {} open{draft} · merged today {} · main CI ",
+        "issues {} open · PRs {} open{}{draft} · merged today {} · main CI ",
         s.issues_open,
         s.prs.len(),
+        page_word(s.prs.len()),
         s.merged_today.len()
     );
     (head, s.main_ci.as_ref().map(|c| c.state.clone()).unwrap_or_else(|| "-".into()))
@@ -655,7 +673,18 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
 /// Segments of the one-line summary; `true` = red (only `FAIL`).
 /// `ISSUES 11 (+2, 5 unclaimed) · PRS 1 (1 FAIL) · MERGED 6 · MAIN ok`
 pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
-    let mut v = vec![(format!("ISSUES {} (+{}, {} unclaimed) · PRS {}", s.issues_open, f.new_today, f.unclaimed, s.prs.len()), false)];
+    let mut v = vec![(
+        format!(
+            "ISSUES {} (+{}, {} unclaimed{}) · PRS {}{}",
+            s.issues_open,
+            f.new_today,
+            f.unclaimed,
+            page_word(s.issues.len()),
+            s.prs.len(),
+            page_word(s.prs.len())
+        ),
+        false,
+    )];
     if f.failing > 0 {
         v.push((format!(" ({} ", f.failing), false));
         v.push(("FAIL".into(), true));
@@ -689,7 +718,7 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
     };
     [
         ("ISSUES".into(), format!("{} open", s.issues_open), format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)),
-        ("PULL REQUESTS".into(), format!("{} open{drafts}", s.prs.len()), pr2),
+        ("PULL REQUESTS".into(), format!("{} open{}{drafts}", s.prs.len(), page_word(s.prs.len())), pr2),
         ("MERGED".into(), format!("{} today", s.merged_today.len()), merged2),
         ("MAIN CI".into(), ci, ci2),
     ]
