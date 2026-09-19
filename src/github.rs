@@ -26,6 +26,9 @@ pub struct Pr {
     /// Issues this PR closes (`closingIssuesReferences`).
     #[serde(default)]
     pub closes: Vec<i64>,
+    /// Last update (RFC 3339; empty in caches written before it was fetched).
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,12 +66,49 @@ pub struct GhSnapshot {
     pub main_ci: Option<MainCi>,
 }
 
-/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any).
+/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any), and
+/// how many refreshes failed in a row (the UI goes red only after 3).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GhView {
     pub repo: Option<String>,
     pub snap: Option<GhSnapshot>,
     pub error: Option<String>,
+    pub fails: i64,
+}
+
+/// Consecutive `gh` refresh failures after which the header turns red.
+pub const RED_AFTER_FAILS: i64 = 3;
+
+/// Header suffix for the GITHUB panel title: quiet words, red only after RED_AFTER_FAILS.
+/// `(error, fails)` -> `(suffix, red)`; `(None, _)` -> `(empty, false)`.
+/// Error text (lower-case) that means the network is down or flaky, not that gh is broken.
+const OFFLINE: [&str; 14] = [
+    "timed out",
+    "timeout",
+    "tls handshake",
+    "connection refused",
+    "temporary failure",
+    "getaddrinfo",
+    "error connecting to",
+    "no such host",
+    "network is unreachable",
+    "no route to host",
+    "connection reset",
+    "broken pipe",
+    "i/o timeout",
+    "check your internet connection",
+];
+
+pub fn sync_suffix(error: Option<&str>, fails: i64) -> (String, bool) {
+    match error {
+        None => (String::new(), false),
+        Some(e) => {
+            // gh relays Go network errors, which are lower-case; compare lower-case anyway
+            let e = e.to_ascii_lowercase();
+            let word = if OFFLINE.iter().any(|w| e.contains(w)) { "offline, retrying" } else { "gh error" };
+            (format!(" · {word}"), fails >= RED_AFTER_FAILS)
+        }
+    }
 }
 
 const BAD: [&str; 6] = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
@@ -135,6 +175,7 @@ pub fn parse_prs(json: &str) -> Result<Vec<Pr>, String> {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|i| i.get("number").and_then(Value::as_i64)).collect())
                 .unwrap_or_default(),
+            updated_at: st(p, "updatedAt"),
         })
         .collect();
     v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -239,6 +280,48 @@ fn gh(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// The fields every `gh pr list` asks for (the page and the sync-only lookups).
+const PR_FIELDS: &str =
+    "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences,updatedAt";
+
+/// Board refs (owned, not done) that no PR on the newest page links — by number, `closes`
+/// or branch name — and that are not PRs themselves: sync looks these up past the page.
+pub fn refs_beyond_page(s: &GhSnapshot, cards: &[crate::store::Card]) -> Vec<i64> {
+    let mut v: Vec<i64> = cards
+        .iter()
+        .filter(|c| c.column == "todo" || c.column == "doing")
+        .filter(|c| c.owner.is_some())
+        .filter_map(|c| c.gh_ref)
+        .filter(|n| {
+            !s.prs.iter().any(|p| p.number == *n || p.closes.contains(n) || branch_matches(&p.head_ref, *n))
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(MAX_STATE_CHECKS);
+    v
+}
+
+/// Open PRs outside the newest page that link `nums` (`closes N`, or a branch named for N):
+/// one `gh pr list --search N` per ref. Only `tb sync` calls this — never the refresh path.
+/// Failed lookups are skipped (the card just is not moved this time).
+pub fn linked_prs_beyond_page(repo: &str, s: &GhSnapshot, nums: &[i64]) -> Vec<Pr> {
+    let mut out: Vec<Pr> = Vec::new();
+    for n in nums {
+        let q = n.to_string();
+        let Ok(json) = gh(&["pr", "list", "-R", repo, "--state", "open", "--search", &q, "--limit", "20", "--json", PR_FIELDS]) else {
+            continue;
+        };
+        let Ok(prs) = parse_prs(&json) else { continue };
+        if let Some(p) = prs.into_iter().find(|p| p.closes.contains(n) || branch_matches(&p.head_ref, *n)) {
+            if !s.prs.iter().chain(out.iter()).any(|q| q.number == p.number) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 /// Fetch a full snapshot (5 gh calls). Any failure -> Err(short message).
 pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
     use chrono::{Local, TimeZone};
@@ -251,8 +334,7 @@ pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
         .map(|t| t.format("%Y-%m-%d").to_string())
         .unwrap_or_default();
     let prs = parse_prs(&gh(&[
-        "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
-        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences",
+        "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json", PR_FIELDS,
     ])?)?;
     let issues = parse_issues(&gh(&[
         "issue", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
@@ -377,7 +459,7 @@ pub fn repo_row(r: &RepoEntry, now: i64) -> String {
     let private = if r.is_private { "  (private)" } else { "" };
     let pushed = age_of(&r.pushed_at, now).map(|a| format!("  pushed {}", crate::store::coarse_age(a))).unwrap_or_default();
     let desc = if r.description.is_empty() { String::new() } else { format!("  {}", r.description) };
-    format!("{}{private}{pushed}{desc}", r.name_with_owner)
+    crate::text::sanitize(&format!("{}{private}{pushed}{desc}", r.name_with_owner))
 }
 
 /// Open/closed state of an issue or PR number (REST `repos/R/issues/N` covers both).
@@ -437,11 +519,14 @@ pub struct AutoMove {
 }
 
 /// Forward-only moves for cards with gh_ref: an open linked PR -> review (from todo/doing);
-/// a merged PR or a closed issue -> done. Never backwards.
+/// a merged PR or a closed issue -> done. Never backwards. A card a reviewer sent back
+/// (`returned` = card id -> time of its last return) stays in DOING until its PR is
+/// updated after that return.
 pub fn plan_moves(
     s: &GhSnapshot,
     cards: &[crate::store::Card],
     states: &std::collections::HashMap<i64, RefState>,
+    returned: &std::collections::HashMap<i64, i64>,
 ) -> Vec<AutoMove> {
     let mut out = Vec::new();
     for c in cards.iter().filter(|c| c.column != "done") {
@@ -458,19 +543,26 @@ pub fn plan_moves(
             }
         }
         if c.column == "todo" || c.column == "doing" {
-            // An open PR outside the newest-20 page still counts: the per-number state
-            // lookup (needs_state/fetch_states) already fetched {pr, merged, closed} for
-            // the board's own refs.
-            let page_pr = s
-                .prs
-                .iter()
-                .find(|p| p.number == n)
-                .or_else(|| s.prs.iter().find(|p| p.closes.contains(&n)))
-                .or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
-            let state_pr = states.get(&n).is_some_and(|st| st.pr && !st.merged && !st.closed);
-            if page_pr.is_some() || state_pr {
-                let pnum = page_pr.map(|p| p.number).unwrap_or(n);
-                out.push(mv("review", format!("github: PR gh#{pnum} open → review")));
+            // An UNOWNED card stays put: sync never moves work nobody took into REVIEW —
+            // there it would have no owner and no author, so anyone could approve it and
+            // nobody would be accountable. (Doing cards always have an owner; the hole is
+            // a todo card linked to an issue that already has an open PR.)
+            if c.owner.is_some() {
+                let own_pr = s.prs.iter().find(|p| p.number == n);
+                let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
+                if let Some(p) = own_pr.or(linked) {
+                    let updated_since_return = match returned.get(&c.id) {
+                        None => true,
+                        Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
+                    };
+                    if updated_since_return {
+                        out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                    }
+                } else if states.get(&n).is_some_and(|st| st.pr && !st.merged && !st.closed) && !returned.contains_key(&c.id) {
+                    // gh#N is itself an open PR outside the newest-20 page (seen by the
+                    // per-number lookup); a sent-back card waits until the page shows it
+                    out.push(mv("review", format!("github: PR #{n} open → review")));
+                }
             }
         }
     }
@@ -493,26 +585,36 @@ pub fn apply_moves(store: &mut crate::store::Store, moves: &[AutoMove]) -> crate
 
 /// Seconds since an RFC 3339 timestamp (None if unparseable).
 pub fn age_of(ts: &str, now: i64) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| now - t.timestamp())
+    unix_time(ts).map(|t| now - t)
+}
+
+/// An RFC 3339 timestamp as Unix seconds (None if unparseable).
+pub fn unix_time(ts: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| t.timestamp())
+}
+
+/// The panel fetches one page of 20 open PRs and 20 open issues. A full page may be only the
+/// newest of more, so its counts say "newest" instead of reading as "all of them".
+pub const PAGE: usize = 20;
+
+/// `20 newest` for a full page, `N open` otherwise.
+fn pr_count(len: usize) -> String {
+    if len >= PAGE { format!("{len} newest") } else { format!("{len} open") }
+}
+
+/// ` in newest 20` when the counts come from a full issue page, else nothing.
+fn issue_page(len: usize) -> String {
+    if len >= PAGE { format!(" in newest {PAGE}") } else { String::new() }
 }
 
 /// `issues 42 open · PRs 5 open (1 draft) · merged today 4 · main CI ok` as (text, main_ci_failed).
-/// The panel fetches one page of 20; when the page is full the repo has at least that many
-/// (or exactly) — label it "newest" so a bigger repo never reads as "all of them".
-pub const PAGE: usize = 20;
-
-fn page_word(len: usize) -> &'static str {
-    if len >= PAGE { " newest" } else { "" }
-}
-
 pub fn summary(s: &GhSnapshot) -> (String, String) {
     let drafts = s.prs.iter().filter(|p| p.is_draft).count();
     let draft = if drafts > 0 { format!(" ({drafts} draft)") } else { String::new() };
     let head = format!(
-        "issues {} open · PRs {} open{}{draft} · merged today {} · main CI ",
+        "issues {} open · PRs {}{draft} · merged today {} · main CI ",
         s.issues_open,
-        s.prs.len(),
-        page_word(s.prs.len()),
+        pr_count(s.prs.len()),
         s.merged_today.len()
     );
     (head, s.main_ci.as_ref().map(|c| c.state.clone()).unwrap_or_else(|| "-".into()))
@@ -675,13 +777,12 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
 pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
     let mut v = vec![(
         format!(
-            "ISSUES {} (+{}, {} unclaimed{}) · PRS {}{}",
+            "ISSUES {} (+{}, {} unclaimed{}) · PRS {}",
             s.issues_open,
             f.new_today,
             f.unclaimed,
-            page_word(s.issues.len()),
-            s.prs.len(),
-            page_word(s.prs.len())
+            issue_page(s.issues.len()),
+            if s.prs.len() >= PAGE { pr_count(s.prs.len()) } else { s.prs.len().to_string() }
         ),
         false,
     )];
@@ -716,9 +817,14 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         Some(c) => (c.state.clone(), format!("{} · {}", c.workflow, age(&c.created_at))),
         None => ("-".into(), "no runs".into()),
     };
+    let issues2 = if s.issues.len() >= PAGE {
+        format!("newest {PAGE}: +{} · {} unclaimed", f.new_today, f.unclaimed)
+    } else {
+        format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)
+    };
     [
-        ("ISSUES".into(), format!("{} open", s.issues_open), format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)),
-        ("PULL REQUESTS".into(), format!("{} open{}{drafts}", s.prs.len(), page_word(s.prs.len())), pr2),
+        ("ISSUES".into(), format!("{} open", s.issues_open), issues2),
+        ("PULL REQUESTS".into(), format!("{}{drafts}", pr_count(s.prs.len())), pr2),
         ("MERGED".into(), format!("{} today", s.merged_today.len()), merged2),
         ("MAIN CI".into(), ci, ci2),
     ]
@@ -726,22 +832,24 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
 
 /// Plain-text snapshot for `ttyboard github` (up to `n` PRs/issues, full titles).
 pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n: usize, now: i64) -> String {
-    use std::fmt::Write;
-    let f = factory(s, cards, now);
     let mut out = String::new();
-    let _ = writeln!(out, "GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
+    // every line through the sanitizer: GitHub titles, names and branches are remote text
+    macro_rules! ln {
+        ($($a:tt)*) => { crate::text::push_line(&mut out, &format!($($a)*)) };
+    }
+    let f = factory(s, cards, now);
+    ln!("GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
     if let Some(e) = error {
-        let _ = writeln!(out, "github: {e} (showing the last good snapshot)");
+        ln!("github: {e} (showing the last good snapshot)");
     }
     let (head, ci) = summary(s);
-    let _ = writeln!(out, "{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
+    ln!("{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
     let age = |ts: &str| age_of(ts, now).map(crate::store::fmt_age).unwrap_or_else(|| "?".into());
-    let _ = writeln!(out, "\nOPEN PRS");
+    ln!("\nOPEN PRS");
     for (p, link) in s.prs.iter().zip(&f.pr_links).take(n) {
         let draft = if p.is_draft { " (draft)" } else { "" };
         let link = link.as_ref().map(|(i, w)| format!(" -> #{i} ({w})")).unwrap_or_default();
-        let _ = writeln!(
-            out,
+        ln!(
             "  #{} {}{draft} · CI {} · review {} · {} · {} · {}{link}",
             p.number,
             p.title,
@@ -752,20 +860,20 @@ pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n
             p.head_ref
         );
     }
-    let _ = writeln!(out, "\nISSUES (state · who)");
+    ln!("\nISSUES (state · who)");
     for r in f.issues.iter().take(n) {
         let labels = if r.labels.is_empty() { String::new() } else { format!(" [{}]", r.labels.join(",")) };
-        let _ = writeln!(out, "  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
+        ln!("  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
     }
     if f.issues.len() > n {
-        let _ = writeln!(out, "  +{} more", f.issues.len() - n);
+        ln!("  +{} more", f.issues.len() - n);
     }
-    let _ = writeln!(out, "\nMERGED TODAY");
+    ln!("\nMERGED TODAY");
     for m in s.merged_today.iter().take(n) {
-        let _ = writeln!(out, "  #{} {}", m.number, m.title);
+        ln!("  #{} {}", m.number, m.title);
     }
     if let Some(c) = &s.main_ci {
-        let _ = writeln!(out, "\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
+        ln!("\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
     }
     out
 }
@@ -816,5 +924,61 @@ mod tests {
         assert_eq!(one("in_progress", ""), "run");
         assert_eq!(parse_main_ci("[]").unwrap(), None);
         assert!(parse_main_ci("{").is_err());
+    }
+
+    #[test]
+    fn sync_suffix_quiet_then_red() {
+        let net = "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout";
+        let other = "HTTP 401: Bad credentials (https://api.github.com)";
+        assert_eq!(sync_suffix(None, 0), (String::new(), false));
+        assert_eq!(sync_suffix(Some(net), 0), (" · offline, retrying".into(), false));
+        assert_eq!(sync_suffix(Some(other), 0), (" · gh error".into(), false));
+        assert_eq!(sync_suffix(Some(net), 2), (" · offline, retrying".into(), false), "not red yet");
+        assert_eq!(sync_suffix(Some(other), RED_AFTER_FAILS), (" · gh error".into(), true), "red at 3");
+        assert_eq!(sync_suffix(Some(net), 10), (" · offline, retrying".into(), true), "still red past the threshold");
+        // gh's own offline message and Go's lower-case network errors, as gh prints them
+        for e in [
+            "error connecting to api.github.com",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: network is unreachable",
+            "Post \"https://api.github.com/graphql\": read tcp 127.0.0.1:51234->127.0.0.1:443: read: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": write tcp 127.0.0.1:51234->127.0.0.1:443: write: broken pipe",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: no route to host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: i/o timeout",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.1:53: Temporary failure in name resolution",
+            "Get \"https://api.github.com/zen\": dial tcp 127.0.0.1:443: connect: Connection Refused",
+            "NETWORK IS UNREACHABLE",
+        ] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · offline, retrying".into(), false), "{e}");
+        }
+        for e in ["HTTP 404: Not Found (https://api.github.com/repos/acme/nope)", "GraphQL: Could not resolve to a Repository"] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · gh error".into(), false), "{e}");
+        }
+    }
+
+    #[test]
+    fn save_github_counts_consecutive_failures() {
+        use crate::store::Store;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("b.db");
+        let s = Store::open(&db).unwrap();
+        s.set_github(Some("acme/widgets")).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!((json.is_none(), error.is_none(), fails), (true, true, 0));
+        for want in 1..=5 {
+            s.save_github(&Err(format!("boom {want}"))).unwrap();
+            let (_, error, fails) = s.github_cache().unwrap();
+            assert_eq!(fails, want);
+            assert_eq!(error.as_deref(), Some(format!("boom {want}").as_str()));
+        }
+        s.save_github(&Ok(GhSnapshot { repo: "acme/widgets".into(), fetched_at: 100, ..Default::default() })).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!(fails, 0, "success resets the counter");
+        assert!(error.is_none());
+        let snap: GhSnapshot = serde_json::from_str(&json.unwrap()).unwrap();
+        assert_eq!(snap.fetched_at, 100);
+        let view = s.github_view().unwrap();
+        assert_eq!(view.fails, 0);
+        assert_eq!(view.snap.as_ref().map(|s| s.fetched_at), Some(100));
     }
 }

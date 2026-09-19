@@ -1,6 +1,6 @@
 [package]
 name = "terminal-board"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Terminal Board (tb): a simple terminal task board shared by people and AI agents"
 license = "MIT"

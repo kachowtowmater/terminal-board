@@ -91,7 +91,7 @@ fn shift_arrows_and_jk_reorder_and_move() {
     app.handle_key(key(KeyCode::Left), &mut s);
     app.handle_key(shift(KeyCode::Right), &mut s);
     assert_eq!(s.card(3).unwrap().column, "todo");
-    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2)"));
+    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2:"));
     // Shift+Left back
     app.col = 1;
     app.row[1] = 0;
@@ -141,7 +141,7 @@ fn position_migration_orders_existing_cards_by_created_at() {
 
 #[test]
 fn edit_form_cursor_ops() {
-    let mut f = EditForm { id: 1, title: "abc".into(), desc: String::new(), field: 0, cursor: 3, from_popup: false };
+    let mut f = EditForm { id: 1, title: "abc".into(), open_title: "abc".into(), desc: String::new(), open_desc: String::new(), field: 0, cursor: 3, from_popup: false };
     f.key(KeyCode::Home);
     f.key(KeyCode::Right);
     f.key(KeyCode::Delete); // removes 'b'
@@ -215,6 +215,7 @@ fn pr(n: i64, closes: &[i64], branch: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: closes.to_vec(),
+        updated_at: String::new(),
     }
 }
 
@@ -234,18 +235,21 @@ fn auto_move_matrix() {
         id
     };
     s.set_wip(99).unwrap();
+    // TODO cards have no owner: an open PR leaves them in TODO, a closed issue still moves
+    // them to DONE; DOING cards (owned by 'me') move on an open PR as before
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
     let closed = mk(&mut s, "gh#21 a closed issue", "todo");
     let open_rev = mk(&mut s, "gh#11 open, in review", "review");
     let unmerged = mk(&mut s, "gh#22 closed unmerged pr", "doing");
+    let linked_owned = mk(&mut s, "gh#13 linked by closes, taken", "doing");
     let done_open = mk(&mut s, "gh#10 already done", "done");
     let plain = mk(&mut s, "no gh ref", "doing");
     let snap = GhSnapshot {
         repo: "o/r".into(),
-        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing")],
-        issues: vec![issue(10), issue(11), issue(12)],
+        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing"), pr(32, &[13], "y")],
+        issues: vec![issue(10), issue(11), issue(12), issue(13)],
         ..Default::default()
     };
     let cards = s.list().unwrap();
@@ -257,25 +261,26 @@ fn auto_move_matrix() {
         (22, RefState { closed: true, pr: true, merged: false }),
     ]
     .into();
-    let moves = plan_moves(&snap, &cards, &states);
+    let moves = plan_moves(&snap, &cards, &states, &HashMap::new());
     let got: Vec<(i64, &str, &str)> = moves.iter().map(|m| (m.card_id, m.to.as_str(), m.text.as_str())).collect();
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR gh#30 open → review"),
-            (branch, "review", "github: PR gh#31 open → review"),
+            (branch, "review", "github: PR #31 open → review"),
             (merged, "done", "github: PR #20 merged → done"),
             (closed, "done", "github: issue #21 closed → done"),
+            (linked_owned, "review", "github: PR #32 open → review"),
         ]
     );
-    let untouched = [open_rev, unmerged, done_open, plain];
+    // the unowned TODO card with an open PR stays in TODO
+    let untouched = [linked, open_rev, unmerged, done_open, plain];
     assert!(moves.iter().all(|m| !untouched.contains(&m.card_id)), "no backwards, no evidence, no move");
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
     let ev = s.show(merged).unwrap().events;
     assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
-    let moves = plan_moves(&snap, &s.list().unwrap(), &states);
+    let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
 }
 
@@ -328,6 +333,8 @@ esac
     for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
         tb(&db, &gh, &["add", t]);
     }
+    // an open PR moves only work someone took; merged/closed move unowned TODO cards too
+    tb(&db, &gh, &["take", "1"]);
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -388,8 +395,12 @@ fn help_overlay_and_footer() {
     let (_d, mut s, mut app) = board(&["a"]);
     let screen = render(&app, 160, 50);
     assert!(screen.contains("a add  e edit  x del  enter open  shift+arrows move") && screen.contains("? help  q quit"), "{screen}");
+    // 60 columns is the focus shape: its footer keeps the focus arrow axis (issue: arrow
+    // behaviour and help text agree in every view), dropping `enter open` to fit
     let narrow = render(&app, 60, 25);
-    assert!(narrow.contains("a add  enter open  ? help  q quit") && !narrow.contains("shift+arrows"), "{narrow}");
+    let footer = narrow.lines().last().unwrap_or("");
+    assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move") && footer.contains("? help"), "{narrow}");
+    assert!(!footer.contains("shift+arrows"), "{narrow}");
     app.handle_key(key(KeyCode::Char('?')), &mut s);
     assert_eq!(app.mode, Mode::Help);
     let screen = render(&app, 160, 50);
@@ -427,6 +438,7 @@ fn a_ref_outside_the_newest_page_still_moves() {
                 created_at: "2026-09-18T07:00:00Z".into(),
                 author: "x".into(),
                 closes: vec![],
+                updated_at: String::new(),
             })
             .collect(),
         issues: vec![],
@@ -437,12 +449,171 @@ fn a_ref_outside_the_newest_page_still_moves() {
     assert_eq!(terminal_board::github::needs_state(&snap, &cards), vec![777]);
     let states: std::collections::HashMap<i64, terminal_board::github::RefState> =
         [(777, terminal_board::github::RefState { closed: false, pr: true, merged: false })].into();
-    let moves = terminal_board::github::plan_moves(&snap, &cards, &states);
-    assert!(moves.iter().any(|m| m.card_id == id && m.to == "review"), "off-page open PR moves: {moves:?}");
+    let moves = terminal_board::github::plan_moves(&snap, &cards, &states, &HashMap::new());
+    assert!(
+        moves.iter().any(|m| m.card_id == id && m.to == "review" && m.text == "github: PR #777 open → review"),
+        "off-page open PR moves: {moves:?}"
+    );
     // and a page-sized repo is labelled "newest" so 20 never reads as the total
     let (head, _) = terminal_board::github::summary(&snap);
-    assert!(head.contains("PRs 20 open newest"), "{head}");
+    assert!(head.contains("PRs 20 newest"), "{head}");
     let small = GhSnapshot { prs: snap.prs[..3].to_vec(), ..snap.clone() };
     let (head, _) = terminal_board::github::summary(&small);
     assert!(head.contains("PRs 3 open ·") && !head.contains("newest"), "{head}");
+}
+
+#[test]
+fn form_save_writes_only_changed_fields_and_refuses_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: first card", "original desc", &[], "lead").unwrap();
+    // the form opened with these values
+    let (open_title, open_desc) = ("plain: first card", "original desc");
+    // an agent edits the description while the form is open
+    s.edit(id, None, Some("new brief from an agent"), "bot-1", None).unwrap();
+    // person adds '!' to the title only: the unchanged (stale) desc must NOT be written
+    let typed_title = "plain: first card!";
+    let c = s
+        .edit(id, Some(typed_title), Some(open_desc), "lead", Some((open_title, open_desc)))
+        .unwrap();
+    assert_eq!(c.title, "first card!", "tag/plain: is stripped by parse");
+    assert_eq!(c.description, "new brief from an agent", "the agent's desc survives");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().rev().find(|e| e.kind == "edit").unwrap();
+    assert_eq!(e.text, "title edited", "the log names only the written field: {e:?}");
+    // a REAL conflict: the person also changed the desc, which moved since open — refused
+    let e = s
+        .edit(id, Some(typed_title), Some("my own wording"), "lead", Some((open_title, open_desc)))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("changed while you were editing") && e.contains("reopen with e"), "{e}");
+    // nothing was overwritten by the refused save
+    assert_eq!(s.card(id).unwrap().description, "new brief from an agent");
+    // negative control on the CLI path: no baseline, unchanged field writes as before
+    let c2 = s.edit(id, None, Some("cli desc wins"), "bot-2", None).unwrap();
+    assert_eq!(c2.description, "cli desc wins");
+}
+
+#[test]
+fn sync_never_moves_an_unowned_todo_card_to_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // unowned todo card linked to an issue that has an open PR
+    let unowned = s.add("plain: gh#60 nobody took it", "", &[], "lead").unwrap();
+    // an owned one, for the positive control
+    let owned = s.add("plain: gh#61 taken", "", &[], "lead").unwrap();
+    s.take(owned, "bot-1").unwrap();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 2,
+        // each card's issue has its own open PR: the unowned one (#62 closes #60) moved on main
+        prs: vec![pr(62, &[60], "fix/60"), pr(61, &[61], "fix/61")],
+        issues: vec![issue(60), issue(61)],
+        ..Default::default()
+    };
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> = [
+        (60, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+        (61, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+    ]
+    .into();
+    let moves = terminal_board::github::plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
+    assert!(moves.iter().all(|m| m.card_id != unowned), "unowned card stays in todo: {moves:?}");
+    assert!(moves.iter().any(|m| m.card_id == owned && m.to == "review"), "owned card moves: {moves:?}");
+    terminal_board::github::apply_moves(&mut s, &moves).unwrap();
+    assert_eq!(s.card(unowned).unwrap().column, "todo", "still todo, still unowned");
+    assert_eq!(s.card(unowned).unwrap().owner, None);
+    assert_eq!(s.card(owned).unwrap().column, "review");
+    // and the self-approval check has an author for every synced REVIEW card
+    for c in s.list().unwrap().into_iter().filter(|c| c.column == "review") {
+        assert!(s.author(c.id).unwrap().is_some(), "#{} in review without an author", c.id);
+    }
+}
+
+#[test]
+fn wip_full_message_is_actor_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(2).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    let c = s.add("plain: three", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // an actor holding none: holders listed, no 'tb done' suggestion
+    let e = s.take(c, "bot-4").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("you hold none; wait, or ask one of them to finish"), "{e}");
+    assert!(!e.contains("tb done"), "{e}");
+    // an actor holding one: their card named, with the exact command
+    let e = s.take(c, "bot-1").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("finish #1 with 'tb done 1' first"), "{e}");
+    // next with json: same message in the hint path
+    let e = s.next("bot-2").unwrap_err().to_string();
+    assert!(e.contains("finish #2 with 'tb done 2' first"), "{e}");
+}
+
+/// Issue #34's repro through `tb sync` and a fake gh: the page holds the newest 20 open PRs;
+/// an older issue's open PR (#950, `closes #777`) is only found by the sync-only lookup.
+#[test]
+fn sync_finds_an_older_issues_pr_beyond_the_newest_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let page: Vec<String> = (900..920)
+        .map(|n| format!(r#"{{"number":{n},"title":"pr {n}","headRefName":"feat/x{n}","isDraft":false,"reviewDecision":"","statusCheckRollup":[],"createdAt":"2026-09-18T08:00:00Z","author":{{"login":"bot"}},"closingIssuesReferences":[]}}"#))
+        .collect();
+    std::fs::write(d.join("page.json"), format!("[{}]", page.join(","))).unwrap();
+    std::fs::write(d.join("pr950.json"), r#"[{"number":950,"title":"fix the old one","headRefName":"feat/y","isDraft":false,"reviewDecision":"","statusCheckRollup":[],"createdAt":"2026-09-01T08:00:00Z","author":{"login":"bot"},"closingIssuesReferences":[{"number":777}]}]"#).unwrap();
+    let issues: Vec<String> = (700..720)
+        .chain([777, 778])
+        .map(|n| format!(r#"{{"number":{n},"title":"issue {n}","labels":[],"assignees":[],"createdAt":"2026-09-01T07:00:00Z"}}"#))
+        .collect();
+    std::fs::write(d.join("issues.json"), format!("[{}]", issues.join(","))).unwrap();
+    let gh = script(
+        d,
+        &format!(
+            r#"#!/bin/sh
+echo "$*" >> {p}/calls.log
+case "$*" in
+  *"--search 777"*) cat {p}/pr950.json; exit 0;;
+  *"--search"*"merged"*) echo '[]'; exit 0;;
+  *"--search"*) echo '[]'; exit 0;;
+esac
+case "$1 $2" in
+  "pr list") cat {p}/page.json;;
+  "issue list") cat {p}/issues.json;;
+  "run list") echo '[]';;
+  "api repos/o/r/issues/777") echo '{{"state":"open"}}';;
+  "api repos/o/r/issues/778") echo '{{"state":"open"}}';;
+  api*) echo 60;;
+  *) exit 2;;
+esac
+"#,
+            p = d.display()
+        ),
+    );
+    let db = d.join("b.db");
+    tb(&db, &gh, &["add", "gh#777 an older issue"]);
+    tb(&db, &gh, &["add", "gh#778 an issue with no PR"]);
+    tb(&db, &gh, &["take", "1"]);
+    tb(&db, &gh, &["take", "2"]);
+    tb(&db, &gh, &["config", "github", "o/r"]);
+    // the panel: a full page is labelled, and the refresh path never runs the extra lookup
+    let o = tb(&db, &gh, &["github", "--refresh"]);
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(text.contains("PRs 20 newest"), "{text}");
+    let log = std::fs::read_to_string(d.join("calls.log")).unwrap();
+    assert!(!log.contains("--search 777"), "no extra lookup on refresh: {log}");
+    // sync: the card for issue 777 moves on its off-page PR; 778 has none and stays
+    let o = tb(&db, &gh, &["sync", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let moves: Vec<(i64, String, String)> = v["moves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["card_id"].as_i64().unwrap(), m["to"].as_str().unwrap().into(), m["text"].as_str().unwrap().into()))
+        .collect();
+    assert_eq!(moves, [(1, "review".to_string(), "github: PR #950 open → review".to_string())]);
 }
