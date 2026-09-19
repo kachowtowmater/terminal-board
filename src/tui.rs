@@ -1386,8 +1386,9 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     let id = format!("#{} ", card.id);
     // narrow boxes (< 30 cols): `gh#N` moves to the meta line so the title gets the width
     let narrow = boxed && width + 4 < NARROW_CARD;
-    let gh = if narrow { String::new() } else { card.gh_ref.map(|n| format!("gh#{n} ")).unwrap_or_default() };
-    let meta_gh = if narrow { card.gh_ref.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
+    let shown = crate::store::shown_ref(card);
+    let gh = if narrow { String::new() } else { shown.map(|n| format!("gh#{n} ")).unwrap_or_default() };
+    let meta_gh = if narrow { shown.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
     let room = width.saturating_sub(id.chars().count() + gh.chars().count());
     let mut first = vec![Span::styled(id, hl)];
     if !gh.is_empty() {
@@ -1668,7 +1669,7 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
             match doing.or(owned.first()) {
                 Some(c) => {
                     spans.push(Span::raw(format!("#{:<4} ", c.id)));
-                    if let Some(n) = c.gh_ref {
+                    if let Some(n) = crate::store::shown_ref(c) {
                         spans.push(Span::raw(format!("gh#{n} ")));
                     }
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
@@ -1694,7 +1695,7 @@ fn detail_strip(app: &App) -> Vec<Line<'static>> {
         return vec![Line::styled(" no card selected - press a to add one", dim())];
     };
     let mut first = vec![Span::raw(format!("> #{} ", c.id))];
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = crate::store::shown_ref(c) {
         first.push(Span::raw(format!("gh#{n} ")));
     }
     first.push(Span::styled(c.title.clone(), Style::default().add_modifier(Modifier::BOLD)));

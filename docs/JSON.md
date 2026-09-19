@@ -65,7 +65,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | field | type | notes |
 |---|---|---|
 | `id` | int | stable card id |
-| `title` | string | without the `tag:` prefix and the `gh#N` token |
+| `title` | string | without the `tag:` prefix and without a **leading** `gh#N` token; a `gh#N` later in the title stays in the text |
 | `tag` | string\|null | parsed from `tag: title` |
 | `description` | string | |
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
@@ -73,7 +73,6 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `owner` | string\|null | who holds it |
 | `due` | string\|null | free text |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
-
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |

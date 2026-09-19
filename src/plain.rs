@@ -79,7 +79,7 @@ pub fn warnings(card: &Card) -> Vec<String> {
 }
 
 pub fn card_head(card: &Card) -> String {
-    match card.gh_ref {
+    match crate::store::shown_ref(card) {
         Some(n) => format!("#{} gh#{n} {}", card.id, card.title),
         None => format!("#{} {}", card.id, card.title),
     }
