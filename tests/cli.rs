@@ -1,5 +1,15 @@
 use std::process::{Command, Output};
 
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    use std::collections::BTreeSet;
+    v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+fn sorted(list: &[&str]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
 struct Board {
     _dir: tempfile::TempDir,
     db: std::path::PathBuf,
@@ -171,4 +181,71 @@ fn config_lists_all_and_sets_panels() {
     // connecting a repo un-hides the GitHub panel
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
+}
+
+#[test]
+fn missing_named_board_fails_instead_of_creating() {
+    // multi-board mode (no TB_DB): boards live in their own dir
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("tbhome");
+    let run_at = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("HOME", &home)
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("TB_DB")
+            .output()
+            .unwrap()
+    };
+    let _ = std::fs::create_dir_all(&home);
+    let o = run_at(&["add", "docs: real work lives here"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let b = Board::new();
+    b.ok(&["-b", "default", "boards"]);
+    // read on a missing non-default board: error, nothing on disk
+    // read on a missing non-default board: error, nothing on disk
+    let o = run_at(&["demo-typo", "list"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("no board 'demo-typo'"), "{err}");
+    assert!(err.contains("boards:"), "names the existing boards: {err}");
+    assert!(err.contains("'tb demo-typo add"), "create hint: {err}");
+    let boards_out = String::from_utf8_lossy(&run_at(&["boards"]).stdout).to_string();
+    assert!(!boards_out.contains("demo-typo"), "nothing created: {boards_out}");
+    // next on a missing named board: same
+    let o = run_at(&["demo-typo", "next", "--as", "bot-1"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no board 'demo-typo'"));
+    let boards_out = String::from_utf8_lossy(&run_at(&["boards"]).stdout).to_string();
+    assert!(!boards_out.contains("demo-typo"));
+    // --json: the standard error object, with the same hint
+    let o = run_at(&["demo-typo", "list", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert!(v["hint"].as_str().unwrap().contains("create it with"), "{}", v);
+    // add DOES create the named board
+    let o = run_at(&["demo-typo", "add", "docs: now it exists"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&run_at(&["boards"]).stdout).contains("demo-typo"));
+    // and config creates too (setting a value on a new board)
+    let o = run_at(&["demo-fresh", "config", "wip", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&run_at(&["boards"]).stdout).contains("demo-fresh"));
+    // negative control: the DEFAULT board keeps today's behaviour — a read shows it empty
+    // (error only when the file truly does not exist AND the command would print a board;
+    // here the default board file exists because we added), and next auto-creates it
+    let dir2 = tempfile::tempdir().unwrap();
+    let db2 = dir2.path().join("fresh-default.db");
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["next", "--as", "bot-1"])
+        .env("TB_DB", &db2)
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "no todo cards is still the failure: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no todo cards"), "default board behaviour unchanged");
+    assert!(db2.exists(), "the default board is created by a write, as before");
 }

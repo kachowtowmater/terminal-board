@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### A mistyped board name fails instead of creating a phantom
+- On a non-default board that does not exist, every command except `add` and `config` (and a
+  bare `tb` in a terminal) fails with `no board 'demo-typo' — boards: … · create it with
+  'tb demo-typo add "…"'` (text and `--json`) and creates nothing — a typo no longer reads as
+  an empty board or leaves a phantom in `tb boards`. The default board keeps today's
+  behaviour, and boards pinned by `TB_DB` (one file) are unaffected.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

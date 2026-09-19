@@ -39,6 +39,10 @@ tb done ID                   # finished: DOING -> REVIEW
 
 ### Find work and read cards
 
+Board names are picked per command: `tb BOARD list`. A name that does not exist (and is not
+the default) fails with `no board 'X' — boards: … · create it with 'tb X add "…"'` instead of
+showing an empty board — check the spelling before creating anything.
+
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
