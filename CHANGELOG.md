@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-09-18
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
