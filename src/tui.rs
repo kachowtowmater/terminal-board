@@ -85,6 +85,8 @@ pub enum Mode {
     Normal,
     Add(String),
     Note { id: i64, buf: String, from_popup: bool },
+    /// Sending a REVIEW card back to DOING: the reason being typed.
+    SendBack { id: i64, buf: String },
     Popup(i64),
     AddCheck { id: i64, buf: String },
     /// Repo picker (`R`): typed filter and selected row (row 0 = "none").
@@ -171,6 +173,9 @@ pub struct EditForm {
     pub id: i64,
     pub title: String,
     pub desc: String,
+    /// What the fields read when the form opened (the save-conflict baseline).
+    pub open_title: String,
+    pub open_desc: String,
     /// 0 = title, 1 = description
     pub field: u8,
     pub cursor: usize,
@@ -252,6 +257,10 @@ pub struct App {
     pub gh: GhView,
     pub show_github: bool,
     pub mode: Mode,
+    /// Scroll offset of the `?` help overlay (up/down, PgUp/PgDn in Mode::Help).
+    pub help_scroll: u16,
+    /// The largest useful `help_scroll` at the last render (the key handler clamps to it).
+    pub help_max: std::cell::Cell<u16>,
     pub popup: Option<CardDetail>,
     pub status: Option<(String, bool)>,
     pub actor: String,
@@ -303,6 +312,8 @@ impl App {
             gh: GhView::default(),
             show_github,
             mode: Mode::Normal,
+            help_scroll: 0,
+            help_max: std::cell::Cell::new(0),
             popup: None,
             status: None,
             actor: actor.to_string(),
@@ -441,6 +452,33 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::SendBack { id, mut buf } => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.status = Some(("cancelled — the card stays in review".into(), false));
+                }
+                KeyCode::Enter => {
+                    if buf.trim().is_empty() {
+                        self.mode = Mode::SendBack { id, buf };
+                        return false;
+                    }
+                    self.mode = Mode::Normal;
+                    let r = store.send_back(id, &buf, &actor);
+                    if self.report(r, |c| format!("#{} sent back to {}", c.id, c.owner.as_deref().unwrap_or("doing"))).is_some() {
+                        self.reload(store);
+                        self.focus_card(id);
+                    }
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                _ => {}
+            },
             Mode::AddCheck { id, mut buf } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Popup(id),
                 KeyCode::Enter => {
@@ -549,8 +587,18 @@ impl App {
                 _ => {}
             },
             Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-                    self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.help_scroll = 0;
+                    }
+                    KeyCode::Down => self.help_scroll = (self.help_scroll + 1).min(self.help_max.get()),
+                    KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                    KeyCode::PageDown => self.help_scroll = (self.help_scroll + 10).min(self.help_max.get()),
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                    KeyCode::Home => self.help_scroll = 0,
+                    KeyCode::End => self.help_scroll = self.help_max.get(),
+                    _ => {}
                 }
             }
             Mode::Confirm { action, .. } => {
@@ -591,7 +639,15 @@ impl App {
                     self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
                 }
                 KeyCode::Enter => {
-                    let r = store.edit(form.id, Some(&form.title), Some(&form.desc), &actor);
+                    // only the fields the person changed are written; a field they left at
+                    // its open-time value but that moved on since is refused, not overwritten
+                    let r = store.edit(
+                        form.id,
+                        (form.title != form.open_title).then_some(form.title.as_str()),
+                        (form.desc != form.open_desc).then_some(form.desc.as_str()),
+                        &actor,
+                        Some((form.open_title.as_str(), form.open_desc.as_str())),
+                    );
                     if self.report(r, |c| format!("#{} saved", c.id)).is_some() {
                         self.reload(store);
                         self.focus_card(form.id);
@@ -697,7 +753,16 @@ impl App {
         if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
-            self.mode = Mode::Edit(EditForm { id, title, desc: c.description.clone(), field: 0, cursor, from_popup });
+            self.mode = Mode::Edit(EditForm {
+                id,
+                open_title: title.clone(),
+                open_desc: c.description.clone(),
+                title,
+                desc: c.description.clone(),
+                field: 0,
+                cursor,
+                from_popup,
+            });
         }
     }
 
@@ -739,6 +804,10 @@ impl App {
                 self.mode = approve_own(id);
                 return;
             }
+        }
+        if column == "review" && to == "doing" {
+            self.mode = Mode::SendBack { id, buf: String::new() };
+            return;
         }
         let actor = self.actor.clone();
         let r = if target.is_none() { store.done(id, &actor) } else { store.move_to(id, &to, &actor) };
@@ -1124,6 +1193,21 @@ impl App {
             self.focus_nav = true;
         }
         match key.code {
+            // shift+left/right moves the card — the same keys mean the same thing in every
+            // view (the focus view previously swallowed them as navigation)
+            KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let (_, column) = self.selected().map(|c| (c.id, c.column.clone()))?;
+                let ci = COLUMNS.iter().position(|k| *k == column).unwrap_or(0);
+                let to = if key.code == KeyCode::Left { ci.checked_sub(1) } else { (ci < 3).then_some(ci + 1) };
+                if let Some(t) = to {
+                    self.move_selected(Some(COLUMNS[t]), store);
+                }
+                return Some(false);
+            }
+            KeyCode::Up | KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.reorder_selected(if key.code == KeyCode::Up { "up" } else { "down" }, store);
+                return Some(false);
+            }
             KeyCode::Left | KeyCode::Right => {
                 let n = self.col_cards(self.col).len();
                 if n > 0 {
@@ -1386,8 +1470,9 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     let id = format!("#{} ", card.id);
     // narrow boxes (< 30 cols): `gh#N` moves to the meta line so the title gets the width
     let narrow = boxed && width + 4 < NARROW_CARD;
-    let gh = if narrow { String::new() } else { card.gh_ref.map(|n| format!("gh#{n} ")).unwrap_or_default() };
-    let meta_gh = if narrow { card.gh_ref.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
+    let shown = crate::store::shown_ref(card);
+    let gh = if narrow { String::new() } else { shown.map(|n| format!("gh#{n} ")).unwrap_or_default() };
+    let meta_gh = if narrow { shown.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
     let room = width.saturating_sub(id.chars().count() + gh.chars().count());
     let mut first = vec![Span::styled(id, hl)];
     if !gh.is_empty() {
@@ -1487,13 +1572,21 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     f.render_widget(block, area);
     let sel = if focused { Some(app.row[ci].min(n.saturating_sub(1))) } else { None };
     if cards.is_empty() {
-        // first-run hint: a bare '-' told a new user nothing
-        let hint = if ci == 0 && app.snap.cards.is_empty() {
-            " press a to add your first card"
+        // first-run hint: a bare '-' told a new user nothing. It wraps at words to fit the
+        // column; a column too small for that gets the short form, never a cut sentence.
+        let lines: Vec<Line> = if ci == 0 && app.snap.cards.is_empty() {
+            let w = (inner.width as usize).saturating_sub(1);
+            let wrapped = wrap_words(FIRST_CARD_HINT, w);
+            let fits = wrapped.len() <= inner.height as usize && wrapped.iter().all(|l| l.chars().count() <= w);
+            if fits {
+                wrapped.into_iter().map(|l| Line::styled(format!(" {l}"), dim())).collect()
+            } else {
+                vec![Line::styled(format!(" {}", fit(FIRST_CARD_SHORT, w)), dim())]
+            }
         } else {
-            " -"
+            vec![Line::styled(" -", dim())]
         };
-        f.render_widget(Paragraph::new(Line::styled(hint, dim())), inner);
+        f.render_widget(Paragraph::new(lines), inner);
     } else if inner.height < 3 || inner.width < 8 {
         app.drawn_styles.borrow_mut().push((ci, "compact"));
         draw_compact(f, app, &cards, sel, inner);
@@ -1623,7 +1716,20 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
     dense
 }
 
-fn agents_panel(app: &App) -> Vec<Line<'static>> {
+/// `"note" 13m` fitted to `room` columns, or just the age when there is no note (or no room
+/// for one). An agent that never writes notes still shows how long its card has been quiet.
+pub fn activity(note: Option<&String>, age: &str, room: usize) -> String {
+    let age_w = age.chars().count();
+    match note {
+        // quotes + one space + the age, and at least a few characters of the note
+        Some(n) if !age.is_empty() && room >= age_w + 3 + 4 => format!("\"{}\" {age}", fit(n, room - age_w - 3)),
+        Some(n) if age.is_empty() && room >= 2 + 4 => format!("\"{}\"", fit(n, room - 2)),
+        _ if age_w <= room => age.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     let agents = match &app.agents {
         AgentsState::Agents(a) => a,
         AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
@@ -1674,15 +1780,23 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
             match doing.or(owned.first()) {
                 Some(c) => {
                     spans.push(Span::raw(format!("#{:<4} ", c.id)));
-                    if let Some(n) = c.gh_ref {
+                    if let Some(n) = crate::store::shown_ref(c) {
                         spans.push(Span::raw(format!("gh#{n} ")));
                     }
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
                         spans.push(Span::styled("! idle, holds card", st));
-                    } else if let Some(n) = app.snap.last_note.get(&c.id) {
-                        spans.push(Span::styled(format!("\"{n}\""), dim()));
+                    } else {
+                        let age = app
+                            .snap
+                            .last_event_at
+                            .get(&c.id)
+                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                            .unwrap_or_default();
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used));
+                        spans.push(Span::styled(text, dim()));
                     }
                 }
                 None => spans.push(Span::styled(
@@ -1700,7 +1814,7 @@ fn detail_strip(app: &App) -> Vec<Line<'static>> {
         return vec![Line::styled(" no card selected - press a to add one", dim())];
     };
     let mut first = vec![Span::raw(format!("> #{} ", c.id))];
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = crate::store::shown_ref(c) {
         first.push(Span::raw(format!("gh#{n} ")));
     }
     first.push(Span::styled(c.title.clone(), Style::default().add_modifier(Modifier::BOLD)));
@@ -1750,6 +1864,11 @@ fn footer(app: &App, width: u16) -> Line<'static> {
             Span::raw(format!("{buf}_")),
             Span::styled("   enter save  esc cancel", dim()),
         ]),
+        Mode::SendBack { id, buf } => Line::from(vec![
+            Span::styled(format!(" send #{id} back — why: "), key),
+            Span::raw(format!("{buf}_")),
+            Span::styled("   enter send back  esc cancel", dim()),
+        ]),
         Mode::Confirm { prompt, .. } => Line::from(vec![Span::styled(format!(" {prompt}"), key)]),
         _ if app.focus != Focus::Columns && app.status.is_none() => {
             let what = if app.focus == Focus::Github { "open" } else { "details" };
@@ -1760,7 +1879,22 @@ fn footer(app: &App, width: u16) -> Line<'static> {
                 let st = if *is_err { bold() } else { Style::default() };
                 return Line::from(vec![Span::styled(format!(" {msg}"), st), Span::styled("  (esc clears)", dim())]);
             }
-            // the essentials; `?` has the rest
+            // the essentials; `?` has the rest. The focus view keeps its own arrow axis
+            // (left/right = card, up/down = column): say so here, so the help agrees.
+            let focus_view = app.last_shape.get() == Shape::Focus && app.view == View::Board;
+            if focus_view {
+                // the focus view's own arrow axis, stated where the keys are used; it is what
+                // this footer must never lose, so the extras are dropped first (a, enter, then
+                // q) and the limit / pick-repo hints stay in `?`
+                let mut hints = vec![("a", "add"), ("enter", "open"), ("arrows", "card/col"), ("shift+<>", "move"), ("?", "help"), ("q", "quit")];
+                for drop in ["enter", "a", "q"] {
+                    if hints_len(&hints) <= width as usize {
+                        break;
+                    }
+                    hints.retain(|(k, _)| *k != drop);
+                }
+                return Line::from(hint_spans(&hints));
+            }
             let mut hints = vec![("a", "add"), ("e", "edit"), ("x", "del"), ("enter", "open"), ("shift+arrows", "move")];
             if app.col == 1 {
                 hints.push(("+/-", "limit"));
@@ -1903,10 +2037,13 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let synced = gh.snap.as_ref().map(|s| crate::store::fmt_clock(s.fetched_at)).unwrap_or_else(|| "never".into());
+    let (suffix, is_red) = github::sync_suffix(gh.error.as_deref(), gh.fails);
+    let sync_text = format!("synced {synced}{suffix}");
+    let sync_style = if is_red { red() } else { bold() };
     let title = if focused && app.gh_sel == 0 {
-        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &format!("synced {synced}")], area.width), sel_style)
+        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &sync_text], area.width), sel_style)
     } else {
-        Span::styled(fit_title(&["GITHUB", &repo, &format!("synced {synced}")], area.width), bold())
+        Span::styled(fit_title(&["GITHUB", &repo, &sync_text], area.width), sync_style)
     };
     let block = frame(focused, None).title(title);
     let inner = block.inner(area);
@@ -1917,10 +2054,6 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
     let now = app.snap.now;
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
-    if let Some(e) = &gh.error {
-        f.render_widget(Paragraph::new(Line::raw(format!(" github: {e}"))), Rect { y, height: 1, ..inner });
-        y += 1;
-    }
     let Some(s) = &gh.snap else {
         if gh.error.is_none() {
             f.render_widget(Paragraph::new(Line::styled(" fetching...", dim())), Rect { y, height: 1, ..inner });
@@ -1967,6 +2100,11 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         layouts::draw_tidy_list(f, app, s, Rect { y, height: bottom - y, ..inner }, focused);
         return;
     };
+    if s.prs.is_empty() && s.issues.is_empty() {
+        // first-run hint: a quiet repo says so instead of an empty table area
+        f.render_widget(Paragraph::new(Line::styled(" no open issues or PRs", dim())), Rect { y, height: 1, ..inner });
+        return;
+    }
     let age = |ts: &str| github::age_of(ts, now).map(crate::store::coarse_age).unwrap_or_else(|| "?".into());
     // row budget: PRs get up to a third (min 1 if any), issues the rest (+1 for "+N more")
     let pr_rows = if s.prs.is_empty() { 0 } else { s.prs.len().min((avail.saturating_sub(2) / 3).max(1)) };
@@ -2106,7 +2244,7 @@ pub(crate) fn github_want(app: &App, width: u16) -> u16 {
     } else {
         s.prs.len() as u16 + issues
     };
-    2 + tiles + rows.max(1) + u16::from(app.gh.error.is_some())
+    2 + tiles + rows.max(1)
 }
 
 fn base_style(app: &App) -> Style {
@@ -2164,6 +2302,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f, app),
         _ => {}
     }
+    // every cell of every view: displayed text never carries control characters or sequences
+    crate::text::sanitize_buffer(f.buffer_mut());
 }
 
 /// Text with a reversed cursor cell at char index `cursor` (a space when at the end).
@@ -2216,6 +2356,7 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
 pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ("Board", &[
         ("arrows", "select a card (left/right column, up/down card)"),
+        ("focus view arrows", "left/right card, up/down column"),
         ("shift+left/right", "move the card to the next column (also > <)"),
         ("shift+up/down, K J", "reorder the card within its column"),
         ("tab / shift+tab", "cycle focus: columns, GITHUB, AGENTS"),
@@ -2257,28 +2398,97 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ]),
 ];
 
+/// The empty-TODO hint on a board with no cards, and its form for tiny columns.
+pub const FIRST_CARD_HINT: &str = "press a to add your first card";
+pub const FIRST_CARD_SHORT: &str = "a: add a card";
+
+/// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let used = cur.chars().count();
+            let sep = usize::from(used > 0);
+            if used + sep + word.len() <= width {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            // a word longer than the line: cut it
+            let rest = word.split_off(width);
+            out.push(word.into_iter().collect());
+            word = rest;
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The help rows for an overlay `iw` columns wide: keys in a `kw` column, descriptions
+/// wrapped beside them; a key too long for the column gets its own line.
+fn help_lines(iw: usize, kw: usize) -> Vec<Line<'static>> {
+    let indent = 3 + kw;
+    let dw = iw.saturating_sub(indent).max(8);
+    let mut lines = Vec::new();
+    for (group, keys) in HELP_GROUPS {
+        lines.push(Line::styled(format!(" {group}"), bold()));
+        for (k, d) in keys {
+            let mut desc = wrap_words(d, dw).into_iter();
+            if k.chars().count() < kw {
+                let first = desc.next().unwrap_or_default();
+                lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(first)]));
+            } else {
+                lines.push(Line::styled(format!("   {k}"), bold()));
+            }
+            for more in desc {
+                lines.push(Line::raw(format!("{:indent$}{more}", "")));
+            }
+        }
+    }
+    lines
+}
+
 fn draw_help(f: &mut Frame, app: &App) {
-    let rows: usize = HELP_GROUPS.iter().map(|g| g.1.len() + 1).sum();
-    let area = centered(f.area(), 96, rows as u16 + 3);
+    // narrow panes: a smaller overlay, a shrunk key column, descriptions wrapped
+    let wide = f.area().width >= 100;
+    let (w, kw) = if wide { (96, 26) } else { (f.area().width.saturating_sub(2).max(30), 12) };
+    let iw = w.min(f.area().width.saturating_sub(2)).saturating_sub(2) as usize;
+    let lines = help_lines(iw, kw);
+    let rows = lines.len();
+    let area = centered(f.area(), w, rows as u16 + 3);
     if area.width < 10 || area.height < 4 {
         return;
     }
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(base_style(app)), area);
+    let mut title_bottom = Line::styled(" esc or ? closes ", bold());
+    let inner_h = area.height.saturating_sub(2) as usize;
+    if rows > inner_h {
+        title_bottom = Line::styled(" esc/? closes · up/down scroll ", bold());
+    }
     let b = frame(true, None)
         .title(Span::styled(" Terminal Board keys ", bold()))
-        .title_bottom(Line::styled(" esc or ? closes ", bold()));
+        .title_bottom(title_bottom);
     let inner = b.inner(area);
     f.render_widget(b, area);
-    let kw = 26;
-    let mut lines = Vec::new();
-    for (group, keys) in HELP_GROUPS {
-        lines.push(Line::styled(format!(" {group}"), bold()));
-        for (k, d) in keys {
-            lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(d.to_string())]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+    let max_scroll = rows.saturating_sub(inner_h) as u16;
+    app.help_max.set(max_scroll);
+    let scroll = app.help_scroll.min(max_scroll);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 fn info_popup(f: &mut Frame, app: &App, title: String, lines: Vec<Line<'static>>, hint: &str) {
@@ -2579,7 +2789,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         note_area(app, 1, rows[i]);
         let focused = app.focus == Focus::Agents;
         let b = frame(focused, None).title(Span::styled(" AGENTS ", bold()));
-        let mut lines = agents_panel(app);
+        let mut lines = agents_panel(app, rows[i].width.saturating_sub(2) as usize);
         if focused {
             let sel = app.ag_sel.min(lines.len().saturating_sub(1));
             if let Some(l) = lines.get_mut(sel) {
@@ -2702,8 +2912,8 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             let fetched = gh_out.lock().ok().and_then(|mut g| g.take());
             if let Some((res, states)) = fetched {
                 let _ = store.save_github(&res);
-                if let (Ok(snap), Ok(cards)) = (&res, store.list()) {
-                    let moves = github::plan_moves(snap, &cards, &states);
+                if let (Ok(snap), Ok(cards), Ok(returned)) = (&res, store.list(), store.returned_at()) {
+                    let moves = github::plan_moves(snap, &cards, &states, &returned);
                     if !moves.is_empty() && github::apply_moves(&mut store, &moves).is_ok() {
                         app.status = Some((format!("github moved {} card(s): {}", moves.len(), moves[0].text), false));
                         app.status_until = Some(Instant::now() + Duration::from_secs(5));

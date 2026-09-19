@@ -26,6 +26,9 @@ pub struct Pr {
     /// Issues this PR closes (`closingIssuesReferences`).
     #[serde(default)]
     pub closes: Vec<i64>,
+    /// Last update (RFC 3339; empty in caches written before it was fetched).
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,12 +66,49 @@ pub struct GhSnapshot {
     pub main_ci: Option<MainCi>,
 }
 
-/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any).
+/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any), and
+/// how many refreshes failed in a row (the UI goes red only after 3).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GhView {
     pub repo: Option<String>,
     pub snap: Option<GhSnapshot>,
     pub error: Option<String>,
+    pub fails: i64,
+}
+
+/// Consecutive `gh` refresh failures after which the header turns red.
+pub const RED_AFTER_FAILS: i64 = 3;
+
+/// Header suffix for the GITHUB panel title: quiet words, red only after RED_AFTER_FAILS.
+/// `(error, fails)` -> `(suffix, red)`; `(None, _)` -> `(empty, false)`.
+/// Error text (lower-case) that means the network is down or flaky, not that gh is broken.
+const OFFLINE: [&str; 14] = [
+    "timed out",
+    "timeout",
+    "tls handshake",
+    "connection refused",
+    "temporary failure",
+    "getaddrinfo",
+    "error connecting to",
+    "no such host",
+    "network is unreachable",
+    "no route to host",
+    "connection reset",
+    "broken pipe",
+    "i/o timeout",
+    "check your internet connection",
+];
+
+pub fn sync_suffix(error: Option<&str>, fails: i64) -> (String, bool) {
+    match error {
+        None => (String::new(), false),
+        Some(e) => {
+            // gh relays Go network errors, which are lower-case; compare lower-case anyway
+            let e = e.to_ascii_lowercase();
+            let word = if OFFLINE.iter().any(|w| e.contains(w)) { "offline, retrying" } else { "gh error" };
+            (format!(" · {word}"), fails >= RED_AFTER_FAILS)
+        }
+    }
 }
 
 const BAD: [&str; 6] = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
@@ -135,6 +175,7 @@ pub fn parse_prs(json: &str) -> Result<Vec<Pr>, String> {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|i| i.get("number").and_then(Value::as_i64)).collect())
                 .unwrap_or_default(),
+            updated_at: st(p, "updatedAt"),
         })
         .collect();
     v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -252,7 +293,7 @@ pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
         .unwrap_or_default();
     let prs = parse_prs(&gh(&[
         "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
-        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences",
+        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences,updatedAt",
     ])?)?;
     let issues = parse_issues(&gh(&[
         "issue", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
@@ -377,7 +418,7 @@ pub fn repo_row(r: &RepoEntry, now: i64) -> String {
     let private = if r.is_private { "  (private)" } else { "" };
     let pushed = age_of(&r.pushed_at, now).map(|a| format!("  pushed {}", crate::store::coarse_age(a))).unwrap_or_default();
     let desc = if r.description.is_empty() { String::new() } else { format!("  {}", r.description) };
-    format!("{}{private}{pushed}{desc}", r.name_with_owner)
+    crate::text::sanitize(&format!("{}{private}{pushed}{desc}", r.name_with_owner))
 }
 
 /// Open/closed state of an issue or PR number (REST `repos/R/issues/N` covers both).
@@ -437,11 +478,14 @@ pub struct AutoMove {
 }
 
 /// Forward-only moves for cards with gh_ref: an open linked PR -> review (from todo/doing);
-/// a merged PR or a closed issue -> done. Never backwards.
+/// a merged PR or a closed issue -> done. Never backwards. A card a reviewer sent back
+/// (`returned` = card id -> time of its last return) stays in DOING until its PR is
+/// updated after that return.
 pub fn plan_moves(
     s: &GhSnapshot,
     cards: &[crate::store::Card],
     states: &std::collections::HashMap<i64, RefState>,
+    returned: &std::collections::HashMap<i64, i64>,
 ) -> Vec<AutoMove> {
     let mut out = Vec::new();
     for c in cards.iter().filter(|c| c.column != "done") {
@@ -458,10 +502,22 @@ pub fn plan_moves(
             }
         }
         if c.column == "todo" || c.column == "doing" {
-            let own_pr = s.prs.iter().find(|p| p.number == n);
-            let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
-            if let Some(p) = own_pr.or(linked) {
-                out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+            // An UNOWNED card stays put: sync never moves work nobody took into REVIEW —
+            // there it would have no owner and no author, so anyone could approve it and
+            // nobody would be accountable. (Doing cards always have an owner; the hole is
+            // a todo card linked to an issue that already has an open PR.)
+            if c.owner.is_some() {
+                let own_pr = s.prs.iter().find(|p| p.number == n);
+                let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
+                if let Some(p) = own_pr.or(linked) {
+                    let updated_since_return = match returned.get(&c.id) {
+                        None => true,
+                        Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
+                    };
+                    if updated_since_return {
+                        out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                    }
+                }
             }
         }
     }
@@ -484,7 +540,12 @@ pub fn apply_moves(store: &mut crate::store::Store, moves: &[AutoMove]) -> crate
 
 /// Seconds since an RFC 3339 timestamp (None if unparseable).
 pub fn age_of(ts: &str, now: i64) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| now - t.timestamp())
+    unix_time(ts).map(|t| now - t)
+}
+
+/// An RFC 3339 timestamp as Unix seconds (None if unparseable).
+pub fn unix_time(ts: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| t.timestamp())
 }
 
 /// `issues 42 open · PRs 5 open (1 draft) · merged today 4 · main CI ok` as (text, main_ci_failed).
@@ -702,22 +763,24 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
 
 /// Plain-text snapshot for `ttyboard github` (up to `n` PRs/issues, full titles).
 pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n: usize, now: i64) -> String {
-    use std::fmt::Write;
-    let f = factory(s, cards, now);
     let mut out = String::new();
-    let _ = writeln!(out, "GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
+    // every line through the sanitizer: GitHub titles, names and branches are remote text
+    macro_rules! ln {
+        ($($a:tt)*) => { crate::text::push_line(&mut out, &format!($($a)*)) };
+    }
+    let f = factory(s, cards, now);
+    ln!("GITHUB · {} · synced {}", s.repo, crate::store::fmt_clock(s.fetched_at));
     if let Some(e) = error {
-        let _ = writeln!(out, "github: {e} (showing the last good snapshot)");
+        ln!("github: {e} (showing the last good snapshot)");
     }
     let (head, ci) = summary(s);
-    let _ = writeln!(out, "{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
+    ln!("{head}{ci} · {} unclaimed · +{} today", f.unclaimed, f.new_today);
     let age = |ts: &str| age_of(ts, now).map(crate::store::fmt_age).unwrap_or_else(|| "?".into());
-    let _ = writeln!(out, "\nOPEN PRS");
+    ln!("\nOPEN PRS");
     for (p, link) in s.prs.iter().zip(&f.pr_links).take(n) {
         let draft = if p.is_draft { " (draft)" } else { "" };
         let link = link.as_ref().map(|(i, w)| format!(" -> #{i} ({w})")).unwrap_or_default();
-        let _ = writeln!(
-            out,
+        ln!(
             "  #{} {}{draft} · CI {} · review {} · {} · {} · {}{link}",
             p.number,
             p.title,
@@ -728,20 +791,20 @@ pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n
             p.head_ref
         );
     }
-    let _ = writeln!(out, "\nISSUES (state · who)");
+    ln!("\nISSUES (state · who)");
     for r in f.issues.iter().take(n) {
         let labels = if r.labels.is_empty() { String::new() } else { format!(" [{}]", r.labels.join(",")) };
-        let _ = writeln!(out, "  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
+        ln!("  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
     }
     if f.issues.len() > n {
-        let _ = writeln!(out, "  +{} more", f.issues.len() - n);
+        ln!("  +{} more", f.issues.len() - n);
     }
-    let _ = writeln!(out, "\nMERGED TODAY");
+    ln!("\nMERGED TODAY");
     for m in s.merged_today.iter().take(n) {
-        let _ = writeln!(out, "  #{} {}", m.number, m.title);
+        ln!("  #{} {}", m.number, m.title);
     }
     if let Some(c) = &s.main_ci {
-        let _ = writeln!(out, "\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
+        ln!("\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));
     }
     out
 }
@@ -792,5 +855,61 @@ mod tests {
         assert_eq!(one("in_progress", ""), "run");
         assert_eq!(parse_main_ci("[]").unwrap(), None);
         assert!(parse_main_ci("{").is_err());
+    }
+
+    #[test]
+    fn sync_suffix_quiet_then_red() {
+        let net = "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout";
+        let other = "HTTP 401: Bad credentials (https://api.github.com)";
+        assert_eq!(sync_suffix(None, 0), (String::new(), false));
+        assert_eq!(sync_suffix(Some(net), 0), (" · offline, retrying".into(), false));
+        assert_eq!(sync_suffix(Some(other), 0), (" · gh error".into(), false));
+        assert_eq!(sync_suffix(Some(net), 2), (" · offline, retrying".into(), false), "not red yet");
+        assert_eq!(sync_suffix(Some(other), RED_AFTER_FAILS), (" · gh error".into(), true), "red at 3");
+        assert_eq!(sync_suffix(Some(net), 10), (" · offline, retrying".into(), true), "still red past the threshold");
+        // gh's own offline message and Go's lower-case network errors, as gh prints them
+        for e in [
+            "error connecting to api.github.com",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: network is unreachable",
+            "Post \"https://api.github.com/graphql\": read tcp 127.0.0.1:51234->127.0.0.1:443: read: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": write tcp 127.0.0.1:51234->127.0.0.1:443: write: broken pipe",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: no route to host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: i/o timeout",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.1:53: Temporary failure in name resolution",
+            "Get \"https://api.github.com/zen\": dial tcp 127.0.0.1:443: connect: Connection Refused",
+            "NETWORK IS UNREACHABLE",
+        ] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · offline, retrying".into(), false), "{e}");
+        }
+        for e in ["HTTP 404: Not Found (https://api.github.com/repos/acme/nope)", "GraphQL: Could not resolve to a Repository"] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · gh error".into(), false), "{e}");
+        }
+    }
+
+    #[test]
+    fn save_github_counts_consecutive_failures() {
+        use crate::store::Store;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("b.db");
+        let s = Store::open(&db).unwrap();
+        s.set_github(Some("acme/widgets")).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!((json.is_none(), error.is_none(), fails), (true, true, 0));
+        for want in 1..=5 {
+            s.save_github(&Err(format!("boom {want}"))).unwrap();
+            let (_, error, fails) = s.github_cache().unwrap();
+            assert_eq!(fails, want);
+            assert_eq!(error.as_deref(), Some(format!("boom {want}").as_str()));
+        }
+        s.save_github(&Ok(GhSnapshot { repo: "acme/widgets".into(), fetched_at: 100, ..Default::default() })).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!(fails, 0, "success resets the counter");
+        assert!(error.is_none());
+        let snap: GhSnapshot = serde_json::from_str(&json.unwrap()).unwrap();
+        assert_eq!(snap.fetched_at, 100);
+        let view = s.github_view().unwrap();
+        assert_eq!(view.fails, 0);
+        assert_eq!(view.snap.as_ref().map(|s| s.fetched_at), Some(100));
     }
 }

@@ -33,6 +33,7 @@ fn pr(n: i64, title: &str, ci: &str) -> Pr {
         created_at: ago(2 * 3600),
         author: "bot-1".into(),
         closes: vec![n - 1],
+        updated_at: String::new(),
     }
 }
 
@@ -784,6 +785,50 @@ fn live_samples() {
 }
 
 #[test]
+fn thirdv_spare_rows_go_to_github_not_to_a_gap() {
+    // the issue's repro: 8 cards, 52x66 — the old split left ~5 blank rows between
+    // DONE and GITHUB
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(9).unwrap();
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 3,
+        issues: vec![issue(305, "login form rejects"), issue(307, "search index lags"), issue(301, "csv export drops the header row")],
+        prs: vec![pr(306, "fix login form validation", "FAIL"), pr(308, "speed up search indexing", "ok")],
+        ..Default::default()
+    }))
+    .unwrap();
+    for i in 0..8 {
+        let id = s.add(&format!("widgets: card number {i} to fill the board"), "", &[], "alice").unwrap();
+        if i >= 3 {
+            s.take(id, "bot-1").unwrap();
+        }
+        if i >= 6 {
+            s.move_to(id, "review", "bot-1").unwrap();
+        }
+    }
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    let screen = render(&app, 52, 66);
+    // every row between the top and the footer belongs to a section: no fully blank row
+    // between DONE's last box and the GITHUB panel
+    let blank_run = screen
+        .lines()
+        .filter(|l| !l.contains("┌") && !l.contains("│") && !l.contains("┃") && !l.contains("┗") && !l.contains("┛") && l.trim().is_empty())
+        .count();
+    assert!(blank_run == 0, "{blank_run} fully blank rows in the body:\n{screen}");
+    // the GITHUB panel actually grew into the spare space
+    assert!(screen.contains("GITHUB"), "{screen}");
+    // negative control: at 52x56 (the no-gap size from the issue) everything still renders
+    let screen56 = render(&app, 52, 56);
+    assert!(screen56.contains("GITHUB") && screen56.contains("DONE"), "{screen56}");
+}
+
+#[test]
 fn first_run_empty_states_show_hints() {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("b.db")).unwrap();
@@ -799,14 +844,29 @@ fn first_run_empty_states_show_hints() {
     let mut app = App::new(s.snapshot().unwrap(), "alice");
     app.agents = AgentsState::Unavailable("herdr not available".into());
     app.reload(&s);
-    // drive all five shapes so no view can regress: focus, third-h, third-v, half-h, half-v
-    for (w, h) in [(50u16, 14u16), (110, 22), (110, 45), (140, 45), (90, 45)] {
-        let _ = render(&app, w, h);
+    let frame = |c: char| "─│┌┐└┘┏┓┗┛━┃┃".contains(c);
+    // every shape: the TODO hint is readable whole (wrapped, never cut mid-word), and the
+    // quiet repo says so wherever the GitHub panel has room for its list
+    for (w, h, shape) in [(50u16, 14u16, "focus"), (110, 22, "third-h"), (110, 45, "third-v"), (140, 45, "half-h"), (90, 45, "half-v")] {
+        let screen = render(&app, w, h);
+        let text: String = screen.chars().map(|c| if frame(c) { ' ' } else { c }).collect();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if shape == "focus" {
+            // the focus view has its own one-line empty state
+            assert!(screen.contains("press a to add a card"), "{shape}:\n{screen}");
+        } else {
+            for word in terminal_board::tui::FIRST_CARD_HINT.split(' ') {
+                assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
+            }
+            let at = words.iter().position(|w| *w == "press").expect(shape);
+            assert_eq!(&words[at..at + 4], ["press", "a", "to", "add"], "{shape}: hint starts whole:\n{screen}");
+            assert!(screen.contains("no open issues or PRs") || screen.contains("no open PRs or issues"), "{shape}: quiet-repo hint:\n{screen}");
+            assert!(screen.contains("MAIN"), "{shape}: main CI stays visible:\n{screen}");
+        }
     }
-    let screen = render(&app, 140, 45);
-    assert!(screen.contains("press a to add your first card"), "TODO hint in the wide view:\n{screen}");
-    assert!(screen.contains("no open issues or PRs"), "quiet-repo hint: {screen}");
-    // narrow: third-h rail still shows the GitHub hint
+    // third-h: the rail keeps its stats rows (a quiet repo can still have a failing main CI)
     let screen = render(&app, 110, 22);
-    assert!(screen.contains("no open issues or PRs"), "{screen}");
+    for row in ["ISSUES", "PRS", "MAIN CI", "no open PRs or issues"] {
+        assert!(screen.contains(row), "third-h rail keeps '{row}':\n{screen}");
+    }
 }
