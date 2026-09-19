@@ -180,21 +180,3 @@ fn watch_streams_a_new_object_after_a_write() {
     let status = child.wait().unwrap();
     assert!(status.success(), "exits cleanly on a closed stdout: {status:?}");
 }
-
-#[test]
-fn gh_install_suggestion_omits_sudo_without_sudo_or_as_root() {
-    use terminal_board::setup::gh_install_cmd_for_test;
-    // no sudo on PATH: the bare command (the issue's root container case)
-    let cmd = gh_install_cmd_for_test(true, true, false);
-    assert_eq!(cmd.as_deref(), Some("apt install gh"), "no sudo → no prefix: {cmd:?}");
-    // sudo present but running as root: still bare
-    let cmd = gh_install_cmd_for_test(true, true, true);
-    assert_eq!(cmd.as_deref(), Some("apt install gh"), "root → no prefix: {cmd:?}");
-    // sudo present, not root: the prefixed command (today's behaviour)
-    let cmd = gh_install_cmd_for_test(true, false, true);
-    assert_eq!(cmd.as_deref(), Some("sudo apt install gh"), "regular user → sudo: {cmd:?}");
-    // pacman: same rule
-    // dnf: same rule
-    let cmd = gh_install_cmd_for_test(false, false, true);
-    assert!(cmd.as_deref().unwrap().starts_with("sudo dnf"), "{cmd:?}");
-}
