@@ -55,7 +55,7 @@ fn blocked_cards_are_skipped_and_reviewer_lifecycle() {
     s.block(a, Some("#9"), "lead").unwrap();
     assert_eq!(s.next_review("rev-1").unwrap().id, b);
     // sent back: the claim ends; the next round is claimed afresh
-    s.move_to(b, "doing", "rev-1").unwrap();
+    s.send_back(b, "missing a test", "rev-1").unwrap();
     assert_eq!(s.card(b).unwrap().reviewer, None);
     s.done(b, "bot-1").unwrap();
     assert_eq!(s.next_review("rev-2").unwrap().reviewer.as_deref(), Some("rev-2"));
@@ -65,6 +65,13 @@ fn blocked_cards_are_skipped_and_reviewer_lifecycle() {
     assert_eq!(s.move_to(c, "review", "lead").unwrap().reviewer, None);
     assert!(s.show(c).unwrap().events.iter().any(|e| e.kind == "unclaimed" && e.text == "rev-3"));
     assert_eq!(s.next_review("rev-4").unwrap().id, c);
+    // a send-back with a reason ends the claim too, and the next round is claimed afresh
+    let d = in_review(&mut s, "d", "bot-1");
+    assert_eq!(s.next_review("rev-5").unwrap().id, d);
+    let back = s.send_back(d, "add the rollback step", "rev-5").unwrap();
+    assert_eq!((back.column.as_str(), back.reviewer.as_deref()), ("doing", None));
+    s.done(d, "bot-1").unwrap();
+    assert_eq!(s.next_review("rev-6").unwrap().id, d);
     // approved: the reviewer stays on the DONE card
     assert_eq!(s.done(b, "rev-2").unwrap().reviewer.as_deref(), Some("rev-2"));
 }

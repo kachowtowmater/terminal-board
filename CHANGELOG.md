@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Identity: a blank `--as` is refused, never silently replaced
+- `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
+  before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
+  `--json`). An absent flag keeps the fallback chain (`TB_AS`, the herdr pane's agent, the
+  login name) unchanged.
+### The WIP-full message is actor-aware
+- `doing is full` is a board-wide limit, but the old hint told every actor to `tb done ID` —
+  including an agent holding nothing, whose only obedience path was finishing someone else's
+  card. Now: `doing is full (3/3: #3 bot-1, #1 bot-2, #2 bot-3)` plus what the actor can do —
+  `finish #3 with 'tb done 3' first` when they hold one, `you hold none; wait, or ask one of
+  them to finish` when they don't. Both `next` and `take`, text and `--json`.
+## 1.1.0 — 2026-09-18
+### Display
+- Control characters and terminal sequences in displayed text (card titles, descriptions,
+  notes, names, checklist items, GitHub titles and branches, agent labels, echoed errors) are
+  removed before they reach the terminal, in the board and in plain CLI output. Tabs and line
+  breaks in one-line fields show as spaces, so every card stays on its own line. The store and
+  `--json` output keep the text as it was written.
+### third-v: spare rows are used, not left blank
+- At tall panes (e.g. 52×66) the one-third view left ~5 blank rows between the DONE section
+  and the GITHUB panel. Now: spare height first grows the GitHub rows (then AGENTS) up to
+  their natural size, and anything still left stretches the last card section instead of
+  sitting as a blank band. At 52×56 the render is unchanged.
+### JSON: argument errors follow the JSON contract
+- With `--json` anywhere in argv, argument-parse failures (bad value, missing argument,
+  unknown flag) answer `{"ok":false,"error":…,"hint":…}` on **stdout** with exit 2, instead
+  of plain text on stderr and an empty stdout. `error` names what is wrong (including the
+  missing argument, e.g. `<TEXT>`) and `hint` carries the usage line (`usage: tb note <ID>
+  <TEXT> — …`). Without `--json` nothing changes (the parser's message, exit 2);
+  `--help`/`--version` are unchanged; runtime failures keep exit 1.
+### A mid-title `gh#N` keeps its words
+- Only a **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored
+  title. A `gh#N` later in the sentence stays in the text verbatim — the board and JSON keep
+  the original wording — and still sets the link (the first such ref wins).
+### Focus view: shift+arrows move, and the help names the axis
+- In the focus view (small panes) shift+left/right were swallowed by navigation and did
+  nothing — a person thought the card moved when it had not. Now shift+left/right moves the
+  card and shift+up/down reorders it, same as every other view (`>`/`<` still work).
+- The footer in the focus view states its arrow axis (`arrows card/col · shift+<> move`) and
+  the full help gains a `focus view arrows` row, so what the keys do agrees in every view.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
@@ -30,6 +71,18 @@
   work? y/n` instead: `y` takes the same logged path, so a person working alone is not stuck. **If one agent does both jobs in your setup**, give
   the reviewing step its own name (`tb done ID --as reviewer`) or add `--force`. Names are
   self-asserted, so this stops mistakes, not a hostile agent.
+
+- **Sending work back, with a reason and a count.** `tb move ID doing "why"` sends a REVIEW
+  card back to its **same owner** in DOING. The reason is required for that move (and only
+  that move) and is logged as a `returned` event; the send-back is not blocked by the WIP
+  limit, since it is the owner's existing work. In the full-screen board Shift+← / `<` on a
+  REVIEW card asks for the reason. The card shows its rework round, `r2`, counted from
+  events; JSON cards (`board`, `show`, write results) gain `round`. **Breaking for
+  scripts:** a plain `tb move ID doing` on a REVIEW card is now refused with
+  `say why it goes back`.
+- **GitHub sync respects a send-back.** A returned card with an open PR stays in DOING until
+  the PR is updated after the return (`updatedAt`, now part of the cached snapshot as
+  `updated_at`); before, the next sync moved it straight back to REVIEW.
 
 ## 1.0.0 — 2026-09-18
 
