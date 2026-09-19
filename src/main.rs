@@ -146,6 +146,16 @@ fn pretty<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
 }
 
+/// The command a hint names: `tb take 1` on the default board, `tb work take 1` on an
+/// explicitly named non-default board (a copied hint must not act on the default board).
+/// A board picked by `TB_BOARD` travels in the env, so the bare form is right there too.
+fn cmd_hint(explicit: Option<&str>, rest: &str) -> String {
+    match explicit {
+        Some(name) if name != boards::DEFAULT_BOARD => format!("'tb {name} {rest}'"),
+        _ => format!("'tb {rest}'"),
+    }
+}
+
 /// `{"ok":true,"card":…}` for --json, else the human line.
 fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(), BoardError> {
     if jsonout {
@@ -280,6 +290,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     }
     let create = cli.cmd.as_ref().map_or(tty, Cmd::writes);
     let mut store = open_board(&name, create)?;
+    // hints carry the board name only when it was chosen explicitly in this shell
+    let explicit = positional.as_deref().or(cli.board.as_deref()).filter(|n| *n != boards::DEFAULT_BOARD);
     let cmd = cli.cmd;
     let j = cli.json;
     let Some(cmd) = cmd else {
@@ -298,7 +310,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     match cmd {
         Cmd::Add { title, desc, checks } => {
             let id = store.add(&title, &desc, &checks, &actor)?;
-            done_card(&store, j, id, format!("added #{id} — take it with 'tb take {id}'"))?;
+            done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
         Cmd::List => {
             let snap = store.snapshot()?;
@@ -343,9 +355,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 _ => store.next(&actor)?,
             };
             let human = format!(
-                "{}\ntaken by {actor} — log progress with 'tb note {id} \"...\"', finish with 'tb done {id}'",
+                "{}\ntaken by {actor} — log progress with {}, finish with {}",
                 plain::detail(&store.show(card.id)?, now).trim_end(),
-                id = card.id
+                cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
+                cmd_hint(explicit, &format!("done {}", card.id))
             );
             done_card(&store, j, card.id, human)?;
         }
@@ -357,11 +370,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let human = match (n, add, rm) {
                 (_, _, Some(r)) => {
                     store.remove_check(id, r, &actor)?;
-                    format!("#{id} item {r} deleted, the rest renumbered — see 'tb show {id}'")
+                    format!("#{id} item {r} deleted, the rest renumbered — see {}", cmd_hint(explicit, &format!("show {id}")))
                 }
                 (_, Some(text), None) => {
                     let n = store.add_check(id, &text, &actor)?;
-                    format!("#{id} item {n} added — toggle it with 'tb check {id} {n}'")
+                    format!("#{id} item {n} added — toggle it with {}", cmd_hint(explicit, &format!("check {id} {n}")))
                 }
                 (Some(n), None, None) => {
                     let on = store.check(id, n, &actor)?;
@@ -369,7 +382,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 (None, None, None) => {
                     return Err(BoardError(format!(
-                        "give an item number, --add or --rm — 'tb check {id} 1', 'tb check {id} --add \"text\"'"
+                        "give an item number, --add or --rm — {}, {}",
+                        cmd_hint(explicit, &format!("check {id} 1")),
+                        cmd_hint(explicit, &format!("check {id} --add \"text\""))
                     )))
                 }
             };
@@ -388,7 +403,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             let c = if force { store.done_forced(id, &actor)? } else { store.done(id, &actor)? };
             let human = if c.column == "review" {
-                format!("#{id} is now in review — close it with 'tb done {id}' once verified")
+                format!("#{id} is now in review — close it with {} once verified", cmd_hint(explicit, &format!("done {id}")))
             } else {
                 format!("#{id} is done")
             };
@@ -402,11 +417,13 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 (Some(r), false) => {
                     store.block(id, Some(&r), &actor)?;
-                    format!("#{id} blocked — clear it with 'tb block {id} --clear'")
+                    format!("#{id} blocked — clear it with {}", cmd_hint(explicit, &format!("block {id} --clear")))
                 }
                 (None, false) => {
                     return Err(BoardError(format!(
-                        "say what blocks it — 'tb block {id} \"#7\"' or 'tb block {id} --clear'"
+                        "say what blocks it — {} or {}",
+                        cmd_hint(explicit, &format!("block {id} \"#7\"")),
+                        cmd_hint(explicit, &format!("block {id} --clear"))
                     )))
                 }
             };
@@ -603,10 +620,35 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
+    let board_arg = args
+        .get(1)
+        .and_then(|a| a.to_str())
+        .map(str::to_string)
+        .filter(|a| !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()))
+        .or_else(|| {
+            // `-b NAME` / `--board NAME`
+            let a1 = args.get(1).and_then(|a| a.to_str())?;
+            if a1 == "-b" || a1 == "--board" {
+                args.get(2).and_then(|a| a.to_str()).map(str::to_string)
+            } else {
+                None
+            }
+        });
     let parsed = split_board(args).and_then(|(board, args)| run(Cli::parse_from(args), board));
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            // Hints name commands (`'tb take 1'`). On an explicitly named, non-default board
+            // the bare hint would act on the default board in a fresh shell — prefix it.
+            // (A board picked by TB_BOARD travels in the env, so the bare form stays right.)
+            let env_board = terminal_board::env("BOARD");
+            let explicit = board_arg.as_deref().or(env_board.as_deref());
+            let e = match explicit.filter(|n| *n != boards::DEFAULT_BOARD) {
+                Some(name) => {
+                    BoardError(e.0.replace("'tb ", &format!("'tb {name} ")).replace("`tb ", &format!("`tb {name} ")))
+                }
+                None => e,
+            };
             if jsonout {
                 println!("{}", pretty(&contract::error(&e.to_string())));
             } else {

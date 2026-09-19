@@ -172,3 +172,53 @@ fn config_lists_all_and_sets_panels() {
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
 }
+
+#[test]
+fn hints_carry_an_explicitly_named_board() {
+    let b = Board::new();
+    // add on a named board (the CLI has no named add here, use -b): hint names the board
+    b.ok(&["-b", "work", "add", "docs: guide"]);
+    let out = b.ok(&["-b", "work", "next"]);
+    assert!(out.contains("'tb work note"), "note hint carries the board: {out}");
+    assert!(out.contains("'tb work done"), "done hint carries the board: {out}");
+    // error hint: same
+    let o = b.run(&["-b", "work", "done", "99"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb work list'"), "error hint carries the board: {err}");
+    // --json hint: same
+    let o = b.run(&["-b", "work", "done", "99", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["hint"].as_str().unwrap().contains("'tb work list'"), "{}", v);
+    // a config hint on the named board carries it
+    let o = b.run(&["-b", "work", "github"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb work config github"), "{err}");
+    // default board: byte-identical bare hints (negative control on main behaviour)
+    b.ok(&["add", "default board card"]);
+    let out = b.ok(&["next"]);
+    assert!(out.contains("'tb note ") && !out.contains("'tb default note"), "default board stays bare: {out}");
+    let o = b.run(&["done", "99"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("'tb list'") && !err.contains("'tb default list'"), "default error stays bare: {err}");
+}
+
+#[test]
+fn hints_stay_bare_when_the_board_comes_from_the_env() {
+    let b = Board::new();
+    b.ok(&["-b", "envb", "add", "docs: env guide"]);
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["next"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "envb")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("'tb note "), "TB_BOARD travels in the env: bare hint {out}");
+}

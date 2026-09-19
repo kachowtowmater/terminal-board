@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Hints carry an explicitly named board
+- Every success and error hint names the board when it was chosen by name or `-b` and is not
+  `default`: `added #1 — take it with 'tb work take 1'`, `no card #99 — see 'tb work list' for
+  ids` (text and `--json` `hint`). Copying a hint into a fresh shell can no longer act on the
+  default board. A board picked by `TB_BOARD` travels in the environment, so its hints stay
+  bare; default-board output is unchanged byte-for-byte.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
