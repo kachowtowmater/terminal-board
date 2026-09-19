@@ -58,7 +58,6 @@ fn gh_snapshot() -> GhSnapshot {
             labels: vec![noisy("label")],
             assignees: vec![noisy("assignee")],
             created_at: now.clone(),
-            updated_at: now.clone(),
         }],
         merged_today: vec![Merged { number: 19, title: noisy("mergedtitle"), merged_at: now }],
         main_ci: None,
