@@ -158,6 +158,8 @@ pub struct Snapshot {
     pub wip: i64,
     /// last note text per card
     pub last_note: HashMap<i64, String>,
+    /// unix ts of each card's last event (any kind)
+    pub last_event_at: HashMap<i64, i64>,
     /// last two events per card, oldest first
     pub recent: HashMap<i64, Vec<Event>>,
     /// (done, total) checklist counts per card
@@ -754,6 +756,7 @@ impl Store {
         let cards = self.list()?;
         let wip = self.wip()?;
         let mut last_note = HashMap::new();
+        let mut last_event_at: HashMap<i64, i64> = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
         let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
@@ -764,6 +767,7 @@ impl Store {
             if e.kind == "note" {
                 last_note.insert(e.card_id, e.text.clone());
             }
+            last_event_at.insert(e.card_id, e.ts);
             if e.kind == "returned" {
                 *rounds.entry(e.card_id).or_insert(1) += 1;
             }
@@ -789,6 +793,7 @@ impl Store {
             cards,
             wip,
             last_note,
+            last_event_at,
             recent,
             checks,
             rounds,

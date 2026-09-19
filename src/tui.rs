@@ -1666,7 +1666,20 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
     dense
 }
 
-fn agents_panel(app: &App) -> Vec<Line<'static>> {
+/// `"note" 13m` fitted to `room` columns, or just the age when there is no note (or no room
+/// for one). An agent that never writes notes still shows how long its card has been quiet.
+pub fn activity(note: Option<&String>, age: &str, room: usize) -> String {
+    let age_w = age.chars().count();
+    match note {
+        // quotes + one space + the age, and at least a few characters of the note
+        Some(n) if !age.is_empty() && room >= age_w + 3 + 4 => format!("\"{}\" {age}", fit(n, room - age_w - 3)),
+        Some(n) if age.is_empty() && room >= 2 + 4 => format!("\"{}\"", fit(n, room - 2)),
+        _ if age_w <= room => age.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     let agents = match &app.agents {
         AgentsState::Agents(a) => a,
         AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
@@ -1724,8 +1737,16 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
                         spans.push(Span::styled("! idle, holds card", st));
-                    } else if let Some(n) = app.snap.last_note.get(&c.id) {
-                        spans.push(Span::styled(format!("\"{n}\""), dim()));
+                    } else {
+                        let age = app
+                            .snap
+                            .last_event_at
+                            .get(&c.id)
+                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                            .unwrap_or_default();
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used));
+                        spans.push(Span::styled(text, dim()));
                     }
                 }
                 None => spans.push(Span::styled(
@@ -2644,7 +2665,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         note_area(app, 1, rows[i]);
         let focused = app.focus == Focus::Agents;
         let b = frame(focused, None).title(Span::styled(" AGENTS ", bold()));
-        let mut lines = agents_panel(app);
+        let mut lines = agents_panel(app, rows[i].width.saturating_sub(2) as usize);
         if focused {
             let sel = app.ag_sel.min(lines.len().saturating_sub(1));
             if let Some(l) = lines.get_mut(sel) {

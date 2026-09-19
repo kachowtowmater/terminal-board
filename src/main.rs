@@ -203,7 +203,7 @@ fn agents_now(store: &Store) -> Result<Vec<contract::AgentJ>, BoardError> {
         terminal_board::herdr::AgentsState::Agents(a) => a,
         _ => Vec::new(),
     };
-    Ok(contract::agents(&list, &store.list()?))
+    Ok(contract::agents(&list, &store.snapshot()?))
 }
 
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
