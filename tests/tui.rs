@@ -180,6 +180,57 @@ fn board_renders_columns_cards_and_agents() {
 }
 
 #[test]
+fn agents_row_shows_last_note_and_age() {
+    let (_d, mut s) = seeded();
+    // bot-4 takes a card and writes no note
+    let quiet = s.add("ops: rotate certs", "", &[], "lead").unwrap();
+    s.take(quiet, "bot-4").unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Agents(parse_agents(AGENTS, Some(PANES)).unwrap());
+    let (screen, buf) = render(&app, 140, 45);
+    // bot-2 holds the doing card whose last note is "patch applied, tests running":
+    // the row quotes the note and appends its age (the seed note is minutes old)
+    let row = screen.lines().find(|l| l.contains("bot-2") && l.contains("patch applied")).unwrap();
+    // the whole note fits a 140-wide row (not cut to a fixed 24), then one space and the age
+    let after = &row[row.find("\"patch applied, tests running\" ").expect(row) + 31..];
+    let age: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+    assert!(is_age(&age), "a space, then the age: {row}");
+    assert!(colours_of(&screen, &buf, "patch applied").iter().all(|c| *c == palette("dark").fg), "note stays plain:\n{screen}");
+    // an agent whose card has no note: no quote, but the age still shows
+    let row = screen.lines().find(|l| l.contains("bot-4") && l.contains("rotate certs")).expect(&screen);
+    assert!(!row.contains('"'), "no quote without a note: {row}");
+    // the card's column age, then the age of its last event
+    assert_eq!(row.split_whitespace().filter(|w| is_age(w)).count(), 2, "age without a note: {row}");
+}
+
+/// `40m`, `3h`, `2d` or `1h12m` (what fmt_age prints).
+fn is_age(s: &str) -> bool {
+    if !s.is_ascii() || s.len() < 2 {
+        return false;
+    }
+    let (n, unit) = s.split_at(s.len() - 1);
+    let digits = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit());
+    match unit {
+        "d" | "h" => digits(n),
+        "m" => digits(n) || n.split_once('h').is_some_and(|(h, m)| digits(h) && digits(m)),
+        _ => false,
+    }
+}
+
+#[test]
+fn agents_activity_text_fits_the_room() {
+    use terminal_board::tui::activity;
+    let n = "patch applied, tests running".to_string();
+    assert_eq!(activity(Some(&n), "13m", 40), "\"patch applied, tests running\" 13m");
+    let short = activity(Some(&n), "13m", 20);
+    assert!(short.chars().count() <= 20 && short.starts_with("\"patch") && short.ends_with("\" 13m"), "{short}");
+    // too little room for a note: the age alone; no note: the age alone
+    assert_eq!(activity(Some(&n), "13m", 8), "13m");
+    assert_eq!(activity(None, "2h05m", 30), "2h05m");
+    assert_eq!(activity(None, "2h05m", 3), "");
+}
+
+#[test]
 fn narrow_hides_agents_and_detail() {
     let (_d, s) = seeded();
     let mut app = App::new(s.snapshot().unwrap(), "alice");
@@ -602,7 +653,7 @@ fn plus_minus_adjust_wip_only_on_doing() {
     let (x, y) = pos(&screen, "3/1");
     assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED), "over the limit stays highlighted");
     assert_eq!(s.snapshot().unwrap().in_column("doing").len(), 3, "nothing kicked out");
-    assert!(s.next("me").unwrap_err().to_string().contains("doing is full (3/1)"));
+    assert!(s.next("me").unwrap_err().to_string().contains("doing is full (3/1:"));
     let log: Vec<String> = s.board_events().unwrap().into_iter().map(|e| e.3).collect();
     assert_eq!(log.first().map(String::as_str), Some("wip 3 -> 4"));
     assert_eq!(log.last().map(String::as_str), Some("wip 2 -> 1"));

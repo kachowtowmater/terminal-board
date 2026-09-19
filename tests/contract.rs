@@ -33,7 +33,7 @@ fn json(o: &Output) -> serde_json::Value {
 
 const CARD: &[&str] = &[
     "id", "title", "tag", "description", "column", "position", "owner", "due", "gh_ref", "blocked", "created_at",
-    "column_since", "checklist", "events",
+    "column_since", "checklist", "round", "events",
 ];
 
 #[test]
@@ -46,9 +46,12 @@ fn golden_board_shape() {
     assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "github", "columns"]));
     assert_eq!(v["v"], 1);
     assert_eq!((v["wip"].as_i64(), v["theme"].as_str(), v["layout"].as_str()), (Some(3), Some("dark"), Some("auto")));
-    assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error"]));
+    assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error", "fails", "fetched_at"]));
     assert_eq!(v["github"]["repo"], "o/r");
     assert!(v["github"]["snapshot"].is_null());
+    assert!(v["github"]["error"].is_null());
+    assert_eq!(v["github"]["fails"], 0);
+    assert_eq!(v["github"]["fetched_at"], 0);
     assert_eq!(keys(&v["columns"]), sorted(&["todo", "doing", "review", "done"]));
     let card = &v["columns"]["todo"][0];
     assert_eq!(keys(card), sorted(CARD));
@@ -91,7 +94,7 @@ fn golden_write_results_and_errors() {
         vec!["block", "2", "--clear"],
         vec!["take", "1"],
         vec!["done", "1"],
-        vec!["move", "1", "doing"],
+        vec!["move", "1", "doing", "send it back"],
         vec!["drop", "1"],
         vec!["next"],
         vec!["rm", "2"],
@@ -135,9 +138,20 @@ fn golden_agents_shape() {
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     let id = s.add("x", "", &[], "me").unwrap();
     s.take(id, "bot").unwrap();
-    let v = serde_json::to_value(contract::agents(&agents, &s.list().unwrap())).unwrap();
-    assert_eq!(keys(&v[0]), sorted(&["name", "harness", "status", "pane_id", "job", "card_id"]));
+    let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
+    assert_eq!(
+        keys(&v[0]),
+        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at"])
+    );
     assert_eq!((v[0]["card_id"].as_i64(), v[0]["job"].as_str()), (Some(id), Some("fix #1")));
+    // no note yet: last_note null, last_event_at = the take event
+    assert!(v[0]["last_note"].is_null(), "{}", v[0]);
+    assert!(v[0]["last_event_at"].as_i64().unwrap() > 0);
+    s.note(id, "tests pass, opening PR", "bot").unwrap();
+    let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
+    assert_eq!(v[0]["last_note"], "tests pass, opening PR");
+    let at_note = v[0]["last_event_at"].as_i64().unwrap();
+    assert!(at_note > 0);
     // CLI: an array (empty without herdr)
     let o = tb(&dir.path().join("b.db"), &["agents", "--json"]);
     assert!(json(&o).as_array().is_some());
@@ -182,8 +196,69 @@ fn watch_streams_a_new_object_after_a_write() {
 }
 
 #[test]
+fn consumers_must_tolerate_unknown_fields_and_kinds() {
+    // docs/JSON.md: "consumers must ignore unknown fields and unknown event kinds".
+    // Pinned here: the shapes that today's readers rely on keep working when a future tb
+    // adds a field to a card/event and a kind nobody has seen.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("widgets: future proof", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    // an event of a kind that does not exist yet (as a future tb would record)
+    let _ = s.note_kind(id, "future-agent", "an unknown kind", "scrying");
+    let card = contract::card_by_id(&s, id).unwrap();
+    // the golden reader contract: field names are stable; an unknown KIND is still a well-
+    // formed {ts, actor, kind, text} object, so a consumer that dispatches on known kinds
+    // and ignores the rest keeps working.
+    let known_kinds = ["created", "taken", "moved", "note", "check", "blocked", "unblocked", "dropped", "edit", "prio", "github"];
+    let bad: Vec<_> = card.events.iter().filter(|e| !known_kinds.contains(&e.kind.as_str())).collect();
+    assert_eq!(bad.len(), 1, "the unknown-kind event is carried through: {bad:?}");
+    assert_eq!(bad[0].kind, "scrying");
+    assert!(bad[0].ts > 0 && !bad[0].actor.is_empty(), "unknown kinds keep the event shape");
+    // an unknown FIELD (a future card with an extra key) parses fine for a typed reader that
+    // names only the fields it uses — the way an app reads — and the fields it names are there
+    #[derive(serde::Deserialize)]
+    struct ReaderEvent {
+        kind: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct ReaderCard {
+        id: i64,
+        title: String,
+        column: String,
+        owner: Option<String>,
+        events: Vec<ReaderEvent>,
+    }
+    let mut v = serde_json::to_value(&card).unwrap();
+    v["brand_new_field"] = serde_json::json!({"anything": true});
+    v["events"][0]["brand_new_event_field"] = serde_json::json!(1);
+    let r: ReaderCard = serde_json::from_value(v).expect("a typed reader ignores unknown fields");
+    assert_eq!((r.id, r.title.as_str(), r.column.as_str(), r.owner.as_deref()), (id, "future proof", "doing", Some("me")));
+    assert!(r.events.iter().any(|e| e.kind == "scrying"));
+}
+
+/// A fake `gh` for setup runs that must stay offline.
+fn setup_env(home: &Path, gh: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(args)
+        .env("HOME", home)
+        .env_remove("TB_DB")
+        .env_remove("TB_BOARD")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", gh)
+        .output()
+        .unwrap()
+}
+
+/// Lines of the setup summary that name the skill.
+fn skill_summary_lines(out: &str) -> Vec<String> {
+    out.lines().filter(|l| l.trim_start().starts_with("- ") && l.contains("Claude Code skill")).map(|l| l.trim().to_string()).collect()
+}
+
+#[test]
 fn setup_offers_the_skill_only_with_claude_dir() {
-    // a minimal fake gh (repo view positive) so `config github` checks pass offline
     let ghdir = tempfile::tempdir().unwrap();
     let gh = ghdir.path().join("gh");
     std::fs::write(&gh, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
@@ -192,44 +267,28 @@ fn setup_offers_the_skill_only_with_claude_dir() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let fake_gh_ok = || gh.clone();
-    let dir = tempfile::tempdir().unwrap();
-    // HOME without ~/.claude: --yes runs the wizard, the skill step is skipped, nothing written
-    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
-        .args(["setup", "--yes", "--no-github", "--dry-run"])
-        .env("HOME", dir.path())
-        .env("TB_AS", "tester")
-        .env("TB_NO_HERDR", "1")
-        .env("TB_GH", fake_gh_ok())
-        .output()
-        .unwrap();
+    const QUESTION: &str = "Install the Claude Code skill";
+    // 1. no ~/.claude, a REAL run (no --dry-run): no question, the skip is explained,
+    //    nothing is written under ~/.claude, and the summary lists the skip exactly once
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout).to_string();
-    assert!(out.contains("No ~/.claude") || out.contains("Claude Code not detected"), "the skip is explained: {out}");
-    assert!(!dir.path().join(".claude").exists(), "nothing created without ~/.claude");
-    // with ~/.claude present: the skill step runs (dry-run reports the would-install)
-    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
-        .args(["setup", "--yes", "--no-github", "--dry-run"])
-        .env("HOME", dir.path())
-        .env("TB_AS", "tester")
-        .env("TB_NO_HERDR", "1")
-        .env("TB_GH", fake_gh_ok())
-        .output()
-        .unwrap();
+    assert!(out.contains("Claude Code not detected"), "the skip is explained: {out}");
+    assert!(!out.contains(QUESTION), "no question without ~/.claude: {out}");
+    assert!(!home.path().join(".claude").exists(), "a real run creates nothing under ~/.claude");
+    assert_eq!(skill_summary_lines(&out), ["- Claude Code skill (no ~/.claude)"], "one skip line: {out}");
+    // 2. with ~/.claude: the question is asked (--yes answers its default, skip)
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--dry-run"]);
     assert!(o.status.success());
     let out = String::from_utf8_lossy(&o.stdout).to_string();
-    assert!(out.contains("Claude Code skill"), "offered when ~/.claude exists: {out}");
-    // --agents forces the skill even without ~/.claude
-    let dir2 = tempfile::tempdir().unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
-        .args(["setup", "--yes", "--no-github", "--agents", "--dry-run"])
-        .env("HOME", dir2.path())
-        .env("TB_AS", "tester")
-        .env("TB_NO_HERDR", "1")
-        .env("TB_GH", fake_gh_ok())
-        .output()
-        .unwrap();
+    assert!(out.contains(QUESTION), "offered when ~/.claude exists: {out}");
+    assert_eq!(skill_summary_lines(&out).len(), 1, "one skip line: {out}");
+    // 3. --agents forces the skill even without ~/.claude
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--agents", "--dry-run"]);
     assert!(o.status.success());
     let out = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(out.contains("Would install the Claude Code skill"), "forced by --agents: {out}");

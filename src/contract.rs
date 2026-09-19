@@ -42,6 +42,8 @@ pub struct CardJ {
     pub created_at: i64,
     pub column_since: i64,
     pub checklist: Vec<CheckJ>,
+    /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
+    pub round: i64,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
 }
@@ -52,6 +54,10 @@ pub struct GithubJ {
     /// The cached `ttyboard github --json` snapshot, or null.
     pub snapshot: serde_json::Value,
     pub error: Option<String>,
+    /// Consecutive failed refreshes (the UI goes red only after 3).
+    pub fails: i64,
+    /// Unix time of the last good snapshot (0 = never fetched).
+    pub fetched_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +87,10 @@ pub struct AgentJ {
     pub pane_id: String,
     pub job: Option<String>,
     pub card_id: Option<i64>,
+    /// The held card's last note text (None when it holds no card or never noted).
+    pub last_note: Option<String>,
+    /// Unix seconds of the held card's last event (any kind); the screen computes the age.
+    pub last_event_at: Option<i64>,
 }
 
 /// A card with its checklist and last events.
@@ -101,6 +111,7 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         created_at: c.created_at,
         column_since: c.column_since,
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
+        round: crate::store::round_of(&d.events),
         events: d
             .events
             .iter()
@@ -119,12 +130,13 @@ pub fn card_by_id(store: &Store, id: i64) -> Result<CardJ> {
 pub fn board(store: &Store) -> Result<BoardJ> {
     let snap = store.snapshot()?;
     let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card(store, c)).collect() };
-    let (json, error) = store.github_cache()?;
+    let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json
         .filter(|_| repo.is_some())
-        .and_then(|j| serde_json::from_str(&j).ok())
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j.trim()).ok())
         .unwrap_or(serde_json::Value::Null);
+    let fetched_at = snapshot.get("fetched_at").and_then(|f| f.as_i64()).unwrap_or(0);
     debug_assert_eq!(COLUMNS.len(), 4);
     Ok(BoardJ {
         v: SCHEMA_VERSION,
@@ -132,20 +144,26 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         wip: snap.wip,
         theme: snap.theme.clone(),
         layout: snap.layout.clone(),
-        github: GithubJ { repo, snapshot, error },
+        github: GithubJ { repo, snapshot, error, fails, fetched_at },
         columns: ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? },
     })
 }
 
-/// herdr agents merged with the board: the card each one holds (doing first).
-pub fn agents(list: &[Agent], cards: &[Card]) -> Vec<AgentJ> {
+/// herdr agents merged with the board: the card each one holds (doing first), with that
+/// card's last note and the age of its last activity (what the agent is doing).
+pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
     list.iter()
         .map(|a| {
-            let mine: Vec<&Card> = cards
+            let mine: Vec<&Card> = snap
+                .cards
                 .iter()
                 .filter(|c| c.column != "done" && herdr::find_owner(list, c).is_some_and(|o| o.pane_id == a.pane_id))
                 .collect();
             let held = mine.iter().find(|c| c.column == "doing").or(mine.first());
+            let (last_note, last_event_at) = match held {
+                Some(c) => (snap.last_note.get(&c.id).cloned(), snap.last_event_at.get(&c.id).copied()),
+                None => (None, None),
+            };
             AgentJ {
                 name: a.name.clone(),
                 harness: a.harness.clone(),
@@ -153,6 +171,8 @@ pub fn agents(list: &[Agent], cards: &[Card]) -> Vec<AgentJ> {
                 pane_id: a.pane_id.clone(),
                 job: a.job.clone(),
                 card_id: held.map(|c| c.id),
+                last_note,
+                last_event_at,
             }
         })
         .collect()

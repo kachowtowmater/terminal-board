@@ -97,7 +97,7 @@ struct Wizard {
 }
 
 fn note(s: &str) {
-    println!("    {s}");
+    println!("    {}", crate::text::sanitize_lines(s));
 }
 
 fn step(n: usize, title: &str) {
@@ -263,7 +263,6 @@ impl Wizard {
             Some(true) => true,
             None if !claude => {
                 note("No ~/.claude — Claude Code not detected; skipping the skill (use --agents to force it).");
-                self.skipped.push("Claude Code skill (no ~/.claude)".into());
                 false
             }
             None => self.p.ask(&format!("Install the Claude Code skill ({})?", tilde(&skill)), false),
@@ -275,6 +274,8 @@ impl Wizard {
                     .map_err(|e| BoardError(format!("cannot write {}: {e}", skill.display())))?;
             }
             self.did(format!("Claude Code skill in {}", tilde(&skill)), "Would install the Claude Code skill".into());
+        } else if !claude && self.o.agents.is_none() {
+            self.skipped.push("Claude Code skill (no ~/.claude)".into());
         } else {
             self.skipped.push("Claude Code skill".into());
         }
