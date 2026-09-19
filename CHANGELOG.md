@@ -6,8 +6,11 @@
 - `tb config github OWNER/REPO` (like the full-screen picker already did) checks the repo via
   `gh` and refuses `no repo 'R' on GitHub (or no access) — see 'tb github repos'` instead of
   saving a name that would fail every later `tb github`/`tb sync` with a cut-off, auth-flavoured
-  error. A genuine auth failure still points at `gh auth login`; a missing repo never does.
-  `tb setup --github R` reports the same wording.
+  error; `tb setup --github R` refuses the same way (exit 1, `--json` too).
+- A repo that is already saved but gh cannot find is named in full everywhere: `tb github`,
+  `tb sync` and the stored panel error say `no repo 'R' on GitHub (or no access)` with the hint
+  `see 'tb github repos', then 'tb config github OWNER/REPO'`. The `gh auth status` hint now
+  appears only for an auth failure; any other failure says to try again.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no

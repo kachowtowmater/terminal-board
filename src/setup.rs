@@ -328,7 +328,7 @@ impl Wizard {
             self.did(format!("GitHub kept: {c}"), format!("Would keep GitHub: {c}"));
             return Ok(());
         }
-        let repo = if want == 1 { self.github_repo() } else { None };
+        let repo = if want == 1 { self.github_repo()? } else { None };
         match (repo, store) {
             (Some(r), Some(s)) if !dry => {
                 s.set_github(Some(&r))?;
@@ -351,7 +351,9 @@ impl Wizard {
 
     /// gh present (install it after asking), logged in (log in after asking), then a repo
     /// picked from a numbered list or typed, validated with `gh repo view`.
-    fn github_repo(&mut self) -> Option<String> {
+    /// A repo named with `--github` that gh cannot find is refused (an error, exit 1); one typed
+    /// at the prompt is reported and skipped.
+    fn github_repo(&mut self) -> Result<Option<String>> {
         let dry = self.o.dry_run;
         if !on_path(&gh_bin()) {
             match gh_install_cmd() {
@@ -359,26 +361,26 @@ impl Wizard {
                     note(&format!("The GitHub CLI (gh) is needed. Install it with: {cmd}"));
                     if !self.p.ask("Run that now?", false) {
                         note("Skipping GitHub: install gh (https://cli.github.com), then run 'tb setup' again.");
-                        return None;
+                        return Ok(None);
                     }
                     if dry {
                         note(&format!("would run: {cmd}"));
-                        return self.o.github.clone();
+                        return Ok(self.o.github.clone());
                     }
                     let ok = Command::new("sh").args(["-c", cmd]).stdin(tty_stdin()).status().is_ok_and(|s| s.success());
                     if !ok || !on_path(&gh_bin()) {
                         note("gh did not install; skipping GitHub for now.");
-                        return None;
+                        return Ok(None);
                     }
                 }
                 None => {
                     note("The GitHub CLI (gh) is needed: https://cli.github.com — then run 'tb setup' again.");
-                    return None;
+                    return Ok(None);
                 }
             }
         }
         if dry {
-            return self.o.github.clone();
+            return Ok(self.o.github.clone());
         }
         if !gh_ok(&["auth", "status"]) {
             note("gh is not logged in.");
@@ -387,7 +389,7 @@ impl Wizard {
             }
             if !gh_ok(&["auth", "status"]) {
                 note("Skipping GitHub: run 'gh auth login', then 'tb setup --github OWNER/REPO'.");
-                return None;
+                return Ok(None);
             }
         }
         let mut repo = self.o.github.clone();
@@ -412,12 +414,13 @@ impl Wizard {
                 Err(_) => (!pick.is_empty()).then_some(pick),
             };
         }
-        let r = repo?;
+        let Some(r) = repo else { return Ok(None) };
         match github::check_repo(&r) {
-            Ok(name) => Some(name),
-            Err(_) => {
-                note(&format!("Could not find {r} on GitHub (check the name and your access)."));
-                None
+            Ok(name) => Ok(Some(name)),
+            Err(e) if self.o.github.is_some() => Err(BoardError(e)),
+            Err(e) => {
+                note(&e);
+                Ok(None)
             }
         }
     }
