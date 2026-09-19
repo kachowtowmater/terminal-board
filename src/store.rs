@@ -187,16 +187,26 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
             rest = tail.trim();
         }
     }
+    // Only a LEADING gh#N (the first word of the rest) is moved out of the title — the
+    // conventional link token. A gh#N later in the sentence stays in the text; it still
+    // sets the link when no leading one exists (documented in JSON.md).
     let mut gh = None;
-    let mut words = Vec::new();
-    for w in rest.split_whitespace() {
-        if gh.is_none() {
-            if let Some(n) = w.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            gh = Some(n);
+            words.remove(0);
+        }
+    }
+    if gh.is_none() {
+        for w in &words {
+            let lower = w.to_ascii_lowercase();
+            if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
-                continue;
+                break; // the link is set, the words stay
             }
         }
-        words.push(w);
     }
     let title = if words.is_empty() { rest.to_string() } else { words.join(" ") };
     (tag, gh, title)

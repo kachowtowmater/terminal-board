@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### A mid-title `gh#N` keeps its words
+- Only a **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored
+  title. A `gh#N` later in the sentence stays in the text verbatim — the board and JSON keep
+  the original wording — and still sets the link (the first such ref wins).
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
