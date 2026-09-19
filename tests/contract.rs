@@ -46,9 +46,12 @@ fn golden_board_shape() {
     assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "github", "columns"]));
     assert_eq!(v["v"], 1);
     assert_eq!((v["wip"].as_i64(), v["theme"].as_str(), v["layout"].as_str()), (Some(3), Some("dark"), Some("auto")));
-    assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error"]));
+    assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error", "fails", "fetched_at"]));
     assert_eq!(v["github"]["repo"], "o/r");
     assert!(v["github"]["snapshot"].is_null());
+    assert!(v["github"]["error"].is_null());
+    assert_eq!(v["github"]["fails"], 0);
+    assert_eq!(v["github"]["fetched_at"], 0);
     assert_eq!(keys(&v["columns"]), sorted(&["todo", "doing", "review", "done"]));
     let card = &v["columns"]["todo"][0];
     assert_eq!(keys(card), sorted(CARD));

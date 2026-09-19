@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### GitHub
+- A one-off `gh` failure no longer shakes the board: no extra row, the last good snapshot
+  stays, and the panel header quietly reads `synced HH:MM · offline, retrying` (network/
+  timeout errors) or `synced HH:MM · gh error` (everything else). The header turns red —
+  the same style as other problems — only after 3 consecutive failed refreshes. The full
+  error text stays in `tb github` and `--json` (`error`, `fails` = consecutive failures,
+  snapshot `fetched_at` so readers can tell how stale the data is).
 ### Identity: a blank `--as` is refused, never silently replaced
 - `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
   before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
@@ -36,6 +43,12 @@
 - Only a **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored
   title. A `gh#N` later in the sentence stays in the text verbatim — the board and JSON keep
   the original wording — and still sets the link (the first such ref wins).
+### Focus view: shift+arrows move, and the help names the axis
+- In the focus view (small panes) shift+left/right were swallowed by navigation and did
+  nothing — a person thought the card moved when it had not. Now shift+left/right moves the
+  card and shift+up/down reorders it, same as every other view (`>`/`<` still work).
+- The footer in the focus view states its arrow axis (`arrows card/col · shift+<> move`) and
+  the full help gains a `focus view arrows` row, so what the keys do agrees in every view.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no

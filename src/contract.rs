@@ -54,6 +54,10 @@ pub struct GithubJ {
     /// The cached `ttyboard github --json` snapshot, or null.
     pub snapshot: serde_json::Value,
     pub error: Option<String>,
+    /// Consecutive failed refreshes (the UI goes red only after 3).
+    pub fails: i64,
+    /// Unix time of the last good snapshot (0 = never fetched).
+    pub fetched_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,12 +130,13 @@ pub fn card_by_id(store: &Store, id: i64) -> Result<CardJ> {
 pub fn board(store: &Store) -> Result<BoardJ> {
     let snap = store.snapshot()?;
     let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card(store, c)).collect() };
-    let (json, error) = store.github_cache()?;
+    let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json
         .filter(|_| repo.is_some())
-        .and_then(|j| serde_json::from_str(&j).ok())
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j.trim()).ok())
         .unwrap_or(serde_json::Value::Null);
+    let fetched_at = snapshot.get("fetched_at").and_then(|f| f.as_i64()).unwrap_or(0);
     debug_assert_eq!(COLUMNS.len(), 4);
     Ok(BoardJ {
         v: SCHEMA_VERSION,
@@ -139,7 +144,7 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         wip: snap.wip,
         theme: snap.theme.clone(),
         layout: snap.layout.clone(),
-        github: GithubJ { repo, snapshot, error },
+        github: GithubJ { repo, snapshot, error, fails, fetched_at },
         columns: ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? },
     })
 }
