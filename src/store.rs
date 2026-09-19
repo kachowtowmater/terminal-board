@@ -43,6 +43,37 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The actor-aware WIP message: the board-wide limit with who holds what, and what the
+/// actor can actually do (finish their own card, or wait — never finish someone else's).
+fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
+    let holders: Vec<String> = {
+        let mut st = conn
+            .prepare(r#"SELECT id, owner FROM cards WHERE "column"='doing' ORDER BY id"#)
+            .unwrap();
+        st.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let owner: Option<String> = r.get(1)?;
+            Ok(format!("#{id} {}", owner.unwrap_or_else(|| "?".into())))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let mine = conn
+        .query_row(
+            r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE LIMIT 1"#,
+            [actor],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let tail = match mine {
+        Some(id) => format!("finish #{id} with 'tb done {id}' first"),
+        None => "you hold none; wait, or ask one of them to finish".to_string(),
+    };
+    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
+}
+
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     let mover: Option<String> = conn
         .query_row(
@@ -116,6 +147,8 @@ pub struct CardDetail {
     pub card: Card,
     pub checklist: Vec<CheckItem>,
     pub events: Vec<Event>,
+    /// Rework round: 1, plus one per send-back (`returned` event).
+    pub round: i64,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -129,6 +162,8 @@ pub struct Snapshot {
     pub recent: HashMap<i64, Vec<Event>>,
     /// (done, total) checklist counts per card
     pub checks: HashMap<i64, (i64, i64)>,
+    /// rework round per card that was sent back at least once (2 = back once)
+    pub rounds: HashMap<i64, i64>,
     /// UI theme: `dark` (default) or `light`
     pub theme: String,
     /// Board name
@@ -187,17 +222,26 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
             rest = tail.trim();
         }
     }
+    // Only a LEADING gh#N (the first word of the rest) is moved out of the title — the
+    // conventional link token. A gh#N later in the sentence stays in the text; it still
+    // sets the link when no leading one exists (documented in JSON.md).
     let mut gh = None;
-    let mut words = Vec::new();
-    for w in rest.split_whitespace() {
-        if gh.is_none() {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            gh = Some(n);
+            words.remove(0);
+        }
+    }
+    if gh.is_none() {
+        for w in &words {
             let lower = w.to_ascii_lowercase();
             if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
-                continue;
+                break; // the link is set, the words stay
             }
         }
-        words.push(w);
     }
     let title = if words.is_empty() { rest.to_string() } else { words.join(" ") };
     (tag, gh, title)
@@ -686,7 +730,8 @@ impl Store {
             "SELECT card_id, ts, actor, kind, text FROM events WHERE card_id=? ORDER BY ts, id",
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(CardDetail { card, checklist, events })
+        let round = round_of(&events);
+        Ok(CardDetail { card, checklist, events, round })
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -694,6 +739,7 @@ impl Store {
         let wip = self.wip()?;
         let mut last_note = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
+        let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
             "SELECT card_id, ts, actor, kind, text FROM events ORDER BY card_id, ts, id",
         )?;
@@ -701,6 +747,9 @@ impl Store {
             let e = e?;
             if e.kind == "note" {
                 last_note.insert(e.card_id, e.text.clone());
+            }
+            if e.kind == "returned" {
+                *rounds.entry(e.card_id).or_insert(1) += 1;
             }
             let v = recent.entry(e.card_id).or_default();
             v.push(e);
@@ -726,6 +775,7 @@ impl Store {
             last_note,
             recent,
             checks,
+            rounds,
             theme,
             board: self.name.clone(),
             layout,
@@ -781,9 +831,7 @@ impl Store {
             }
         };
         if doing >= wip {
-            return err(format!(
-                "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-            ));
+            return Err(wip_full_err(&tx, doing, wip, actor));
         }
         let pos = bottom_of(&tx, "doing")?;
         let changed = tx.execute(
@@ -895,12 +943,33 @@ impl Store {
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, false)
+        self.move_card(id, column, actor, false, None)
     }
 
     /// `move_to` that lets the author approve their own REVIEW card; logged as a `force` event.
     pub fn move_to_forced(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, true)
+        self.move_card(id, column, actor, true, None)
+    }
+
+    /// `move_to` with every option: `reason` is required (and only allowed) when a REVIEW
+    /// card goes back to DOING.
+    pub fn move_opts(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
+        self.move_card(id, column, actor, force, reason)
+    }
+
+    /// Send a REVIEW card back to its owner in DOING with the reason (a `returned` event).
+    pub fn send_back(&mut self, id: i64, reason: &str, actor: &str) -> Result<Card> {
+        self.move_card(id, "doing", actor, false, Some(reason))
+    }
+
+    /// Last `returned` event time per card (GitHub sync leaves those cards alone until
+    /// their PR is updated after it).
+    pub fn returned_at(&self) -> Result<HashMap<i64, i64>> {
+        let mut st = self.conn.prepare("SELECT card_id, MAX(ts) FROM events WHERE kind='returned' GROUP BY card_id")?;
+        let v = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<i64, i64>>>()?;
+        Ok(v)
     }
 
     /// Who did the work on a card: the actor of its last move into review, or the owner when
@@ -910,15 +979,27 @@ impl Store {
         author_of(&self.conn, &c)
     }
 
-    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool) -> Result<Card> {
+    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
         let column = column.to_ascii_lowercase();
         if !COLUMNS.contains(&column.as_str()) {
             return err(format!(
                 "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
             ));
         }
+        let reason = reason.map(str::trim);
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let send_back = c.column == "review" && column == "doing";
+        if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
+            return err(format!(
+                "say why it goes back — 'tb move {id} doing \"what to fix\"'"
+            ));
+        }
+        if !send_back && reason.is_some() {
+            return err(format!(
+                "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+            ));
+        }
         if c.column == column {
             return Ok(c);
         }
@@ -932,7 +1013,8 @@ impl Store {
                 }
             }
         }
-        if column == "doing" {
+        // a returned card is its owner's existing work, not new work: WIP does not block it
+        if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
             let doing: i64 = tx.query_row(
                 r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#,
@@ -940,9 +1022,7 @@ impl Store {
                 |r| r.get(0),
             )?;
             if doing >= wip {
-                return err(format!(
-                    "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-                ));
+                return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
         let owner = match column.as_str() {
@@ -956,6 +1036,9 @@ impl Store {
             params![column, owner, now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+        if let (true, Some(r)) = (send_back, reason) {
+            Self::log(&tx, id, actor, "returned", r)?;
+        }
         let c = get_card(&tx, id)?;
         tx.commit()?;
         Ok(c)
@@ -1050,8 +1133,8 @@ impl Store {
     fn done_opts(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
         let c = self.card(id)?;
         match c.column.as_str() {
-            "doing" => self.move_card(id, "review", actor, force),
-            "todo" | "review" => self.move_card(id, "done", actor, force),
+            "doing" => self.move_card(id, "review", actor, force, None),
+            "todo" | "review" => self.move_card(id, "done", actor, force, None),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
             )),
@@ -1075,9 +1158,22 @@ impl Store {
     }
 }
 
+/// Rework round from a card's events: 1, plus one for every time it was sent back.
+pub fn round_of(events: &[Event]) -> i64 {
+    1 + events.iter().filter(|e| e.kind == "returned").count() as i64
+}
+
 /// Position for a card appended to the bottom of `column`.
 fn bottom_of(conn: &Connection, column: &str) -> Result<i64> {
     Ok(conn.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"=?"#, [column], |r| r.get(0))?)
+}
+
+/// The card's `gh#N` when it is not already in the title text (a mid-title ref stays there),
+/// i.e. the ref a display should put in front of the title.
+pub fn shown_ref(c: &Card) -> Option<i64> {
+    let n = c.gh_ref?;
+    let token = format!("gh#{n}");
+    (!c.title.split_whitespace().any(|w| w.eq_ignore_ascii_case(&token))).then_some(n)
 }
 
 /// The raw title as typed: `tag: gh#N title` (what `edit` pre-fills).
@@ -1086,7 +1182,7 @@ pub fn raw_title(c: &Card) -> String {
     if let Some(t) = &c.tag {
         s.push_str(&format!("{t}: "));
     }
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = shown_ref(c) {
         s.push_str(&format!("gh#{n} "));
     }
     s.push_str(&c.title);

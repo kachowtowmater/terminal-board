@@ -17,6 +17,7 @@ under the same name: `--as <your-name>` or `TB_AS=<your-name>`.
 | finished (DOING → REVIEW; REVIEW → DONE only on someone else's card) | `tb done ID` |
 | stop and hand it back (→ TODO) | `tb drop ID` |
 | move to any column | `tb move ID todo\|doing\|review\|done` |
+| send a REVIEW card back | `tb move ID doing "what to fix"` |
 | reorder | `tb prio ID top\|bottom\|up\|down` |
 | file new work | `tb add "tag: title" -d "Done = …" --check "step"` |
 | machine-readable | add `--json` to any command |

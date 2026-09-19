@@ -85,6 +85,8 @@ pub enum Mode {
     Normal,
     Add(String),
     Note { id: i64, buf: String, from_popup: bool },
+    /// Sending a REVIEW card back to DOING: the reason being typed.
+    SendBack { id: i64, buf: String },
     Popup(i64),
     AddCheck { id: i64, buf: String },
     /// Repo picker (`R`): typed filter and selected row (row 0 = "none").
@@ -441,6 +443,33 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::SendBack { id, mut buf } => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.status = Some(("cancelled — the card stays in review".into(), false));
+                }
+                KeyCode::Enter => {
+                    if buf.trim().is_empty() {
+                        self.mode = Mode::SendBack { id, buf };
+                        return false;
+                    }
+                    self.mode = Mode::Normal;
+                    let r = store.send_back(id, &buf, &actor);
+                    if self.report(r, |c| format!("#{} sent back to {}", c.id, c.owner.as_deref().unwrap_or("doing"))).is_some() {
+                        self.reload(store);
+                        self.focus_card(id);
+                    }
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                _ => {}
+            },
             Mode::AddCheck { id, mut buf } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Popup(id),
                 KeyCode::Enter => {
@@ -739,6 +768,10 @@ impl App {
                 self.mode = approve_own(id);
                 return;
             }
+        }
+        if column == "review" && to == "doing" {
+            self.mode = Mode::SendBack { id, buf: String::new() };
+            return;
         }
         let actor = self.actor.clone();
         let r = if target.is_none() { store.done(id, &actor) } else { store.move_to(id, &to, &actor) };
@@ -1124,6 +1157,21 @@ impl App {
             self.focus_nav = true;
         }
         match key.code {
+            // shift+left/right moves the card — the same keys mean the same thing in every
+            // view (the focus view previously swallowed them as navigation)
+            KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let (_, column) = self.selected().map(|c| (c.id, c.column.clone()))?;
+                let ci = COLUMNS.iter().position(|k| *k == column).unwrap_or(0);
+                let to = if key.code == KeyCode::Left { ci.checked_sub(1) } else { (ci < 3).then_some(ci + 1) };
+                if let Some(t) = to {
+                    self.move_selected(Some(COLUMNS[t]), store);
+                }
+                return Some(false);
+            }
+            KeyCode::Up | KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.reorder_selected(if key.code == KeyCode::Up { "up" } else { "down" }, store);
+                return Some(false);
+            }
             KeyCode::Left | KeyCode::Right => {
                 let n = self.col_cards(self.col).len();
                 if n > 0 {
@@ -1386,8 +1434,9 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     let id = format!("#{} ", card.id);
     // narrow boxes (< 30 cols): `gh#N` moves to the meta line so the title gets the width
     let narrow = boxed && width + 4 < NARROW_CARD;
-    let gh = if narrow { String::new() } else { card.gh_ref.map(|n| format!("gh#{n} ")).unwrap_or_default() };
-    let meta_gh = if narrow { card.gh_ref.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
+    let shown = crate::store::shown_ref(card);
+    let gh = if narrow { String::new() } else { shown.map(|n| format!("gh#{n} ")).unwrap_or_default() };
+    let meta_gh = if narrow { shown.map(|n| format!("gh#{n} · ")).unwrap_or_default() } else { String::new() };
     let room = width.saturating_sub(id.chars().count() + gh.chars().count());
     let mut first = vec![Span::styled(id, hl)];
     if !gh.is_empty() {
@@ -1668,7 +1717,7 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
             match doing.or(owned.first()) {
                 Some(c) => {
                     spans.push(Span::raw(format!("#{:<4} ", c.id)));
-                    if let Some(n) = c.gh_ref {
+                    if let Some(n) = crate::store::shown_ref(c) {
                         spans.push(Span::raw(format!("gh#{n} ")));
                     }
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
@@ -1694,7 +1743,7 @@ fn detail_strip(app: &App) -> Vec<Line<'static>> {
         return vec![Line::styled(" no card selected - press a to add one", dim())];
     };
     let mut first = vec![Span::raw(format!("> #{} ", c.id))];
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = crate::store::shown_ref(c) {
         first.push(Span::raw(format!("gh#{n} ")));
     }
     first.push(Span::styled(c.title.clone(), Style::default().add_modifier(Modifier::BOLD)));
@@ -1744,6 +1793,11 @@ fn footer(app: &App, width: u16) -> Line<'static> {
             Span::raw(format!("{buf}_")),
             Span::styled("   enter save  esc cancel", dim()),
         ]),
+        Mode::SendBack { id, buf } => Line::from(vec![
+            Span::styled(format!(" send #{id} back — why: "), key),
+            Span::raw(format!("{buf}_")),
+            Span::styled("   enter send back  esc cancel", dim()),
+        ]),
         Mode::Confirm { prompt, .. } => Line::from(vec![Span::styled(format!(" {prompt}"), key)]),
         _ if app.focus != Focus::Columns && app.status.is_none() => {
             let what = if app.focus == Focus::Github { "open" } else { "details" };
@@ -1754,7 +1808,22 @@ fn footer(app: &App, width: u16) -> Line<'static> {
                 let st = if *is_err { bold() } else { Style::default() };
                 return Line::from(vec![Span::styled(format!(" {msg}"), st), Span::styled("  (esc clears)", dim())]);
             }
-            // the essentials; `?` has the rest
+            // the essentials; `?` has the rest. The focus view keeps its own arrow axis
+            // (left/right = card, up/down = column): say so here, so the help agrees.
+            let focus_view = app.last_shape.get() == Shape::Focus && app.view == View::Board;
+            if focus_view {
+                // the focus view's own arrow axis, stated where the keys are used; it is what
+                // this footer must never lose, so the extras are dropped first (a, enter, then
+                // q) and the limit / pick-repo hints stay in `?`
+                let mut hints = vec![("a", "add"), ("enter", "open"), ("arrows", "card/col"), ("shift+<>", "move"), ("?", "help"), ("q", "quit")];
+                for drop in ["enter", "a", "q"] {
+                    if hints_len(&hints) <= width as usize {
+                        break;
+                    }
+                    hints.retain(|(k, _)| *k != drop);
+                }
+                return Line::from(hint_spans(&hints));
+            }
             let mut hints = vec![("a", "add"), ("e", "edit"), ("x", "del"), ("enter", "open"), ("shift+arrows", "move")];
             if app.col == 1 {
                 hints.push(("+/-", "limit"));
@@ -2158,6 +2227,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f, app),
         _ => {}
     }
+    // every cell of every view: displayed text never carries control characters or sequences
+    crate::text::sanitize_buffer(f.buffer_mut());
 }
 
 /// Text with a reversed cursor cell at char index `cursor` (a space when at the end).
@@ -2210,6 +2281,7 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
 pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ("Board", &[
         ("arrows", "select a card (left/right column, up/down card)"),
+        ("focus view arrows", "left/right card, up/down column"),
         ("shift+left/right", "move the card to the next column (also > <)"),
         ("shift+up/down, K J", "reorder the card within its column"),
         ("tab / shift+tab", "cycle focus: columns, GITHUB, AGENTS"),
@@ -2696,8 +2768,8 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             let fetched = gh_out.lock().ok().and_then(|mut g| g.take());
             if let Some((res, states)) = fetched {
                 let _ = store.save_github(&res);
-                if let (Ok(snap), Ok(cards)) = (&res, store.list()) {
-                    let moves = github::plan_moves(snap, &cards, &states);
+                if let (Ok(snap), Ok(cards), Ok(returned)) = (&res, store.list(), store.returned_at()) {
+                    let moves = github::plan_moves(snap, &cards, &states, &returned);
                     if !moves.is_empty() && github::apply_moves(&mut store, &moves).is_ok() {
                         app.status = Some((format!("github moved {} card(s): {}", moves.len(), moves[0].text), false));
                         app.status_until = Some(Instant::now() + Duration::from_secs(5));
