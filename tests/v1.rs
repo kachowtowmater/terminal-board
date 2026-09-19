@@ -450,4 +450,19 @@ fn approve_refuses_the_author() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(s.show(id).unwrap().events.iter().any(|e| e.kind == "approved" && e.actor == "rev"));
     assert_eq!(s.card(id).unwrap().column, "review");
+    // a card that is not in review cannot be approved
+    let doing = s.add("plain: still working", "", &[], "lead").unwrap();
+    s.take(doing, "bot-1").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["done", &doing.to_string(), "--approve"])
+        .env("TB_DB", &db)
+        .env("TB_GH", gh)
+        .env("TB_AS", "rev")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not in review"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(s.card(doing).unwrap().column, "doing");
+    assert!(!s.show(doing).unwrap().events.iter().any(|e| e.kind == "approved"));
 }
