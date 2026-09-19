@@ -252,6 +252,13 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
 
 
 fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+    // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
+    // silently lose to the fallback chain — refuse before anything is written
+    if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
+        return Err(BoardError(
+            "--as is empty — pass your agent name, e.g. --as bot-1 (or drop the flag to use TB_AS/the pane's agent)".to_string(),
+        ));
+    }
     let actor = resolve_actor(cli.actor.as_deref());
     if !terminal_board::env("DB").is_some() {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {

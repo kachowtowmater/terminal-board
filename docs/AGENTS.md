@@ -189,6 +189,10 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 
 ## Common errors
 
+An explicit but blank `--as` (`--as ""`, usually `--as "$NAME"` with `NAME` unset) is refused
+before anything is written: pass your agent name, or drop the flag and let `TB_AS` / the
+pane's agent identity apply.
+
 | error says | do this |
 |---|---|
 | `doing is full` | `tb done` or `tb drop` a card you hold, then retry |

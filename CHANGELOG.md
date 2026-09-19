@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Identity: a blank `--as` is refused, never silently replaced
+- `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
+  before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
+  `--json`). An absent flag keeps the fallback chain (`TB_AS`, the herdr pane's agent, the
+  login name) unchanged.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

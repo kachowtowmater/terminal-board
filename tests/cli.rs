@@ -1,5 +1,15 @@
 use std::process::{Command, Output};
 
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    use std::collections::BTreeSet;
+    v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+fn sorted(list: &[&str]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
 struct Board {
     _dir: tempfile::TempDir,
     db: std::path::PathBuf,
@@ -171,4 +181,29 @@ fn config_lists_all_and_sets_panels() {
     // connecting a repo un-hides the GitHub panel
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
+}
+
+#[test]
+fn blank_as_is_refused_not_silently_replaced() {
+    let b = Board::new();
+    b.ok(&["--as", "lead", "add", "plain: x"]);
+    // empty string
+    let o = b.run(&["note", "1", "empty", "--as", ""]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("--as is empty") && err.contains("--as bot-1"), "{err}");
+    // whitespace only
+    let o = b.run(&["note", "1", "spacey", "--as", "  "]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--as is empty"));
+    // json: the standard object
+    let o = b.run(&["note", "1", "empty", "--as", "", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    // nothing was written
+    let show = b.ok(&["show", "1"]);
+    assert!(!show.contains("empty") && !show.contains("spacey"), "no note landed: {show}");
+    // absent flag: the fallback chain still works (TB_AS=tester in the harness)
+    b.ok(&["note", "1", "logged as tester"]);
+    assert!(b.ok(&["show", "1"]).contains("logged as tester"));
 }
