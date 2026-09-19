@@ -1,5 +1,15 @@
 use std::process::{Command, Output};
 
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    use std::collections::BTreeSet;
+    v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+fn sorted(list: &[&str]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
 struct Board {
     _dir: tempfile::TempDir,
     db: std::path::PathBuf,
@@ -171,4 +181,49 @@ fn config_lists_all_and_sets_panels() {
     // connecting a repo un-hides the GitHub panel
     b.ok(&["config", "github", "o/r"]);
     assert!(b.ok(&["config"]).contains("github-panel  shown"));
+}
+
+#[test]
+fn parse_errors_answer_json_under_json_flag() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target card"]);
+    // bad value: a non-numeric id
+    let o = b.run(&["show", "abc", "--json"]);
+    assert_eq!(o.status.code(), Some(2), "usage errors exit 2");
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert_eq!(v["ok"], false);
+    assert!(v["hint"].as_str().unwrap().contains("tb --help"), "{}", v);
+    // missing argument
+    let o = b.run(&["note", "1", "--json"]);
+    assert_eq!(o.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["ok"], false, "{}", v);
+    let (err, hint) = (v["error"].as_str().unwrap(), v["hint"].as_str().unwrap());
+    assert!(err.contains("<TEXT>"), "names the missing argument: {v}");
+    assert!(err.starts_with("argument error: the following") && !err.contains("error: error"), "no repeated 'error:': {v}");
+    assert!(hint.starts_with("usage: tb note <ID> <TEXT>") && hint.contains("tb --help"), "{v}");
+    // unknown flag (a bare unknown word stays the documented board-open behavior)
+    let o = b.run(&["--frobnicate", "--json"]);
+    assert_eq!(o.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["error"].as_str().unwrap().contains("argument error"), "{}", v);
+    // control: a runtime failure under --json keeps its exact shape and rc 1
+    let o = b.run(&["done", "99", "--json"]);
+    assert!(!o.status.success() && o.status.code().unwrap() == 1);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["hint"], "see 'tb list' for ids", "{}", v);
+    // negative control: without --json a parse failure stays plain on stderr, empty stdout
+    // (the parser's full message and exit code 2, exactly as before)
+    let o = b.run(&["show", "abc"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(o.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("invalid value 'abc'"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = b.run(&["note", "1"]);
+    assert_eq!(o.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("<TEXT>") && e.contains("Usage: tb note <ID> <TEXT>"), "{e}");
+    // --help with --json still prints help text, exit 0
+    let o = b.run(&["--help", "--json"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"));
 }
