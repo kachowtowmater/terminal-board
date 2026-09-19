@@ -14,7 +14,8 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N
 Flow    next (take the top todo) · take ID · done ID [--force] · drop ID
-        move ID todo|doing|review|done [--force] · prio ID top|bottom|up|down
+        move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
+        prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
@@ -73,6 +74,8 @@ enum Cmd {
     Move {
         id: i64,
         column: String,
+        /// Why a REVIEW card goes back to doing (required for that move only)
+        reason: Option<String>,
         #[arg(long)]
         force: bool,
     },
@@ -142,6 +145,21 @@ impl Cmd {
     }
 }
 
+/// Human output goes through the sanitizer: stored, typed and remote text is data, never
+/// terminal control. `say!` is one line; the `_lines` forms keep line breaks. JSON is untouched.
+macro_rules! say {
+    ($($a:tt)*) => { println!("{}", terminal_board::text::sanitize(&format!($($a)*))) };
+}
+macro_rules! say_lines {
+    ($($a:tt)*) => { println!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+macro_rules! print_lines {
+    ($($a:tt)*) => { print!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+macro_rules! warn {
+    ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
+}
+
 fn pretty<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
 }
@@ -151,7 +169,7 @@ fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(),
     if jsonout {
         println!("{}", pretty(&json!({"ok": true, "card": contract::card_by_id(store, id)?})));
     } else {
-        println!("{human}");
+        say_lines!("{human}");
     }
     Ok(())
 }
@@ -205,7 +223,7 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     if !path.exists() {
         if create {
             let store = Store::open(&path)?.named(name);
-            eprintln!("created board '{name}'");
+            warn!("created board '{name}'");
             return Ok(store);
         }
         // A missing non-default board is a typo until shown otherwise: fail with the
@@ -247,31 +265,38 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
             .collect();
         println!("{}", pretty(&v));
     } else if rows.is_empty() {
-        println!("no boards yet — 'tb add \"title\"' creates '{def}', 'tb home add \"title\"' creates 'home'");
+        say!("no boards yet — 'tb add \"title\"' creates '{def}', 'tb home add \"title\"' creates 'home'");
     } else {
         for (n, d, c) in &rows {
-            println!(
+            say!(
                 "{} {n:<16} todo {:<3} doing {:<3} review {:<3} done {}",
                 if *d { "*" } else { " " },
                 c[0], c[1], c[2], c[3]
             );
         }
-        println!("* = default (plain 'tb'); open another with 'tb NAME'");
+        say!("* = default (plain 'tb'); open another with 'tb NAME'");
     }
     Ok(())
 }
 
 
 fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+    // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
+    // silently lose to the fallback chain — refuse before anything is written
+    if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
+        return Err(BoardError(
+            "--as is empty — pass your agent name, e.g. --as bot-1 (or drop the flag to use TB_AS/the pane's agent)".to_string(),
+        ));
+    }
     let actor = resolve_actor(cli.actor.as_deref());
     if !terminal_board::env("DB").is_some() {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
             Ok(notes) => {
                 for n in notes {
-                    eprintln!("tb: {n}");
+                    warn!("tb: {n}");
                 }
             }
-            Err(e) => eprintln!("tb: could not migrate the legacy board: {e}"),
+            Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
     if matches!(cli.cmd, Some(Cmd::Boards)) {
@@ -307,7 +332,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         if j {
             println!("{}", pretty(&contract::board(&store)?));
         } else {
-            print!("{}", plain::board(&store.snapshot()?));
+            print_lines!("{}", plain::board(&store.snapshot()?));
         }
         return Ok(());
     };
@@ -322,7 +347,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&snap.cards));
             } else {
-                print!("{}", plain::list(&snap));
+                print_lines!("{}", plain::list(&snap));
             }
         }
         Cmd::Show { id } => {
@@ -330,14 +355,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&d));
             } else {
-                print!("{}", plain::detail(&d, now));
+                print_lines!("{}", plain::detail(&d, now));
             }
         }
         Cmd::Board => {
             if j {
                 println!("{}", pretty(&contract::board(&store)?));
             } else {
-                print!("{}", plain::board(&store.snapshot()?));
+                print_lines!("{}", plain::board(&store.snapshot()?));
             }
         }
         Cmd::Watch => watch(&store, j)?,
@@ -346,11 +371,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&list));
             } else if list.is_empty() {
-                println!("no agents (herdr not available or no agent panes)");
+                say!("no agents (herdr not available or no agent panes)");
             } else {
                 for a in list {
                     let card = a.card_id.map(|c| format!("#{c}")).unwrap_or_else(|| "-".into());
-                    println!("{:<16} {:<8} {:<8} {:<8} {card}  {}", a.name, a.harness, a.status, a.pane_id, a.job.unwrap_or_default());
+                    say!("{:<16} {:<8} {:<8} {:<8} {card}  {}", a.name, a.harness, a.status, a.pane_id, a.job.unwrap_or_default());
                 }
             }
         }
@@ -392,12 +417,21 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Move { id, column, force } => {
+        Cmd::Move { id, column, reason, force } => {
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;
             }
-            let c = if force { store.move_to_forced(id, &column, &actor)? } else { store.move_to(id, &column, &actor)? };
-            done_card(&store, j, id, format!("#{id} is now in {}", c.column))?;
+            let c = store.move_opts(id, &column, &actor, force, reason.as_deref())?;
+            let human = if reason.is_some() {
+                let round = store.show(id)?.round;
+                format!(
+                    "#{id} is back in doing with {} (round r{round}) — they fix it and 'tb done {id}' again",
+                    c.owner.as_deref().unwrap_or("its owner")
+                )
+            } else {
+                format!("#{id} is now in {}", c.column)
+            };
+            done_card(&store, j, id, human)?;
         }
         Cmd::Done { id, force } => {
             if store.card(id)?.column != "doing" {
@@ -439,7 +473,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&json!({"ok": true, "card": before})));
             } else {
-                println!("deleted #{id} \"{}\"", c.title);
+                say!("deleted #{id} \"{}\"", c.title);
             }
         }
         Cmd::Prio { id, how } => {
@@ -462,15 +496,15 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let snap = r.map_err(|e| BoardError(format!("github: {e} — check 'gh auth status', then 'tb sync'")))?;
             let cards = store.list()?;
             let states = github::fetch_states(&repo, &github::needs_state(&snap, &cards));
-            let moves = github::plan_moves(&snap, &cards, &states);
+            let moves = github::plan_moves(&snap, &cards, &states, &store.returned_at()?);
             github::apply_moves(&mut store, &moves)?;
             if j {
                 println!("{}", pretty(&json!({"ok": true, "moves": moves})));
             } else if moves.is_empty() {
-                println!("synced {repo}: nothing to move");
+                say!("synced {repo}: nothing to move");
             } else {
                 for m in &moves {
-                    println!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
+                    say!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
                 }
             }
         }
@@ -482,7 +516,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 println!("{}", pretty(&json!({"ok": true, "config": m})));
             } else {
                 for (k, v) in all {
-                    println!("{k:<13} {v}");
+                    say!("{k:<13} {v}");
                 }
             }
         }
@@ -496,8 +530,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     let r = store.github_repo()?;
                     if !j {
                         match &r {
-                            Some(r) => println!("{r}"),
-                            None => println!(
+                            Some(r) => say!("{r}"),
+                            None => say!(
                                 "github is off for board '{}' — 'tb config github owner/repo', or press R on the board",
                                 store.name
                             ),
@@ -539,10 +573,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 println!("{}", pretty(&json!({"ok": true, "config": {"key": k, "value": v}})));
             } else {
                 match (k.as_str(), &v) {
-                    ("github", serde_json::Value::Null) => println!("github panel off for board '{}'", store.name),
-                    ("github", r) => println!("github panel on: {} — see it with 'tb github' or 'G' on the board", r.as_str().unwrap_or("")),
-                    ("wip", n) => println!("wip limit is now {n}"),
-                    (k, v) => println!("{k} is now {}", v.as_str().unwrap_or("")),
+                    ("github", serde_json::Value::Null) => say!("github panel off for board '{}'", store.name),
+                    ("github", r) => say!("github panel on: {} — see it with 'tb github' or 'G' on the board", r.as_str().unwrap_or("")),
+                    ("wip", n) => say!("wip limit is now {n}"),
+                    (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }
         }
@@ -554,9 +588,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let cur = store.github_repo()?;
                 for r in &repos {
                     let mark = if cur.as_deref() == Some(r.name_with_owner.as_str()) { "*" } else { " " };
-                    println!("{mark} {}", github::repo_row(r, now));
+                    say!("{mark} {}", github::repo_row(r, now));
                 }
-                println!("pick one with 'tb config github owner/repo' or R on the board");
+                say!("pick one with 'tb config github owner/repo' or R on the board");
             }
         }
         Cmd::Github { what: Some(w), .. } => {
@@ -596,7 +630,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 println!("{}", pretty(&v));
             } else if let Some(s) = &view.snap {
-                print!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
+                print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
             }
         }
         Cmd::Boards | Cmd::Setup { .. } => unreachable!("handled above"),
@@ -620,16 +654,62 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
-    let parsed = split_board(args).and_then(|(board, args)| run(Cli::parse_from(args), board));
+    let parsed = match split_board(args.clone()) {
+        Ok((board, rest)) => match Cli::try_parse_from(rest) {
+            Ok(cli) => run(cli, board),
+            // --help/--version print their text and succeed, with or without --json
+            Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
+                let _ = e.print();
+                return ExitCode::SUCCESS;
+            }
+            // a parse failure is still a documented `--json` failure: the error object on
+            // stdout (non-zero exit), not plain text on stderr with empty stdout
+            Err(e) if jsonout => {
+                let (what, usage) = parse_error_parts(&e.to_string());
+                let more = "see 'tb --help' for every command or 'tb guide' for the manual";
+                let hint = match (e.kind(), usage) {
+                    (clap::error::ErrorKind::InvalidSubcommand, _) => e
+                        .get(clap::error::ContextKind::InvalidSubcommand)
+                        .map(|c| format!("unknown command '{c}' — {more}"))
+                        .unwrap_or_else(|| more.into()),
+                    (_, Some(u)) => format!("usage: {u} — {more}"),
+                    (_, None) => more.into(),
+                };
+                let v = contract::error(&format!("argument error: {what} — {hint}"));
+                println!("{}", pretty(&v));
+                return ExitCode::from(2); // usage error, as without --json
+            }
+            // without --json: the parser's own message and exit code, unchanged
+            Err(e) => e.exit(),
+        },
+        Err(e) => Err(e),
+    };
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             if jsonout {
                 println!("{}", pretty(&contract::error(&e.to_string())));
             } else {
-                eprintln!("tb: {e}");
+                warn!("tb: {e}");
             }
             ExitCode::FAILURE
         }
     }
+}
+
+/// The parser's message as (what went wrong, usage line): the first line without its
+/// `error: ` prefix plus any indented detail lines under it (e.g. the missing `<TEXT>`), and
+/// the `Usage:` line when there is one.
+fn parse_error_parts(msg: &str) -> (String, Option<String>) {
+    let mut lines = msg.lines();
+    let first = lines.next().unwrap_or("").trim();
+    let first = first.strip_prefix("error:").unwrap_or(first).trim();
+    let detail: Vec<&str> = lines.by_ref().take_while(|l| !l.trim().is_empty()).map(str::trim).collect();
+    let what = if detail.is_empty() { first.to_string() } else { format!("{first} {}", detail.join(", ")) };
+    // the parser echoes the global flags it saw; the usage hint is about the command itself
+    let usage = msg
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Usage:"))
+        .map(|u| u.split_whitespace().filter(|w| *w != "--json").collect::<Vec<_>>().join(" "));
+    (what, usage)
 }
