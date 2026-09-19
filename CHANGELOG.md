@@ -17,6 +17,26 @@
   the same style as other problems — only after 3 consecutive failed refreshes. The full
   error text stays in `tb github` and `--json` (`error`, `fails` = consecutive failures,
   snapshot `fetched_at` so readers can tell how stale the data is).
+### Sync never moves unowned work into REVIEW
+- A TODO card nobody took, whose issue already has an open PR, used to be moved to REVIEW by
+  `tb sync` — ownerless, authorless, approvable by anyone, accountable to nobody. Now sync
+  leaves it in TODO (the GITHUB panel still shows the issue's open PR in its STATE column,
+  e.g. `PR #62 ok`); once someone
+  takes the card, the next sync moves it as before. Every synced REVIEW card therefore has
+  an owner and an author.
+### A reader that stops early no longer crashes tb
+- `tb list | head -1`, `tb config | grep -q …` and the like: when the reader closes the pipe
+  before tb has written everything, tb now stops and exits 0 (as `tb watch` already did)
+  instead of panicking with `failed printing to stdout: Broken pipe` (exit 101), on every
+  command. The installer test reads `tb config` output from a variable, not through a pipe.
+
+### The `?` help is readable and scrollable in small panes
+- Narrow panes get a smaller overlay with a shrunk key column; a key too long for it gets
+  its own line, and descriptions wrap at word boundaries — nothing runs together or is cut
+  at the right edge, down to 40 columns, and every key group is reachable.
+- `up`/`down` and PgUp/PgDn scroll the help (Home/End jump to the top/bottom), stopping at
+  the last line so Up works at once; when there is more below, the title bar says
+  `up/down scroll`. The wide view is unchanged.
 ### Identity: a blank `--as` is refused, never silently replaced
 - `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
   before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
@@ -67,6 +87,11 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Agents
+- The AGENTS row says what the agent is doing, in its own words: the held card's last note
+  and its age inside the existing row (e.g. `bot-2 #7 "tests pass, opening PR" 3m`). An
+  agent that never writes notes shows an old age — which is itself the signal. `tb agents
+  --json` adds `last_note` and `last_event_at` (unix seconds; the screen computes the age).
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —

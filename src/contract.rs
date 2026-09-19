@@ -87,6 +87,10 @@ pub struct AgentJ {
     pub pane_id: String,
     pub job: Option<String>,
     pub card_id: Option<i64>,
+    /// The held card's last note text (None when it holds no card or never noted).
+    pub last_note: Option<String>,
+    /// Unix seconds of the held card's last event (any kind); the screen computes the age.
+    pub last_event_at: Option<i64>,
 }
 
 /// A card with its checklist and last events.
@@ -145,15 +149,21 @@ pub fn board(store: &Store) -> Result<BoardJ> {
     })
 }
 
-/// herdr agents merged with the board: the card each one holds (doing first).
-pub fn agents(list: &[Agent], cards: &[Card]) -> Vec<AgentJ> {
+/// herdr agents merged with the board: the card each one holds (doing first), with that
+/// card's last note and the age of its last activity (what the agent is doing).
+pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
     list.iter()
         .map(|a| {
-            let mine: Vec<&Card> = cards
+            let mine: Vec<&Card> = snap
+                .cards
                 .iter()
                 .filter(|c| c.column != "done" && herdr::find_owner(list, c).is_some_and(|o| o.pane_id == a.pane_id))
                 .collect();
             let held = mine.iter().find(|c| c.column == "doing").or(mine.first());
+            let (last_note, last_event_at) = match held {
+                Some(c) => (snap.last_note.get(&c.id).cloned(), snap.last_event_at.get(&c.id).copied()),
+                None => (None, None),
+            };
             AgentJ {
                 name: a.name.clone(),
                 harness: a.harness.clone(),
@@ -161,6 +171,8 @@ pub fn agents(list: &[Agent], cards: &[Card]) -> Vec<AgentJ> {
                 pane_id: a.pane_id.clone(),
                 job: a.job.clone(),
                 card_id: held.map(|c| c.id),
+                last_note,
+                last_event_at,
             }
         })
         .collect()
