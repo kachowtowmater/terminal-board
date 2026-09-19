@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Watching
+- `tb watch --events --json [--since TS]`: an opt-in event stream for orchestrators — one
+  NDJSON line per event (`{v, ts, card_id, actor, kind, from, to, text}`; `from`/`to` are
+  the column transition of `moved` events) instead of the whole board. `--since` resumes
+  after a restart with only the events at/after that unix second. Plain `tb watch --json`
+  output is unchanged byte-for-byte.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

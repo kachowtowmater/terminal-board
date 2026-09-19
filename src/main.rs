@@ -105,7 +105,15 @@ enum Cmd {
     },
     Boards,
     Board,
-    Watch,
+    /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
+    Watch {
+        /// Print one NDJSON line per event instead of the whole board on every change.
+        #[arg(long, requires = "json")]
+        events: bool,
+        /// Start from events at/after this unix-second timestamp.
+        #[arg(long, value_name = "TS", requires = "events")]
+        since: Option<i64>,
+    },
     Agents,
     Sync,
     Guide,
@@ -179,9 +187,54 @@ fn agents_now(store: &Store) -> Result<Vec<contract::AgentJ>, BoardError> {
     Ok(contract::agents(&list, &store.list()?))
 }
 
+/// One `tb watch --events --json` line: the event plus the column transition parsed out of a
+/// `moved` event's text (`doing -> review`); `from`/`to` stay null for other kinds.
+#[derive(serde::Serialize)]
+struct EventLine<'a> {
+    v: u32,
+    ts: i64,
+    card_id: i64,
+    actor: &'a str,
+    kind: &'a str,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    text: &'a str,
+}
+
+impl<'a> EventLine<'a> {
+    fn of(e: &'a terminal_board::store::Event) -> Self {
+        let (from, to) = if e.kind == "moved" {
+            e.text.split_once(" -> ").map(|(f, t)| (Some(f.trim()), Some(t.trim()))).unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+        EventLine { v: contract::SCHEMA_VERSION, ts: e.ts, card_id: e.card_id, actor: &e.actor, kind: &e.kind, from, to, text: &e.text }
+    }
+}
+
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
-fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
+/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text}` line per
+/// event, resuming from `since` (unix seconds) after a restart.
+fn watch(store: &Store, jsonout: bool, events: bool, since: Option<i64>) -> Result<(), BoardError> {
     let mut out = std::io::stdout().lock();
+    if events {
+        // Resume: the id of the last event at/after `since` (0 = stream from the start).
+        let mut last = match since {
+            None => 0,
+            Some(ts) => store.events_cursor_at(ts)?,
+        };
+        loop {
+            for e in store.events_since(last)? {
+                last = e.id;
+                let line = EventLine::of(&e.event);
+                let text = serde_json::to_string(&line).unwrap_or_default();
+                if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
+                    return Ok(()); // reader went away
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    }
     let mut last = None;
     loop {
         let v = store.data_version()?;
@@ -323,7 +376,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print!("{}", plain::board(&store.snapshot()?));
             }
         }
-        Cmd::Watch => watch(&store, j)?,
+        Cmd::Watch { events, since } => watch(&store, j, events, since)?,
         Cmd::Agents => {
             let list = agents_now(&store)?;
             if j {
