@@ -33,7 +33,7 @@ fn json(o: &Output) -> serde_json::Value {
 
 const CARD: &[&str] = &[
     "id", "title", "tag", "description", "column", "position", "owner", "due", "gh_ref", "blocked", "created_at",
-    "column_since", "checklist", "events",
+    "column_since", "checklist", "round", "events",
 ];
 
 #[test]
@@ -94,7 +94,7 @@ fn golden_write_results_and_errors() {
         vec!["block", "2", "--clear"],
         vec!["take", "1"],
         vec!["done", "1"],
-        vec!["move", "1", "doing"],
+        vec!["move", "1", "doing", "send it back"],
         vec!["drop", "1"],
         vec!["next"],
         vec!["rm", "2"],

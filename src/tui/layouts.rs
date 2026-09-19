@@ -438,13 +438,14 @@ pub(super) fn draw_stack(f: &mut Frame, app: &App, area: Rect) {
         gh_h = gh_cap;
         ag_h = ag_min;
         let mut left = bh - cards_min - gh_h - ag_h;
-        // cards up to ~55% first, then AGENTS, then the rest of GITHUB; leftovers to cards
+        // cards up to ~55% first, then the rest of GITHUB (issue #4: spare rows must not
+        // sit unused between DONE and GITHUB), then AGENTS; whatever remains goes to cards
         let cards_target = (bh * 55 / 100).clamp(cards_min, cards_full.max(cards_min));
         left -= (cards_target - cards_min).min(left);
-        let add = (ag_full - ag_h).min(left);
-        ag_h += add;
+        let add = (gh_full - gh_h).min(left);
+        gh_h += add;
         left -= add;
-        gh_h += (gh_full - gh_h).min(left);
+        ag_h += (ag_full - ag_h).min(left);
     } else {
         // tight: the cards keep their minimum, panels shrink, then become bars (never dropped)
         ag_h = if ag_on { 3 } else { 0 };
@@ -517,6 +518,13 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             let add = column_height(app, c, w, dense).saturating_sub(heights[c]).min(left);
             heights[c] += add;
             left -= add;
+        }
+    }
+    // spare height must not sit as a blank band between sections and the panels
+    // (issue #4): stretch the LAST boxed section to absorb what is left
+    if left > 0 {
+        if let Some(&c) = order.iter().rev().find(|&&c| counts[c] > 0 && heights[c] > 1) {
+            heights[c] += left;
         }
     }
     let boxed = |c: usize| counts[c] > 0 && heights[c] > 1;
@@ -595,7 +603,7 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     let inner = b.inner(body);
     f.render_widget(b, body);
     let mut lines: Vec<Line> = Vec::new();
-    let title = match card.gh_ref {
+    let title = match crate::store::shown_ref(card) {
         Some(n) => format!("{} (gh#{n})", card.title),
         None => card.title.clone(),
     };
