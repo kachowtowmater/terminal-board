@@ -457,14 +457,48 @@ pub fn needs_state(s: &GhSnapshot, cards: &[crate::store::Card]) -> Vec<i64> {
     v
 }
 
-/// Look up states with `gh api repos/R/issues/N` (failures are skipped).
-pub fn fetch_states(repo: &str, nums: &[i64]) -> std::collections::HashMap<i64, RefState> {
-    nums.iter()
-        .filter_map(|n| {
-            let out = gh(&["api", &format!("repos/{repo}/issues/{n}")]).ok()?;
-            parse_ref_state(&out).ok().map(|s| (*n, s))
+/// What one `gh api repos/R/issues/N` lookup found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefLookup {
+    /// The issue or PR exists (open or closed).
+    Found(RefState),
+    /// GitHub answered 404: no issue or PR has this number.
+    Missing,
+    /// The lookup itself failed (network, rate limit, auth, bad JSON): nothing is known.
+    Failed(String),
+}
+
+/// Classify the result of `gh api repos/R/issues/N`: only a real 404 means "no such ref".
+pub fn classify_lookup(r: Result<String, String>) -> RefLookup {
+    match r {
+        Ok(out) => match parse_ref_state(&out) {
+            Ok(s) => RefLookup::Found(s),
+            Err(e) => RefLookup::Failed(e),
+        },
+        Err(e) if e.contains("Not Found") || e.contains("HTTP 404") => RefLookup::Missing,
+        Err(e) => RefLookup::Failed(e),
+    }
+}
+
+/// One `gh api repos/R/issues/N` call per number, in order.
+pub fn lookup_refs(repo: &str, nums: &[i64]) -> Vec<(i64, RefLookup)> {
+    nums.iter().map(|n| (*n, classify_lookup(gh(&["api", &format!("repos/{repo}/issues/{n}")])))).collect()
+}
+
+/// The states found by `lookup_refs` (misses and failures are left out).
+pub fn found_states(lookups: &[(i64, RefLookup)]) -> std::collections::HashMap<i64, RefState> {
+    lookups
+        .iter()
+        .filter_map(|(n, l)| match l {
+            RefLookup::Found(s) => Some((*n, s.clone())),
+            _ => None,
         })
         .collect()
+}
+
+/// Look up states with `gh api repos/R/issues/N` (failures are skipped).
+pub fn fetch_states(repo: &str, nums: &[i64]) -> std::collections::HashMap<i64, RefState> {
+    found_states(&lookup_refs(repo, nums))
 }
 
 /// A card GitHub evidence moves forward.
