@@ -1113,11 +1113,50 @@ impl Store {
     }
 
     /// Edit title (re-parsing `tag:` and `gh#N`; an absent gh#N keeps the old ref) and/or description.
-    pub fn edit(&mut self, id: i64, raw_title: Option<&str>, desc: Option<&str>, actor: &str) -> Result<Card> {
+    /// Edit a card. `raw_title`/`desc` of `None` leave that field alone (only the fields
+    /// the caller changed are written). `baseline` = what the caller saw when they started
+    /// (the TUI form): a field the caller changed that someone else changed since the form
+    /// opened is refused instead of overwritten — the form never puts old values back.
+    pub fn edit(
+        &mut self,
+        id: i64,
+        raw_title: Option<&str>,
+        desc: Option<&str>,
+        actor: &str,
+        baseline: Option<(&str, &str)>,
+    ) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let (mut skip_title, mut skip_desc) = (false, false);
+        if let Some((base_title, base_desc)) = baseline {
+            // Only fields the caller CHANGED are written. A field typed back at its
+            // open-time value is skipped (never written — no stale overwrite). A field
+            // they changed that someone else changed since the form opened is refused.
+            let conflict = |field: &str, base: &str, now: &str, typed: &str| -> Option<String> {
+                (now != base && typed != now).then(|| {
+                    format!("#{id} changed while you were editing — {field} has newer text; reopen with e")
+                })
+            };
+            if let Some(t) = raw_title {
+                // the baseline for titles is the raw `tag: gh#N title` string, not the
+                // parsed title the card stores
+                let now_raw = crate::store::raw_title(&c);
+                if t == base_title {
+                    skip_title = true;
+                } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
+                    return err(e);
+                }
+            }
+            if let Some(d) = desc {
+                if d == base_desc {
+                    skip_desc = true;
+                } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
+                    return err(e);
+                }
+            }
+        }
         let mut what = Vec::new();
-        if let Some(t) = raw_title {
+        if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
                 return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
             }
@@ -1128,7 +1167,7 @@ impl Store {
             )?;
             what.push("title");
         }
-        if let Some(d) = desc {
+        if let (Some(d), false) = (desc, skip_desc) {
             tx.execute("UPDATE cards SET description=? WHERE id=?", params![d.trim(), id])?;
             what.push("description");
         }
