@@ -27,6 +27,7 @@ tb check ID --add "step"      # add a checklist item (--rm N deletes one)
 tb block ID "#N"              # stuck (tb block ID --clear when it moves)
 tb drop ID                    # hand it back to TODO if you stop
 tb move ID review             # any column: todo | doing | review | done
+tb move ID doing "why"        # reviewer: send a REVIEW card back to its owner
 tb prio ID top                # reorder: top | bottom | up | down
 tb add "tag: title" -d "Done = …" --check "step"   # file follow-up work
 ```

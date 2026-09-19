@@ -91,7 +91,7 @@ fn shift_arrows_and_jk_reorder_and_move() {
     app.handle_key(key(KeyCode::Left), &mut s);
     app.handle_key(shift(KeyCode::Right), &mut s);
     assert_eq!(s.card(3).unwrap().column, "todo");
-    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2)"));
+    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2:"));
     // Shift+Left back
     app.col = 1;
     app.row[1] = 0;
@@ -215,6 +215,7 @@ fn pr(n: i64, closes: &[i64], branch: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: closes.to_vec(),
+        updated_at: String::new(),
     }
 }
 
@@ -257,7 +258,7 @@ fn auto_move_matrix() {
         (22, RefState { closed: true, pr: true, merged: false }),
     ]
     .into();
-    let moves = plan_moves(&snap, &cards, &states);
+    let moves = plan_moves(&snap, &cards, &states, &HashMap::new());
     let got: Vec<(i64, &str, &str)> = moves.iter().map(|m| (m.card_id, m.to.as_str(), m.text.as_str())).collect();
     assert_eq!(
         got,
@@ -275,7 +276,7 @@ fn auto_move_matrix() {
     let ev = s.show(merged).unwrap().events;
     assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
-    let moves = plan_moves(&snap, &s.list().unwrap(), &states);
+    let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
 }
 
@@ -388,8 +389,12 @@ fn help_overlay_and_footer() {
     let (_d, mut s, mut app) = board(&["a"]);
     let screen = render(&app, 160, 50);
     assert!(screen.contains("a add  e edit  x del  enter open  shift+arrows move") && screen.contains("? help  q quit"), "{screen}");
+    // 60 columns is the focus shape: its footer keeps the focus arrow axis (issue: arrow
+    // behaviour and help text agree in every view), dropping `enter open` to fit
     let narrow = render(&app, 60, 25);
-    assert!(narrow.contains("a add  enter open  ? help  q quit") && !narrow.contains("shift+arrows"), "{narrow}");
+    let footer = narrow.lines().last().unwrap_or("");
+    assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move") && footer.contains("? help"), "{narrow}");
+    assert!(!footer.contains("shift+arrows"), "{narrow}");
     app.handle_key(key(KeyCode::Char('?')), &mut s);
     assert_eq!(app.mode, Mode::Help);
     let screen = render(&app, 160, 50);
@@ -403,4 +408,28 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn wip_full_message_is_actor_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(2).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    let c = s.add("plain: three", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // an actor holding none: holders listed, no 'tb done' suggestion
+    let e = s.take(c, "bot-4").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("you hold none; wait, or ask one of them to finish"), "{e}");
+    assert!(!e.contains("tb done"), "{e}");
+    // an actor holding one: their card named, with the exact command
+    let e = s.take(c, "bot-1").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("finish #1 with 'tb done 1' first"), "{e}");
+    // next with json: same message in the hint path
+    let e = s.next("bot-2").unwrap_err().to_string();
+    assert!(e.contains("finish #2 with 'tb done 2' first"), "{e}");
 }
