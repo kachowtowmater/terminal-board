@@ -89,6 +89,7 @@ The last GitHub sync.
 | `fetched_at` | INTEGER | unix seconds of the last good snapshot (0 = never) |
 | `json` | TEXT NULL | the cached snapshot, same shape as `tb github --json` |
 | `error` | TEXT NULL | the last fetch error |
+| `fails` | INTEGER | failed refreshes in a row since the last good snapshot (a good fetch resets it to 0); the board turns the GitHub header red at 3 |
 
 ### config
 Key/value settings.

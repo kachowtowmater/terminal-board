@@ -100,7 +100,7 @@ fn tui_cells_never_carry_control_characters() {
         aliases: vec![],
     }]);
     app.reload(&s);
-    app.gh = GhView { repo: Some("acme/widgets".into()), snap: Some(gh_snapshot()), error: Some(noisy("gherror")) };
+    app.gh = GhView { repo: Some("acme/widgets".into()), snap: Some(gh_snapshot()), error: Some(noisy("gherror")), fails: 3 };
     app.status = Some((noisy("status"), true));
     let mut seen = String::new();
     for layout in LAYOUTS {
