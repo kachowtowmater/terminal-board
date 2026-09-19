@@ -180,3 +180,32 @@ fn watch_streams_a_new_object_after_a_write() {
     let status = child.wait().unwrap();
     assert!(status.success(), "exits cleanly on a closed stdout: {status:?}");
 }
+
+#[test]
+fn consumers_must_tolerate_unknown_fields_and_kinds() {
+    // docs/JSON.md: "consumers must ignore unknown fields and unknown event kinds".
+    // Pinned here: the shapes that today's readers rely on keep working when a future tb
+    // adds a field to a card/event and a kind nobody has seen.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("widgets: future proof", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    // an event of a kind that does not exist yet (as a future tb would record)
+    let _ = s.note_kind(id, "future-agent", "an unknown kind", "scrying");
+    let card = contract::card_by_id(&s, id).unwrap();
+    // the golden reader contract: field names are stable; an unknown KIND is still a well-
+    // formed {ts, actor, kind, text} object, so a consumer that dispatches on known kinds
+    // and ignores the rest keeps working.
+    let known_kinds = ["created", "taken", "moved", "note", "check", "blocked", "unblocked", "dropped", "edit", "prio", "github"];
+    let bad: Vec<_> = card.events.iter().filter(|e| !known_kinds.contains(&e.kind.as_str())).collect();
+    assert_eq!(bad.len(), 1, "the unknown-kind event is carried through: {bad:?}");
+    assert_eq!(bad[0].kind, "scrying");
+    assert!(bad[0].ts > 0 && !bad[0].actor.is_empty(), "unknown kinds keep the event shape");
+    // an unknown FIELD (a future card with an extra key) parses fine for consumers that
+    // ignore unknown fields — demonstrated with serde_json's merge, the way an app reads:
+    let mut v = serde_json::to_value(&card).unwrap();
+    v["brand_new_field"] = serde_json::json!({"anything": true});
+    let round: serde_json::Value = serde_json::from_value(v).unwrap();
+    assert_eq!(round["id"], id, "the object stays readable with an unknown field present");
+}
