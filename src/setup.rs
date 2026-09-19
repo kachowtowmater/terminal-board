@@ -137,19 +137,52 @@ fn tty_stdin() -> Stdio {
     std::fs::File::open(path).map(Stdio::from).unwrap_or_else(|_| Stdio::inherit())
 }
 
-/// The command that installs the GitHub CLI here, if we know one.
-fn gh_install_cmd() -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        on_path("brew").then_some("brew install gh")
-    } else if on_path("pacman") {
-        Some("sudo pacman -S github-cli")
-    } else if on_path("apt-get") {
-        Some("sudo apt install gh")
-    } else if on_path("dnf") {
-        Some("sudo dnf install gh")
-    } else {
-        None
+/// True when the process may write system paths directly: no `sudo` on the PATH (containers
+/// often run as root without it), or we already are root (Linux: /proc/self/status).
+fn can_install_directly() -> bool {
+    if !on_path("sudo") {
+        return true;
     }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("Uid:")).and_then(|l| l.split_whitespace().nth(1).map(str::to_string)))
+            .is_some_and(|uid| uid == "0")
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// The command that installs the GitHub CLI here, if we know one. `sudo` is suggested only
+/// when it exists AND we are not root (a root container without sudo sees the bare command).
+fn gh_install_cmd() -> Option<String> {
+    let pkg = on_path("apt-get") || on_path("pacman") || on_path("dnf");
+    gh_install_cmd_for_test(pkg, root_now(), on_path("sudo"))
+}
+
+/// Testable core: `pkg` = a Linux package manager is present, `root` = uid 0.
+/// `can_install_directly()` already treats a missing `sudo` as direct; here sudo's
+/// presence is the caller's `root` complement.
+pub fn gh_install_cmd_for_test(pkg: bool, root: bool, has_sudo: bool) -> Option<String> {
+    let pfx = if !has_sudo || root { "" } else { "sudo " };
+    if cfg!(target_os = "macos") && !pkg {
+        return on_path("brew").then(|| "brew install gh".to_string());
+    }
+    if on_path("pacman") {
+        return Some(format!("{pfx}pacman -S github-cli"));
+    }
+    if on_path("apt-get") || (pkg && !on_path("pacman") && !on_path("dnf")) {
+        return Some(format!("{pfx}apt install gh"));
+    }
+    if on_path("dnf") {
+        return Some(format!("{pfx}dnf install gh"));
+    }
+    None
+}
+
+fn root_now() -> bool {
+    can_install_directly() && on_path("sudo")
 }
 
 /// Replace (or add) the marked snippet block in `file`; the rest of the file is kept.
@@ -365,7 +398,7 @@ impl Wizard {
                         note(&format!("would run: {cmd}"));
                         return self.o.github.clone();
                     }
-                    let ok = Command::new("sh").args(["-c", cmd]).stdin(tty_stdin()).status().is_ok_and(|s| s.success());
+                    let ok = Command::new("sh").args(["-c", cmd.as_str()]).stdin(tty_stdin()).status().is_ok_and(|s| s.success());
                     if !ok || !on_path(&gh_bin()) {
                         note("gh did not install; skipping GitHub for now.");
                         return None;
