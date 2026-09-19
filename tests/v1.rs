@@ -234,22 +234,21 @@ fn auto_move_matrix() {
         id
     };
     s.set_wip(99).unwrap();
-    // every card here has an owner (taken by 'me'): the unowned-todo case is its own test
+    // TODO cards have no owner: an open PR leaves them in TODO, a closed issue still moves
+    // them to DONE; DOING cards (owned by 'me') move on an open PR as before
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
     let closed = mk(&mut s, "gh#21 a closed issue", "todo");
     let open_rev = mk(&mut s, "gh#11 open, in review", "review");
     let unmerged = mk(&mut s, "gh#22 closed unmerged pr", "doing");
-    for id in [linked, branch, merged, closed, unmerged] {
-        let _ = s.take(id, "me");
-    }
+    let linked_owned = mk(&mut s, "gh#13 linked by closes, taken", "doing");
     let done_open = mk(&mut s, "gh#10 already done", "done");
     let plain = mk(&mut s, "no gh ref", "doing");
     let snap = GhSnapshot {
         repo: "o/r".into(),
-        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing")],
-        issues: vec![issue(10), issue(11), issue(12)],
+        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing"), pr(32, &[13], "y")],
+        issues: vec![issue(10), issue(11), issue(12), issue(13)],
         ..Default::default()
     };
     let cards = s.list().unwrap();
@@ -266,13 +265,14 @@ fn auto_move_matrix() {
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR #30 open → review"),
             (branch, "review", "github: PR #31 open → review"),
             (merged, "done", "github: PR #20 merged → done"),
             (closed, "done", "github: issue #21 closed → done"),
+            (linked_owned, "review", "github: PR #32 open → review"),
         ]
     );
-    let untouched = [open_rev, unmerged, done_open, plain];
+    // the unowned TODO card with an open PR stays in TODO
+    let untouched = [linked, open_rev, unmerged, done_open, plain];
     assert!(moves.iter().all(|m| !untouched.contains(&m.card_id)), "no backwards, no evidence, no move");
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
@@ -329,10 +329,11 @@ esac
         ),
     );
     let db = d.join("b.db");
-    for (i, t) in ["gh#10 linked", "gh#20 merged", "gh#21 closed"].iter().enumerate() {
+    for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
         tb(&db, &gh, &["add", t]);
-        tb(&db, &gh, &["take", &(i + 1).to_string()]); // owners: sync moves taken work
     }
+    // an open PR moves only work someone took; merged/closed move unowned TODO cards too
+    tb(&db, &gh, &["take", "1"]);
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -423,17 +424,8 @@ fn sync_never_moves_an_unowned_todo_card_to_review() {
         repo: "acme/widgets".into(),
         fetched_at: terminal_board::store::now(),
         issues_open: 2,
-        prs: vec![Pr {
-            number: 61,
-            title: "fix it".into(),
-            head_ref: "fix/61".into(),
-            is_draft: false,
-            review: "-".into(),
-            ci: "ok".into(),
-            created_at: "2026-09-18T07:00:00Z".into(),
-            author: "bot-1".into(),
-            closes: vec![61],
-        }],
+        // each card's issue has its own open PR: the unowned one (#62 closes #60) moved on main
+        prs: vec![pr(62, &[60], "fix/60"), pr(61, &[61], "fix/61")],
         issues: vec![issue(60), issue(61)],
         ..Default::default()
     };
