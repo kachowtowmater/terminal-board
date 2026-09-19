@@ -141,6 +141,14 @@ pub struct Event {
     pub text: String,
 }
 
+/// An event with its database id (for `tb watch --events` resumption).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchEvent {
+    pub id: i64,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CardDetail {
     #[serde(flatten)]
@@ -750,6 +758,35 @@ impl Store {
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
         Ok(CardDetail { card, checklist, events, round })
+    }
+
+    /// Events with `id > after`, oldest first (for `tb watch --events`).
+    pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, card_id, ts, actor, kind, text FROM events WHERE id > ? ORDER BY id")?;
+        let v = st
+            .query_map([after], |r| {
+                Ok(WatchEvent {
+                    id: r.get(0)?,
+                    event: Event {
+                        card_id: r.get(1)?,
+                        ts: r.get(2)?,
+                        actor: r.get(3)?,
+                        kind: r.get(4)?,
+                        text: r.get(5)?,
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
+    /// The id of the last event strictly before `ts` (0 when none) — `--since` resumption:
+    /// streaming `id > cursor` yields exactly the events at/after `ts`.
+    pub fn events_cursor_at(&self, ts: i64) -> Result<i64> {
+        // a DB error must surface, not silently replay the whole history from 0
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events WHERE ts < ?", [ts], |r| r.get(0))?)
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {

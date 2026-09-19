@@ -98,6 +98,24 @@ other processes and GitHub cache refreshes both count). Exits cleanly when stdou
 tb watch --json | while read -r line; do …; done
 ```
 
+## `tb watch --events --json [--since TS]` — one line per event (opt-in)
+
+Plain `tb watch --json` above is unchanged byte-for-byte; the event stream is opt-in:
+
+```sh
+tb watch --events --json                # one NDJSON line per event
+tb watch --events --json --since 1789777000   # resume: only events at/after that unix second
+```
+
+Each line is `{v, ts, card_id, actor, kind, from, to, text}`: `kind` is the event kind
+(`created`, `taken`, `moved`, `note`, `check`, …); `from`/`to` are the column transition of
+every event that changes a card's column — `created` (null → `todo`), `taken` (`todo` →
+`doing`), `dropped` (e.g. `doing` → `todo`) and `moved` (e.g. `doing` → `review`) — so following
+them tracks every card's column; they are null for every other kind; `text` is the event's
+text (the note, the block reason, …). `--since` resumes after a restart: only events at/after
+that unix second are streamed, in `(ts, id)` order — an orchestrator records the last event
+it saw and passes the next start second on restart.
+
 ## Writes — `--json` results
 
 Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `move`, `done`,
