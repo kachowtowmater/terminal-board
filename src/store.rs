@@ -45,18 +45,48 @@ pub type Result<T> = std::result::Result<T, BoardError>;
 
 /// The refusal for moving someone else's DOING card: what it is held by, what the actor
 /// holds, and the escape hatch.
-fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> BoardError {
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
     let mine: Vec<i64> = {
-        let mut st = tx
-            .prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)
-            .unwrap();
-        let v = st.query_map([actor], |r| r.get::<_, i64>(0)).unwrap().map(|r| r.unwrap()).collect();
+        let mut st =
+            tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
+        let v = st.query_map([actor], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         v
     };
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
-    BoardError(format!(
+    Ok(BoardError(format!(
         "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
-    ))
+    )))
+}
+
+/// The actor-aware WIP message: the board-wide limit with who holds what, and what the
+/// actor can actually do (finish their own card, or wait — never finish someone else's).
+fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
+    let holders: Vec<String> = {
+        let mut st = conn
+            .prepare(r#"SELECT id, owner FROM cards WHERE "column"='doing' ORDER BY id"#)
+            .unwrap();
+        st.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let owner: Option<String> = r.get(1)?;
+            Ok(format!("#{id} {}", owner.unwrap_or_else(|| "?".into())))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let mine = conn
+        .query_row(
+            r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE LIMIT 1"#,
+            [actor],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let tail = match mine {
+        Some(id) => format!("finish #{id} with 'tb done {id}' first"),
+        None => "you hold none; wait, or ask one of them to finish".to_string(),
+    };
+    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
 }
 
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
@@ -132,6 +162,8 @@ pub struct CardDetail {
     pub card: Card,
     pub checklist: Vec<CheckItem>,
     pub events: Vec<Event>,
+    /// Rework round: 1, plus one per send-back (`returned` event).
+    pub round: i64,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -141,10 +173,14 @@ pub struct Snapshot {
     pub wip: i64,
     /// last note text per card
     pub last_note: HashMap<i64, String>,
+    /// unix ts of each card's last event (any kind)
+    pub last_event_at: HashMap<i64, i64>,
     /// last two events per card, oldest first
     pub recent: HashMap<i64, Vec<Event>>,
     /// (done, total) checklist counts per card
     pub checks: HashMap<i64, (i64, i64)>,
+    /// rework round per card that was sent back at least once (2 = back once)
+    pub rounds: HashMap<i64, i64>,
     /// UI theme: `dark` (default) or `light`
     pub theme: String,
     /// Board name
@@ -203,16 +239,26 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
             rest = tail.trim();
         }
     }
+    // Only a LEADING gh#N (the first word of the rest) is moved out of the title — the
+    // conventional link token. A gh#N later in the sentence stays in the text; it still
+    // sets the link when no leading one exists (documented in JSON.md).
     let mut gh = None;
-    let mut words = Vec::new();
-    for w in rest.split_whitespace() {
-        if gh.is_none() {
-            if let Some(n) = w.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            gh = Some(n);
+            words.remove(0);
+        }
+    }
+    if gh.is_none() {
+        for w in &words {
+            let lower = w.to_ascii_lowercase();
+            if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
-                continue;
+                break; // the link is set, the words stay
             }
         }
-        words.push(w);
     }
     let title = if words.is_empty() { rest.to_string() } else { words.join(" ") };
     (tag, gh, title)
@@ -261,7 +307,8 @@ CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
     json TEXT,
-    error TEXT
+    error TEXT,
+    fails INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS board_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,6 +411,19 @@ impl Store {
                 }
                 Err(e) if e.to_string().contains("duplicate column") => {}
                 Err(e) => return Err(e.into()),
+            }
+        }
+        // migration: github fail counter (red only after 3 consecutive failed refreshes)
+        let has_fails: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_fails == 0 {
+            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.into()),
+                _ => {}
             }
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
@@ -495,21 +555,21 @@ impl Store {
     }
 
     /// Store a fetch result: a snapshot replaces the cache and clears the error; an error is
-    /// recorded next to the last good snapshot.
+    /// recorded next to the last good snapshot, and counted (red only after 3 in a row).
     pub fn save_github(&self, r: &std::result::Result<crate::github::GhSnapshot, String>) -> Result<()> {
         match r {
             Ok(s) => {
                 let json = serde_json::to_string(s).unwrap_or_default();
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, fetched_at, json, error) VALUES (1, ?, ?, NULL)
-                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, ?, ?, NULL, 0)
+                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL, fails=0",
                     params![s.fetched_at, json],
                 )?;
             }
             Err(e) => {
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, error) VALUES (1, ?)
-                     ON CONFLICT(key) DO UPDATE SET error=excluded.error",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, 0, NULL, ?, 1)
+                     ON CONFLICT(key) DO UPDATE SET error=excluded.error, fails=fails+1",
                     params![e],
                 )?;
             }
@@ -517,23 +577,25 @@ impl Store {
         Ok(())
     }
 
-    /// Raw cached snapshot JSON and its error, if any.
-    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>)> {
+    /// Raw cached snapshot JSON, its error (if any) and consecutive fail count.
+    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>, i64)> {
         Ok(self
             .conn
-            .query_row("SELECT json, error FROM github_snapshot WHERE key=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT json, error, fails FROM github_snapshot WHERE key=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?
-            .unwrap_or((None, None)))
+            .unwrap_or((None, None, 0)))
     }
 
-    /// Repo + cached snapshot (only if it is for that repo) + last error.
+    /// Repo + cached snapshot (only if it is for that repo) + last error + fail count.
     pub fn github_view(&self) -> Result<crate::github::GhView> {
         let repo = self.github_repo()?;
-        let (json, error) = self.github_cache()?;
+        let (json, error, fails) = self.github_cache()?;
         let snap = json
             .and_then(|j| serde_json::from_str::<crate::github::GhSnapshot>(&j).ok())
             .filter(|s| Some(&s.repo) == repo.as_ref());
-        Ok(crate::github::GhView { repo, snap, error })
+        Ok(crate::github::GhView { repo, snap, error, fails })
     }
 
     /// `github-panel` / `agents-panel`: shown (default) or hidden.
@@ -701,14 +763,17 @@ impl Store {
             "SELECT card_id, ts, actor, kind, text FROM events WHERE card_id=? ORDER BY ts, id",
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(CardDetail { card, checklist, events })
+        let round = round_of(&events);
+        Ok(CardDetail { card, checklist, events, round })
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
         let cards = self.list()?;
         let wip = self.wip()?;
         let mut last_note = HashMap::new();
+        let mut last_event_at: HashMap<i64, i64> = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
+        let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
             "SELECT card_id, ts, actor, kind, text FROM events ORDER BY card_id, ts, id",
         )?;
@@ -716,6 +781,10 @@ impl Store {
             let e = e?;
             if e.kind == "note" {
                 last_note.insert(e.card_id, e.text.clone());
+            }
+            last_event_at.insert(e.card_id, e.ts);
+            if e.kind == "returned" {
+                *rounds.entry(e.card_id).or_insert(1) += 1;
             }
             let v = recent.entry(e.card_id).or_default();
             v.push(e);
@@ -739,8 +808,10 @@ impl Store {
             cards,
             wip,
             last_note,
+            last_event_at,
             recent,
             checks,
+            rounds,
             theme,
             board: self.name.clone(),
             layout,
@@ -796,9 +867,7 @@ impl Store {
             }
         };
         if doing >= wip {
-            return err(format!(
-                "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-            ));
+            return Err(wip_full_err(&tx, doing, wip, actor));
         }
         let pos = bottom_of(&tx, "doing")?;
         let changed = tx.execute(
@@ -910,12 +979,33 @@ impl Store {
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, false)
+        self.move_card(id, column, actor, false, None)
     }
 
     /// `move_to` that lets the author approve their own REVIEW card; logged as a `force` event.
     pub fn move_to_forced(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, true)
+        self.move_card(id, column, actor, true, None)
+    }
+
+    /// `move_to` with every option: `reason` is required (and only allowed) when a REVIEW
+    /// card goes back to DOING.
+    pub fn move_opts(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
+        self.move_card(id, column, actor, force, reason)
+    }
+
+    /// Send a REVIEW card back to its owner in DOING with the reason (a `returned` event).
+    pub fn send_back(&mut self, id: i64, reason: &str, actor: &str) -> Result<Card> {
+        self.move_card(id, "doing", actor, false, Some(reason))
+    }
+
+    /// Last `returned` event time per card (GitHub sync leaves those cards alone until
+    /// their PR is updated after it).
+    pub fn returned_at(&self) -> Result<HashMap<i64, i64>> {
+        let mut st = self.conn.prepare("SELECT card_id, MAX(ts) FROM events WHERE kind='returned' GROUP BY card_id")?;
+        let v = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<i64, i64>>>()?;
+        Ok(v)
     }
 
     /// Who did the work on a card: the actor of its last move into review, or the owner when
@@ -925,15 +1015,27 @@ impl Store {
         author_of(&self.conn, &c)
     }
 
-    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool) -> Result<Card> {
+    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
         let column = column.to_ascii_lowercase();
         if !COLUMNS.contains(&column.as_str()) {
             return err(format!(
                 "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
             ));
         }
+        let reason = reason.map(str::trim);
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let send_back = c.column == "review" && column == "doing";
+        if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
+            return err(format!(
+                "say why it goes back — 'tb move {id} doing \"what to fix\"'"
+            ));
+        }
+        if !send_back && reason.is_some() {
+            return err(format!(
+                "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+            ));
+        }
         if c.column == column {
             return Ok(c);
         }
@@ -944,7 +1046,7 @@ impl Store {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, &column));
+                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
                     }
                     Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
                 }
@@ -960,7 +1062,8 @@ impl Store {
                 }
             }
         }
-        if column == "doing" {
+        // a returned card is its owner's existing work, not new work: WIP does not block it
+        if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
             let doing: i64 = tx.query_row(
                 r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#,
@@ -968,9 +1071,7 @@ impl Store {
                 |r| r.get(0),
             )?;
             if doing >= wip {
-                return err(format!(
-                    "doing is full ({doing}/{wip}) — finish one with 'tb done ID' first"
-                ));
+                return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
         let owner = match column.as_str() {
@@ -984,6 +1085,9 @@ impl Store {
             params![column, owner, now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+        if let (true, Some(r)) = (send_back, reason) {
+            Self::log(&tx, id, actor, "returned", r)?;
+        }
         let c = get_card(&tx, id)?;
         tx.commit()?;
         Ok(c)
@@ -1037,11 +1141,50 @@ impl Store {
     }
 
     /// Edit title (re-parsing `tag:` and `gh#N`; an absent gh#N keeps the old ref) and/or description.
-    pub fn edit(&mut self, id: i64, raw_title: Option<&str>, desc: Option<&str>, actor: &str) -> Result<Card> {
+    /// Edit a card. `raw_title`/`desc` of `None` leave that field alone (only the fields
+    /// the caller changed are written). `baseline` = what the caller saw when they started
+    /// (the TUI form): a field the caller changed that someone else changed since the form
+    /// opened is refused instead of overwritten — the form never puts old values back.
+    pub fn edit(
+        &mut self,
+        id: i64,
+        raw_title: Option<&str>,
+        desc: Option<&str>,
+        actor: &str,
+        baseline: Option<(&str, &str)>,
+    ) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let (mut skip_title, mut skip_desc) = (false, false);
+        if let Some((base_title, base_desc)) = baseline {
+            // Only fields the caller CHANGED are written. A field typed back at its
+            // open-time value is skipped (never written — no stale overwrite). A field
+            // they changed that someone else changed since the form opened is refused.
+            let conflict = |field: &str, base: &str, now: &str, typed: &str| -> Option<String> {
+                (now != base && typed != now).then(|| {
+                    format!("#{id} changed while you were editing — {field} has newer text; reopen with e")
+                })
+            };
+            if let Some(t) = raw_title {
+                // the baseline for titles is the raw `tag: gh#N title` string, not the
+                // parsed title the card stores
+                let now_raw = crate::store::raw_title(&c);
+                if t == base_title {
+                    skip_title = true;
+                } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
+                    return err(e);
+                }
+            }
+            if let Some(d) = desc {
+                if d == base_desc {
+                    skip_desc = true;
+                } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
+                    return err(e);
+                }
+            }
+        }
         let mut what = Vec::new();
-        if let Some(t) = raw_title {
+        if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
                 return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
             }
@@ -1052,7 +1195,7 @@ impl Store {
             )?;
             what.push("title");
         }
-        if let Some(d) = desc {
+        if let (Some(d), false) = (desc, skip_desc) {
             tx.execute("UPDATE cards SET description=? WHERE id=?", params![d.trim(), id])?;
             what.push("description");
         }
@@ -1078,8 +1221,8 @@ impl Store {
     fn done_opts(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
         let c = self.card(id)?;
         match c.column.as_str() {
-            "doing" => self.move_card(id, "review", actor, force),
-            "todo" | "review" => self.move_card(id, "done", actor, force),
+            "doing" => self.move_card(id, "review", actor, force, None),
+            "todo" | "review" => self.move_card(id, "done", actor, force, None),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
             )),
@@ -1087,53 +1230,62 @@ impl Store {
     }
 
     /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
     pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
-        let c = self.card(id)?;
-        if c.column == "doing" {
-            if let Some(owner) = c.owner.as_deref() {
-                if !owner.eq_ignore_ascii_case(actor) {
-                    let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
-                    tx.commit()?;
-                }
-            }
-        }
-        self.drop_card_inner(id, actor)
+        self.drop_card_inner(id, actor, true)
     }
 
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.drop_card_inner(id, actor)
+        self.drop_card_inner(id, actor, false)
     }
 
-    fn drop_card_inner(&mut self, id: i64, actor: &str) -> Result<Card> {
-        let c = self.card(id)?;
+    /// Back to todo, unowned. Someone else's DOING card is refused (the same hazard as moving
+    /// it, see move_card) unless forced; the check, the `force` event and the drop are one
+    /// transaction.
+    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let c = get_card(&tx, id)?;
         if c.column == "todo" && c.owner.is_none() {
             return Ok(c);
         }
-        // dropping someone else's DOING card is the same hazard as moving it (see move_card)
         if c.column == "doing" && actor != "github" {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
-                    let tx = self.conn.unchecked_transaction()?;
-                    return Err(ownership_err(&tx, id, owner, actor, "todo"));
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
                 }
             }
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
             r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=? WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
+        let c = get_card(&tx, id)?;
         tx.commit()?;
-        self.card(id)
+        Ok(c)
     }
+}
+
+/// Rework round from a card's events: 1, plus one for every time it was sent back.
+pub fn round_of(events: &[Event]) -> i64 {
+    1 + events.iter().filter(|e| e.kind == "returned").count() as i64
 }
 
 /// Position for a card appended to the bottom of `column`.
 fn bottom_of(conn: &Connection, column: &str) -> Result<i64> {
     Ok(conn.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"=?"#, [column], |r| r.get(0))?)
+}
+
+/// The card's `gh#N` when it is not already in the title text (a mid-title ref stays there),
+/// i.e. the ref a display should put in front of the title.
+pub fn shown_ref(c: &Card) -> Option<i64> {
+    let n = c.gh_ref?;
+    let token = format!("gh#{n}");
+    (!c.title.split_whitespace().any(|w| w.eq_ignore_ascii_case(&token))).then_some(n)
 }
 
 /// The raw title as typed: `tag: gh#N title` (what `edit` pre-fills).
@@ -1142,7 +1294,7 @@ pub fn raw_title(c: &Card) -> String {
     if let Some(t) = &c.tag {
         s.push_str(&format!("{t}: "));
     }
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = shown_ref(c) {
         s.push_str(&format!("gh#{n} "));
     }
     s.push_str(&c.title);
