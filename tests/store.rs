@@ -169,3 +169,25 @@ fn done_approve_records_without_moving() {
     assert_eq!(a.actor, "rev");
     assert!(a.text.contains("approved"), "{a:?}");
 }
+
+#[test]
+fn moves_keep_blocks_except_into_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // a DOING card blocked on an external wait: finishing it to REVIEW keeps the block
+    let id = s.add("plain: blocked while working", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    s.block(id, Some("waiting on API key"), "me").unwrap();
+    s.done(id, "me").unwrap();
+    let c = s.card(id).unwrap();
+    assert_eq!(c.column, "review");
+    assert_eq!(c.blocked.as_deref(), Some("waiting on API key"), "DOING->REVIEW keeps the block");
+    // and reaching DONE clears it
+    s.done_forced(id, "rev").unwrap();
+    assert_eq!(s.card(id).unwrap().blocked, None, "DONE clears the block");
+    // a TODO -> REVIEW move keeps a block too
+    let id2 = s.add("plain: blocked in todo", "", &[], "me").unwrap();
+    s.block(id2, Some("#9"), "me").unwrap();
+    s.move_to(id2, "review", "me").unwrap();
+    assert_eq!(s.card(id2).unwrap().blocked.as_deref(), Some("#9"));
+}

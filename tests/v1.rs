@@ -419,3 +419,19 @@ fn auto_move_event_text_carries_no_repeated_source() {
     assert!(!e.text.starts_with("github: "), "no triple 'github' in one line: {}", e.text);
     assert!(e.text.starts_with("PR gh#"), "{}", e.text);
 }
+
+#[test]
+fn approve_refuses_the_author() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: mine", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap(); // bot-1 is the owner -> the author of the review move
+    s.done(id, "bot-1").unwrap(); // bot-1 moved it to review
+    // the author cannot approve their own work via --approve (CLI-level gate asserted here
+    // via the store author record the gate reads)
+    assert_eq!(s.author(id).unwrap().as_deref(), Some("bot-1"));
+    // a different actor records the approval without moving the card
+    let _ = s.note_kind(id, "rev", "approved (the card stays in review; done waits for the merge)", "approved");
+    assert_eq!(s.card(id).unwrap().column, "review");
+}

@@ -148,7 +148,9 @@ fn tidy_rows(app: &App, s: &github::GhSnapshot, width: usize) -> Vec<Line<'stati
     }
     for r in &fac.issues {
         let status = match r.kind {
-            github::StateKind::Pr => format!("PR gh#{} {}", r.number, r.pr_ci.clone().unwrap_or_else(|| "-".into())),
+            // r.state already reads 'PR gh#<pr#> <ci>' with the PR's own number; do not
+            // re-derive it from r.number (that is the ISSUE number)
+            github::StateKind::Pr => r.state.clone(),
             github::StateKind::InProgress => r.who.clone(),
             github::StateKind::OnBoard => "board".into(),
             github::StateKind::Unclaimed => "free".into(),

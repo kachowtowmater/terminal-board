@@ -393,6 +393,13 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "#{id} is not in review — approval records a review pass; move it to review first"
                     )));
                 }
+                // the self-approval rule (#11) applies to --approve too: the card's author
+                // cannot record their own approval
+                if store.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(&actor)) {
+                    return Err(BoardError(format!(
+                        "you did this work — ask another person or agent to approve #{id}"
+                    )));
+                }
                 store.note_kind(id, &actor, "approved (the card stays in review; done waits for the merge)", "approved")?;
                 let human = format!("#{id} approved by {actor} — it stays in review until the gh# PR merges");
                 done_card(&store, j, id, human)?;
@@ -666,7 +673,8 @@ fn argument_error(e: clap::error::Error) -> BoardError {
             ));
         }
     }
-    let msg = e.to_string();
+    // clap's Display is multi-line (usage block); the JSON "error" takes one line
+    let msg = e.to_string().lines().next().unwrap_or_default().trim().to_string();
     BoardError(format!(
         "{msg} — run 'tb --help' for every command or 'tb guide' for the manual"
     ))
