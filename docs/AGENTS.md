@@ -165,6 +165,9 @@ tb github --json             # the same, for parsing
 tb sync                      # apply GitHub evidence to the board now
 ```
 
+- The GitHub panel reads the 20 newest open PRs and issues; when a page is full the count
+  says `newest`. `tb sync` still follows the board's own `gh#N` refs beyond that page
+  (their state is looked up per number).
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW,
   a merged PR or a closed issue moves it to DONE. Cards never move backwards.
 - Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR, so

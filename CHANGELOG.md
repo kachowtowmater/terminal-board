@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### GitHub counts are pages, and sync sees past the page
+- The panel fetches the 20 newest open PRs and issues; when the page is full the counts are
+  labelled `newest` (`PRS 20 open newest`, `ISSUES 60 (+1, 5 unclaimed newest)`) so 20 never
+  reads as the repo total. No extra `gh` calls on the refresh path.
+- `tb sync` now moves a card whose linked PR is **outside** the newest 20: the per-number
+  state lookup it already runs for the board's own refs carries the open-PR evidence
+  (`closed/merged/open`), so an older issue's card moves to REVIEW instead of silently
+  sticking.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
