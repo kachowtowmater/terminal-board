@@ -25,6 +25,7 @@ fn pr(n: i64, title: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: vec![],
+        updated_at: String::new(),
     }
 }
 

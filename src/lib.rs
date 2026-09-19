@@ -7,6 +7,7 @@ pub mod herdr;
 pub mod plain;
 pub mod setup;
 pub mod store;
+pub mod text;
 pub mod tui;
 
 /// `TB_<name>`, falling back to the pre-rename `TTYBOARD_<name>` (the new name wins).
