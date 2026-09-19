@@ -129,6 +129,7 @@ fn lifecycle_and_errors() {
     assert_eq!(s.done(p, "me").unwrap().column, "done");
     let snap = s.snapshot().unwrap();
     assert_eq!(snap.last_note.get(&id).map(String::as_str), Some("halfway"));
+    assert!(snap.last_event_at.get(&id).is_some_and(|ts| *ts > 0), "last event ts present: {:?}", snap.last_event_at);
     let kinds: Vec<_> = s.show(id).unwrap().events.into_iter().map(|e| e.kind).collect();
     assert!(kinds.contains(&"taken".to_string()) && kinds.contains(&"dropped".to_string()));
 }
@@ -151,7 +152,7 @@ fn gh_ref_parses_case_insensitively() {
     }
     // edit keeps the same rule
     let id = s.add("widgets: no ref", "", &[], "me").unwrap();
-    s.edit(id, Some("widgets: GH#99 moved"), None, "me").unwrap();
+    s.edit(id, Some("widgets: GH#99 moved"), None, "me", None).unwrap();
     assert_eq!(s.card(id).unwrap().gh_ref, Some(99));
 }
 

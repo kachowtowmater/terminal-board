@@ -5,6 +5,12 @@ fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking chan
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
 
+**Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
+fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
+and a consumer that hard-fails on them breaks on every minor update. The event `kind`
+vocabulary is open (see docs/SCHEMA.md); treat an unknown kind as "something happened to
+this card", not as an error.
+
 ## `tb board --json` — the whole board
 
 ```json
@@ -14,7 +20,7 @@ Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_
   "wip": 3,
   "theme": "dark",
   "layout": "auto",
-  "github": { "repo": "acme/widgets", "snapshot": { "…": "see below" }, "error": null },
+  "github": { "repo": "acme/widgets", "snapshot": { "…": "see below" }, "error": null, "fails": 0, "fetched_at": 1789763036 },
   "columns": {
     "todo":   [ card, … ],
     "doing":  [ card, … ],
@@ -34,6 +40,8 @@ Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_
 | `github.repo` | string\|null | `owner/repo`, null when GitHub is off |
 | `github.snapshot` | object\|null | the cached GitHub snapshot (same as `tb github --json` without the per-issue `state`/`who`) |
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
+| `github.fails` | int | consecutive failed refreshes; the board UI goes red only after 3 |
+| `github.fetched_at` | int | unix seconds of the last good snapshot (0 = never fetched) |
 | `columns.*` | card[] | todo/doing/review in `position` order; **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
 
 A bare `tb --json` (not a terminal) prints the same object.
@@ -125,7 +133,7 @@ or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it don
 herdr agent panes merged with the board (empty array when herdr is not available).
 
 ```json
-[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1 } ]
+[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036 } ]
 ```
 
 | field | type | notes |
@@ -136,11 +144,13 @@ herdr agent panes merged with the board (empty array when herdr is not available
 | `pane_id` | string | |
 | `job` | string\|null | the last `·` segment of the pane label |
 | `card_id` | int\|null | the card it holds (DOING first) |
+| `last_note` | string\|null | that card's last note text (what the agent says it is doing) |
+| `last_event_at` | int\|null | unix seconds of the card's last event — compute the age yourself; an agent that never notes shows an old age |
 
 ## Other read commands
 
 - `tb list --json` — array of cards (without checklist/events).
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
-- `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}`.
+- `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

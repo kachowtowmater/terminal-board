@@ -173,6 +173,9 @@ pub struct EditForm {
     pub id: i64,
     pub title: String,
     pub desc: String,
+    /// What the fields read when the form opened (the save-conflict baseline).
+    pub open_title: String,
+    pub open_desc: String,
     /// 0 = title, 1 = description
     pub field: u8,
     pub cursor: usize,
@@ -254,6 +257,10 @@ pub struct App {
     pub gh: GhView,
     pub show_github: bool,
     pub mode: Mode,
+    /// Scroll offset of the `?` help overlay (up/down, PgUp/PgDn in Mode::Help).
+    pub help_scroll: u16,
+    /// The largest useful `help_scroll` at the last render (the key handler clamps to it).
+    pub help_max: std::cell::Cell<u16>,
     pub popup: Option<CardDetail>,
     pub status: Option<(String, bool)>,
     pub actor: String,
@@ -305,6 +312,8 @@ impl App {
             gh: GhView::default(),
             show_github,
             mode: Mode::Normal,
+            help_scroll: 0,
+            help_max: std::cell::Cell::new(0),
             popup: None,
             status: None,
             actor: actor.to_string(),
@@ -578,8 +587,18 @@ impl App {
                 _ => {}
             },
             Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-                    self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.help_scroll = 0;
+                    }
+                    KeyCode::Down => self.help_scroll = (self.help_scroll + 1).min(self.help_max.get()),
+                    KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                    KeyCode::PageDown => self.help_scroll = (self.help_scroll + 10).min(self.help_max.get()),
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                    KeyCode::Home => self.help_scroll = 0,
+                    KeyCode::End => self.help_scroll = self.help_max.get(),
+                    _ => {}
                 }
             }
             Mode::Confirm { action, .. } => {
@@ -620,7 +639,15 @@ impl App {
                     self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
                 }
                 KeyCode::Enter => {
-                    let r = store.edit(form.id, Some(&form.title), Some(&form.desc), &actor);
+                    // only the fields the person changed are written; a field they left at
+                    // its open-time value but that moved on since is refused, not overwritten
+                    let r = store.edit(
+                        form.id,
+                        (form.title != form.open_title).then_some(form.title.as_str()),
+                        (form.desc != form.open_desc).then_some(form.desc.as_str()),
+                        &actor,
+                        Some((form.open_title.as_str(), form.open_desc.as_str())),
+                    );
                     if self.report(r, |c| format!("#{} saved", c.id)).is_some() {
                         self.reload(store);
                         self.focus_card(form.id);
@@ -726,7 +753,16 @@ impl App {
         if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
-            self.mode = Mode::Edit(EditForm { id, title, desc: c.description.clone(), field: 0, cursor, from_popup });
+            self.mode = Mode::Edit(EditForm {
+                id,
+                open_title: title.clone(),
+                open_desc: c.description.clone(),
+                title,
+                desc: c.description.clone(),
+                field: 0,
+                cursor,
+                from_popup,
+            });
         }
     }
 
@@ -1666,7 +1702,20 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
     dense
 }
 
-fn agents_panel(app: &App) -> Vec<Line<'static>> {
+/// `"note" 13m` fitted to `room` columns, or just the age when there is no note (or no room
+/// for one). An agent that never writes notes still shows how long its card has been quiet.
+pub fn activity(note: Option<&String>, age: &str, room: usize) -> String {
+    let age_w = age.chars().count();
+    match note {
+        // quotes + one space + the age, and at least a few characters of the note
+        Some(n) if !age.is_empty() && room >= age_w + 3 + 4 => format!("\"{}\" {age}", fit(n, room - age_w - 3)),
+        Some(n) if age.is_empty() && room >= 2 + 4 => format!("\"{}\"", fit(n, room - 2)),
+        _ if age_w <= room => age.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     let agents = match &app.agents {
         AgentsState::Agents(a) => a,
         AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
@@ -1724,8 +1773,16 @@ fn agents_panel(app: &App) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
                         spans.push(Span::styled("! idle, holds card", st));
-                    } else if let Some(n) = app.snap.last_note.get(&c.id) {
-                        spans.push(Span::styled(format!("\"{n}\""), dim()));
+                    } else {
+                        let age = app
+                            .snap
+                            .last_event_at
+                            .get(&c.id)
+                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                            .unwrap_or_default();
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used));
+                        spans.push(Span::styled(text, dim()));
                     }
                 }
                 None => spans.push(Span::styled(
@@ -1966,10 +2023,13 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let synced = gh.snap.as_ref().map(|s| crate::store::fmt_clock(s.fetched_at)).unwrap_or_else(|| "never".into());
+    let (suffix, is_red) = github::sync_suffix(gh.error.as_deref(), gh.fails);
+    let sync_text = format!("synced {synced}{suffix}");
+    let sync_style = if is_red { red() } else { bold() };
     let title = if focused && app.gh_sel == 0 {
-        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &format!("synced {synced}")], area.width), sel_style)
+        Span::styled(fit_title(&["GITHUB", &format!("repo: {repo}  (enter to change)"), &sync_text], area.width), sel_style)
     } else {
-        Span::styled(fit_title(&["GITHUB", &repo, &format!("synced {synced}")], area.width), bold())
+        Span::styled(fit_title(&["GITHUB", &repo, &sync_text], area.width), sync_style)
     };
     let block = frame(focused, None).title(title);
     let inner = block.inner(area);
@@ -1980,10 +2040,6 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
     let now = app.snap.now;
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
-    if let Some(e) = &gh.error {
-        f.render_widget(Paragraph::new(Line::raw(format!(" github: {e}"))), Rect { y, height: 1, ..inner });
-        y += 1;
-    }
     let Some(s) = &gh.snap else {
         if gh.error.is_none() {
             f.render_widget(Paragraph::new(Line::styled(" fetching...", dim())), Rect { y, height: 1, ..inner });
@@ -2169,7 +2225,7 @@ pub(crate) fn github_want(app: &App, width: u16) -> u16 {
     } else {
         s.prs.len() as u16 + issues
     };
-    2 + tiles + rows.max(1) + u16::from(app.gh.error.is_some())
+    2 + tiles + rows.max(1)
 }
 
 fn base_style(app: &App) -> Style {
@@ -2323,28 +2379,93 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ]),
 ];
 
+/// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let used = cur.chars().count();
+            let sep = usize::from(used > 0);
+            if used + sep + word.len() <= width {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            // a word longer than the line: cut it
+            let rest = word.split_off(width);
+            out.push(word.into_iter().collect());
+            word = rest;
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The help rows for an overlay `iw` columns wide: keys in a `kw` column, descriptions
+/// wrapped beside them; a key too long for the column gets its own line.
+fn help_lines(iw: usize, kw: usize) -> Vec<Line<'static>> {
+    let indent = 3 + kw;
+    let dw = iw.saturating_sub(indent).max(8);
+    let mut lines = Vec::new();
+    for (group, keys) in HELP_GROUPS {
+        lines.push(Line::styled(format!(" {group}"), bold()));
+        for (k, d) in keys {
+            let mut desc = wrap_words(d, dw).into_iter();
+            if k.chars().count() < kw {
+                let first = desc.next().unwrap_or_default();
+                lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(first)]));
+            } else {
+                lines.push(Line::styled(format!("   {k}"), bold()));
+            }
+            for more in desc {
+                lines.push(Line::raw(format!("{:indent$}{more}", "")));
+            }
+        }
+    }
+    lines
+}
+
 fn draw_help(f: &mut Frame, app: &App) {
-    let rows: usize = HELP_GROUPS.iter().map(|g| g.1.len() + 1).sum();
-    let area = centered(f.area(), 96, rows as u16 + 3);
+    // narrow panes: a smaller overlay, a shrunk key column, descriptions wrapped
+    let wide = f.area().width >= 100;
+    let (w, kw) = if wide { (96, 26) } else { (f.area().width.saturating_sub(2).max(30), 12) };
+    let iw = w.min(f.area().width.saturating_sub(2)).saturating_sub(2) as usize;
+    let lines = help_lines(iw, kw);
+    let rows = lines.len();
+    let area = centered(f.area(), w, rows as u16 + 3);
     if area.width < 10 || area.height < 4 {
         return;
     }
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(base_style(app)), area);
+    let mut title_bottom = Line::styled(" esc or ? closes ", bold());
+    let inner_h = area.height.saturating_sub(2) as usize;
+    if rows > inner_h {
+        title_bottom = Line::styled(" esc/? closes · up/down scroll ", bold());
+    }
     let b = frame(true, None)
         .title(Span::styled(" Terminal Board keys ", bold()))
-        .title_bottom(Line::styled(" esc or ? closes ", bold()));
+        .title_bottom(title_bottom);
     let inner = b.inner(area);
     f.render_widget(b, area);
-    let kw = 26;
-    let mut lines = Vec::new();
-    for (group, keys) in HELP_GROUPS {
-        lines.push(Line::styled(format!(" {group}"), bold()));
-        for (k, d) in keys {
-            lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(d.to_string())]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+    let max_scroll = rows.saturating_sub(inner_h) as u16;
+    app.help_max.set(max_scroll);
+    let scroll = app.help_scroll.min(max_scroll);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 fn info_popup(f: &mut Frame, app: &App, title: String, lines: Vec<Line<'static>>, hint: &str) {
@@ -2645,7 +2766,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         note_area(app, 1, rows[i]);
         let focused = app.focus == Focus::Agents;
         let b = frame(focused, None).title(Span::styled(" AGENTS ", bold()));
-        let mut lines = agents_panel(app);
+        let mut lines = agents_panel(app, rows[i].width.saturating_sub(2) as usize);
         if focused {
             let sel = app.ag_sel.min(lines.len().saturating_sub(1));
             if let Some(l) = lines.get_mut(sel) {

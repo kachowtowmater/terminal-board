@@ -66,12 +66,49 @@ pub struct GhSnapshot {
     pub main_ci: Option<MainCi>,
 }
 
-/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any).
+/// What the UI/CLI shows: the last good snapshot (if any) plus the last error (if any), and
+/// how many refreshes failed in a row (the UI goes red only after 3).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GhView {
     pub repo: Option<String>,
     pub snap: Option<GhSnapshot>,
     pub error: Option<String>,
+    pub fails: i64,
+}
+
+/// Consecutive `gh` refresh failures after which the header turns red.
+pub const RED_AFTER_FAILS: i64 = 3;
+
+/// Header suffix for the GITHUB panel title: quiet words, red only after RED_AFTER_FAILS.
+/// `(error, fails)` -> `(suffix, red)`; `(None, _)` -> `(empty, false)`.
+/// Error text (lower-case) that means the network is down or flaky, not that gh is broken.
+const OFFLINE: [&str; 14] = [
+    "timed out",
+    "timeout",
+    "tls handshake",
+    "connection refused",
+    "temporary failure",
+    "getaddrinfo",
+    "error connecting to",
+    "no such host",
+    "network is unreachable",
+    "no route to host",
+    "connection reset",
+    "broken pipe",
+    "i/o timeout",
+    "check your internet connection",
+];
+
+pub fn sync_suffix(error: Option<&str>, fails: i64) -> (String, bool) {
+    match error {
+        None => (String::new(), false),
+        Some(e) => {
+            // gh relays Go network errors, which are lower-case; compare lower-case anyway
+            let e = e.to_ascii_lowercase();
+            let word = if OFFLINE.iter().any(|w| e.contains(w)) { "offline, retrying" } else { "gh error" };
+            (format!(" · {word}"), fails >= RED_AFTER_FAILS)
+        }
+    }
 }
 
 const BAD: [&str; 6] = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
@@ -499,15 +536,21 @@ pub fn plan_moves(
             }
         }
         if c.column == "todo" || c.column == "doing" {
-            let own_pr = s.prs.iter().find(|p| p.number == n);
-            let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
-            if let Some(p) = own_pr.or(linked) {
-                let updated_since_return = match returned.get(&c.id) {
-                    None => true,
-                    Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
-                };
-                if updated_since_return {
-                    out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+            // An UNOWNED card stays put: sync never moves work nobody took into REVIEW —
+            // there it would have no owner and no author, so anyone could approve it and
+            // nobody would be accountable. (Doing cards always have an owner; the hole is
+            // a todo card linked to an issue that already has an open PR.)
+            if c.owner.is_some() {
+                let own_pr = s.prs.iter().find(|p| p.number == n);
+                let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
+                if let Some(p) = own_pr.or(linked) {
+                    let updated_since_return = match returned.get(&c.id) {
+                        None => true,
+                        Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
+                    };
+                    if updated_since_return {
+                        out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                    }
                 }
             }
         }
@@ -841,5 +884,61 @@ mod tests {
         assert_eq!(one("in_progress", ""), "run");
         assert_eq!(parse_main_ci("[]").unwrap(), None);
         assert!(parse_main_ci("{").is_err());
+    }
+
+    #[test]
+    fn sync_suffix_quiet_then_red() {
+        let net = "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout";
+        let other = "HTTP 401: Bad credentials (https://api.github.com)";
+        assert_eq!(sync_suffix(None, 0), (String::new(), false));
+        assert_eq!(sync_suffix(Some(net), 0), (" · offline, retrying".into(), false));
+        assert_eq!(sync_suffix(Some(other), 0), (" · gh error".into(), false));
+        assert_eq!(sync_suffix(Some(net), 2), (" · offline, retrying".into(), false), "not red yet");
+        assert_eq!(sync_suffix(Some(other), RED_AFTER_FAILS), (" · gh error".into(), true), "red at 3");
+        assert_eq!(sync_suffix(Some(net), 10), (" · offline, retrying".into(), true), "still red past the threshold");
+        // gh's own offline message and Go's lower-case network errors, as gh prints them
+        for e in [
+            "error connecting to api.github.com",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: network is unreachable",
+            "Post \"https://api.github.com/graphql\": read tcp 127.0.0.1:51234->127.0.0.1:443: read: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": write tcp 127.0.0.1:51234->127.0.0.1:443: write: broken pipe",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: no route to host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: i/o timeout",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.1:53: Temporary failure in name resolution",
+            "Get \"https://api.github.com/zen\": dial tcp 127.0.0.1:443: connect: Connection Refused",
+            "NETWORK IS UNREACHABLE",
+        ] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · offline, retrying".into(), false), "{e}");
+        }
+        for e in ["HTTP 404: Not Found (https://api.github.com/repos/acme/nope)", "GraphQL: Could not resolve to a Repository"] {
+            assert_eq!(sync_suffix(Some(e), 0), (" · gh error".into(), false), "{e}");
+        }
+    }
+
+    #[test]
+    fn save_github_counts_consecutive_failures() {
+        use crate::store::Store;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("b.db");
+        let s = Store::open(&db).unwrap();
+        s.set_github(Some("acme/widgets")).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!((json.is_none(), error.is_none(), fails), (true, true, 0));
+        for want in 1..=5 {
+            s.save_github(&Err(format!("boom {want}"))).unwrap();
+            let (_, error, fails) = s.github_cache().unwrap();
+            assert_eq!(fails, want);
+            assert_eq!(error.as_deref(), Some(format!("boom {want}").as_str()));
+        }
+        s.save_github(&Ok(GhSnapshot { repo: "acme/widgets".into(), fetched_at: 100, ..Default::default() })).unwrap();
+        let (json, error, fails) = s.github_cache().unwrap();
+        assert_eq!(fails, 0, "success resets the counter");
+        assert!(error.is_none());
+        let snap: GhSnapshot = serde_json::from_str(&json.unwrap()).unwrap();
+        assert_eq!(snap.fetched_at, 100);
+        let view = s.github_view().unwrap();
+        assert_eq!(view.fails, 0);
+        assert_eq!(view.snap.as_ref().map(|s| s.fetched_at), Some(100));
     }
 }

@@ -184,17 +184,18 @@ pub(super) fn draw_gh_compact(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let name = repo.rsplit('/').next().unwrap_or(&repo).to_string();
+    let (suffix, is_red) = github::sync_suffix(app.gh.error.as_deref(), app.gh.fails);
     let left = if focused && app.gh_sel == 0 {
         Span::styled(fit_title(&["GITHUB", &format!("{name} (enter to change)")], area.width), sel_style)
     } else {
-        Span::styled(fit_title(&["GITHUB", &name], area.width), bold().fg(fg))
+        Span::styled(fit_title(&["GITHUB", &name], area.width), if is_red { red().fg(fg) } else { bold().fg(fg) })
     };
     let mut b = frame(focused, None).title(left.clone());
     if let Some(snap) = &app.gh.snap {
-        let t = format!(" {} ", crate::store::fmt_clock(snap.fetched_at));
-        // the time only when it fits next to the title
-        if left.content.chars().count() + t.len() + 4 <= area.width as usize {
-            b = b.title(Line::styled(t, dim()).right_aligned());
+        let t = format!(" {}{suffix} ", crate::store::fmt_clock(snap.fetched_at));
+        // the time (and, when failing, the suffix) only when it fits next to the title
+        if left.content.chars().count() + t.chars().count() + 4 <= area.width as usize {
+            b = b.title(Line::styled(t, if is_red { red() } else { dim() }).right_aligned());
         }
     }
     let inner = b.inner(area);
@@ -202,12 +203,6 @@ pub(super) fn draw_gh_compact(f: &mut Frame, app: &App, area: Rect) {
     let w = inner.width as usize;
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
-    if let Some(e) = &app.gh.error {
-        if y < bottom {
-            f.render_widget(Paragraph::new(Line::raw(fit(&format!(" github: {e}"), w))), Rect { y, height: 1, ..inner });
-            y += 1;
-        }
-    }
     let Some(s) = &app.gh.snap else {
         if app.gh.error.is_none() && y < bottom {
             f.render_widget(Paragraph::new(Line::styled(" fetching...", dim())), Rect { y, height: 1, ..inner });
@@ -294,7 +289,25 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 _ => ("-", dim()),
             };
             let what = match app.agent_card(i) {
-                Some(c) => format!("#{} {}", c.id, c.title),
+                Some(c) => {
+                    let age = app
+                        .snap
+                        .last_event_at
+                        .get(&c.id)
+                        .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+                        .unwrap_or_default();
+                    // the note gets what the row has left after the name, status, id and a
+                    // short title; the age is shown even without a note
+                    let id = format!("#{} ", c.id);
+                    let title = format!(" {}", fit(&c.title, 12));
+                    let fixed = 3 + 11 + if holds { 15 } else { 9 } + id.chars().count() + title.chars().count();
+                    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
+                    if act.is_empty() {
+                        format!("{id}{}", c.title)
+                    } else {
+                        format!("{id}{act}{title}")
+                    }
+                }
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
             let text = if holds {
