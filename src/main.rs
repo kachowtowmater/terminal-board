@@ -14,7 +14,8 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N
 Flow    next (take the top todo) · take ID · done ID [--force] · drop ID
-        move ID todo|doing|review|done [--force] · prio ID top|bottom|up|down
+        move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
+        prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
@@ -73,6 +74,8 @@ enum Cmd {
     Move {
         id: i64,
         column: String,
+        /// Why a REVIEW card goes back to doing (required for that move only)
+        reason: Option<String>,
         #[arg(long)]
         force: bool,
     },
@@ -390,12 +393,21 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Move { id, column, force } => {
+        Cmd::Move { id, column, reason, force } => {
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;
             }
-            let c = if force { store.move_to_forced(id, &column, &actor)? } else { store.move_to(id, &column, &actor)? };
-            done_card(&store, j, id, format!("#{id} is now in {}", c.column))?;
+            let c = store.move_opts(id, &column, &actor, force, reason.as_deref())?;
+            let human = if reason.is_some() {
+                let round = store.show(id)?.round;
+                format!(
+                    "#{id} is back in doing with {} (round r{round}) — they fix it and 'tb done {id}' again",
+                    c.owner.as_deref().unwrap_or("its owner")
+                )
+            } else {
+                format!("#{id} is now in {}", c.column)
+            };
+            done_card(&store, j, id, human)?;
         }
         Cmd::Done { id, force } => {
             if store.card(id)?.column != "doing" {
@@ -460,7 +472,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let snap = r.map_err(|e| BoardError(format!("github: {e} — check 'gh auth status', then 'tb sync'")))?;
             let cards = store.list()?;
             let states = github::fetch_states(&repo, &github::needs_state(&snap, &cards));
-            let moves = github::plan_moves(&snap, &cards, &states);
+            let moves = github::plan_moves(&snap, &cards, &states, &store.returned_at()?);
             github::apply_moves(&mut store, &moves)?;
             if j {
                 println!("{}", pretty(&json!({"ok": true, "moves": moves})));

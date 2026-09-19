@@ -55,6 +55,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "created_at": 1789763036,
   "column_since": 1789763036,
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
+  "round": 1,
   "events": [
     { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "" },
     { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "" }
@@ -76,7 +77,8 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github` |
+| `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force` |
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -131,7 +133,7 @@ herdr agent panes merged with the board (empty array when herdr is not available
 ## Other read commands
 
 - `tb list --json` — array of cards (without checklist/events).
-- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`) and all `events`.
+- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}`.
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

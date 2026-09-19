@@ -85,6 +85,8 @@ pub enum Mode {
     Normal,
     Add(String),
     Note { id: i64, buf: String, from_popup: bool },
+    /// Sending a REVIEW card back to DOING: the reason being typed.
+    SendBack { id: i64, buf: String },
     Popup(i64),
     AddCheck { id: i64, buf: String },
     /// Repo picker (`R`): typed filter and selected row (row 0 = "none").
@@ -441,6 +443,33 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::SendBack { id, mut buf } => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.status = Some(("cancelled — the card stays in review".into(), false));
+                }
+                KeyCode::Enter => {
+                    if buf.trim().is_empty() {
+                        self.mode = Mode::SendBack { id, buf };
+                        return false;
+                    }
+                    self.mode = Mode::Normal;
+                    let r = store.send_back(id, &buf, &actor);
+                    if self.report(r, |c| format!("#{} sent back to {}", c.id, c.owner.as_deref().unwrap_or("doing"))).is_some() {
+                        self.reload(store);
+                        self.focus_card(id);
+                    }
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    self.mode = Mode::SendBack { id, buf };
+                }
+                _ => {}
+            },
             Mode::AddCheck { id, mut buf } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Popup(id),
                 KeyCode::Enter => {
@@ -739,6 +768,10 @@ impl App {
                 self.mode = approve_own(id);
                 return;
             }
+        }
+        if column == "review" && to == "doing" {
+            self.mode = Mode::SendBack { id, buf: String::new() };
+            return;
         }
         let actor = self.actor.clone();
         let r = if target.is_none() { store.done(id, &actor) } else { store.move_to(id, &to, &actor) };
@@ -1744,6 +1777,11 @@ fn footer(app: &App, width: u16) -> Line<'static> {
             Span::raw(format!("{buf}_")),
             Span::styled("   enter save  esc cancel", dim()),
         ]),
+        Mode::SendBack { id, buf } => Line::from(vec![
+            Span::styled(format!(" send #{id} back — why: "), key),
+            Span::raw(format!("{buf}_")),
+            Span::styled("   enter send back  esc cancel", dim()),
+        ]),
         Mode::Confirm { prompt, .. } => Line::from(vec![Span::styled(format!(" {prompt}"), key)]),
         _ if app.focus != Focus::Columns && app.status.is_none() => {
             let what = if app.focus == Focus::Github { "open" } else { "details" };
@@ -2698,8 +2736,8 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             let fetched = gh_out.lock().ok().and_then(|mut g| g.take());
             if let Some((res, states)) = fetched {
                 let _ = store.save_github(&res);
-                if let (Ok(snap), Ok(cards)) = (&res, store.list()) {
-                    let moves = github::plan_moves(snap, &cards, &states);
+                if let (Ok(snap), Ok(cards), Ok(returned)) = (&res, store.list(), store.returned_at()) {
+                    let moves = github::plan_moves(snap, &cards, &states, &returned);
                     if !moves.is_empty() && github::apply_moves(&mut store, &moves).is_ok() {
                         app.status = Some((format!("github moved {} card(s): {}", moves.len(), moves[0].text), false));
                         app.status_until = Some(Instant::now() + Duration::from_secs(5));

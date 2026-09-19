@@ -51,6 +51,9 @@ pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) 
     if let Some((d, t)) = snap.checks.get(&card.id) {
         parts.push((3, format!("{d}/{t}")));
     }
+    if let Some(r) = snap.rounds.get(&card.id).filter(|_| card.column != "done") {
+        parts.push((2, format!("r{r}")));
+    }
     let join = |p: &[(u8, String)]| p.iter().map(|x| x.1.as_str()).collect::<Vec<_>>().join(" - ");
     let len = |p: &[(u8, String)]| {
         let b = join(p).chars().count();
@@ -157,6 +160,9 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
     }
     meta.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
     meta.push(fmt_age(now - c.column_since));
+    if d.round > 1 {
+        meta.push(format!("r{}", d.round));
+    }
     if let Some(due) = &c.due {
         meta.push(format!("due {due}"));
     }

@@ -33,6 +33,7 @@ fn pr(n: i64, title: &str, ci: &str) -> Pr {
         created_at: ago(2 * 3600),
         author: "bot-1".into(),
         closes: vec![n - 1],
+        updated_at: String::new(),
     }
 }
 

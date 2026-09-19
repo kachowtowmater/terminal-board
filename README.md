@@ -281,7 +281,8 @@ linked to issue or pull request N:
 - an open pull request for it → the card moves to **REVIEW**;
 - the pull request is merged, or the issue is closed → the card moves to **DONE**;
 - cards never move backwards on their own. This happens on every refresh (every minute)
-  and whenever you run `tb sync`.
+  and whenever you run `tb sync`. A card a reviewer sent back stays in DOING until its pull
+  request is updated after that.
 
 If you mark such a card done yourself while its issue is still open, the board asks first
 (the command line needs `--force`).
@@ -379,6 +380,7 @@ tb --version
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card |
+| `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb drop ID` | give a card back to TODO |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |

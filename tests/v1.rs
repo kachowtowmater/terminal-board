@@ -215,6 +215,7 @@ fn pr(n: i64, closes: &[i64], branch: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: closes.to_vec(),
+        updated_at: String::new(),
     }
 }
 
@@ -257,7 +258,7 @@ fn auto_move_matrix() {
         (22, RefState { closed: true, pr: true, merged: false }),
     ]
     .into();
-    let moves = plan_moves(&snap, &cards, &states);
+    let moves = plan_moves(&snap, &cards, &states, &HashMap::new());
     let got: Vec<(i64, &str, &str)> = moves.iter().map(|m| (m.card_id, m.to.as_str(), m.text.as_str())).collect();
     assert_eq!(
         got,
@@ -275,7 +276,7 @@ fn auto_move_matrix() {
     let ev = s.show(merged).unwrap().events;
     assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
-    let moves = plan_moves(&snap, &s.list().unwrap(), &states);
+    let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
 }
 
