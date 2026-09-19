@@ -615,9 +615,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let view = store.github_view()?;
             let cards = store.list()?;
             if j {
-                // raw cached snapshot, plus the factory view per issue (state/who)
-                let raw = store.github_cache()?.0.unwrap_or_else(|| "null".into());
-                let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                // raw cached snapshot, plus the factory view per issue (state/who) and the
+                // sync state (full error text, consecutive fails, when the snapshot was fetched)
+                let (raw, error, fails) = store.github_cache()?;
+                let mut v: serde_json::Value = serde_json::from_str(raw.as_deref().unwrap_or("null").trim()).unwrap_or(serde_json::Value::Null);
                 if let (Some(s), Some(list)) = (&view.snap, v.get_mut("issues").and_then(|i| i.as_array_mut())) {
                     let f = github::factory(s, &cards, now);
                     for item in list.iter_mut() {
@@ -628,6 +629,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         }
                     }
                 }
+                v["error"] = match &error {
+                    Some(e) => json!(e),
+                    None => serde_json::Value::Null,
+                };
+                v["fails"] = json!(fails);
                 println!("{}", pretty(&v));
             } else if let Some(s) = &view.snap {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));

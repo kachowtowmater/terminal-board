@@ -14,7 +14,7 @@ Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_
   "wip": 3,
   "theme": "dark",
   "layout": "auto",
-  "github": { "repo": "acme/widgets", "snapshot": { "…": "see below" }, "error": null },
+  "github": { "repo": "acme/widgets", "snapshot": { "…": "see below" }, "error": null, "fails": 0, "fetched_at": 1789763036 },
   "columns": {
     "todo":   [ card, … ],
     "doing":  [ card, … ],
@@ -34,6 +34,8 @@ Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_
 | `github.repo` | string\|null | `owner/repo`, null when GitHub is off |
 | `github.snapshot` | object\|null | the cached GitHub snapshot (same as `tb github --json` without the per-issue `state`/`who`) |
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
+| `github.fails` | int | consecutive failed refreshes; the board UI goes red only after 3 |
+| `github.fetched_at` | int | unix seconds of the last good snapshot (0 = never fetched) |
 | `columns.*` | card[] | todo/doing/review in `position` order; **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
 
 A bare `tb --json` (not a terminal) prints the same object.
@@ -66,14 +68,14 @@ A bare `tb --json` (not a terminal) prints the same object.
 | field | type | notes |
 |---|---|---|
 | `id` | int | stable card id |
-| `title` | string | without the `tag:` prefix and the `gh#N` token |
+| `title` | string | without the `tag:` prefix and without a **leading** `gh#N` token; a `gh#N` later in the title stays in the text |
 | `tag` | string\|null | parsed from `tag: title` |
 | `description` | string | |
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
 | `due` | string\|null | free text |
-| `gh_ref` | int\|null | GitHub issue/PR number (`gh#N` in the title) |
+| `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
@@ -142,5 +144,5 @@ herdr agent panes merged with the board (empty array when herdr is not available
 - `tb list --json` — array of cards (without checklist/events).
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
-- `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}`.
+- `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

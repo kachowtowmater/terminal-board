@@ -222,16 +222,26 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
             rest = tail.trim();
         }
     }
+    // Only a LEADING gh#N (the first word of the rest) is moved out of the title — the
+    // conventional link token. A gh#N later in the sentence stays in the text; it still
+    // sets the link when no leading one exists (documented in JSON.md).
     let mut gh = None;
-    let mut words = Vec::new();
-    for w in rest.split_whitespace() {
-        if gh.is_none() {
-            if let Some(n) = w.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            gh = Some(n);
+            words.remove(0);
+        }
+    }
+    if gh.is_none() {
+        for w in &words {
+            let lower = w.to_ascii_lowercase();
+            if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
-                continue;
+                break; // the link is set, the words stay
             }
         }
-        words.push(w);
     }
     let title = if words.is_empty() { rest.to_string() } else { words.join(" ") };
     (tag, gh, title)
@@ -280,7 +290,8 @@ CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
     json TEXT,
-    error TEXT
+    error TEXT,
+    fails INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS board_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -383,6 +394,19 @@ impl Store {
                 }
                 Err(e) if e.to_string().contains("duplicate column") => {}
                 Err(e) => return Err(e.into()),
+            }
+        }
+        // migration: github fail counter (red only after 3 consecutive failed refreshes)
+        let has_fails: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_fails == 0 {
+            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.into()),
+                _ => {}
             }
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
@@ -514,21 +538,21 @@ impl Store {
     }
 
     /// Store a fetch result: a snapshot replaces the cache and clears the error; an error is
-    /// recorded next to the last good snapshot.
+    /// recorded next to the last good snapshot, and counted (red only after 3 in a row).
     pub fn save_github(&self, r: &std::result::Result<crate::github::GhSnapshot, String>) -> Result<()> {
         match r {
             Ok(s) => {
                 let json = serde_json::to_string(s).unwrap_or_default();
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, fetched_at, json, error) VALUES (1, ?, ?, NULL)
-                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, ?, ?, NULL, 0)
+                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL, fails=0",
                     params![s.fetched_at, json],
                 )?;
             }
             Err(e) => {
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, error) VALUES (1, ?)
-                     ON CONFLICT(key) DO UPDATE SET error=excluded.error",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, 0, NULL, ?, 1)
+                     ON CONFLICT(key) DO UPDATE SET error=excluded.error, fails=fails+1",
                     params![e],
                 )?;
             }
@@ -536,23 +560,25 @@ impl Store {
         Ok(())
     }
 
-    /// Raw cached snapshot JSON and its error, if any.
-    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>)> {
+    /// Raw cached snapshot JSON, its error (if any) and consecutive fail count.
+    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>, i64)> {
         Ok(self
             .conn
-            .query_row("SELECT json, error FROM github_snapshot WHERE key=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT json, error, fails FROM github_snapshot WHERE key=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?
-            .unwrap_or((None, None)))
+            .unwrap_or((None, None, 0)))
     }
 
-    /// Repo + cached snapshot (only if it is for that repo) + last error.
+    /// Repo + cached snapshot (only if it is for that repo) + last error + fail count.
     pub fn github_view(&self) -> Result<crate::github::GhView> {
         let repo = self.github_repo()?;
-        let (json, error) = self.github_cache()?;
+        let (json, error, fails) = self.github_cache()?;
         let snap = json
             .and_then(|j| serde_json::from_str::<crate::github::GhSnapshot>(&j).ok())
             .filter(|s| Some(&s.repo) == repo.as_ref());
-        Ok(crate::github::GhView { repo, snap, error })
+        Ok(crate::github::GhView { repo, snap, error, fails })
     }
 
     /// `github-panel` / `agents-panel`: shown (default) or hidden.
@@ -1158,13 +1184,21 @@ fn bottom_of(conn: &Connection, column: &str) -> Result<i64> {
     Ok(conn.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"=?"#, [column], |r| r.get(0))?)
 }
 
+/// The card's `gh#N` when it is not already in the title text (a mid-title ref stays there),
+/// i.e. the ref a display should put in front of the title.
+pub fn shown_ref(c: &Card) -> Option<i64> {
+    let n = c.gh_ref?;
+    let token = format!("gh#{n}");
+    (!c.title.split_whitespace().any(|w| w.eq_ignore_ascii_case(&token))).then_some(n)
+}
+
 /// The raw title as typed: `tag: gh#N title` (what `edit` pre-fills).
 pub fn raw_title(c: &Card) -> String {
     let mut s = String::new();
     if let Some(t) = &c.tag {
         s.push_str(&format!("{t}: "));
     }
-    if let Some(n) = c.gh_ref {
+    if let Some(n) = shown_ref(c) {
         s.push_str(&format!("gh#{n} "));
     }
     s.push_str(&c.title);
