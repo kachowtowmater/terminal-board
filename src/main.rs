@@ -490,6 +490,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("github".into(), json!(r))
                 }
                 ("github", Some(repo)) => {
+                    // the picker checks the repo exists; the CLI must not save a name that
+                    // will fail every later sync with an auth-flavoured error
+                    github::check_repo(&repo).map_err(BoardError)?;
                     store.set_github(Some(&repo))?;
                     ("github".into(), json!(repo))
                 }
