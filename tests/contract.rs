@@ -1,5 +1,22 @@
 //! GOLDEN tests for the JSON contract (docs/JSON.md): exact field names of every shape,
 //! plus `watch --json` streaming a new line after a CLI write.
+/// A fake `gh` that answers `repo view` positively (for `config github`'s existence
+/// check) and nothing else; shared by tests that pin `TB_GH` to a nonexistent path.
+fn fake_gh_ok() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static GH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    GH.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("tb-fake-gh-{}", std::process::id()));
+        std::fs::write(&p, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    })
+    .clone()
+}
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -22,7 +39,7 @@ fn tb(db: &Path, args: &[&str]) -> Output {
         .env("TB_DB", db)
         .env("TB_AS", "tester")
         .env("TB_NO_HERDR", "1")
-        .env("TB_GH", "/nonexistent/gh")
+        .env("TB_GH", fake_gh_ok())
         .output()
         .unwrap()
 }

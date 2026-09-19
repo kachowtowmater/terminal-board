@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### `config github` verifies the repo exists
+- `tb config github OWNER/REPO` (like the full-screen picker already did) checks the repo via
+  `gh` and refuses `no repo 'R' on GitHub (or no access) — see 'tb github repos'` instead of
+  saving a name that would fail every later `tb github`/`tb sync` with a cut-off, auth-flavoured
+  error. A genuine auth failure still points at `gh auth login`; a missing repo never does.
+  `tb setup --github R` reports the same wording.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

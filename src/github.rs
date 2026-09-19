@@ -333,11 +333,20 @@ pub fn check_repo(repo: &str) -> Result<String, String> {
     if !valid_repo(repo) {
         return Err(format!("'{repo}' is not owner/repo"));
     }
-    let out = gh(&["repo", "view", repo, "--json", "nameWithOwner"]).map_err(|e| explain(format!("{repo}: {e}")))?;
+    let out = gh(&["repo", "view", repo, "--json", "nameWithOwner"]).map_err(|e| {
+        let l = e.to_ascii_lowercase();
+        if l.contains("auth login") || l.contains("not logged") || l.contains("authentication") {
+            explain(e)
+        } else if l.contains("could not resolve") || l.contains("not found") || l.contains("http 404") || l.contains("exit status 1") {
+            format!("no repo '{repo}' on GitHub (or no access) — see 'tb github repos'")
+        } else {
+            explain(format!("{repo}: {e}"))
+        }
+    })?;
     let v: Value = serde_json::from_str(&out).map_err(|_| format!("{repo}: unexpected gh output"))?;
     let name = st(&v, "nameWithOwner");
     if name.is_empty() {
-        Err(format!("{repo}: not found"))
+        Err(format!("no repo '{repo}' on GitHub (or no access) — see 'tb github repos'"))
     } else {
         Ok(name)
     }

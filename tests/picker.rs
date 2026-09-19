@@ -47,7 +47,7 @@ fn fake_ok(dir: &Path) -> PathBuf {
 case "$1 $2" in
   "repo list") if [ "$3" = "acme" ]; then cat {d}/org.json; else cat {d}/own.json; fi;;
   "api user/orgs") echo acme;;
-  "repo view") if [ "$3" = "good/repo" ]; then echo '{{"nameWithOwner":"good/repo"}}'; else echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1; fi;;
+  "repo view") case "$3" in good/repo|me/widgets) echo "{{\"nameWithOwner\":\"$3\"}}";; *) echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1;; esac;;
   *) echo '[]';;
 esac
 "#
@@ -148,7 +148,8 @@ fn picker_and_cli() {
     app.handle_key(key(KeyCode::Enter), &mut s);
     assert!(matches!(app.mode, Mode::Picker { .. }), "stays open on error");
     let screen = render(&app, 160, 50);
-    assert!(screen.contains("Could not resolve"), "{screen}");
+    // check_repo now reports the name, not gh's raw cut-off GraphQL line
+    assert!(screen.contains("no repo 'bad/nope' on GitHub"), "{screen}");
     assert_eq!(s.github_repo().unwrap(), None);
     for _ in 0.."bad/nope".len() {
         app.handle_key(key(KeyCode::Backspace), &mut s);

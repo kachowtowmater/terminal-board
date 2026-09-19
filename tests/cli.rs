@@ -3,13 +3,22 @@ use std::process::{Command, Output};
 struct Board {
     _dir: tempfile::TempDir,
     db: std::path::PathBuf,
+    gh: std::path::PathBuf,
 }
 
 impl Board {
     fn new() -> Board {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sub/board.db");
-        Board { _dir: dir, db }
+        // a minimal fake gh so `config github` can verify the repo (as the picker does)
+        let gh = dir.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Board { _dir: dir, db, gh }
     }
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tb"))
@@ -17,6 +26,7 @@ impl Board {
             .env("TB_DB", &self.db)
             .env("TB_AS", "tester")
             .env("TB_NO_HERDR", "1")
+            .env("TB_GH", &self.gh)
             .env_remove("HERDR_AGENT_NAME")
             .output()
             .unwrap()
