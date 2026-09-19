@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Only the owner moves their DOING card
+- `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
+  `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is
+  logged as its own event; the TUI asks y/n instead of refusing. The `github` automation and
+  REVIEW→DONE reviewers are unaffected (card ids are small shared integers; an off-by-one
+  must not move someone else's work or hijack the author record).
 ### Polish (from running several agents on one board)
 - GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
   text/JSON fields already carried the number; the panel never shows a bare `#N` for a

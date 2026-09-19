@@ -103,7 +103,12 @@ enum Cmd {
         #[arg(long, conflicts_with = "reason")]
         clear: bool,
     },
-    Drop { id: i64 },
+    Drop {
+        id: i64,
+        /// Take someone else's DOING card back to todo (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
     Rm { id: i64 },
     Prio { id: i64, how: String },
     Edit {
@@ -494,8 +499,12 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Drop { id } => {
-            store.drop_card(id, &actor)?;
+        Cmd::Drop { id, force } => {
+            if force {
+                store.drop_card_forced(id, &actor)?;
+            } else {
+                store.drop_card(id, &actor)?;
+            }
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
         }
         Cmd::Rm { id } => {
