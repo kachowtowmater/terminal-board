@@ -19,6 +19,12 @@
   with `#1 changed while you were editing — description has newer text; reopen with e` and
   nothing is overwritten. The event log names only the fields actually written. The CLI
   `tb edit` is unchanged (it passes no baseline and writes exactly what it is given).
+### A mistyped board name fails instead of creating a phantom
+- On a non-default board that does not exist, every command except `add` and `config` (and a
+  bare `tb` in a terminal) fails with `no board 'demo-typo' — boards: … · create it with
+  'tb demo-typo add "…"'` (text and `--json`) and creates nothing — a typo no longer reads as
+  an empty board or leaves a phantom in `tb boards`. The default board keeps today's
+  behaviour, and boards pinned by `TB_DB` (one file) are unaffected.
 ### GitHub
 - A one-off `gh` failure no longer shakes the board: no extra row, the last good snapshot
   stays, and the panel header quietly reads `synced HH:MM · offline, retrying` (network/

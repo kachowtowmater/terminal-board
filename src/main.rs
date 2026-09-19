@@ -229,16 +229,27 @@ fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
 
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
-    if !path.exists() && !create {
-        // read on a board that doesn't exist yet: empty, and nothing is created
+    if !path.exists() {
+        if create {
+            let store = Store::open(&path)?.named(name);
+            warn!("created board '{name}'");
+            return Ok(store);
+        }
+        // A missing non-default board is a typo until shown otherwise: fail with the
+        // existing boards and the create hint instead of acting on an empty phantom
+        // (reads showed "no cards", `next`/`take` silently created it on disk).
+        // (TB_DB pins one file per board name — no boards dir, no list, no gate.)
+        if name != boards::DEFAULT_BOARD && terminal_board::env("DB").is_none() {
+            let names = boards::list();
+            let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+            return Err(BoardError(format!(
+                "no board '{name}' — boards: {all} · create it with 'tb {name} add \"…\"'"
+            )));
+        }
+        // the default board keeps today's behaviour: reads show it empty, writes create it
         return Ok(Store::open(Path::new(":memory:"))?.named(name));
     }
-    let existed = path.exists();
-    let store = Store::open(&path)?.named(name);
-    if !existed {
-        warn!("created board '{name}'");
-    }
-    Ok(store)
+    Ok(Store::open(&path)?.named(name))
 }
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
@@ -312,8 +323,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
         setup::run(&name, setup::Options { first_run: true, ..Default::default() })?;
     }
-    let create = cli.cmd.as_ref().map_or(tty, Cmd::writes);
-    let mut store = open_board(&name, create)?;
+    let cmd_ref = cli.cmd.as_ref();
+    // on a named board only `add` and `config` (and bare `tb` in a terminal) may create it;
+    // every other command on a missing board must fail with the boards list + create hint
+    let creates = cmd_ref.map_or(tty, |c| {
+        matches!(c, Cmd::Add { .. } | Cmd::Config { .. })
+            || (c.writes() && name == boards::DEFAULT_BOARD)
+    });
+    let mut store = open_board(&name, creates)?;
     let cmd = cli.cmd;
     let j = cli.json;
     let Some(cmd) = cmd else {

@@ -166,6 +166,7 @@ herdr agents + the card each holds. Field names are stable (schema `"v":1`); see
 
 | error says | do this |
 |---|---|
+| `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb X add "…"` |
 | `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
