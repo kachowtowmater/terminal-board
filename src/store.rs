@@ -780,7 +780,8 @@ impl Store {
         }
         let Some(target) = target else {
             return err(if own > 0 {
-                format!("no review cards for you — the {own} waiting are your own work; another agent must review them, so take new work with 'tb next'")
+                let waiting = if own == 1 { "the one waiting is".to_string() } else { format!("the {own} waiting are") };
+                format!("no review cards for you — {waiting} your own work; ask another person or agent to review it, and take new work with 'tb next'")
             } else {
                 "no review cards waiting — take new work with 'tb next'".to_string()
             });
@@ -978,6 +979,14 @@ impl Store {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         if c.column == column {
+            // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
+            if column == "review" && c.reviewer.is_some() {
+                tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+                Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
+                let c = get_card(&tx, id)?;
+                tx.commit()?;
+                return Ok(c);
+            }
             return Ok(c);
         }
         if column == "done" && c.column == "review" {

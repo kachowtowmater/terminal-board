@@ -78,7 +78,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github` |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force` (approved own work), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released) |
 
 ## `tb watch --json` — live stream (NDJSON)
 

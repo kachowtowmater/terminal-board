@@ -17,7 +17,8 @@
   so two reviewers never get the same card; no WIP limit). The card shows `review NAME` next
   to its owner; JSON cards gain a nullable `reviewer` field, and the database a nullable
   `reviewer` column (added on open). The reviewer stays on a card that reaches DONE; any other
-  move clears it.
+  move clears it, and `tb move ID review` on a claimed card releases the claim (logged as
+  `unclaimed`) when its reviewer stopped.
 
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's

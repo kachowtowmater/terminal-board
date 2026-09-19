@@ -129,7 +129,9 @@ narrow the original with `tb edit ID --desc "…"`.
 
 **Review someone's card (verifier):** `tb next --review --as NAME` claims the top REVIEW
 card you did not do (atomic: two reviewers never get the same card; it skips your own work
-and cards another reviewer claimed). `tb show ID`; check the done criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
+and cards another reviewer claimed; `tb move ID review` releases a claim whose reviewer
+stopped). `tb show ID`; check the done criteria; then `tb done ID` (→ DONE) with a note of
+what you checked, or
 `tb move ID todo` with a note of what is missing. You cannot approve a card you did
 yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
 `you did this work — ask another person or agent to review it`. (In the full-screen

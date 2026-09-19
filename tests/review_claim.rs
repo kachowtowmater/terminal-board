@@ -35,7 +35,7 @@ fn claims_the_top_card_the_reviewer_did_not_author() {
     assert!(s.show(theirs).unwrap().events.iter().any(|e| e.kind == "reviewing" && e.actor == "REV-1"));
     // only own work (and claimed cards) left: a clear refusal
     let e = s.next_review("rev-1").unwrap_err().to_string();
-    assert!(e.contains("your own work") && e.contains("tb next"), "{e}");
+    assert!(e.contains("the one waiting is your own work") && e.contains("ask another person or agent to review it"), "{e}");
     assert_eq!(s.card(mine).unwrap().reviewer, None);
     // another reviewer gets the author's card; claimed cards are not handed out twice
     assert_eq!(s.next_review("rev-2").unwrap().id, mine);
@@ -59,6 +59,12 @@ fn blocked_cards_are_skipped_and_reviewer_lifecycle() {
     assert_eq!(s.card(b).unwrap().reviewer, None);
     s.done(b, "bot-1").unwrap();
     assert_eq!(s.next_review("rev-2").unwrap().reviewer.as_deref(), Some("rev-2"));
+    // a stale claim is released by moving the card to review again (logged)
+    let c = in_review(&mut s, "c", "bot-1");
+    assert_eq!(s.next_review("rev-3").unwrap().id, c);
+    assert_eq!(s.move_to(c, "review", "lead").unwrap().reviewer, None);
+    assert!(s.show(c).unwrap().events.iter().any(|e| e.kind == "unclaimed" && e.text == "rev-3"));
+    assert_eq!(s.next_review("rev-4").unwrap().id, c);
     // approved: the reviewer stays on the DONE card
     assert_eq!(s.done(b, "rev-2").unwrap().reviewer.as_deref(), Some("rev-2"));
 }
