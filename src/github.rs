@@ -840,13 +840,13 @@ mod tests {
         for e in [
             "error connecting to api.github.com",
             "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host",
-            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: connect: network is unreachable",
-            "Post \"https://api.github.com/graphql\": read tcp 10.0.0.2:51234->140.82.112.6:443: read: connection reset by peer",
-            "Post \"https://api.github.com/graphql\": write tcp 10.0.0.2:51234->140.82.112.6:443: write: broken pipe",
-            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: connect: no route to host",
-            "Post \"https://api.github.com/graphql\": dial tcp 140.82.112.6:443: i/o timeout",
-            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.53:53: Temporary failure in name resolution",
-            "Get \"https://api.github.com/zen\": dial tcp 140.82.112.6:443: connect: Connection Refused",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: network is unreachable",
+            "Post \"https://api.github.com/graphql\": read tcp 127.0.0.1:51234->127.0.0.1:443: read: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": write tcp 127.0.0.1:51234->127.0.0.1:443: write: broken pipe",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: connect: no route to host",
+            "Post \"https://api.github.com/graphql\": dial tcp 127.0.0.1:443: i/o timeout",
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com on 127.0.0.1:53: Temporary failure in name resolution",
+            "Get \"https://api.github.com/zen\": dial tcp 127.0.0.1:443: connect: Connection Refused",
             "NETWORK IS UNREACHABLE",
         ] {
             assert_eq!(sync_suffix(Some(e), 0), (" · offline, retrying".into(), false), "{e}");
