@@ -19,7 +19,7 @@ fn cols_of(conn: &rusqlite::Connection, table: &str) -> Vec<String> {
 
 /// "### table" then a `| column |` row per documented column.
 fn documented(path: &Path, table: &str) -> Option<Vec<String>> {
-    let md = std::fs::read_to_string(path).unwrap();
+    let md = std::fs::read_to_string(path).unwrap_or_default(); // missing doc = nothing documented
     let start = md.find(&format!("### {table}\n"))?;
     let rest = &md[start..];
     let end = rest.find("\n### ").map(|i| i + 1).unwrap_or(rest.len());
@@ -39,10 +39,15 @@ fn documented(path: &Path, table: &str) -> Option<Vec<String>> {
 #[test]
 fn every_column_of_every_table_is_documented_in_schema_md() {
     let dir = tempfile::tempdir().unwrap();
-    let s = Store::open(&dir.path().join("b.db")).unwrap();
-    s.add("seed: one card", "", &["a check".to_string()], "me").unwrap();
+    let db = dir.path().join("b.db");
+    {
+        let s = Store::open(&db).unwrap();
+        s.add("seed: one card", "", &["a check".to_string()], "me").unwrap();
+    }
     let md = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/SCHEMA.md");
-    let conn = s.conn_snapshot(); // read-only access to the schema for the test
+    // read the board the way SCHEMA.md tells outside readers to: its own read-only connection
+    let conn = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let conn = &conn;
     for t in tables_of(conn) {
         let actual = cols_of(conn, &t);
         let doc = documented(&md, &t).unwrap_or_else(|| panic!("table {t} exists but has no '### {t}' section in docs/SCHEMA.md"));

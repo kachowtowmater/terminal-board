@@ -202,10 +202,24 @@ fn consumers_must_tolerate_unknown_fields_and_kinds() {
     assert_eq!(bad.len(), 1, "the unknown-kind event is carried through: {bad:?}");
     assert_eq!(bad[0].kind, "scrying");
     assert!(bad[0].ts > 0 && !bad[0].actor.is_empty(), "unknown kinds keep the event shape");
-    // an unknown FIELD (a future card with an extra key) parses fine for consumers that
-    // ignore unknown fields — demonstrated with serde_json's merge, the way an app reads:
+    // an unknown FIELD (a future card with an extra key) parses fine for a typed reader that
+    // names only the fields it uses — the way an app reads — and the fields it names are there
+    #[derive(serde::Deserialize)]
+    struct ReaderEvent {
+        kind: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct ReaderCard {
+        id: i64,
+        title: String,
+        column: String,
+        owner: Option<String>,
+        events: Vec<ReaderEvent>,
+    }
     let mut v = serde_json::to_value(&card).unwrap();
     v["brand_new_field"] = serde_json::json!({"anything": true});
-    let round: serde_json::Value = serde_json::from_value(v).unwrap();
-    assert_eq!(round["id"], id, "the object stays readable with an unknown field present");
+    v["events"][0]["brand_new_event_field"] = serde_json::json!(1);
+    let r: ReaderCard = serde_json::from_value(v).expect("a typed reader ignores unknown fields");
+    assert_eq!((r.id, r.title.as_str(), r.column.as_str(), r.owner.as_deref()), (id, "future proof", "doing", Some("me")));
+    assert!(r.events.iter().any(|e| e.kind == "scrying"));
 }

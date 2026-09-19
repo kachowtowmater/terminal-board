@@ -209,13 +209,6 @@ pub struct Store {
     pub name: String,
 }
 
-impl Store {
-    /// Read-only access to the connection (for the schema contract test; never a write path).
-    pub fn conn_snapshot(&self) -> &rusqlite::Connection {
-        &self.conn
-    }
-}
-
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
