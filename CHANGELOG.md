@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### The WIP-full message is actor-aware
+- `doing is full` is a board-wide limit, but the old hint told every actor to `tb done ID` —
+  including an agent holding nothing, whose only obedience path was finishing someone else's
+  card. Now: `doing is full (3/3: #3 bot-1, #1 bot-2, #2 bot-3)` plus what the actor can do —
+  `finish #3 with 'tb done 3' first` when they hold one, `you hold none; wait, or ask one of
+  them to finish` when they don't. Both `next` and `take`, text and `--json`.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

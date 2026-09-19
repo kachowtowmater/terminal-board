@@ -91,7 +91,7 @@ fn shift_arrows_and_jk_reorder_and_move() {
     app.handle_key(key(KeyCode::Left), &mut s);
     app.handle_key(shift(KeyCode::Right), &mut s);
     assert_eq!(s.card(3).unwrap().column, "todo");
-    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2)"));
+    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2:"));
     // Shift+Left back
     app.col = 1;
     app.row[1] = 0;
@@ -403,4 +403,28 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn wip_full_message_is_actor_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(2).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    let c = s.add("plain: three", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // an actor holding none: holders listed, no 'tb done' suggestion
+    let e = s.take(c, "bot-4").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("you hold none; wait, or ask one of them to finish"), "{e}");
+    assert!(!e.contains("tb done"), "{e}");
+    // an actor holding one: their card named, with the exact command
+    let e = s.take(c, "bot-1").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("finish #1 with 'tb done 1' first"), "{e}");
+    // next with json: same message in the hint path
+    let e = s.next("bot-2").unwrap_err().to_string();
+    assert!(e.contains("finish #2 with 'tb done 2' first"), "{e}");
 }
