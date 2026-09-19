@@ -171,6 +171,9 @@ pub struct EditForm {
     pub id: i64,
     pub title: String,
     pub desc: String,
+    /// What the fields read when the form opened (the save-conflict baseline).
+    pub open_title: String,
+    pub open_desc: String,
     /// 0 = title, 1 = description
     pub field: u8,
     pub cursor: usize,
@@ -591,7 +594,15 @@ impl App {
                     self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
                 }
                 KeyCode::Enter => {
-                    let r = store.edit(form.id, Some(&form.title), Some(&form.desc), &actor);
+                    // only the fields the person changed are written; a field they left at
+                    // its open-time value but that moved on since is refused, not overwritten
+                    let r = store.edit(
+                        form.id,
+                        (form.title != form.open_title).then_some(form.title.as_str()),
+                        (form.desc != form.open_desc).then_some(form.desc.as_str()),
+                        &actor,
+                        Some((form.open_title.as_str(), form.open_desc.as_str())),
+                    );
                     if self.report(r, |c| format!("#{} saved", c.id)).is_some() {
                         self.reload(store);
                         self.focus_card(form.id);
@@ -697,7 +708,16 @@ impl App {
         if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
-            self.mode = Mode::Edit(EditForm { id, title, desc: c.description.clone(), field: 0, cursor, from_popup });
+            self.mode = Mode::Edit(EditForm {
+                id,
+                open_title: title.clone(),
+                open_desc: c.description.clone(),
+                title,
+                desc: c.description.clone(),
+                field: 0,
+                cursor,
+                from_popup,
+            });
         }
     }
 

@@ -430,7 +430,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
         }
         Cmd::Edit { id, title, desc } => {
-            store.edit(id, title.as_deref(), desc.as_deref(), &actor)?;
+            store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
             done_card(&store, j, id, format!("#{id} saved"))?;
         }
         Cmd::Sync => {

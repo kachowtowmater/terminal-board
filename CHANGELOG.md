@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### The edit form no longer overwrites concurrent changes
+- The full-screen edit form (`e`) saved both fields from its open-time values: an agent's
+  CLI edit while the form was open was silently put back, and the log credited the person
+  with editing fields they never touched. Now the form writes **only the fields the person
+  changed**; a field they changed that someone else changed since the form opened is refused
+  with `#1 changed while you were editing — description has newer text; reopen with e` and
+  nothing is overwritten. The event log names only the fields actually written. The CLI
+  `tb edit` is unchanged (it passes no baseline and writes exactly what it is given).
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

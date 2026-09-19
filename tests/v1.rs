@@ -141,7 +141,7 @@ fn position_migration_orders_existing_cards_by_created_at() {
 
 #[test]
 fn edit_form_cursor_ops() {
-    let mut f = EditForm { id: 1, title: "abc".into(), desc: String::new(), field: 0, cursor: 3, from_popup: false };
+    let mut f = EditForm { id: 1, title: "abc".into(), open_title: "abc".into(), desc: String::new(), open_desc: String::new(), field: 0, cursor: 3, from_popup: false };
     f.key(KeyCode::Home);
     f.key(KeyCode::Right);
     f.key(KeyCode::Delete); // removes 'b'
@@ -403,4 +403,36 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn form_save_writes_only_changed_fields_and_refuses_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: first card", "original desc", &[], "lead").unwrap();
+    // the form opened with these values
+    let (open_title, open_desc) = ("plain: first card", "original desc");
+    // an agent edits the description while the form is open
+    s.edit(id, None, Some("new brief from an agent"), "bot-1", None).unwrap();
+    // person adds '!' to the title only: the unchanged (stale) desc must NOT be written
+    let typed_title = "plain: first card!";
+    let c = s
+        .edit(id, Some(typed_title), Some(open_desc), "lead", Some((open_title, open_desc)))
+        .unwrap();
+    assert_eq!(c.title, "first card!", "tag/plain: is stripped by parse");
+    assert_eq!(c.description, "new brief from an agent", "the agent's desc survives");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().rev().find(|e| e.kind == "edit").unwrap();
+    assert_eq!(e.text, "title edited", "the log names only the written field: {e:?}");
+    // a REAL conflict: the person also changed the desc, which moved since open — refused
+    let e = s
+        .edit(id, Some(typed_title), Some("my own wording"), "lead", Some((open_title, open_desc)))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("changed while you were editing") && e.contains("reopen with e"), "{e}");
+    // nothing was overwritten by the refused save
+    assert_eq!(s.card(id).unwrap().description, "new brief from an agent");
+    // negative control on the CLI path: no baseline, unchanged field writes as before
+    let c2 = s.edit(id, None, Some("cli desc wins"), "bot-2", None).unwrap();
+    assert_eq!(c2.description, "cli desc wins");
 }
