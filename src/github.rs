@@ -26,6 +26,9 @@ pub struct Pr {
     /// Issues this PR closes (`closingIssuesReferences`).
     #[serde(default)]
     pub closes: Vec<i64>,
+    /// Last update (RFC 3339; empty in caches written before it was fetched).
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -135,6 +138,7 @@ pub fn parse_prs(json: &str) -> Result<Vec<Pr>, String> {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|i| i.get("number").and_then(Value::as_i64)).collect())
                 .unwrap_or_default(),
+            updated_at: st(p, "updatedAt"),
         })
         .collect();
     v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -252,7 +256,7 @@ pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
         .unwrap_or_default();
     let prs = parse_prs(&gh(&[
         "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
-        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences",
+        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences,updatedAt",
     ])?)?;
     let issues = parse_issues(&gh(&[
         "issue", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
@@ -437,11 +441,14 @@ pub struct AutoMove {
 }
 
 /// Forward-only moves for cards with gh_ref: an open linked PR -> review (from todo/doing);
-/// a merged PR or a closed issue -> done. Never backwards.
+/// a merged PR or a closed issue -> done. Never backwards. A card a reviewer sent back
+/// (`returned` = card id -> time of its last return) stays in DOING until its PR is
+/// updated after that return.
 pub fn plan_moves(
     s: &GhSnapshot,
     cards: &[crate::store::Card],
     states: &std::collections::HashMap<i64, RefState>,
+    returned: &std::collections::HashMap<i64, i64>,
 ) -> Vec<AutoMove> {
     let mut out = Vec::new();
     for c in cards.iter().filter(|c| c.column != "done") {
@@ -461,7 +468,13 @@ pub fn plan_moves(
             let own_pr = s.prs.iter().find(|p| p.number == n);
             let linked = s.prs.iter().find(|p| p.closes.contains(&n)).or_else(|| s.prs.iter().find(|p| branch_matches(&p.head_ref, n)));
             if let Some(p) = own_pr.or(linked) {
-                out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                let updated_since_return = match returned.get(&c.id) {
+                    None => true,
+                    Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
+                };
+                if updated_since_return {
+                    out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                }
             }
         }
     }
@@ -484,7 +497,12 @@ pub fn apply_moves(store: &mut crate::store::Store, moves: &[AutoMove]) -> crate
 
 /// Seconds since an RFC 3339 timestamp (None if unparseable).
 pub fn age_of(ts: &str, now: i64) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| now - t.timestamp())
+    unix_time(ts).map(|t| now - t)
+}
+
+/// An RFC 3339 timestamp as Unix seconds (None if unparseable).
+pub fn unix_time(ts: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| t.timestamp())
 }
 
 /// `issues 42 open · PRs 5 open (1 draft) · merged today 4 · main CI ok` as (text, main_ci_failed).

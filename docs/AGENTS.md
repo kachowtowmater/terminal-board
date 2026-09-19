@@ -77,10 +77,12 @@ empty or DOING is full.
 | finished your work: DOING → REVIEW | `tb done ID` |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
+| send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
 
 `tb move ID doing` respects the WIP limit and makes you the owner if nobody owns the card.
-`tb move ID todo` clears the owner.
+`tb move ID todo` clears the owner. Sending a REVIEW card back needs the reason, keeps its
+owner and is not blocked by the WIP limit (it is the owner's existing work).
 
 ### Create and delete cards
 
@@ -127,11 +129,15 @@ something else with `tb next`, or wait. `tb block ID --clear` when it moves agai
 narrow the original with `tb edit ID --desc "…"`.
 
 **Review someone's card (verifier):** `tb list` shows REVIEW; `tb show ID`; check the done
-criteria; then `tb done ID` (→ DONE) with a note of what you checked, or
-`tb move ID todo` with a note of what is missing. You cannot approve a card you did
+criteria; then `tb done ID` (→ DONE) with a note of what you checked, or send it back to
+its owner with `tb move ID doing "what is missing"`. The card then shows its rework round
+(`r2`, `r3`, …; `round` in JSON). You cannot approve a card you did
 yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
 `you did this work — ask another person or agent to review it`. (In the full-screen
 board a person approving their own card is asked `approve your own work? y/n` instead.)
+
+**Your card came back:** it is in DOING again, showing `r2`. `tb show ID` — the last
+`returned` event says what to fix. Fix it, note it, and `tb done ID` again.
 
 ## Rules
 
@@ -166,7 +172,9 @@ tb sync                      # apply GitHub evidence to the board now
 ```
 
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW,
-  a merged PR or a closed issue moves it to DONE. Cards never move backwards.
+  a merged PR or a closed issue moves it to DONE. Cards never move backwards. A card sent
+  back from REVIEW stays in DOING until its PR is updated (a push, a comment) after the
+  send-back.
 - Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR, so
   the link is found.
 - `tb done` will not move a `gh#N` card to DONE while its issue is still open. Close the
@@ -196,6 +204,7 @@ Field names are stable (schema `"v":1`); see docs/JSON.md.
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue #N still open on GitHub` | close the issue / merge the PR first |
 | `you did this work — ask another person or agent to review it` | leave it in REVIEW for another agent |
+| `say why it goes back` | `tb move ID doing "what to fix"` |
 | `no card #ID` | `tb list` to find the right ID |
 
 ## Brief line for orchestrators
@@ -227,6 +236,7 @@ tb take 2
 tb drop 2
 tb move 2 doing
 tb move 2 review
+tb move 2 doing "add the rollback step" --as bob
 tb move 2 todo
 tb list
 tb board --json

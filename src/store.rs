@@ -116,6 +116,8 @@ pub struct CardDetail {
     pub card: Card,
     pub checklist: Vec<CheckItem>,
     pub events: Vec<Event>,
+    /// Rework round: 1, plus one per send-back (`returned` event).
+    pub round: i64,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -129,6 +131,8 @@ pub struct Snapshot {
     pub recent: HashMap<i64, Vec<Event>>,
     /// (done, total) checklist counts per card
     pub checks: HashMap<i64, (i64, i64)>,
+    /// rework round per card that was sent back at least once (2 = back once)
+    pub rounds: HashMap<i64, i64>,
     /// UI theme: `dark` (default) or `light`
     pub theme: String,
     /// Board name
@@ -685,7 +689,8 @@ impl Store {
             "SELECT card_id, ts, actor, kind, text FROM events WHERE card_id=? ORDER BY ts, id",
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(CardDetail { card, checklist, events })
+        let round = round_of(&events);
+        Ok(CardDetail { card, checklist, events, round })
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -693,6 +698,7 @@ impl Store {
         let wip = self.wip()?;
         let mut last_note = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
+        let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
             "SELECT card_id, ts, actor, kind, text FROM events ORDER BY card_id, ts, id",
         )?;
@@ -700,6 +706,9 @@ impl Store {
             let e = e?;
             if e.kind == "note" {
                 last_note.insert(e.card_id, e.text.clone());
+            }
+            if e.kind == "returned" {
+                *rounds.entry(e.card_id).or_insert(1) += 1;
             }
             let v = recent.entry(e.card_id).or_default();
             v.push(e);
@@ -725,6 +734,7 @@ impl Store {
             last_note,
             recent,
             checks,
+            rounds,
             theme,
             board: self.name.clone(),
             layout,
@@ -894,12 +904,33 @@ impl Store {
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, false)
+        self.move_card(id, column, actor, false, None)
     }
 
     /// `move_to` that lets the author approve their own REVIEW card; logged as a `force` event.
     pub fn move_to_forced(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, true)
+        self.move_card(id, column, actor, true, None)
+    }
+
+    /// `move_to` with every option: `reason` is required (and only allowed) when a REVIEW
+    /// card goes back to DOING.
+    pub fn move_opts(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
+        self.move_card(id, column, actor, force, reason)
+    }
+
+    /// Send a REVIEW card back to its owner in DOING with the reason (a `returned` event).
+    pub fn send_back(&mut self, id: i64, reason: &str, actor: &str) -> Result<Card> {
+        self.move_card(id, "doing", actor, false, Some(reason))
+    }
+
+    /// Last `returned` event time per card (GitHub sync leaves those cards alone until
+    /// their PR is updated after it).
+    pub fn returned_at(&self) -> Result<HashMap<i64, i64>> {
+        let mut st = self.conn.prepare("SELECT card_id, MAX(ts) FROM events WHERE kind='returned' GROUP BY card_id")?;
+        let v = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<i64, i64>>>()?;
+        Ok(v)
     }
 
     /// Who did the work on a card: the actor of its last move into review, or the owner when
@@ -909,15 +940,27 @@ impl Store {
         author_of(&self.conn, &c)
     }
 
-    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool) -> Result<Card> {
+    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
         let column = column.to_ascii_lowercase();
         if !COLUMNS.contains(&column.as_str()) {
             return err(format!(
                 "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
             ));
         }
+        let reason = reason.map(str::trim);
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let send_back = c.column == "review" && column == "doing";
+        if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
+            return err(format!(
+                "say why it goes back — 'tb move {id} doing \"what to fix\"'"
+            ));
+        }
+        if !send_back && reason.is_some() {
+            return err(format!(
+                "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+            ));
+        }
         if c.column == column {
             return Ok(c);
         }
@@ -931,7 +974,8 @@ impl Store {
                 }
             }
         }
-        if column == "doing" {
+        // a returned card is its owner's existing work, not new work: WIP does not block it
+        if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
             let doing: i64 = tx.query_row(
                 r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#,
@@ -955,6 +999,9 @@ impl Store {
             params![column, owner, now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+        if let (true, Some(r)) = (send_back, reason) {
+            Self::log(&tx, id, actor, "returned", r)?;
+        }
         let c = get_card(&tx, id)?;
         tx.commit()?;
         Ok(c)
@@ -1049,8 +1096,8 @@ impl Store {
     fn done_opts(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
         let c = self.card(id)?;
         match c.column.as_str() {
-            "doing" => self.move_card(id, "review", actor, force),
-            "todo" | "review" => self.move_card(id, "done", actor, force),
+            "doing" => self.move_card(id, "review", actor, force, None),
+            "todo" | "review" => self.move_card(id, "done", actor, force, None),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
             )),
@@ -1072,6 +1119,11 @@ impl Store {
         tx.commit()?;
         self.card(id)
     }
+}
+
+/// Rework round from a card's events: 1, plus one for every time it was sent back.
+pub fn round_of(events: &[Event]) -> i64 {
+    1 + events.iter().filter(|e| e.kind == "returned").count() as i64
 }
 
 /// Position for a card appended to the bottom of `column`.

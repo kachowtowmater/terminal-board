@@ -22,6 +22,18 @@
   the reviewing step its own name (`tb done ID --as reviewer`) or add `--force`. Names are
   self-asserted, so this stops mistakes, not a hostile agent.
 
+- **Sending work back, with a reason and a count.** `tb move ID doing "why"` sends a REVIEW
+  card back to its **same owner** in DOING. The reason is required for that move (and only
+  that move) and is logged as a `returned` event; the send-back is not blocked by the WIP
+  limit, since it is the owner's existing work. In the full-screen board Shift+← / `<` on a
+  REVIEW card asks for the reason. The card shows its rework round, `r2`, counted from
+  events; JSON cards (`board`, `show`, write results) gain `round`. **Breaking for
+  scripts:** a plain `tb move ID doing` on a REVIEW card is now refused with
+  `say why it goes back`.
+- **GitHub sync respects a send-back.** A returned card with an open PR stays in DOING until
+  the PR is updated after the return (`updatedAt`, now part of the cached snapshot as
+  `updated_at`); before, the next sync moved it straight back to REVIEW.
+
 ## 1.0.0 — 2026-09-18
 
 The first public release of **Terminal Board** (`tb`): a task board in your terminal,
