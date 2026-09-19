@@ -15,6 +15,11 @@
   removed before they reach the terminal, in the board and in plain CLI output. Tabs and line
   breaks in one-line fields show as spaces, so every card stays on its own line. The store and
   `--json` output keep the text as it was written.
+### third-v: spare rows are used, not left blank
+- At tall panes (e.g. 52×66) the one-third view left ~5 blank rows between the DONE section
+  and the GITHUB panel. Now: spare height first grows the GitHub rows (then AGENTS) up to
+  their natural size, and anything still left stretches the last card section instead of
+  sitting as a blank band. At 52×56 the render is unchanged.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
