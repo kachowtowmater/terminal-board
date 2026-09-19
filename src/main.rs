@@ -444,29 +444,38 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             store.save_github(&r)?;
             let snap = r.map_err(|e| BoardError(format!("github: {e} — check 'gh auth status', then 'tb sync'")))?;
             let cards = store.list()?;
-            let states = github::fetch_states(&repo, &github::needs_state(&snap, &cards));
+            // one lookup per not-done ref the open lists can't vouch for: its state, or a 404
+            // (no such issue or PR), or a failed call (nothing known — never reported as missing)
+            let lookups = github::lookup_refs(&repo, &github::needs_state(&snap, &cards));
+            let states = github::found_states(&lookups);
             let moves = github::plan_moves(&snap, &cards, &states);
             github::apply_moves(&mut store, &moves)?;
-            // gh#N refs the snapshot and the per-number lookups cannot vouch for: one extra
-            // lookup per ref, only here on sync — never on the board's refresh path
-            let unknown = github::unknown_refs(&snap, &cards, &states);
-            let checked: Vec<(i64, bool)> = unknown
+            let unknown: Vec<i64> =
+                lookups.iter().filter(|(_, l)| *l == github::RefLookup::Missing).map(|(n, _)| *n).collect();
+            let unchecked: Vec<(i64, &str)> = lookups
                 .iter()
-                .map(|n| (*n, github::fetch_ref_exists(&repo, *n)))
+                .filter_map(|(n, l)| match l {
+                    github::RefLookup::Failed(e) => Some((*n, e.as_str())),
+                    _ => None,
+                })
                 .collect();
-            let unknown: Vec<i64> = checked.iter().filter(|(_, ok)| !ok).map(|(n, _)| *n).collect();
             if j {
+                let unchecked_n: Vec<i64> = unchecked.iter().map(|(n, _)| *n).collect();
                 println!(
                     "{}",
                     pretty(&json!({
                         "ok": true,
                         "moves": moves,
                         "unknown_refs": unknown,
+                        "unchecked_refs": unchecked_n,
                     }))
                 );
             } else {
                 for n in &unknown {
                     println!("gh#{n}: no such issue or PR in {repo} — fix the title with 'tb edit'");
+                }
+                for (n, e) in &unchecked {
+                    println!("gh#{n}: could not check on GitHub ({e}) — try 'tb sync' again");
                 }
                 if moves.is_empty() {
                     println!("synced {repo}: nothing to move");

@@ -416,20 +416,48 @@ pub fn needs_state(s: &GhSnapshot, cards: &[crate::store::Card]) -> Vec<i64> {
     v
 }
 
-/// Look up states with `gh api repos/R/issues/N` (failures are skipped).
-/// Does issue/PR `n` exist at all (open or closed)? One `gh api` call — used by `tb sync`
-/// to report `gh#N` refs that match nothing; never on the board's refresh path.
-pub fn fetch_ref_exists(repo: &str, n: i64) -> bool {
-    gh(&["api", &format!("repos/{repo}/issues/{n}")]).is_ok()
+/// What one `gh api repos/R/issues/N` lookup found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefLookup {
+    /// The issue or PR exists (open or closed).
+    Found(RefState),
+    /// GitHub answered 404: no issue or PR has this number.
+    Missing,
+    /// The lookup itself failed (network, rate limit, auth, bad JSON): nothing is known.
+    Failed(String),
 }
 
-pub fn fetch_states(repo: &str, nums: &[i64]) -> std::collections::HashMap<i64, RefState> {
-    nums.iter()
-        .filter_map(|n| {
-            let out = gh(&["api", &format!("repos/{repo}/issues/{n}")]).ok()?;
-            parse_ref_state(&out).ok().map(|s| (*n, s))
+/// Classify the result of `gh api repos/R/issues/N`: only a real 404 means "no such ref".
+pub fn classify_lookup(r: Result<String, String>) -> RefLookup {
+    match r {
+        Ok(out) => match parse_ref_state(&out) {
+            Ok(s) => RefLookup::Found(s),
+            Err(e) => RefLookup::Failed(e),
+        },
+        Err(e) if e.contains("Not Found") || e.contains("HTTP 404") => RefLookup::Missing,
+        Err(e) => RefLookup::Failed(e),
+    }
+}
+
+/// One `gh api repos/R/issues/N` call per number, in order.
+pub fn lookup_refs(repo: &str, nums: &[i64]) -> Vec<(i64, RefLookup)> {
+    nums.iter().map(|n| (*n, classify_lookup(gh(&["api", &format!("repos/{repo}/issues/{n}")])))).collect()
+}
+
+/// The states found by `lookup_refs` (misses and failures are left out).
+pub fn found_states(lookups: &[(i64, RefLookup)]) -> std::collections::HashMap<i64, RefState> {
+    lookups
+        .iter()
+        .filter_map(|(n, l)| match l {
+            RefLookup::Found(s) => Some((*n, s.clone())),
+            _ => None,
         })
         .collect()
+}
+
+/// Look up states with `gh api repos/R/issues/N` (failures are skipped).
+pub fn fetch_states(repo: &str, nums: &[i64]) -> std::collections::HashMap<i64, RefState> {
+    found_states(&lookup_refs(repo, nums))
 }
 
 /// A card GitHub evidence moves forward.
@@ -477,26 +505,6 @@ pub fn plan_moves(
 /// Is issue/PR `n` open according to the snapshot? (Evidence gate for a manual done.)
 pub fn still_open(s: &GhSnapshot, n: i64) -> bool {
     s.issues.iter().any(|i| i.number == n) || s.prs.iter().any(|p| p.number == n)
-}
-
-/// Board gh_refs the snapshot cannot vouch for at all — no open issue, no open PR, and no
-/// per-number state saying it existed (closed long ago counts as found).
-pub fn unknown_refs(
-    s: &GhSnapshot,
-    cards: &[crate::store::Card],
-    states: &std::collections::HashMap<i64, RefState>,
-) -> Vec<i64> {
-    let mut out = Vec::new();
-    for c in cards {
-        let Some(n) = c.gh_ref else { continue };
-        if still_open(s, n) || states.contains_key(&n) {
-            continue;
-        }
-        if !out.contains(&n) {
-            out.push(n);
-        }
-    }
-    out
 }
 
 /// Apply planned moves as actor `github`, logging the reason on each card.

@@ -4,10 +4,12 @@
 
 ### GitHub links refuse to be silently wrong
 - `gh#N` in a title is recognised case-insensitively (`GH#6`, `Gh#6`), in `add` and `edit`.
-- `tb sync` reports linked refs it cannot find — `gh#999: no such issue or PR in OWNER/REPO`
-  (text; `--json` gains an additive `unknown_refs` array) — with one extra `gh` lookup per
-  suspect ref, only during sync and never on the board's refresh path. An issue closed long
-  ago still counts as found (its per-number state was already fetched).
+- `tb sync` reports linked refs GitHub answers 404 for — `gh#999: no such issue or PR in
+  OWNER/REPO` (text; `--json` gains an additive `unknown_refs` array). It uses the per-number
+  lookup sync already makes for refs the open lists don't cover (no extra `gh` calls), and
+  never looks up DONE cards. When that lookup fails for another reason (network, rate
+  limit, auth) the ref is reported as `gh#N: could not check on GitHub (…)` instead
+  (`--json`: `unchecked_refs`). An issue closed long ago still counts as found.
 
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no

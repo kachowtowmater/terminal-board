@@ -406,26 +406,16 @@ fn help_overlay_and_footer() {
 }
 
 #[test]
-fn sync_reports_unknown_gh_refs() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
-    s.set_github(Some("acme/widgets")).unwrap();
-    let _missing = s.add("plain: gh#999 does not exist", "", &[], "lead").unwrap();
-    let known = s.add("plain: gh#60 known open", "", &[], "lead").unwrap();
-    s.take(known, "bot-1").unwrap();
-    let snap = GhSnapshot {
-        repo: "acme/widgets".into(),
-        fetched_at: terminal_board::store::now(),
-        issues_open: 1,
-        issues: vec![issue(60)],
-        ..Default::default()
-    };
-    let states = std::collections::HashMap::new(); // 999 is not in the snapshot at all
-    let unknown = terminal_board::github::unknown_refs(&snap, &s.list().unwrap(), &states);
-    assert_eq!(unknown, vec![999], "the mistyped ref is reported: {unknown:?}");
-    // a closed-long-ago ref resolves as found via its per-number state
-    let states: std::collections::HashMap<i64, terminal_board::github::RefState> =
-        [(999, terminal_board::github::RefState { closed: true, pr: false, merged: false })].into();
-    let unknown = terminal_board::github::unknown_refs(&snap, &s.list().unwrap(), &states);
-    assert!(unknown.is_empty(), "closed refs count as found: {unknown:?}");
+fn ref_lookups_report_missing_only_on_a_real_404() {
+    use terminal_board::github::{classify_lookup, found_states, RefLookup, RefState};
+    let closed = r#"{"state":"closed"}"#.to_string();
+    assert_eq!(classify_lookup(Ok(closed)), RefLookup::Found(RefState { closed: true, pr: false, merged: false }));
+    assert_eq!(classify_lookup(Err("gh: Not Found (HTTP 404)".into())), RefLookup::Missing);
+    // network, rate limit, auth: nothing is known, so it is never reported as missing
+    for e in ["error connecting to api.github.com", "HTTP 403: API rate limit exceeded", "HTTP 401: Bad credentials", "gh api timed out"] {
+        assert!(matches!(classify_lookup(Err(e.into())), RefLookup::Failed(_)), "{e}");
+    }
+    assert!(matches!(classify_lookup(Ok("not json".into())), RefLookup::Failed(_)));
+    let l = vec![(1, RefLookup::Missing), (2, RefLookup::Found(RefState { closed: true, pr: true, merged: true })), (3, RefLookup::Failed("x".into()))];
+    assert_eq!(found_states(&l).keys().copied().collect::<Vec<_>>(), [2]);
 }
