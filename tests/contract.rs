@@ -180,3 +180,57 @@ fn watch_streams_a_new_object_after_a_write() {
     let status = child.wait().unwrap();
     assert!(status.success(), "exits cleanly on a closed stdout: {status:?}");
 }
+
+#[test]
+fn setup_offers_the_skill_only_with_claude_dir() {
+    // a minimal fake gh (repo view positive) so `config github` checks pass offline
+    let ghdir = tempfile::tempdir().unwrap();
+    let gh = ghdir.path().join("gh");
+    std::fs::write(&gh, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let fake_gh_ok = || gh.clone();
+    let dir = tempfile::tempdir().unwrap();
+    // HOME without ~/.claude: --yes runs the wizard, the skill step is skipped, nothing written
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["setup", "--yes", "--no-github", "--dry-run"])
+        .env("HOME", dir.path())
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", fake_gh_ok())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("No ~/.claude") || out.contains("Claude Code not detected"), "the skip is explained: {out}");
+    assert!(!dir.path().join(".claude").exists(), "nothing created without ~/.claude");
+    // with ~/.claude present: the skill step runs (dry-run reports the would-install)
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["setup", "--yes", "--no-github", "--dry-run"])
+        .env("HOME", dir.path())
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", fake_gh_ok())
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Claude Code skill"), "offered when ~/.claude exists: {out}");
+    // --agents forces the skill even without ~/.claude
+    let dir2 = tempfile::tempdir().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["setup", "--yes", "--no-github", "--agents", "--dry-run"])
+        .env("HOME", dir2.path())
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", fake_gh_ok())
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Would install the Claude Code skill"), "forced by --agents: {out}");
+}

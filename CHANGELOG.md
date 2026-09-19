@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Setup: the Claude Code skill is offered only to Claude Code users
+- The wizard asked to install the skill even on machines without Claude Code (and would
+  create `~/.claude/skills/...`). Now step 4 skips silently when `~/.claude` does not exist
+  (`No ~/.claude — Claude Code not detected; skipping the skill (use --agents to force it)`);
+  it is offered when `~/.claude` exists, and `--agents` forces the agent steps regardless.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were
