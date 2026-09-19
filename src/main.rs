@@ -1,4 +1,13 @@
 use clap::{Parser, Subcommand};
+// all output through `terminal_board::write_stdout` (see lib.rs): a closed stdout is a clean exit
+macro_rules! println {
+    () => { terminal_board::write_stdout("\n") };
+    ($($a:tt)*) => { terminal_board::write_stdout(&format!("{}\n", format_args!($($a)*))) };
+}
+macro_rules! print {
+    ($($a:tt)*) => { terminal_board::write_stdout(&format!($($a)*)) };
+}
+
 use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### A reader that stops early no longer crashes tb
+- `tb list | head -1`, `tb config | grep -q …` and the like: when the reader closes the pipe
+  before tb has written everything, tb now stops and exits 0 (as `tb watch` already did)
+  instead of panicking with `failed printing to stdout: Broken pipe` (exit 101), on every
+  command. The installer test reads `tb config` output from a variable, not through a pipe.
+
 ### Identity: a blank `--as` is refused, never silently replaced
 - `--as ""` or `--as "  "` (usually `--as "$NAME"` with `NAME` unset in a fresh shell) fails
   before any write with `--as is empty — pass your agent name, e.g. --as bot-1` (text and
