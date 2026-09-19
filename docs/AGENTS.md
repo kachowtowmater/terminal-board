@@ -42,6 +42,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
+| claim the top REVIEW card you did not do | `tb next --review --as NAME` |
 | take one specific TODO card | `tb take ID` |
 | see every card, by column | `tb list` |
 | one card in full (brief, checklist, notes, history) | `tb show ID` |
@@ -126,13 +127,12 @@ something else with `tb next`, or wait. `tb block ID --clear` when it moves agai
 **Card too big:** add the parts as new cards (`tb add`), note their IDs on the original, and
 narrow the original with `tb edit ID --desc "…"`.
 
-**Review someone's card (verifier):** `tb list` shows REVIEW; `tb show ID`; check the done
-criteria; then `tb done ID` (→ DONE) with a note of what you checked, or send it back to
-its owner with `tb move ID doing "what is missing"`. The card then shows its rework round
-(`r2`, `r3`, …; `round` in JSON). You cannot approve a card you did
-yourself: whoever moved it to REVIEW (its owner, if GitHub moved it) gets
-`you did this work — ask another person or agent to review it`. (In the full-screen
-board a person approving their own card is asked `approve your own work? y/n` instead.)
+**Review someone's card (verifier):** `tb next --review --as NAME` claims the top REVIEW card
+you did not do (atomic; skips your own and claimed cards; `tb move ID review` frees a stale claim).
+`tb show ID`, check the done criteria, then `tb done ID` with a note of what you checked, or send
+it back to its owner with `tb move ID doing "what is missing"` (it then shows `r2`, `r3`, …;
+`round` in JSON). You cannot approve a card you moved to REVIEW (its owner, if GitHub moved
+it): you get `you did this work — …`; the full-screen board asks `approve your own work? y/n`.
 
 **Your card came back:** it is in DOING again, showing `r2`. `tb show ID` — the last
 `returned` event says what to fix. Fix it, note it, and `tb done ID` again.
@@ -233,6 +233,7 @@ tb block 1 "#2"
 tb block 1 --clear
 tb prio 2 top
 tb done 1
+tb next --review --as bob
 tb done 1 --as bob
 tb take 2
 tb drop 2
