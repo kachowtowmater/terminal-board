@@ -1157,6 +1157,21 @@ impl App {
             self.focus_nav = true;
         }
         match key.code {
+            // shift+left/right moves the card — the same keys mean the same thing in every
+            // view (the focus view previously swallowed them as navigation)
+            KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let (_, column) = self.selected().map(|c| (c.id, c.column.clone()))?;
+                let ci = COLUMNS.iter().position(|k| *k == column).unwrap_or(0);
+                let to = if key.code == KeyCode::Left { ci.checked_sub(1) } else { (ci < 3).then_some(ci + 1) };
+                if let Some(t) = to {
+                    self.move_selected(Some(COLUMNS[t]), store);
+                }
+                return Some(false);
+            }
+            KeyCode::Up | KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.reorder_selected(if key.code == KeyCode::Up { "up" } else { "down" }, store);
+                return Some(false);
+            }
             KeyCode::Left | KeyCode::Right => {
                 let n = self.col_cards(self.col).len();
                 if n > 0 {
@@ -1793,7 +1808,22 @@ fn footer(app: &App, width: u16) -> Line<'static> {
                 let st = if *is_err { bold() } else { Style::default() };
                 return Line::from(vec![Span::styled(format!(" {msg}"), st), Span::styled("  (esc clears)", dim())]);
             }
-            // the essentials; `?` has the rest
+            // the essentials; `?` has the rest. The focus view keeps its own arrow axis
+            // (left/right = card, up/down = column): say so here, so the help agrees.
+            let focus_view = app.last_shape.get() == Shape::Focus && app.view == View::Board;
+            if focus_view {
+                // the focus view's own arrow axis, stated where the keys are used; it is what
+                // this footer must never lose, so the extras are dropped first (a, enter, then
+                // q) and the limit / pick-repo hints stay in `?`
+                let mut hints = vec![("a", "add"), ("enter", "open"), ("arrows", "card/col"), ("shift+<>", "move"), ("?", "help"), ("q", "quit")];
+                for drop in ["enter", "a", "q"] {
+                    if hints_len(&hints) <= width as usize {
+                        break;
+                    }
+                    hints.retain(|(k, _)| *k != drop);
+                }
+                return Line::from(hint_spans(&hints));
+            }
             let mut hints = vec![("a", "add"), ("e", "edit"), ("x", "del"), ("enter", "open"), ("shift+arrows", "move")];
             if app.col == 1 {
                 hints.push(("+/-", "limit"));
@@ -2250,6 +2280,7 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
 pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ("Board", &[
         ("arrows", "select a card (left/right column, up/down card)"),
+        ("focus view arrows", "left/right card, up/down column"),
         ("shift+left/right", "move the card to the next column (also > <)"),
         ("shift+up/down, K J", "reorder the card within its column"),
         ("tab / shift+tab", "cycle focus: columns, GITHUB, AGENTS"),
