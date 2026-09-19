@@ -191,7 +191,8 @@ pub fn parse_title(raw: &str) -> (Option<String>, Option<i64>, String) {
     let mut words = Vec::new();
     for w in rest.split_whitespace() {
         if gh.is_none() {
-            if let Some(n) = w.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
+            let lower = w.to_ascii_lowercase();
+            if let Some(n) = lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()) {
                 gh = Some(n);
                 continue;
             }

@@ -168,7 +168,9 @@ tb sync                      # apply GitHub evidence to the board now
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW,
   a merged PR or a closed issue moves it to DONE. Cards never move backwards.
 - Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR, so
-  the link is found.
+  the link is found. `gh#N` is case-insensitive (`GH#6` works). A `gh#N` that matches no
+  issue or PR is reported by `tb sync` (`gh#999: no such issue or PR in OWNER/REPO`) — fix
+  it with `tb edit`.
 - `tb done` will not move a `gh#N` card to DONE while its issue is still open. Close the
   issue on GitHub (or merge the PR) instead of adding `--force`.
 

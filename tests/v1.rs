@@ -404,3 +404,28 @@ fn help_overlay_and_footer() {
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
 }
+
+#[test]
+fn sync_reports_unknown_gh_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_github(Some("acme/widgets")).unwrap();
+    let _missing = s.add("plain: gh#999 does not exist", "", &[], "lead").unwrap();
+    let known = s.add("plain: gh#60 known open", "", &[], "lead").unwrap();
+    s.take(known, "bot-1").unwrap();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 1,
+        issues: vec![issue(60)],
+        ..Default::default()
+    };
+    let states = std::collections::HashMap::new(); // 999 is not in the snapshot at all
+    let unknown = terminal_board::github::unknown_refs(&snap, &s.list().unwrap(), &states);
+    assert_eq!(unknown, vec![999], "the mistyped ref is reported: {unknown:?}");
+    // a closed-long-ago ref resolves as found via its per-number state
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> =
+        [(999, terminal_board::github::RefState { closed: true, pr: false, merged: false })].into();
+    let unknown = terminal_board::github::unknown_refs(&snap, &s.list().unwrap(), &states);
+    assert!(unknown.is_empty(), "closed refs count as found: {unknown:?}");
+}

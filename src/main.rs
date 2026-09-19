@@ -447,13 +447,33 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let states = github::fetch_states(&repo, &github::needs_state(&snap, &cards));
             let moves = github::plan_moves(&snap, &cards, &states);
             github::apply_moves(&mut store, &moves)?;
+            // gh#N refs the snapshot and the per-number lookups cannot vouch for: one extra
+            // lookup per ref, only here on sync — never on the board's refresh path
+            let unknown = github::unknown_refs(&snap, &cards, &states);
+            let checked: Vec<(i64, bool)> = unknown
+                .iter()
+                .map(|n| (*n, github::fetch_ref_exists(&repo, *n)))
+                .collect();
+            let unknown: Vec<i64> = checked.iter().filter(|(_, ok)| !ok).map(|(n, _)| *n).collect();
             if j {
-                println!("{}", pretty(&json!({"ok": true, "moves": moves})));
-            } else if moves.is_empty() {
-                println!("synced {repo}: nothing to move");
+                println!(
+                    "{}",
+                    pretty(&json!({
+                        "ok": true,
+                        "moves": moves,
+                        "unknown_refs": unknown,
+                    }))
+                );
             } else {
-                for m in &moves {
-                    println!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
+                for n in &unknown {
+                    println!("gh#{n}: no such issue or PR in {repo} — fix the title with 'tb edit'");
+                }
+                if moves.is_empty() {
+                    println!("synced {repo}: nothing to move");
+                } else {
+                    for m in &moves {
+                        println!("#{} {} -> {}  ({})", m.card_id, m.from, m.to, m.text);
+                    }
                 }
             }
         }
