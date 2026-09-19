@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Sync never moves unowned work into REVIEW
+- A TODO card nobody took, whose issue already has an open PR, used to be moved to REVIEW by
+  `tb sync` — ownerless, authorless, approvable by anyone, accountable to nobody. Now sync
+  leaves it in TODO (the open PR still shows on the card via its gh# link); once someone
+  takes the card, the next sync moves it as before. Every synced REVIEW card therefore has
+  an owner and an author.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

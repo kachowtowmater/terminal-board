@@ -234,12 +234,16 @@ fn auto_move_matrix() {
         id
     };
     s.set_wip(99).unwrap();
+    // every card here has an owner (taken by 'me'): the unowned-todo case is its own test
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
     let closed = mk(&mut s, "gh#21 a closed issue", "todo");
     let open_rev = mk(&mut s, "gh#11 open, in review", "review");
     let unmerged = mk(&mut s, "gh#22 closed unmerged pr", "doing");
+    for id in [linked, branch, merged, closed, unmerged] {
+        let _ = s.take(id, "me");
+    }
     let done_open = mk(&mut s, "gh#10 already done", "done");
     let plain = mk(&mut s, "no gh ref", "doing");
     let snap = GhSnapshot {
@@ -325,8 +329,9 @@ esac
         ),
     );
     let db = d.join("b.db");
-    for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
+    for (i, t) in ["gh#10 linked", "gh#20 merged", "gh#21 closed"].iter().enumerate() {
         tb(&db, &gh, &["add", t]);
+        tb(&db, &gh, &["take", &(i + 1).to_string()]); // owners: sync moves taken work
     }
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
@@ -403,4 +408,49 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn sync_never_moves_an_unowned_todo_card_to_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // unowned todo card linked to an issue that has an open PR
+    let unowned = s.add("plain: gh#60 nobody took it", "", &[], "lead").unwrap();
+    // an owned one, for the positive control
+    let owned = s.add("plain: gh#61 taken", "", &[], "lead").unwrap();
+    s.take(owned, "bot-1").unwrap();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 2,
+        prs: vec![Pr {
+            number: 61,
+            title: "fix it".into(),
+            head_ref: "fix/61".into(),
+            is_draft: false,
+            review: "-".into(),
+            ci: "ok".into(),
+            created_at: "2026-09-18T07:00:00Z".into(),
+            author: "bot-1".into(),
+            closes: vec![61],
+        }],
+        issues: vec![issue(60), issue(61)],
+        ..Default::default()
+    };
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> = [
+        (60, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+        (61, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+    ]
+    .into();
+    let moves = terminal_board::github::plan_moves(&snap, &s.list().unwrap(), &states);
+    assert!(moves.iter().all(|m| m.card_id != unowned), "unowned card stays in todo: {moves:?}");
+    assert!(moves.iter().any(|m| m.card_id == owned && m.to == "review"), "owned card moves: {moves:?}");
+    terminal_board::github::apply_moves(&mut s, &moves).unwrap();
+    assert_eq!(s.card(unowned).unwrap().column, "todo", "still todo, still unowned");
+    assert_eq!(s.card(unowned).unwrap().owner, None);
+    assert_eq!(s.card(owned).unwrap().column, "review");
+    // and the self-approval check has an author for every synced REVIEW card
+    for c in s.list().unwrap().into_iter().filter(|c| c.column == "review") {
+        assert!(s.author(c.id).unwrap().is_some(), "#{} in review without an author", c.id);
+    }
 }
