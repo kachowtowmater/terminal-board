@@ -712,7 +712,7 @@ fn plus_minus_adjust_wip_only_on_doing() {
     let (x, y) = pos(&screen, "3/1");
     assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED), "over the limit stays highlighted");
     assert_eq!(s.snapshot().unwrap().in_column("doing").len(), 3, "nothing kicked out");
-    assert!(s.next("me").unwrap_err().to_string().contains("doing is full (3/1)"));
+    assert!(s.next("me").unwrap_err().to_string().contains("doing is full (3/1:"));
     let log: Vec<String> = s.board_events().unwrap().into_iter().map(|e| e.3).collect();
     assert_eq!(log.first().map(String::as_str), Some("wip 3 -> 4"));
     assert_eq!(log.last().map(String::as_str), Some("wip 2 -> 1"));
