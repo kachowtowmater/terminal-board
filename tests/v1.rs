@@ -1,4 +1,20 @@
 //! v1.0.0 features: delete, reorder/shift-move, edit, GitHub auto-move + forced done, help.
+/// Pin the test clock once: `TB_NOW` = local noon today (see tests/common/mod.rs).
+fn pin_clock() {
+    use std::sync::Once;
+    static PIN: Once = Once::new();
+    PIN.call_once(|| {
+        let noon = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .map(|t| t.timestamp())
+            .unwrap_or_else(terminal_board::store::now);
+        std::env::set_var("TB_NOW", noon.to_string());
+    });
+}
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -45,6 +61,7 @@ fn todo_ids(s: &Store) -> Vec<i64> {
 
 #[test]
 fn delete_asks_then_deletes() {
+    pin_clock();
     let (_d, mut s, mut app) = board(&["one", "two"]);
     app.handle_key(key(KeyCode::Char('x')), &mut s);
     assert!(matches!(app.mode, Mode::Confirm { action: Confirm::Delete(1), .. }));
@@ -64,6 +81,7 @@ fn delete_asks_then_deletes() {
 
 #[test]
 fn shift_arrows_and_jk_reorder_and_move() {
+    pin_clock();
     let (_d, mut s, mut app) = board(&["a", "b", "c"]);
     render(&app, 140, 40);
     // Shift+Down moves #1 down; the selection follows
@@ -101,6 +119,7 @@ fn shift_arrows_and_jk_reorder_and_move() {
 
 #[test]
 fn next_takes_the_top_by_position_and_prio_cli() {
+    pin_clock();
     let (_d, mut s, _app) = board(&["old", "mid", "new"]);
     s.reorder(3, "top", "me").unwrap();
     assert_eq!(todo_ids(&s), [3, 1, 2]);
@@ -117,6 +136,7 @@ fn next_takes_the_top_by_position_and_prio_cli() {
 
 #[test]
 fn position_migration_orders_existing_cards_by_created_at() {
+    pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("old.db");
     {
@@ -141,6 +161,7 @@ fn position_migration_orders_existing_cards_by_created_at() {
 
 #[test]
 fn edit_form_cursor_ops() {
+    pin_clock();
     let mut f = EditForm { id: 1, title: "abc".into(), desc: String::new(), field: 0, cursor: 3, from_popup: false };
     f.key(KeyCode::Home);
     f.key(KeyCode::Right);
@@ -170,6 +191,7 @@ fn edit_form_cursor_ops() {
 
 #[test]
 fn edit_key_saves_and_reparses_the_tag() {
+    pin_clock();
     let (_d, mut s, mut app) = board(&["widgets: gh#308 csv export"]);
     app.handle_key(key(KeyCode::Char('e')), &mut s);
     let Mode::Edit(f) = app.mode.clone() else { panic!("edit form") };
@@ -224,6 +246,7 @@ fn issue(n: i64) -> Issue {
 
 #[test]
 fn auto_move_matrix() {
+    pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     let mk = |s: &mut Store, t: &str, col: &str| {
@@ -303,6 +326,7 @@ fn tb(db: &Path, gh: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn sync_cli_moves_cards_via_fake_gh() {
+    pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     std::fs::write(d.join("prs.json"), r#"[{"number":30,"title":"fix","headRefName":"x","isDraft":false,"reviewDecision":"","statusCheckRollup":[],"createdAt":"2026-09-18T08:00:00Z","author":{"login":"bot"},"closingIssuesReferences":[{"number":10}]}]"#).unwrap();
@@ -342,6 +366,7 @@ esac
 
 #[test]
 fn forced_done_prompt_and_cli_force() {
+    pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("b.db");
     let mut s = Store::open(&db).unwrap();
@@ -385,6 +410,7 @@ fn forced_done_prompt_and_cli_force() {
 
 #[test]
 fn help_overlay_and_footer() {
+    pin_clock();
     let (_d, mut s, mut app) = board(&["a"]);
     let screen = render(&app, 160, 50);
     assert!(screen.contains("a add  e edit  x del  enter open  shift+arrows move") && screen.contains("? help  q quit"), "{screen}");

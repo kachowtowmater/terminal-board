@@ -167,7 +167,13 @@ impl Snapshot {
 }
 
 pub fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    // Testable clock: `TB_NOW` (unix seconds) pins "now" so golden/layout tests are
+    // independent of the time of day and timezone (a just-after-midnight CI clock used to
+    // push `now - 3h` fixtures into yesterday and flip the '+N today' counts).
+    match crate::env("NOW") {
+        Some(v) => v.trim().parse::<i64>().unwrap_or_else(|_| chrono::Utc::now().timestamp()),
+        None => chrono::Utc::now().timestamp(),
+    }
 }
 
 /// Split `tag: rest` and `gh#N` out of a title.

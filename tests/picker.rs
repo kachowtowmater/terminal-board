@@ -1,5 +1,21 @@
 //! Repo picker (R) and `github repos` / `config github` CLI, via a fake gh (TB_GH).
 //! One test function: TB_GH is process-wide, so scenarios run in order.
+/// Pin the test clock once: `TB_NOW` = local noon today (see tests/common/mod.rs).
+fn pin_clock() {
+    use std::sync::Once;
+    static PIN: Once = Once::new();
+    PIN.call_once(|| {
+        let noon = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .map(|t| t.timestamp())
+            .unwrap_or_else(terminal_board::store::now);
+        std::env::set_var("TB_NOW", noon.to_string());
+    });
+}
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -86,6 +102,7 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 #[test]
 fn picker_and_cli() {
+    pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let ok = fake_ok(dir.path());
     let out = fake_logged_out(dir.path());
