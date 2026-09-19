@@ -1487,7 +1487,13 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     f.render_widget(block, area);
     let sel = if focused { Some(app.row[ci].min(n.saturating_sub(1))) } else { None };
     if cards.is_empty() {
-        f.render_widget(Paragraph::new(Line::styled(" -", dim())), inner);
+        // first-run hint: a bare '-' told a new user nothing
+        let hint = if ci == 0 && app.snap.cards.is_empty() {
+            " press a to add your first card"
+        } else {
+            " -"
+        };
+        f.render_widget(Paragraph::new(Line::styled(hint, dim())), inner);
     } else if inner.height < 3 || inner.width < 8 {
         app.drawn_styles.borrow_mut().push((ci, "compact"));
         draw_compact(f, app, &cards, sel, inner);

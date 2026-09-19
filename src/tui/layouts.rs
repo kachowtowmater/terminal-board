@@ -106,6 +106,10 @@ const TIDY_TWO_COL: u16 = 56;
 /// `PRS      1 open   0 failing         MAIN CI  ok` (4 rows when narrower than 56).
 fn tidy_stats(app: &App, s: &github::GhSnapshot, width: u16) -> Vec<Line<'static>> {
     let fac = github::factory(s, &app.snap.cards, app.snap.now);
+    // first-run hint: an all-quiet repo says so instead of two 0-open rows
+    if s.issues_open == 0 && s.prs.is_empty() {
+        return vec![Line::styled(" no open issues or PRs", dim())];
+    }
     let left1 = format!(" {:<7}{:>3} open {:>3} new {:>3} free", "ISSUES", s.issues_open, fac.new_today, fac.unclaimed);
     let left2 = format!(" {:<7}{:>3} open {:>3} failing", "PRS", s.prs.len(), fac.failing);
     let right1 = vec![Span::raw(format!("{:<9}{:>2} today", "MERGED", s.merged_today.len()))];

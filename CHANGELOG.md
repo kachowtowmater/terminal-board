@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### First-run empty states
+- A fresh board's empty TODO column reads `press a to add your first card` instead of a bare
+  `-`; a connected repo with zero open issues and PRs reads `no open issues or PRs` instead of
+  two 0-open rows. Every view shows the hints; a board with cards keeps today's look.
+
 ### Identity
 - Inside a herdr pane, tb asks herdr for the agent name of `HERDR_PANE_ID` when there is no
   `--as`, `TB_AS` or `HERDR_AGENT_NAME`. Agents that forgot `--as` after `tb next` were

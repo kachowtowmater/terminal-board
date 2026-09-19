@@ -782,3 +782,31 @@ fn live_samples() {
         }
     }
 }
+
+#[test]
+fn first_run_empty_states_show_hints() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    // a fresh board, GitHub connected to a quiet repo
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 0,
+        ..Default::default()
+    }))
+    .unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    // drive all five shapes so no view can regress: focus, third-h, third-v, half-h, half-v
+    for (w, h) in [(50u16, 14u16), (110, 22), (110, 45), (140, 45), (90, 45)] {
+        let _ = render(&app, w, h);
+    }
+    let screen = render(&app, 140, 45);
+    assert!(screen.contains("press a to add your first card"), "TODO hint in the wide view:\n{screen}");
+    assert!(screen.contains("no open issues or PRs"), "quiet-repo hint: {screen}");
+    // narrow: third-h rail still shows the GitHub hint
+    let screen = render(&app, 110, 22);
+    assert!(screen.contains("no open issues or PRs"), "{screen}");
+}
