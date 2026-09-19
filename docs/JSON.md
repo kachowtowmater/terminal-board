@@ -5,6 +5,12 @@ fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking chan
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
 
+**Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
+fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
+and a consumer that hard-fails on them breaks on every minor update. The event `kind`
+vocabulary is open (see docs/SCHEMA.md); treat an unknown kind as "something happened to
+this card", not as an error.
+
 ## `tb board --json` — the whole board
 
 ```json

@@ -254,6 +254,10 @@ pub struct App {
     pub gh: GhView,
     pub show_github: bool,
     pub mode: Mode,
+    /// Scroll offset of the `?` help overlay (up/down, PgUp/PgDn in Mode::Help).
+    pub help_scroll: u16,
+    /// The largest useful `help_scroll` at the last render (the key handler clamps to it).
+    pub help_max: std::cell::Cell<u16>,
     pub popup: Option<CardDetail>,
     pub status: Option<(String, bool)>,
     pub actor: String,
@@ -305,6 +309,8 @@ impl App {
             gh: GhView::default(),
             show_github,
             mode: Mode::Normal,
+            help_scroll: 0,
+            help_max: std::cell::Cell::new(0),
             popup: None,
             status: None,
             actor: actor.to_string(),
@@ -578,8 +584,18 @@ impl App {
                 _ => {}
             },
             Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-                    self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.help_scroll = 0;
+                    }
+                    KeyCode::Down => self.help_scroll = (self.help_scroll + 1).min(self.help_max.get()),
+                    KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                    KeyCode::PageDown => self.help_scroll = (self.help_scroll + 10).min(self.help_max.get()),
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                    KeyCode::Home => self.help_scroll = 0,
+                    KeyCode::End => self.help_scroll = self.help_max.get(),
+                    _ => {}
                 }
             }
             Mode::Confirm { action, .. } => {
@@ -2343,28 +2359,93 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     ]),
 ];
 
+/// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let used = cur.chars().count();
+            let sep = usize::from(used > 0);
+            if used + sep + word.len() <= width {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            // a word longer than the line: cut it
+            let rest = word.split_off(width);
+            out.push(word.into_iter().collect());
+            word = rest;
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The help rows for an overlay `iw` columns wide: keys in a `kw` column, descriptions
+/// wrapped beside them; a key too long for the column gets its own line.
+fn help_lines(iw: usize, kw: usize) -> Vec<Line<'static>> {
+    let indent = 3 + kw;
+    let dw = iw.saturating_sub(indent).max(8);
+    let mut lines = Vec::new();
+    for (group, keys) in HELP_GROUPS {
+        lines.push(Line::styled(format!(" {group}"), bold()));
+        for (k, d) in keys {
+            let mut desc = wrap_words(d, dw).into_iter();
+            if k.chars().count() < kw {
+                let first = desc.next().unwrap_or_default();
+                lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(first)]));
+            } else {
+                lines.push(Line::styled(format!("   {k}"), bold()));
+            }
+            for more in desc {
+                lines.push(Line::raw(format!("{:indent$}{more}", "")));
+            }
+        }
+    }
+    lines
+}
+
 fn draw_help(f: &mut Frame, app: &App) {
-    let rows: usize = HELP_GROUPS.iter().map(|g| g.1.len() + 1).sum();
-    let area = centered(f.area(), 96, rows as u16 + 3);
+    // narrow panes: a smaller overlay, a shrunk key column, descriptions wrapped
+    let wide = f.area().width >= 100;
+    let (w, kw) = if wide { (96, 26) } else { (f.area().width.saturating_sub(2).max(30), 12) };
+    let iw = w.min(f.area().width.saturating_sub(2)).saturating_sub(2) as usize;
+    let lines = help_lines(iw, kw);
+    let rows = lines.len();
+    let area = centered(f.area(), w, rows as u16 + 3);
     if area.width < 10 || area.height < 4 {
         return;
     }
     f.render_widget(Clear, area);
     f.render_widget(Block::default().style(base_style(app)), area);
+    let mut title_bottom = Line::styled(" esc or ? closes ", bold());
+    let inner_h = area.height.saturating_sub(2) as usize;
+    if rows > inner_h {
+        title_bottom = Line::styled(" esc/? closes · up/down scroll ", bold());
+    }
     let b = frame(true, None)
         .title(Span::styled(" Terminal Board keys ", bold()))
-        .title_bottom(Line::styled(" esc or ? closes ", bold()));
+        .title_bottom(title_bottom);
     let inner = b.inner(area);
     f.render_widget(b, area);
-    let kw = 26;
-    let mut lines = Vec::new();
-    for (group, keys) in HELP_GROUPS {
-        lines.push(Line::styled(format!(" {group}"), bold()));
-        for (k, d) in keys {
-            lines.push(Line::from(vec![Span::styled(format!("   {k:<kw$}"), bold()), Span::raw(d.to_string())]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+    let max_scroll = rows.saturating_sub(inner_h) as u16;
+    app.help_max.set(max_scroll);
+    let scroll = app.help_scroll.min(max_scroll);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 fn info_popup(f: &mut Frame, app: &App, title: String, lines: Vec<Line<'static>>, hint: &str) {
