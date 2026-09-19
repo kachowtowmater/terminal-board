@@ -156,6 +156,38 @@ fn cmd_hint(explicit: Option<&str>, rest: &str) -> String {
     }
 }
 
+/// The board named on the command line (a first-argument name or `-b`), unless it is
+/// `default`. A board picked by `TB_BOARD` travels in the environment, so it is not
+/// "explicit": its hints stay bare on every path.
+fn explicit_board<'a>(positional: Option<&'a str>, flag: Option<&'a str>) -> Option<&'a str> {
+    positional.or(flag).filter(|n| *n != boards::DEFAULT_BOARD)
+}
+
+/// Put an explicitly named board into every command a text hints at
+/// (`'tb list'` -> `'tb work list'`); unchanged without one.
+fn with_board(text: &str, explicit: Option<&str>) -> String {
+    match explicit {
+        Some(name) => {
+            // hints built with cmd_hint already carry the board: leave those alone
+            let done = [format!("'tb {name} "), format!("`tb {name} ")];
+            let marks = ["\u{0}q", "\u{0}b"];
+            let mut t = text.replace(&done[0], marks[0]).replace(&done[1], marks[1]);
+            t = t.replace("'tb ", &done[0]).replace("`tb ", &done[1]);
+            t.replace(marks[0], &done[0]).replace(marks[1], &done[1])
+        }
+        None => text.to_string(),
+    }
+}
+
+/// Plain board/list text: an empty board's `'tb add …'` hint names an explicit board too.
+fn plain_hinted(text: String, empty: bool, explicit: Option<&str>) -> String {
+    if empty {
+        with_board(&text, explicit)
+    } else {
+        text
+    }
+}
+
 /// `{"ok":true,"card":…}` for --json, else the human line.
 fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(), BoardError> {
     if jsonout {
@@ -190,7 +222,7 @@ fn agents_now(store: &Store) -> Result<Vec<contract::AgentJ>, BoardError> {
 }
 
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
-fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
+fn watch(store: &Store, jsonout: bool, explicit: Option<&str>) -> Result<(), BoardError> {
     let mut out = std::io::stdout().lock();
     let mut last = None;
     loop {
@@ -200,7 +232,8 @@ fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
             let text = if jsonout {
                 serde_json::to_string(&contract::board(store)?).unwrap_or_default()
             } else {
-                format!("{}\n", plain::board(&store.snapshot()?))
+                let snap = store.snapshot()?;
+                format!("{}\n", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit))
             };
             if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
                 return Ok(()); // reader went away
@@ -291,7 +324,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let create = cli.cmd.as_ref().map_or(tty, Cmd::writes);
     let mut store = open_board(&name, create)?;
     // hints carry the board name only when it was chosen explicitly in this shell
-    let explicit = positional.as_deref().or(cli.board.as_deref()).filter(|n| *n != boards::DEFAULT_BOARD);
+    let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
     let j = cli.json;
     let Some(cmd) = cmd else {
@@ -302,7 +335,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         if j {
             println!("{}", pretty(&contract::board(&store)?));
         } else {
-            print!("{}", plain::board(&store.snapshot()?));
+            let snap = store.snapshot()?;
+            print!("{}", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit));
         }
         return Ok(());
     };
@@ -317,7 +351,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&snap.cards));
             } else {
-                print!("{}", plain::list(&snap));
+                print!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
         }
         Cmd::Show { id } => {
@@ -332,10 +366,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&contract::board(&store)?));
             } else {
-                print!("{}", plain::board(&store.snapshot()?));
+                let snap = store.snapshot()?;
+            print!("{}", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit));
             }
         }
-        Cmd::Watch => watch(&store, j)?,
+        Cmd::Watch => watch(&store, j, explicit)?,
         Cmd::Agents => {
             let list = agents_now(&store)?;
             if j {
@@ -620,35 +655,17 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
-    let board_arg = args
-        .get(1)
-        .and_then(|a| a.to_str())
-        .map(str::to_string)
-        .filter(|a| !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()))
-        .or_else(|| {
-            // `-b NAME` / `--board NAME`
-            let a1 = args.get(1).and_then(|a| a.to_str())?;
-            if a1 == "-b" || a1 == "--board" {
-                args.get(2).and_then(|a| a.to_str()).map(str::to_string)
-            } else {
-                None
-            }
-        });
-    let parsed = split_board(args).and_then(|(board, args)| run(Cli::parse_from(args), board));
+    // the board named on the command line (positional or -b), for hints on the error path too
+    let mut explicit: Option<String> = None;
+    let parsed = split_board(args).and_then(|(board, args)| {
+        let cli = Cli::parse_from(args);
+        explicit = explicit_board(board.as_deref(), cli.board.as_deref()).map(str::to_string);
+        run(cli, board)
+    });
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // Hints name commands (`'tb take 1'`). On an explicitly named, non-default board
-            // the bare hint would act on the default board in a fresh shell — prefix it.
-            // (A board picked by TB_BOARD travels in the env, so the bare form stays right.)
-            let env_board = terminal_board::env("BOARD");
-            let explicit = board_arg.as_deref().or(env_board.as_deref());
-            let e = match explicit.filter(|n| *n != boards::DEFAULT_BOARD) {
-                Some(name) => {
-                    BoardError(e.0.replace("'tb ", &format!("'tb {name} ")).replace("`tb ", &format!("`tb {name} ")))
-                }
-                None => e,
-            };
+            let e = BoardError(with_board(&e.0, explicit.as_deref()));
             if jsonout {
                 println!("{}", pretty(&contract::error(&e.to_string())));
             } else {

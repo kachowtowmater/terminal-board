@@ -222,3 +222,40 @@ fn hints_stay_bare_when_the_board_comes_from_the_env() {
     let out = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(out.contains("'tb note "), "TB_BOARD travels in the env: bare hint {out}");
 }
+
+/// Review fixes: an empty board's hint, `-b` after the subcommand on the error path, and one
+/// TB_BOARD rule (bare) on both paths.
+#[test]
+fn hints_name_the_board_on_every_path() {
+    let b = Board::new();
+    let stderr = |o: &Output| String::from_utf8_lossy(&o.stderr).to_string();
+    // (1) empty board: list, board and the positional form all hint at the named board
+    for args in [&["work", "list"][..], &["-b", "work", "list"], &["work", "board"], &["list", "-b", "work"]] {
+        let out = b.ok(args);
+        assert!(out.contains("'tb work add \"tag: title\"'"), "{args:?}: {out}");
+    }
+    assert!(b.ok(&["list"]).contains("'tb add \"tag: title\"'"), "default board stays bare");
+    // (2) a -b after the subcommand counts on the error path as it does on success
+    let o = b.run(&["done", "99", "-b", "work"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("see 'tb work list' for ids"), "{}", stderr(&o));
+    let o = b.run(&["done", "99", "-b", "work", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["hint"], "see 'tb work list' for ids");
+    // hints already naming the board are not prefixed twice
+    b.ok(&["-b", "work", "add", "one"]);
+    let o = b.run(&["check", "1", "-b", "work"]);
+    let e = stderr(&o);
+    assert!(e.contains("'tb work check 1 1'") && !e.contains("work work"), "{e}");
+    // (3) TB_BOARD: bare on the error path, as on the success path
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["done", "99"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "work")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("see 'tb list' for ids") && !stderr(&o).contains("tb work"), "{}", stderr(&o));
+}
