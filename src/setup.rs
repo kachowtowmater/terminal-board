@@ -255,9 +255,16 @@ impl Wizard {
 
         step(4, "Claude Code skill");
         let skill = home().join(".claude/skills/terminal-board/SKILL.md");
+        // the skill is only for Claude Code users: offer it when ~/.claude exists, or when
+        // --agents explicitly forces the agent steps; otherwise skip without prompting
+        let claude = home().join(".claude").is_dir();
         let want = match self.o.agents {
             Some(false) => false,
             Some(true) => true,
+            None if !claude => {
+                note("No ~/.claude — Claude Code not detected; skipping the skill (use --agents to force it).");
+                false
+            }
             None => self.p.ask(&format!("Install the Claude Code skill ({})?", tilde(&skill)), false),
         };
         if want {
@@ -267,6 +274,8 @@ impl Wizard {
                     .map_err(|e| BoardError(format!("cannot write {}: {e}", skill.display())))?;
             }
             self.did(format!("Claude Code skill in {}", tilde(&skill)), "Would install the Claude Code skill".into());
+        } else if !claude && self.o.agents.is_none() {
+            self.skipped.push("Claude Code skill (no ~/.claude)".into());
         } else {
             self.skipped.push("Claude Code skill".into());
         }
