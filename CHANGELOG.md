@@ -8,6 +8,12 @@
   logged as its own event; the TUI asks y/n instead of refusing. The `github` automation and
   REVIEW→DONE reviewers are unaffected (card ids are small shared integers; an off-by-one
   must not move someone else's work or hijack the author record).
+### `TB_DB` and board names no longer mix silently
+- With `TB_DB=/path/file.db` set, every board name opened the SAME file while JSON and the
+  header reported the name you typed — a script could blend boards with no sign of it. Now
+  an explicit non-default name under `TB_DB` is refused: `TB_DB is set — board names are
+  ignored; unset TB_DB to use boards`. Bare `tb` and the `default` name keep working, and
+  JSON reports the board actually opened.
 ### Polish (from running several agents on one board)
 - GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
   text/JSON fields already carried the number; the panel never shows a bare `#N` for a

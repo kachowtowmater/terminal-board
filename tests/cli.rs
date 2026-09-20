@@ -194,9 +194,33 @@ fn mistyped_commands_get_a_next_step_hint() {
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr).to_string();
     assert!(err.contains("unknown command 'frobnicate'") && err.contains("tb --help"), "{err}");
-    // a bare unknown word stays the documented board-open behavior (`tb myboard`)
-    let o = b.run(&["myboard"]);
+    // a bare unknown word stays the documented board-open behavior (`tb myboard`).
+    // Board names need boards mode (a temp HOME, no pinned TB_DB file — a pinned file refuses
+    // them), so this one runs there, on a board that exists.
+    let home = tempfile::tempdir().unwrap();
+    let boards_mode = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("HOME", home.path())
+            .env_remove("TB_DB")
+            .env_remove("TTYBOARD_DB")
+            .env_remove("TB_BOARD")
+            .env_remove("TTYBOARD_BOARD")
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("HERDR_AGENT_NAME")
+            .output()
+            .unwrap()
+    };
+    let o = boards_mode(&["myboard", "add", "plain: first card"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = boards_mode(&["myboard"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // under the pinned TB_DB file the same word is still read as a board name (and refused
+    // as one), never as an unknown command
+    let o = b.run(&["myboard"]);
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(!err.contains("unknown command") && err.contains("board names are ignored"), "{err}");
     // --help still prints its text and succeeds
     let o = b.run(&["--help"]);
     assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"), "{}", String::from_utf8_lossy(&o.stderr));
@@ -337,4 +361,39 @@ fn parse_errors_answer_json_under_json_flag() {
     // --help with --json still prints help text, exit 0
     let o = b.run(&["--help", "--json"]);
     assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"));
+}
+
+#[test]
+fn a_board_name_with_tb_db_is_refused() {
+    let b = Board::new();
+    b.ok(&["add", "plain: on the pinned file"]);
+    for args in [
+        vec!["other", "add", "plain: mixed in"],
+        vec!["-b", "other", "add", "plain: mixed in"],
+        vec!["--board", "other", "list"],
+        vec!["other", "list"],
+    ] {
+        let o = b.run(&args);
+        assert!(!o.status.success(), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(err.contains("TB_DB is set") && err.contains("unset TB_DB"), "{args:?}: {err}");
+    }
+    // nothing mixed in: the pinned file holds only the default board's card
+    let list = b.ok(&["list"]);
+    assert!(list.contains("on the pinned file") && !list.contains("mixed in"), "{list}");
+    // TB_BOARD env: same refusal
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["list"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "other")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("TB_DB is set"));
+    // bare and default name keep working under TB_DB
+    b.ok(&["default", "list"]);
+    let v: serde_json::Value = serde_json::from_str(&b.ok(&["board", "--json"])).unwrap();
+    assert_eq!(v["board"], "default", "JSON reports the board actually opened");
 }
