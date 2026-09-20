@@ -4,8 +4,13 @@
 
 ### First-run empty states
 - A fresh board's empty TODO column reads `press a to add your first card` instead of a bare
-  `-`; a connected repo with zero open issues and PRs reads `no open issues or PRs` instead of
-  two 0-open rows. Every view shows the hints; a board with cards keeps today's look.
+  `-` in the third-h, half-h and half-v views, wrapped at whole words; a column too small
+  for that reads `a: add a card`, and one too small for even that keeps the `-`. The focus
+  view keeps its own `nothing here yet` line, and third-v still folds an empty section into
+  its header, so it shows no hint.
+- A connected repo with zero open issues and PRs reads `no open issues or PRs` in the wide
+  GitHub panel instead of two 0-open rows, and the one-third rail keeps its stats rows.
+  A board with cards keeps today's look.
 ### Only the owner moves their DOING card
 - `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
   `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is

@@ -1601,18 +1601,17 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     let sel = if focused { Some(app.row[ci].min(n.saturating_sub(1))) } else { None };
     if cards.is_empty() {
         // first-run hint: a bare '-' told a new user nothing. It wraps at words to fit the
-        // column; a column too small for that gets the short form, never a cut sentence.
-        let lines: Vec<Line> = if ci == 0 && app.snap.cards.is_empty() {
-            let w = (inner.width as usize).saturating_sub(1);
-            let wrapped = wrap_words(FIRST_CARD_HINT, w);
-            let fits = wrapped.len() <= inner.height as usize && wrapped.iter().all(|l| l.chars().count() <= w);
-            if fits {
-                wrapped.into_iter().map(|l| Line::styled(format!(" {l}"), dim())).collect()
-            } else {
-                vec![Line::styled(format!(" {}", fit(FIRST_CARD_SHORT, w)), dim())]
-            }
+        // column; a column too small for that gets the short form, and one too small for
+        // even that keeps the bare '-' — never a cut word.
+        let hint = if ci == 0 && app.snap.cards.is_empty() {
+            let (w, h) = ((inner.width as usize).saturating_sub(1), inner.height as usize);
+            [FIRST_CARD_HINT, FIRST_CARD_SHORT].into_iter().find_map(|t| wrap_whole(t, w, h))
         } else {
-            vec![Line::styled(" -", dim())]
+            None
+        };
+        let lines: Vec<Line> = match hint {
+            Some(wrapped) => wrapped.into_iter().map(|l| Line::styled(format!(" {l}"), dim())).collect(),
+            None => vec![Line::styled(" -", dim())],
         };
         f.render_widget(Paragraph::new(lines), inner);
     } else if inner.height < 3 || inner.width < 8 {
@@ -2429,6 +2428,16 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
 /// The empty-TODO hint on a board with no cards, and its form for tiny columns.
 pub const FIRST_CARD_HINT: &str = "press a to add your first card";
 pub const FIRST_CARD_SHORT: &str = "a: add a card";
+
+/// `text` wrapped at spaces into at most `height` lines of `width`, or None when that would
+/// split a word or need more lines.
+fn wrap_whole(text: &str, width: usize, height: usize) -> Option<Vec<String>> {
+    if text.split_whitespace().any(|word| word.chars().count() > width) {
+        return None;
+    }
+    let lines = wrap_words(text, width);
+    (lines.len() <= height).then_some(lines)
+}
 
 /// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
 fn wrap_words(text: &str, width: usize) -> Vec<String> {
