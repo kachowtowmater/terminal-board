@@ -155,6 +155,16 @@
   and its age inside the existing row (e.g. `bot-2 #7 "tests pass, opening PR" 3m`). An
   agent that never writes notes shows an old age — which is itself the signal. `tb agents
   --json` adds `last_note` and `last_event_at` (unix seconds; the screen computes the age).
+
+### Added
+- **Reviewers claim cards: `tb next --review --as NAME`.** Atomically claims the top unblocked
+  REVIEW card that NAME did not author and nobody else has claimed (same lock as `tb next`,
+  so two reviewers never get the same card; no WIP limit). The card shows `review NAME` next
+  to its owner; JSON cards gain a nullable `reviewer` field, and the database a nullable
+  `reviewer` column (added on open). The reviewer stays on a card that reaches DONE; any other
+  move clears it, and `tb move ID review` on a claimed card releases the claim (logged as
+  `unclaimed`) when its reviewer stopped.
+
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —

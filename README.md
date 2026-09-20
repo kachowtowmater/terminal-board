@@ -196,6 +196,7 @@ tb take 2
 tb note 2 "kitchen done"
 tb check 2 1
 tb done 2
+tb next --review --as bob
 tb done 2 --as bob
 tb
 ```
@@ -375,6 +376,7 @@ tb --version
 | `tb add "tag: title" [-d DESC] [--check ITEM]...` | add a card to TODO |
 | `tb list` / `tb show ID` | all cards / one card in full |
 | `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
+| `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
 | `tb note ID "text"` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |

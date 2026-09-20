@@ -60,6 +60,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column": "doing",
   "position": 0,
   "owner": "bot-2",
+  "reviewer": null,
   "due": null,
   "gh_ref": 327,
   "blocked": null,
@@ -83,13 +84,14 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
+| `reviewer` | string\|null | who claimed it with `tb next --review`; kept when it reaches DONE, cleared by any other move |
 | `due` | string\|null | free text |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
 
 ## `tb watch --json` — live stream (NDJSON)
 

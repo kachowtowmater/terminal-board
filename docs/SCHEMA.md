@@ -32,6 +32,7 @@ tool owns the events log, positions and migrations, and a foreign writer skips t
 | `column_since` | INTEGER | unix seconds since the last column move |
 | `blocked` | TEXT NULL | what blocks it (e.g. `#7`) |
 | `position` | INTEGER | order within the column, 0 = top |
+| `reviewer` | TEXT NULL | who claimed it with `tb next --review`; kept in `done`, cleared by any other move |
 
 ### checklist
 | column | type | meaning |
@@ -68,6 +69,8 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `edit` | what changed |
 | `prio` | the move within the column |
 | `github` | the automation reason (e.g. `PR gh#30 open → review`) |
+| `reviewing` | — (the actor claimed it with `tb next --review`) |
+| `unclaimed` | the reviewer whose claim was released |
 
 ### board_events
 Board-level events (no card):

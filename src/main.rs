@@ -22,7 +22,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N
-Flow    next (take the top todo) · take ID · done ID [--force] · drop ID
+Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
@@ -69,7 +69,11 @@ enum Cmd {
     },
     List,
     Show { id: i64 },
-    Next,
+    Next {
+        /// Claim the top REVIEW card you did not do yourself, instead of a TODO card.
+        #[arg(long)]
+        review: bool,
+    },
     Take { id: i64 },
     Note { id: i64, text: String },
     Check {
@@ -465,7 +469,16 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Next | Cmd::Take { .. } => {
+        Cmd::Next { review: true } => {
+            let card = store.next_review(&actor)?;
+            let human = format!(
+                "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
+                plain::detail(&store.show(card.id)?, now).trim_end(),
+                id = card.id
+            );
+            done_card(&store, j, card.id, human)?;
+        }
+        Cmd::Next { .. } | Cmd::Take { .. } => {
             let card = match cmd {
                 Cmd::Take { id } => store.take(id, &actor)?,
                 _ => store.next(&actor)?,
