@@ -174,10 +174,21 @@ check "github hidden" 'grep -Eq "^github-panel +hidden$" <<<"$(tbcfg)"'
 check "agents hidden, no skill" 'grep -Eq "^agents-panel +hidden$" <<<"$(tbcfg)" && [ ! -e "$HOME/.claude" ]'
 check "summary lists the skips" 'grep -q "^Skipped:" "$SCRATCH/out"'
 
+echo "(k2) interactive, no ~/.claude: the skill question is not asked"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+TB_TTY=$(answers '\n\n~/NOTES.md\n') "$TB" setup >"$SCRATCH/out" 2>&1
+check "skill question absent" '! grep -q "Install the Claude Code skill" "$SCRATCH/out"'
+check "skip explained" 'grep -q "Claude Code not detected" "$SCRATCH/out"'
+check "one skip line, no ~/.claude created" '[ "$(grep -c "^ *- Claude Code skill" "$SCRATCH/out")" = 1 ] && [ ! -e "$HOME/.claude" ]'
+check "next answer reaches the snippet prompt" 'grep -q "terminal-board:start" "$HOME/NOTES.md"'
+
 echo "(l) interactive: github yes, pick #1, skill yes, snippet path"
 new_home
 fake_gh "$FAKE" ok
 "$INSTALL" --yes --no-setup >/dev/null 2>&1
+# a Claude Code user: ~/.claude exists, so the skill question is asked
+mkdir -p "$HOME/.claude"
 TB_GH="$FAKE/gh" TB_TTY=$(answers "y\n1\ns\ny\n~/CLAUDE.md\n") "$TB" setup >"$SCRATCH/out" 2>&1
 check "list shown numbered" 'grep -q "1) me/first" "$SCRATCH/out"'
 check "repo picked from the list" 'grep -Eq "^github +me/first$" <<<"$(tbcfg)"'
