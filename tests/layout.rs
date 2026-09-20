@@ -869,7 +869,9 @@ fn first_run_empty_states_show_hints() {
             // the focus view has its own one-line empty state
             assert!(screen.contains("press a to add a card"), "{shape}:\n{screen}");
         } else {
-            for word in terminal_board::tui::FIRST_CARD_HINT.split(' ') {
+            // the expected text is spelled out here on purpose: the test pins what the user
+            // reads, not a constant from the code under test
+            for word in "press a to add your first card".split(' ') {
                 assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
             }
             let at = words.iter().position(|w| *w == "press").expect(shape);
