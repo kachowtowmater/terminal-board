@@ -1,11 +1,13 @@
-//! Every `tb …` line in the README's code blocks runs, in order, against one temp board.
+//! Every `tb …` line in the README's code blocks runs, in order, against temp boards.
 //! A code block right after `<!-- no-test -->` is skipped (GitHub, installer, watch).
 use std::process::Command;
 
 #[test]
 fn readme_examples_run() {
-    let ran = run_doc(include_str!("../README.md"), "README"); // one pinned board, as before
-    assert!(ran >= 31, "only {ran} README commands found");
+    // boards mode (a temp HOME, no TB_DB): the README uses board names (`tb home add …`),
+    // which a pinned TB_DB file refuses
+    let ran = run_doc_mode(include_str!("../README.md"), "README", true);
+    assert!(ran >= 35, "only {ran} README commands found");
 }
 
 /// The agent manual's walkthrough: every command it teaches, run in order.
@@ -64,7 +66,8 @@ fn run_doc_mode(md: &str, name: &str, boards_mode: bool) -> usize {
         let mut c = Command::new("sh");
         c.arg("-c").arg(format!("\"$TB_BIN\"{rest}"));
         if boards_mode {
-            c.env("HOME", dir.path()); // boards-dir mode: README blocks use board names
+            // boards-dir mode: every board is its own file under this temp HOME
+            c.env("HOME", dir.path()).env_remove("TB_DB").env_remove("TTYBOARD_DB").env_remove("XDG_STATE_HOME");
         } else {
             c.env("TB_DB", &db);
         }

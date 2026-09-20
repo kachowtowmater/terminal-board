@@ -242,11 +242,10 @@ full, finish something first. Change it with `+`/`-` or `tb config wip 4`.
 You can have as many boards as you like. `tb` opens the one called `default`. Give a name
 to use another — it is created the first time you add to it:
 
-<!-- no-test -->
 ```sh
 tb home add "call the plumber"
 tb home list
-tb -b work list
+tb -b home list
 tb boards
 ```
 
@@ -347,13 +346,17 @@ Add `--json` to any command for machine-readable output.
 ```sh
 tb add "docs: fix typo in README"
 tb list
-tb show 1
-tb note 1 "found the typo"
-tb check 1 --add "proofread"
-tb check 1 1
-tb check 1 --rm 1
-tb move 1 review
-tb done 1 --as bob
+tb show 3
+tb next --as alice
+tb take 3
+tb note 3 "found the typo"
+tb check 3 --add "proofread"
+tb check 3 1
+tb check 3 --rm 1
+tb block 1 "#3"
+tb block 1 --clear
+tb move 3 review
+tb done 3 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
