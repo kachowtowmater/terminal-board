@@ -266,10 +266,10 @@ fn auto_move_matrix() {
     assert_eq!(
         got,
         [
-            (branch, "review", "github: PR #31 open → review"),
-            (merged, "done", "github: PR #20 merged → done"),
-            (closed, "done", "github: issue #21 closed → done"),
-            (linked_owned, "review", "github: PR #32 open → review"),
+            (branch, "review", "PR gh#31 open → review"),
+            (merged, "done", "PR gh#20 merged → done"),
+            (closed, "done", "issue gh#21 closed → done"),
+            (linked_owned, "review", "PR gh#32 open → review"),
         ]
     );
     // the unowned TODO card with an open PR stays in TODO
@@ -278,7 +278,7 @@ fn auto_move_matrix() {
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
     let ev = s.show(merged).unwrap().events;
-    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
+    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "PR gh#20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
     let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
@@ -362,7 +362,7 @@ fn forced_done_prompt_and_cli_force() {
     // TUI: d on a todo gh card whose issue is open asks first
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ForceDone(1), .. }));
-    assert!(render(&app, 140, 40).contains("issue #11 still open on GitHub — mark done anyway? y/n"));
+    assert!(render(&app, 140, 40).contains("issue gh#11 still open on GitHub — mark done anyway? y/n"));
     app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(1).unwrap().column, "todo");
     app.handle_key(key(KeyCode::Char('d')), &mut s);
@@ -378,7 +378,7 @@ fn forced_done_prompt_and_cli_force() {
     let o = tb(&db, gh, &["done", "1"]);
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("issue #11 still open on GitHub") && e.contains("--force"), "{e}");
+    assert!(e.contains("issue gh#11 still open on GitHub") && e.contains("--force"), "{e}");
     let o = tb(&db, gh, &["move", "1", "done", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], false);
@@ -460,6 +460,68 @@ fn a_ref_outside_the_newest_page_still_moves() {
     let small = GhSnapshot { prs: snap.prs[..3].to_vec(), ..snap.clone() };
     let (head, _) = terminal_board::github::summary(&small);
     assert!(head.contains("PRs 3 open ·") && !head.contains("newest"), "{head}");
+}
+
+#[test]
+fn auto_move_event_text_carries_no_repeated_source() {
+    // the actor is `github` and the kind is `github`; the text must not repeat "github:"
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: merge me", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    let _ = s.note_kind(id, "github", "PR gh#9 merged → done", "github");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().find(|e| e.actor == "github" && e.kind == "github").unwrap();
+    assert!(!e.text.starts_with("github: "), "no triple 'github' in one line: {}", e.text);
+    assert!(e.text.starts_with("PR gh#"), "{}", e.text);
+}
+
+#[test]
+fn approve_refuses_the_author() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: mine", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    s.done(id, "bot-1").unwrap(); // bot-1 moved it to review: the author
+    let gh = Path::new("/nonexistent/gh");
+    let ids = id.to_string();
+    let as_ = |who: &str| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(["done", &ids, "--approve"])
+            .env("TB_DB", &db)
+            .env("TB_GH", gh)
+            .env("TB_AS", who)
+            .env("TB_NO_HERDR", "1")
+            .output()
+            .unwrap()
+    };
+    // the author is refused through the CLI, and nothing is recorded
+    let o = as_("BOT-1");
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("you did this work"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!s.show(id).unwrap().events.iter().any(|e| e.kind == "approved"));
+    // another agent's approval is recorded; the card stays in review
+    let o = as_("rev");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(s.show(id).unwrap().events.iter().any(|e| e.kind == "approved" && e.actor == "rev"));
+    assert_eq!(s.card(id).unwrap().column, "review");
+    // a card that is not in review cannot be approved
+    let doing = s.add("plain: still working", "", &[], "lead").unwrap();
+    s.take(doing, "bot-1").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["done", &doing.to_string(), "--approve"])
+        .env("TB_DB", &db)
+        .env("TB_GH", gh)
+        .env("TB_AS", "rev")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not in review"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(s.card(doing).unwrap().column, "doing");
+    assert!(!s.show(doing).unwrap().events.iter().any(|e| e.kind == "approved"));
 }
 
 #[test]

@@ -67,6 +67,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work: DOING → REVIEW | `tb done ID` |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
+| pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |

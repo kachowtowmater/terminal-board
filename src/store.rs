@@ -141,6 +141,14 @@ pub struct Event {
     pub text: String,
 }
 
+/// An event with its database id (for `tb watch --events` resumption).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchEvent {
+    pub id: i64,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CardDetail {
     #[serde(flatten)]
@@ -752,6 +760,35 @@ impl Store {
         Ok(CardDetail { card, checklist, events, round })
     }
 
+    /// Events with `id > after`, oldest first (for `tb watch --events`).
+    pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, card_id, ts, actor, kind, text FROM events WHERE id > ? ORDER BY id")?;
+        let v = st
+            .query_map([after], |r| {
+                Ok(WatchEvent {
+                    id: r.get(0)?,
+                    event: Event {
+                        card_id: r.get(1)?,
+                        ts: r.get(2)?,
+                        actor: r.get(3)?,
+                        kind: r.get(4)?,
+                        text: r.get(5)?,
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
+    /// The id of the last event strictly before `ts` (0 when none) — `--since` resumption:
+    /// streaming `id > cursor` yields exactly the events at/after `ts`.
+    pub fn events_cursor_at(&self, ts: i64) -> Result<i64> {
+        // a DB error must surface, not silently replay the whole history from 0
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events WHERE ts < ?", [ts], |r| r.get(0))?)
+    }
+
     pub fn snapshot(&self) -> Result<Snapshot> {
         let cards = self.list()?;
         let wip = self.wip()?;
@@ -1051,11 +1088,20 @@ impl Store {
             "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
+        // a block set while in REVIEW must not survive into DONE (or it renders as a live
+        // problem on a finished card); reaching done clears it, logged as part of the move.
+        // Any other move keeps the block untouched (QA: 'block 1' then 'done 1' from DOING
+        // must NOT clear it — only the DONE transition does).
+        let block_cleared = column == "done" && c.blocked.is_some();
         let pos = bottom_of(&tx, &column)?;
         tx.execute(
-            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=? WHERE id=?"#,
-            params![column, owner, now(), pos, id],
+            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?,
+               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
+            params![column, owner, now(), pos, column, id],
         )?;
+        if block_cleared {
+            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        }
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
         if let (true, Some(r)) = (send_back, reason) {
             Self::log(&tx, id, actor, "returned", r)?;
