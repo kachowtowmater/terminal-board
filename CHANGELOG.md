@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Polish (from running several agents on one board)
+- GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
+  text/JSON fields already carried the number; the panel never shows a bare `#N` for a
+  GitHub number next to card ids).
+- Mistyped commands fail with the usual tb error shape plus a next step
+  (`tb --help` / `tb guide`); `--help` still prints and succeeds.
+- A block set while in REVIEW is cleared when the card reaches DONE (logged
+  `unblocked: cleared on done`), and `tb show` hides the marker on done cards.
+- GitHub auto-move event texts drop the repeated `github:` prefix (the actor and kind
+  already say it): `PR gh#9 merged → done`.
+- `tb done ID --approve` records a reviewer's approval as an `approved` event without
+  moving the card — REVIEW stays REVIEW and DONE still waits for the merge.
+### Watching
+- `tb watch --events --json [--since TS]`: an opt-in event stream for orchestrators — one
+  NDJSON line per event (`{v, ts, card_id, actor, kind, from, to, text}`; `from`/`to` are
+  the column transition of every event that changes a column: created, taken, dropped, moved) instead of the whole board. `--since` resumes
+  after a restart with only the events at/after that unix second. Plain `tb watch --json`
+  output is unchanged byte-for-byte.
 ### Setup: the Claude Code skill is offered only to Claude Code users
 - The wizard asked to install the skill even on machines without Claude Code (and would
   create `~/.claude/skills/...`). Now step 4 skips silently when `~/.claude` does not exist
