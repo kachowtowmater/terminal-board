@@ -66,6 +66,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work: DOING → REVIEW | `tb done ID` |
+| another agent holds the card you want to move/drop | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
 | pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |

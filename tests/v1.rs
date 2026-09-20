@@ -463,6 +463,92 @@ fn a_ref_outside_the_newest_page_still_moves() {
 }
 
 #[test]
+fn non_owner_done_drop_move_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // non-owner done: refused with holder + your-cards + force hint
+    let e = s.done(b, "bot-1").unwrap_err().to_string();
+    assert!(e.contains(&format!("#{b} is held by bot-2")), "{e}");
+    assert!(e.contains("your cards:"), "{e}");
+    assert!(e.contains("--force"), "{e}");
+    // owner path unaffected
+    let c = s.done(b, "bot-2").unwrap();
+    assert_eq!(c.column, "review");
+    // non-owner drop: refused
+    let e = s.drop_card(a, "bot-2").unwrap_err().to_string();
+    assert!(e.contains("is held by bot-1"), "{e}");
+    // non-owner move out of DOING: refused
+    let e = s.move_to(a, "review", "bot-2").unwrap_err().to_string();
+    assert!(e.contains("is held by bot-1"), "{e}");
+    // --force works and is logged as its own event
+    let c = s.move_to_forced(a, "review", "bot-2").unwrap();
+    assert_eq!(c.column, "review");
+    let ev = s.show(a).unwrap().events;
+    assert!(ev.iter().any(|e| e.kind == "force" && e.text.contains("held by bot-1")), "{ev:?}");
+    // REVIEW moves by reviewers are unaffected (another agent can review it to done)
+    let d = s.move_to(a, "done", "bot-3").unwrap();
+    assert_eq!(d.column, "done");
+}
+
+#[test]
+fn tui_asks_before_moving_another_agents_doing_card() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    let shift = |c: KeyCode| KeyEvent::new(c, KeyModifiers::SHIFT);
+    // each key moves bot-1's DOING card for bot-2: it asks first, then goes where the key
+    // pointed (left = TODO, right = REVIEW), on the forced, logged path
+    for (press, want) in [
+        (shift(KeyCode::Left), "todo"),
+        (shift(KeyCode::Right), "review"),
+        (key(KeyCode::Char('<')), "todo"),
+        (key(KeyCode::Char('>')), "review"),
+        (key(KeyCode::Char('d')), "review"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("plain: theirs", "", &[], "lead").unwrap();
+        s.take(id, "bot-1").unwrap();
+        let mut app = App::new(s.snapshot().unwrap(), "bot-2");
+        app.agents = AgentsState::Unavailable("x".into());
+        app.reload(&s);
+        app.focus_card(id);
+        app.handle_key(press, &mut s);
+        let Mode::Confirm { prompt, .. } = app.mode.clone() else {
+            panic!("{press:?}: asks y/n instead of moving: {:?}, card in {}", app.mode, s.card(id).unwrap().column)
+        };
+        assert!(prompt.contains("held by bot-1") && prompt.contains(&format!("to {want}")) && prompt.contains("y/n"), "{prompt}");
+        assert_eq!(s.card(id).unwrap().column, "doing", "{press:?}: nothing moves before y");
+        // n leaves it
+        app.handle_key(key(KeyCode::Char('n')), &mut s);
+        assert_eq!(s.card(id).unwrap().column, "doing");
+        // y moves it where the key pointed, logged
+        app.focus_card(id);
+        app.handle_key(press, &mut s);
+        app.handle_key(key(KeyCode::Char('y')), &mut s);
+        assert_eq!(s.card(id).unwrap().column, want, "{press:?}");
+        let ev = s.show(id).unwrap().events;
+        assert!(ev.iter().any(|e| e.kind == "force" && e.actor == "bot-2"), "{press:?}: {ev:?}");
+    }
+    // the holder's own keys never ask
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: mine", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "bot-1");
+    app.agents = AgentsState::Unavailable("x".into());
+    app.reload(&s);
+    app.focus_card(id);
+    app.handle_key(shift(KeyCode::Right), &mut s);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert_eq!(s.card(id).unwrap().column, "review");
+}
+
+#[test]
 fn auto_move_event_text_carries_no_repeated_source() {
     // the actor is `github` and the kind is `github`; the text must not repeat "github:"
     let dir = tempfile::tempdir().unwrap();

@@ -64,10 +64,10 @@ fn store_refuses_the_author_and_accepts_another_agent() {
 fn author_is_the_mover_or_the_owner_after_github_sync() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
-    // a person moved bot-1's card to review: the person is the author
+    // a person moved bot-1's card to review (forced: not the owner): the person is the author
     let id = s.add("a", "", &[], "lead").unwrap();
     s.take(id, "bot-1").unwrap();
-    s.move_to(id, "review", "lead").unwrap();
+    s.move_to_forced(id, "review", "lead").unwrap();
     assert_eq!(s.author(id).unwrap().as_deref(), Some("lead"));
     assert!(s.done(id, "lead").is_err());
     assert_eq!(s.done(id, "bot-1").unwrap().column, "done");
