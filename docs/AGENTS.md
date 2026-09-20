@@ -147,8 +147,8 @@ tb github --json             # the same, for parsing
 tb sync                      # apply GitHub evidence to the board now
 ```
 
-- The GitHub panel reads the 20 newest open PRs and issues; a full page's count says
-  `newest`. `tb sync` also finds a taken card's PR beyond that page (one lookup per card).
+- tb reads the 20 newest open PRs and issues; `tb github` says `20 newest` for a full page.
+  `tb sync` also finds a taken card's PR beyond that page (one lookup per card).
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW,
   a merged PR or a closed issue moves it to DONE. Cards never move backwards. A card sent
   back from REVIEW stays in DOING until its PR is updated (a push, a comment) after the

@@ -429,6 +429,7 @@ fn help_overlay_and_footer() {
 
 #[test]
 fn a_ref_outside_the_newest_page_still_moves() {
+    common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     let id = s.add("plain: gh#777 old issue with an open PR", "", &[], "lead").unwrap();
@@ -724,6 +725,7 @@ fn wip_full_message_is_actor_aware() {
 /// an older issue's open PR (#950, `closes #777`) is only found by the sync-only lookup.
 #[test]
 fn sync_finds_an_older_issues_pr_beyond_the_newest_page() {
+    common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let page: Vec<String> = (900..920)

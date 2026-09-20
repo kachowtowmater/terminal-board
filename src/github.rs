@@ -772,31 +772,40 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
     }
 }
 
+/// How a full page (20 items) is labelled where room is short. The label is what gives
+/// way: `Long` where it fits whole, else `Terse`, else `None` — the text of a page that is
+/// not full, so nothing else is ever cut or lost to make room for a label.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageLabel {
+    Long,
+    Terse,
+    None,
+}
+
+impl PageLabel {
+    /// Try these in order; `None` is drawn when neither fits.
+    pub const LABELLED: [PageLabel; 2] = [PageLabel::Long, PageLabel::Terse];
+}
+
 /// Segments of the one-line summary; `true` = red (only `FAIL`).
 /// `ISSUES 11 (+2, 5 unclaimed) · PRS 1 (1 FAIL) · MERGED 6 · MAIN ok`
 pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
-    compact(s, f, false)
+    compact_summary_as(s, f, PageLabel::Long)
 }
 
-/// The same line for a panel too narrow for a full page's labels:
-/// `ISSUES 60 (+1, 5/20 free) · PRS 20+ · …`. Never longer than the line without labels, so
-/// the labels cost no room where the plain counts fit. Without a full page it is the same line.
-pub fn compact_summary_terse(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
-    compact(s, f, true)
-}
-
-fn compact(s: &GhSnapshot, f: &Factory, terse: bool) -> Vec<(String, bool)> {
+/// The one-line summary with a full page labelled as `label` says: `… 5 unclaimed in newest
+/// 20) · PRS 20 newest`, or terse `… 5/20 free) · PRS 20+` (never longer than no label).
+pub fn compact_summary_as(s: &GhSnapshot, f: &Factory, label: PageLabel) -> Vec<(String, bool)> {
     let (full_issues, full_prs) = (s.issues.len() >= PAGE, s.prs.len() >= PAGE);
-    let terse = terse && (full_issues || full_prs);
-    let unclaimed = match (terse, full_issues) {
-        (true, true) => format!("{}/{PAGE} free", f.unclaimed),
-        (true, false) => format!("{} free", f.unclaimed),
-        (false, _) => format!("{} unclaimed{}", f.unclaimed, issue_page(s.issues.len())),
+    let unclaimed = match (label, full_issues) {
+        (PageLabel::Long, true) => format!("{} unclaimed{}", f.unclaimed, issue_page(s.issues.len())),
+        (PageLabel::Terse, true) => format!("{}/{PAGE} free", f.unclaimed),
+        _ => format!("{} unclaimed", f.unclaimed),
     };
-    let prs = match (full_prs, terse) {
-        (true, true) => format!("{}+", s.prs.len()),
-        (true, false) => pr_count(s.prs.len()),
-        (false, _) => s.prs.len().to_string(),
+    let prs = match (label, full_prs) {
+        (PageLabel::Long, true) => pr_count(s.prs.len()),
+        (PageLabel::Terse, true) => format!("{}+", s.prs.len()),
+        _ => s.prs.len().to_string(),
     };
     let mut v = vec![(format!("ISSUES {} (+{}, {unclaimed}) · PRS {prs}", s.issues_open, f.new_today), false)];
     if f.failing > 0 {
@@ -813,6 +822,13 @@ fn compact(s: &GhSnapshot, f: &Factory, terse: bool) -> Vec<(String, bool)> {
 
 /// The four tiles as (title, value, line 2). Value `FAIL` is the only red.
 pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String); 4] {
+    tiles_as(s, f, now, PageLabel::Long)
+}
+
+/// The tiles with a full page labelled as `label` says: PRs `20 newest` / `20+` / `20 open`,
+/// ISSUES line 2 `newest 20: +1 · 5 free` / `+1 today · 5/20 free` / `+1 today · 5 unclaimed`.
+/// No labelled text is longer than the unlabelled one except `20 newest`.
+pub fn tiles_as(s: &GhSnapshot, f: &Factory, now: i64, label: PageLabel) -> [(String, String, String); 4] {
     let age = |ts: &str| age_of(ts, now).map(crate::store::fmt_age).unwrap_or_else(|| "?".into());
     let drafts = if f.drafts > 0 { format!(" ({} draft)", f.drafts) } else { String::new() };
     let pr2 = if f.failing > 0 {
@@ -830,16 +846,20 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         Some(c) => (c.state.clone(), format!("{} · {}", c.workflow, age(&c.created_at))),
         None => ("-".into(), "no runs".into()),
     };
-    let issues2 = if s.issues.len() >= PAGE {
-        // no longer than the line below ("free" is the tidy block's word for unclaimed), so
-        // the page label is never cut where the plain counts fit
-        format!("newest {PAGE}: +{} · {} free", f.new_today, f.unclaimed)
-    } else {
-        format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)
+    let issues2 = match (label, s.issues.len() >= PAGE) {
+        // as long as the unlabelled line ("free" is the tidy block's word for unclaimed)
+        (PageLabel::Long, true) => format!("newest {PAGE}: +{} · {} free", f.new_today, f.unclaimed),
+        (PageLabel::Terse, true) => format!("+{} today · {}/{PAGE} free", f.new_today, f.unclaimed),
+        _ => format!("+{} today · {} unclaimed", f.new_today, f.unclaimed),
+    };
+    let prs = match (label, s.prs.len() >= PAGE) {
+        (PageLabel::Long, true) => pr_count(s.prs.len()),
+        (PageLabel::Terse, true) => format!("{}+", s.prs.len()),
+        _ => format!("{} open", s.prs.len()),
     };
     [
         ("ISSUES".into(), format!("{} open", s.issues_open), issues2),
-        ("PULL REQUESTS".into(), format!("{}{drafts}", pr_count(s.prs.len())), pr2),
+        ("PULL REQUESTS".into(), format!("{prs}{drafts}"), pr2),
         ("MERGED".into(), format!("{} today", s.merged_today.len()), merged2),
         ("MAIN CI".into(), ci, ci2),
     ]

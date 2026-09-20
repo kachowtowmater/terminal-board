@@ -2081,14 +2081,30 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         layouts::draw_dense_tiles(f, app, s, Rect { y, height: 6, ..inner });
         y += 6;
     } else if area.height >= GITHUB_TILES_MIN && bottom.saturating_sub(y) >= 4 {
-        let tiles = github::tiles(s, &fac, now);
+        // the unlabelled tiles are drawn as ever; a full page's label is used only where it
+        // fits whole (long, else terse), so it never cuts or pushes out anything else
+        let tiles = github::tiles_as(s, &fac, now, github::PageLabel::None);
+        let labelled = github::PageLabel::LABELLED.map(|l| github::tiles_as(s, &fac, now, l));
         let row = Rect { y, height: 4, ..inner };
         let cells = Layout::horizontal([Constraint::Ratio(1, 4); 4]).spacing(1).split(row);
         for (k, (title, value, line2)) in tiles.into_iter().enumerate() {
             let v_style = if value == "FAIL" { red() } else { bold() };
             // narrow tiles: "PULL REQUESTS" -> "PRS" so the value stays whole
             let iw = cells[k].width.saturating_sub(4) as usize;
-            let title = if title.len() + 2 + value.len() > iw && title == "PULL REQUESTS" { "PRS".to_string() } else { title };
+            let short = title.len() + 2 + value.len() > iw && title == "PULL REQUESTS";
+            let head = |t: &str, v: &str| t.chars().count() + 2 + v.chars().count() <= iw;
+            // a labelled value beside the title the plain value gets, else beside "PRS"
+            let mut pick = None;
+            if title == "PULL REQUESTS" {
+                let titles: &[&str] = if short { &["PRS"] } else { &["PULL REQUESTS", "PRS"] };
+                pick = titles
+                    .iter()
+                    .flat_map(|t| labelled.iter().map(move |f| (t.to_string(), f[k].1.clone())))
+                    .find(|(t, v)| *v != value && head(t, v));
+            }
+            let (title, value) = pick.unwrap_or_else(|| (if short { "PRS".to_string() } else { title }, value));
+            let fitting = labelled.iter().map(|f| f[k].2.clone()).find(|l| *l != line2 && l.chars().count() <= iw);
+            let line2 = fitting.unwrap_or(line2);
             let lines = vec![
                 Line::from(vec![Span::styled(format!("{title}  "), bold()), Span::styled(value, v_style)]),
                 Line::raw(line2),
@@ -2098,11 +2114,14 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         }
         y += 4;
     } else if y < bottom {
-        // a full page's "newest" labels are long: where they do not fit, the terse ones do
-        let mut segs = github::compact_summary(s, &fac);
-        if 1 + segs.iter().map(|(t, _)| t.chars().count()).sum::<usize>() > inner.width as usize {
-            segs = github::compact_summary_terse(s, &fac);
-        }
+        // a full page's label only where the whole line fits (long, else terse); else the
+        // line without labels, cut as ever
+        let width = |segs: &[(String, bool)]| 1 + segs.iter().map(|(t, _)| t.chars().count()).sum::<usize>();
+        let segs = github::PageLabel::LABELLED
+            .iter()
+            .map(|l| github::compact_summary_as(s, &fac, *l))
+            .find(|segs| width(segs) <= inner.width as usize)
+            .unwrap_or_else(|| github::compact_summary_as(s, &fac, github::PageLabel::None));
         let spans: Vec<Span> = std::iter::once(Span::raw(" "))
             .chain(segs.into_iter().map(|(t, r)| if r { Span::styled(t, red()) } else { Span::raw(t) }))
             .collect();
