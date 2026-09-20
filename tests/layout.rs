@@ -211,6 +211,42 @@ fn medium_bars_when_panels_do_not_fit() {
     assert!(screen.contains(" AGENTS 4 working · 2 idle"), "{screen}");
 }
 
+/// An idle agent holding a card is a problem, so its warning is never the part that gets cut:
+/// the stacked and rail AGENTS panels keep `idle w/ card (<how long>)` whole at the narrow sizes
+/// where the row has no room left for the activity text, and the AGENTS bar says the words
+/// before the duration.
+#[test]
+fn idle_holder_warning_stays_whole_at_narrow_sizes() {
+    for (w, h) in [(52u16, 56u16), (52, 60), (52, 80), (54, 56), (140, 16), (140, 20), (140, 28), (144, 16)] {
+        let (_d, _s, app) = setup();
+        let screen = render(&app, w, h);
+        let row = screen.lines().find(|l| l.contains("! bot-2")).unwrap_or_else(|| panic!("{w}x{h}: no idle holder row:\n{screen}"));
+        assert!(row.contains("#5 "), "{w}x{h}: the held card: {row}");
+        let at = row.find(" · idle w/ card (").unwrap_or_else(|| panic!("{w}x{h}: the warning and its duration are cut: {row}"));
+        assert!(row[at..].contains("m)"), "{w}x{h}: the duration is whole: {row}");
+    }
+    let (_d, _s, app) = setup();
+    let bar = render(&app, 95, 35);
+    assert!(bar.contains("(! bot-2 idle w/ card (0m))"), "the bar: words first, then the duration:\n{bar}");
+    // a narrow bar drops the duration before the words, and never shows half of it
+    for w in [48u16, 50, 52, 54] {
+        let narrow = render(&app, w, 12);
+        let row = narrow.lines().find(|l| l.contains("(! bot-2")).unwrap_or_else(|| panic!("{w}x12: no bar:\n{narrow}"));
+        let at = row.find("(! bot-2 idle w/ card").unwrap_or_else(|| panic!("{w}x12: the words are cut: {row}"));
+        let after = &row[at + "(! bot-2 idle w/ card".len()..];
+        assert!(after.starts_with(" (0m))") || !after.contains('('), "{w}x12: a cut duration: {row}");
+    }
+    // the full panel shows the duration whole or not at all
+    for w in [100u16, 102, 104, 110, 126] {
+        let screen = render(&app, w, 35);
+        let row = screen.lines().find(|l| l.contains("! idle, holds card")).unwrap_or_else(|| panic!("{w}x35: no holder row:\n{screen}"));
+        let after = &row[row.find("! idle, holds card").unwrap() + "! idle, holds card".len()..];
+        assert!(after.starts_with(" (0m)") || !after.contains('('), "{w}x35: a cut duration: {row}");
+    }
+    let wide = render(&app, 126, 41);
+    assert!(wide.contains("! idle, holds card (0m)"), "126x41: the duration shows:\n{wide}");
+}
+
 #[test]
 fn tiny_tab_pages_through_the_panels() {
     let (_d, mut s, mut app) = setup();

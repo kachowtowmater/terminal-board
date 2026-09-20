@@ -48,14 +48,24 @@ pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
             let working = list.iter().filter(|a| a.status == "working").count();
             let idle = list.iter().filter(|a| a.is_idle()).count();
             spans.push(Span::styled(format!("{working} working · {idle} idle"), base));
-            let holders: Vec<String> = list
-                .iter()
-                .filter(|a| holds_card(app, a))
-                .map(|a| format!("{}{}", a.name, crate::tui::idle_hold_age(app, a)))
-                .collect();
-            if !holders.is_empty() {
+            let held: Vec<&Agent> = list.iter().filter(|a| holds_card(app, a)).collect();
+            if !held.is_empty() {
+                let holders: Vec<String> = held.iter().map(|a| a.name.clone()).collect();
+                // the durations follow the warning, so a narrow bar drops them before the words
+                let ages: Vec<String> = held
+                    .iter()
+                    .map(|a| crate::tui::idle_hold_age(app, a))
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.trim_matches(|c| c == ' ' || c == '(' || c == ')').to_string())
+                    .collect();
+                let ages = if ages.is_empty() { String::new() } else { format!(" ({})", ages.join(", ")) };
                 spans.push(Span::styled(" (", base));
                 spans.push(Span::styled(format!("! {} idle w/ card", holders.join(", ")), red().patch(base)));
+                // shown whole or not at all: a bar too narrow for it keeps the plain warning
+                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                if !ages.is_empty() && used + ages.chars().count() < width {
+                    spans.push(Span::styled(ages, red().patch(base)));
+                }
                 spans.push(Span::styled(")", base));
             }
         }
@@ -306,10 +316,20 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     let id = format!("#{} ", c.id);
                     let title = format!(" {}", fit(&c.title, 12));
                     // holders end in ` · idle w/ card` plus how long they have been idle
-                    let tail = if holds { 15 + crate::tui::idle_hold_age(app, a).chars().count() } else { 9 };
-                    let fixed = 3 + 11 + tail + id.chars().count() + title.chars().count();
+                    let held_for = if holds { crate::tui::idle_hold_age(app, a).chars().count() } else { 0 };
+                    let tail = if holds { 15 + held_for } else { 9 };
+                    // a row that ends in a duration is budgeted to the column (` name ` is 12),
+                    // so the duration is never the part that gets cut
+                    let lead = if held_for > 0 { 12 } else { 11 };
+                    let fixed = 3 + lead + tail + id.chars().count() + title.chars().count();
                     let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
-                    if act.is_empty() {
+                    // what a holder's title may take so that ` · idle w/ card (1h20m)` still fits
+                    let title_room = width.saturating_sub(3 + 12 + id.chars().count() + tail);
+                    if act.is_empty() && held_for > 0 && title_room >= 4 {
+                        // no room for the activity next to the duration: the duration says the
+                        // same age, so keep the warning whole and shorten the title instead
+                        format!("{id}{}", fit(&c.title, title_room))
+                    } else if act.is_empty() {
                         format!("{id}{}", c.title)
                     } else {
                         format!("{id}{act}{title}")

@@ -1777,8 +1777,13 @@ fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
+                        // the duration is shown whole or not at all: a panel too narrow for it
+                        // keeps the plain warning
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let flag = "! idle, holds card";
                         let age = idle_hold_age(app, a);
-                        spans.push(Span::styled(format!("! idle, holds card{age}"), st));
+                        let fits = used + flag.chars().count() + age.chars().count() <= width;
+                        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
                     } else {
                         let age = app
                             .snap

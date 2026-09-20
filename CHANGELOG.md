@@ -125,7 +125,9 @@
   setting) shows `quiet 1h20m` inside its existing box, as plain dim text — the word is the
   signal, red stays reserved for real problems. The idle-agent flag gains its duration
   (`! bot-2 idle w/ card (1h20m)`): how long its card has been quiet, i.e. since the card's
-  last event — a proxy for how long the agent has been idle. JSON exposes only timestamps (`card.last_event_at`,
+  last event — a proxy for how long the agent has been idle. The duration is shown whole or
+  not at all: a narrow AGENTS row shortens the card title to keep `idle w/ card (1h20m)`
+  readable, and a bar or panel with no room for it keeps the plain warning. JSON exposes only timestamps (`card.last_event_at`,
   unix seconds), never durations.
 ### Agents
 - The AGENTS row says what the agent is doing, in its own words: the held card's last note
