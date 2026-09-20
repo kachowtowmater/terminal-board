@@ -261,6 +261,7 @@ mod tests {
             column_since: 0,
             blocked: None,
             position: 0,
+            reviewer: None,
         }
     }
 

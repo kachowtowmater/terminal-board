@@ -408,7 +408,7 @@ impl Env {
         } else {
             let p = d.display();
             format!(
-                "#!/bin/sh\necho \"$*\" >> {p}/calls.log\ncase \"$1 $2\" in\n  \"pr list\") case \"$*\" in *merged*) cat {p}/merged.json;; *) cat {p}/prs.json;; esac;;\n  \"issue list\") cat {p}/issues.json;;\n  \"run list\") cat {p}/run.json;;\n  api*) echo 42;;\n  *) exit 2;;\nesac\n"
+                "#!/bin/sh\necho \"$*\" >> {p}/calls.log\ncase \"$1 $2\" in\n  \"repo view\") echo '{{\"nameWithOwner\":\"acme/widgets\"}}';;\n  \"pr list\") case \"$*\" in *merged*) cat {p}/merged.json;; *) cat {p}/prs.json;; esac;;\n  \"issue list\") cat {p}/issues.json;;\n  \"run list\") cat {p}/run.json;;\n  api*) echo 42;;\n  *) exit 2;;\nesac\n"
             )
         };
         let path = d.join(if fail { "gh-fail" } else { "gh-ok" });
@@ -435,6 +435,16 @@ impl Env {
     }
 }
 
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    use std::collections::BTreeSet;
+    v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+fn sorted(list: &[&str]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
 fn out(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).to_string()
 }
@@ -452,7 +462,10 @@ fn config_and_off_state() {
     assert!(!o.status.success() && err(&o).contains("config github owner/repo"), "{}", err(&o));
     let o = e.run(&["config", "github", "not-a-repo"], none);
     assert!(!o.status.success() && err(&o).contains("owner/repo"));
-    assert!(e.run(&["config", "github", "acme/widgets"], none).status.success());
+    // config now verifies the repo exists (the picker's check); a fake gh answers it
+    let ok0 = e.fake_gh(&run_json("success"), false);
+    let o = e.run(&["config", "github", "acme/widgets"], &ok0);
+    assert!(o.status.success(), "{}", err(&o));
     let s = Store::open(&e.db()).unwrap();
     assert_eq!(s.github_repo().unwrap().as_deref(), Some("acme/widgets"));
     assert!(e.run(&["config", "github", "--off"], none).status.success());
@@ -509,17 +522,17 @@ fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
     // no cache + failing gh: actionable error, non-zero
     let o = e.run(&["github"], &bad);
     assert!(!o.status.success() && err(&o).contains("HTTP 401") && err(&o).contains("gh auth status"), "{}", err(&o));
-    // no cache: fetch
+    // no cache: fetch (config's repo-view check made one call already)
     let o = e.run(&["github"], &ok);
     assert!(o.status.success(), "{}", err(&o));
     assert!(out(&o).contains("issues 42 open") && out(&o).contains("main CI ok"));
-    assert_eq!(e.calls(), 5, "5 gh calls per snapshot");
+    assert_eq!(e.calls(), 6, "1 repo-view (config) + 5 per snapshot");
     // fresh: served from cache
     e.run(&["github", "--json"], &ok);
-    assert_eq!(e.calls(), 5);
+    assert_eq!(e.calls(), 6);
     // forced
     e.run(&["github", "--refresh"], &ok);
-    assert_eq!(e.calls(), 10);
+    assert_eq!(e.calls(), 11);
     // failing refresh keeps the last good snapshot and says so
     let o = e.run(&["github", "--refresh"], &bad);
     assert!(o.status.success());
@@ -537,4 +550,53 @@ fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
     let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--refresh", "--json"], &ok))).unwrap();
     assert_eq!(j["fails"], 0, "success resets the counter: {}", j);
     assert!(j["error"].is_null());
+}
+
+#[test]
+fn config_refuses_a_repo_that_does_not_exist() {
+    let e = Env::new();
+    // a fake gh whose `repo view` fails with gh's own not-found text
+    let d = e.dir.path();
+    std::fs::write(d.join("prs.json"), prs_json()).unwrap();
+    std::fs::write(d.join("issues.json"), issues_json()).unwrap();
+    std::fs::write(d.join("merged.json"), merged_json()).unwrap();
+    std::fs::write(d.join("run.json"), run_json("success")).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+case "$1 $2" in
+  "repo view") echo "GraphQL: Could not resolve to a Repository with the name 'nobody-xyz/does-not-exist-123'." >&2; exit 1;;
+  "repo list") echo '[]';;
+  "pr list") case "$*" in *merged*) cat {p}/merged.json;; *) cat {p}/prs.json;; esac;;
+  "issue list") cat {p}/issues.json;;
+  "run list") cat {p}/run.json;;
+  api*) echo 42;;
+  *) exit 2;;
+esac
+"#,
+        p = d.display()
+    );
+    let gh = d.join("gh-norepo");
+    std::fs::write(&gh, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // config refuses with the repo-name hint, not the auth hint
+    let o = e.run(&["config", "github", "nobody-xyz/does-not-exist-123"], &gh);
+    assert!(!o.status.success());
+    let err = err(&o);
+    assert!(err.contains("no repo 'nobody-xyz/does-not-exist-123'"), "{err}");
+    assert!(!err.contains("gh auth status"), "the name, not auth, is the problem: {err}");
+    // nothing was saved
+    let s = Store::open(&e.db()).unwrap();
+    assert_eq!(s.github_repo().unwrap(), None);
+    // --json carries the standard object
+    let o = e.run(&["config", "github", "nobody-xyz/does-not-exist-123", "--json"], &gh);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    // an existing repo still saves (the ok script from Env covers it)
+    let ok = e.fake_gh(&run_json("success"), false);
+    assert!(e.run(&["config", "github", "acme/widgets"], &ok).status.success());
 }

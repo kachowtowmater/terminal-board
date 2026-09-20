@@ -218,6 +218,153 @@ fn medium_bars_when_panels_do_not_fit() {
     assert!(screen.contains(" AGENTS 4 working · 2 idle"), "{screen}");
 }
 
+/// An idle agent holding a card is a problem, so its warning is never the part that gets cut:
+/// the stacked and rail AGENTS panels keep `idle w/ card (<how long>)` whole at the narrow sizes
+/// where the row has no room left for the activity text, and the AGENTS bar says the words
+/// before the duration.
+#[test]
+fn idle_holder_warning_stays_whole_at_narrow_sizes() {
+    for (w, h) in [(52u16, 56u16), (52, 60), (52, 80), (54, 56), (140, 16), (140, 20), (140, 28), (144, 16)] {
+        let (_d, _s, app) = setup();
+        let screen = render(&app, w, h);
+        let row = screen.lines().find(|l| l.contains("! bot-2")).unwrap_or_else(|| panic!("{w}x{h}: no idle holder row:\n{screen}"));
+        assert!(row.contains("#5 "), "{w}x{h}: the held card: {row}");
+        let at = row.find(" · idle w/ card (").unwrap_or_else(|| panic!("{w}x{h}: the warning and its duration are cut: {row}"));
+        assert!(row[at..].contains("m)"), "{w}x{h}: the duration is whole: {row}");
+    }
+    let (_d, _s, app) = setup();
+    let bar = render(&app, 95, 35);
+    assert!(bar.contains("(! bot-2 idle w/ card (0m))"), "the bar: words first, then the duration:\n{bar}");
+    // a narrow bar drops the duration before the words, and never shows half of it
+    for w in [48u16, 50, 52, 54] {
+        let narrow = render(&app, w, 12);
+        let row = narrow.lines().find(|l| l.contains("(! bot-2")).unwrap_or_else(|| panic!("{w}x12: no bar:\n{narrow}"));
+        let at = row.find("(! bot-2 idle w/ card").unwrap_or_else(|| panic!("{w}x12: the words are cut: {row}"));
+        let after = &row[at + "(! bot-2 idle w/ card".len()..];
+        assert!(after.starts_with(" (0m))") || !after.contains('('), "{w}x12: a cut duration: {row}");
+    }
+    // the full panel shows the duration whole or not at all
+    for w in [100u16, 102, 104, 110, 126] {
+        let screen = render(&app, w, 35);
+        let row = screen.lines().find(|l| l.contains("! idle, holds card")).unwrap_or_else(|| panic!("{w}x35: no holder row:\n{screen}"));
+        let after = &row[row.find("! idle, holds card").unwrap() + "! idle, holds card".len()..];
+        assert!(after.starts_with(" (0m)") || !after.contains('('), "{w}x35: a cut duration: {row}");
+    }
+    let wide = render(&app, 126, 41);
+    assert!(wide.contains("! idle, holds card (0m)"), "126x41: the duration shows:\n{wide}");
+}
+
+/// Push every event of a card (and its clocks) back in time.
+fn backdate(dir: &tempfile::TempDir, card: i64, secs: i64) {
+    let c = rusqlite::Connection::open(dir.path().join("b.db")).unwrap();
+    c.execute("UPDATE events SET ts = ts - ?1 WHERE card_id = ?2", rusqlite::params![secs, card]).unwrap();
+    c.execute("UPDATE cards SET column_since = column_since - ?1, created_at = created_at - ?1 WHERE id = ?2", rusqlite::params![secs, card])
+        .unwrap();
+}
+
+/// The 12-card board with quiet work on it: 1 = an idle holder quiet for 1h20m and a working
+/// agent quiet for 2h, with notes; 2 = no notes, 2d and 5h; 3 = two idle holders, 1h20m and 3d.
+fn quiet_board(n: usize) -> (tempfile::TempDir, Store, App) {
+    let (dir, mut s, mut app) = setup();
+    match n {
+        1 => {
+            s.note(5, "retrying the upload with a smaller chunk size", "bot-2").unwrap();
+            s.note(4, "plus-addresses parse now; writing the regression test", "bot-1").unwrap();
+            s.note(6, "took 3 of 5 screenshots", "bot-3").unwrap();
+            backdate(&dir, 5, 80 * 60 + 20);
+            backdate(&dir, 4, 2 * 3600 + 20);
+        }
+        2 => {
+            backdate(&dir, 5, 51 * 3600 + 20);
+            backdate(&dir, 6, 5 * 3600 + 20);
+        }
+        _ => {
+            let id = s.add("ops: a very long title for the second idle holder card to test fitting", "", &[], "alice").unwrap();
+            s.move_to(id, "doing", "lead").unwrap();
+            s.note(5, "short note", "bot-2").unwrap();
+            backdate(&dir, 5, 80 * 60 + 20);
+            backdate(&dir, id, 72 * 3600 + 20);
+        }
+    }
+    app.reload(&s);
+    (dir, s, app)
+}
+
+/// Every `quiet` on the screen is whole: followed by a whole duration or by nothing, and a
+/// card's meta line never ends in a piece of the word.
+fn assert_quiet_is_whole(ctx: &str, screen: &str) {
+    const AGES: [&str; 5] = ["1h20m", "2h", "2d", "5h", "3d"];
+    const OWNERS: [&str; 4] = ["bot-1", "bot-2", "bot-3", "lead"];
+    for line in screen.lines() {
+        for seg in line.split(['│', '┃']) {
+            let toks: Vec<&str> = seg.split_whitespace().collect();
+            for (i, t) in toks.iter().enumerate() {
+                if *t == "quiet" {
+                    let next = toks.get(i + 1);
+                    assert!(next.is_none_or(|a| AGES.contains(a)), "{ctx}: a cut duration after 'quiet': {seg:?}\n{screen}");
+                }
+            }
+            let last = toks.last().copied().unwrap_or("");
+            let cut = !last.is_empty() && last.len() < 5 && "quiet".starts_with(last);
+            assert!(!(cut && OWNERS.iter().any(|o| toks.contains(o))), "{ctx}: a cut 'quiet': {seg:?}\n{screen}");
+        }
+    }
+}
+
+/// The AGENTS bar shows an idle holder's duration only with room for all of it: the closing
+/// `)` and the `tab >` hint are never cut to make space for it.
+fn assert_bar_keeps_its_hint(ctx: &str, screen: &str) {
+    for line in screen.lines().filter(|l| l.trim_start().starts_with("AGENTS ") && l.contains("idle w/ card (")) {
+        assert!(line.trim_end().ends_with("))   tab >"), "{ctx}: the duration cut the hint: {line:?}");
+    }
+}
+
+/// Quiet work at every size: the `quiet` marker and the idle holder's duration are shown
+/// whole, in a shorter whole form, or not at all - never cut mid-token - and they never cost
+/// the AGENTS bar its `tab >` hint.
+#[test]
+fn quiet_work_is_never_cut_at_any_size() {
+    const HEIGHTS: [u16; 13] = [10, 12, 14, 16, 20, 24, 28, 35, 41, 45, 56, 60, 80];
+    for n in 1..=3 {
+        let (_d, s, mut app) = quiet_board(n);
+        for w in (30u16..=200).step_by(2) {
+            for h in HEIGHTS {
+                let screen = render(&app, w, h);
+                assert_quiet_is_whole(&format!("board {n} {w}x{h}"), &screen);
+                assert_bar_keeps_its_hint(&format!("board {n} {w}x{h}"), &screen);
+            }
+        }
+        // every layout preference, and the focus view
+        for pref in LAYOUTS {
+            s.set_layout(pref).unwrap();
+            app.reload(&s);
+            app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+            for w in (30u16..=200).step_by(10) {
+                for h in [16u16, 28, 45, 73] {
+                    let screen = render(&app, w, h);
+                    assert_quiet_is_whole(&format!("board {n} {pref} {w}x{h}"), &screen);
+                    assert_bar_keeps_its_hint(&format!("board {n} {pref} {w}x{h}"), &screen);
+                }
+            }
+        }
+    }
+    // with room, both are there in full
+    let (_d, _s, app) = quiet_board(1);
+    let wide = render(&app, 160, 45);
+    assert!(wide.contains("quiet 1h20m") && wide.contains("quiet 2h"), "160x45: the quiet markers:\n{wide}");
+    let bar = render(&app, 70, 12);
+    assert!(bar.contains("(! bot-2 idle w/ card (1h20m))   tab >"), "70x12: duration and hint:\n{bar}");
+    // 56..64 wide: no room for the duration next to the hint, so the hint wins
+    for w in [58u16, 60, 62, 64] {
+        let screen = render(&app, w, 12);
+        let row = screen.lines().find(|l| l.contains("(! bot-2")).unwrap_or_else(|| panic!("{w}x12: no bar:\n{screen}"));
+        assert!(row.trim_end().ends_with("(! bot-2 idle w/ card)   tab >"), "{w}x12: the hint is whole: {row:?}");
+    }
+    // a narrow card keeps the owner and the whole marker, and gives up the tag first
+    let narrow = render(&app, 74, 41);
+    assert!(narrow.contains("bot-2 - 1h20m quiet 1h20m") || narrow.contains("bot-2 quiet 1h20m"), "74x41: the marker is whole:\n{narrow}");
+}
+
 #[test]
 fn tiny_tab_pages_through_the_panels() {
     common::pin_clock();
@@ -869,6 +1016,131 @@ fn thirdv_spare_rows_go_to_github_not_to_a_gap() {
     assert!(screen56.contains("GITHUB") && screen56.contains("DONE"), "{screen56}");
 }
 
+#[test]
+fn first_run_empty_states_show_hints() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    // a fresh board, GitHub connected to a quiet repo
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 0,
+        ..Default::default()
+    }))
+    .unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    let frame = |c: char| "─│┌┐└┘┏┓┗┛━┃┃".contains(c);
+    // every view, at a size that auto really maps to it (110x45 is half-h with a column narrow
+    // enough to wrap the hint): the TODO hint is readable whole (wrapped, never cut mid-word),
+    // and the quiet repo says so wherever the GitHub panel has room for its list
+    use terminal_board::tui::{pick_shape, Shape};
+    for (w, h, want, shape) in [
+        (50u16, 14u16, Shape::Focus, "focus"),
+        (110, 22, Shape::ThirdH, "third-h"),
+        (52, 60, Shape::ThirdV, "third-v"),
+        (110, 45, Shape::HalfH, "half-h, hint wrapped"),
+        (140, 45, Shape::HalfH, "half-h"),
+        (90, 45, Shape::HalfV, "half-v"),
+    ] {
+        assert_eq!(pick_shape("auto", w, h), want, "{w}x{h} is the {shape} view");
+        let screen = render(&app, w, h);
+        let text: String = screen.chars().map(|c| if frame(c) { ' ' } else { c }).collect();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if want == Shape::Focus {
+            // the focus view has its own one-line empty state
+            assert!(screen.contains("press a to add a card"), "{shape}:\n{screen}");
+            continue;
+        }
+        if want == Shape::ThirdV {
+            // third-v folds an empty section into its header line, so there is no TODO box
+            // and no hint (unchanged); the quiet-repo text and the stats are there
+            assert!(!words.contains(&"press"), "{shape}: no TODO hint in this view:\n{screen}");
+        } else {
+            // the expected text is spelled out here on purpose: the test pins what the user
+            // reads, not a constant from the code under test
+            for word in "press a to add your first card".split(' ') {
+                assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
+            }
+            let at = words.iter().position(|w| *w == "press").expect(shape);
+            assert_eq!(&words[at..at + 4], ["press", "a", "to", "add"], "{shape}: hint starts whole:\n{screen}");
+        }
+        assert!(screen.contains("no open issues or PRs") || screen.contains("no open PRs or issues"), "{shape}: quiet-repo hint:\n{screen}");
+        assert!(screen.contains("MAIN"), "{shape}: main CI stays visible:\n{screen}");
+    }
+    // third-h: the rail keeps its stats rows (a quiet repo can still have a failing main CI)
+    let screen = render(&app, 110, 22);
+    for row in ["ISSUES", "PRS", "MAIN CI", "no open PRs or issues"] {
+        assert!(screen.contains(row), "third-h rail keeps '{row}':\n{screen}");
+    }
+}
+
+/// The words inside the TODO column's box (None when the view draws no box for it). TODO is
+/// the first box on the screen; a narrow column cuts its title, so any start of it counts.
+fn todo_box_words(screen: &str) -> Option<Vec<String>> {
+    let rows: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let (r0, c0) = rows.iter().enumerate().find_map(|(r, row)| row.iter().position(|c| "┏┌".contains(*c)).map(|c| (r, c)))?;
+    let c1 = (c0 + 1..rows[r0].len()).find(|&c| "┓┐".contains(rows[r0][c]))?;
+    let title: String = rows[r0][c0 + 1..c1].iter().filter(|c| !"━─".contains(**c)).collect();
+    if !title.contains('o') || !" o TODO (0)".starts_with(title.trim_end()) {
+        return None;
+    }
+    let inner: Vec<String> = rows[r0 + 1..].iter().take_while(|row| "┃│".contains(row[c0])).map(|row| row[c0 + 1..c1].iter().collect()).collect();
+    Some(inner.join(" ").split_whitespace().map(str::to_string).collect())
+}
+
+#[test]
+fn first_card_hint_is_never_cut_in_any_forced_layout() {
+    // a fresh board in every layout preference, swept over widths: the TODO box holds the
+    // whole hint, the whole short form, or the plain '-' — never a split or ellipsized word
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    app.reload(&s);
+    let long: Vec<&str> = "press a to add your first card".split(' ').collect();
+    let short: Vec<&str> = "a: add a card".split(' ').collect();
+    let (mut saw_long, mut saw_short, mut saw_dash) = (0, 0, 0);
+    for pref in terminal_board::store::LAYOUTS {
+        app.snap.layout = pref.into();
+        for w in 20u16..=200 {
+            for h in [6u16, 8, 12, 16, 20, 30, 45, 60] {
+                if terminal_board::tui::pick_shape(pref, w, h) == terminal_board::tui::Shape::Focus {
+                    continue; // the focus view has its own one-line empty state
+                }
+                let screen = render(&app, w, h);
+                let Some(words) = todo_box_words(&screen) else {
+                    // only third-v (and auto when it picks third-v) draws no TODO box
+                    assert_eq!(terminal_board::tui::pick_shape(pref, w, h), terminal_board::tui::Shape::ThirdV, "{pref} {w}x{h}: no TODO box:\n{screen}");
+                    continue;
+                };
+                if words == long {
+                    saw_long += 1;
+                } else if words == short {
+                    saw_short += 1;
+                } else if words == ["-"] || words.is_empty() {
+                    saw_dash += 1;
+                } else {
+                    panic!("{pref} {w}x{h}: the TODO box holds a cut hint {words:?}:\n{screen}");
+                }
+            }
+        }
+    }
+    // the sweep met all three forms, so each branch above was really exercised
+    assert!(saw_long > 0, "no size showed the whole hint");
+    assert!(saw_short > 0, "no size showed the short form");
+    assert!(saw_dash > 0, "no size fell back to the plain '-'");
+    // the reported sizes: forced third-h at 64x20 and forced half-h at 58x8
+    for (pref, w, h) in [("third-h", 64u16, 20u16), ("half-h", 58, 8), ("half-v", 28, 12)] {
+        app.snap.layout = pref.into();
+        let screen = render(&app, w, h);
+        let words = todo_box_words(&screen).unwrap_or_else(|| panic!("{pref} {w}x{h}: no TODO box:\n{screen}"));
+        assert!(words == long || words == short || words == ["-"], "{pref} {w}x{h}: {words:?}");
+    }
+}
+
 /// A GitHub page of `np` PRs and `ni` issues from a repo with 60 open issues (20 = a full
 /// page); `busy` makes one PR fail CI and one a draft. Returns the counts the tiles show.
 fn setup_page(np: i64, ni: i64, busy: bool) -> (tempfile::TempDir, Store, App, terminal_board::github::Factory) {
@@ -876,7 +1148,7 @@ fn setup_page(np: i64, ni: i64, busy: bool) -> (tempfile::TempDir, Store, App, t
     let snap = GhSnapshot {
         repo: "acme/widgets".into(),
         fetched_at: terminal_board::store::now(),
-        issues_open: 60,
+        issues_open: if np == 0 && ni == 0 { 0 } else { 60 },
         prs: (0..np)
             .map(|k| Pr { is_draft: busy && k == 2, ..pr(400 + 2 * k, "speed up search indexing", if busy && k == 1 { "FAIL" } else { "ok" }) })
             .collect(),
@@ -977,4 +1249,16 @@ fn full_page_labels_fit_at_small_sizes() {
     assert!(grid.contains("20+ (1 draft) · 1 failing CI ") && grid.contains("60 open · +20 today · 17/20 free "), "{grid}");
     let grid = render(&full, 66, 60);
     assert!(grid.contains("60 open · +20 today · 17 un…") && grid.contains("20 open (1 draft) · 1 fail…"), "no room: the counts stay, the label goes:\n{grid}");
+
+    // a quiet repo is never a page: its empty state is the same whatever the label
+    let (_d, s, mut quiet, _) = setup_page(0, 0, false);
+    // every width, including those where a full page gets the long, terse or no label
+    for (w, h) in [(160u16, 50u16), (126, 41), (110, 41), (104, 41), (90, 60), (76, 60), (66, 60), (61, 30)] {
+        let screen = render(&quiet, w, h);
+        assert!(screen.contains("no open issues or PRs") || screen.contains("0 issues"), "{w}x{h}: the empty state:\n{screen}");
+        assert!(!screen.contains("newest") && !screen.contains("20+") && !screen.contains("/20"), "{w}x{h}: no page label on a quiet repo:\n{screen}");
+    }
+    s.set_layout("half-v").unwrap();
+    quiet.reload(&s);
+    assert!(render(&quiet, 80, 60).contains("no open issues or PRs"));
 }

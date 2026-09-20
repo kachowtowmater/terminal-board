@@ -326,6 +326,7 @@ fn sync_cli_moves_cards_via_fake_gh() {
         &format!(
             r#"#!/bin/sh
 case "$1 $2" in
+  "repo view") echo '{{"nameWithOwner":"o/r"}}';;
   "pr list") case "$*" in *merged*) echo '[]';; *) cat {p}/prs.json;; esac;;
   "issue list") cat {p}/issues.json;;
   "run list") echo '[]';;
@@ -749,6 +750,7 @@ case "$*" in
   *"--search"*) echo '[]'; exit 0;;
 esac
 case "$1 $2" in
+  "repo view") echo '{{"nameWithOwner":"o/r"}}';;
   "pr list") cat {p}/page.json;;
   "issue list") cat {p}/issues.json;;
   "run list") echo '[]';;

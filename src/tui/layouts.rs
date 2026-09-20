@@ -48,10 +48,26 @@ pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
             let working = list.iter().filter(|a| a.status == "working").count();
             let idle = list.iter().filter(|a| a.is_idle()).count();
             spans.push(Span::styled(format!("{working} working · {idle} idle"), base));
-            let holders: Vec<String> = list.iter().filter(|a| holds_card(app, a)).map(|a| a.name.clone()).collect();
-            if !holders.is_empty() {
+            let held: Vec<&Agent> = list.iter().filter(|a| holds_card(app, a)).collect();
+            if !held.is_empty() {
+                let holders: Vec<String> = held.iter().map(|a| a.name.clone()).collect();
+                // the durations follow the warning, so a narrow bar drops them before the words
+                let ages: Vec<String> = held
+                    .iter()
+                    .map(|a| crate::tui::idle_hold_age(app, a))
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.trim_matches(|c| c == ' ' || c == '(' || c == ')').to_string())
+                    .collect();
+                let ages = if ages.is_empty() { String::new() } else { format!(" ({})", ages.join(", ")) };
                 spans.push(Span::styled(" (", base));
                 spans.push(Span::styled(format!("! {} idle w/ card", holders.join(", ")), red().patch(base)));
+                // shown whole or not at all, and never at the cost of the `tab >` hint: a bar
+                // without room for all of it keeps the plain warning
+                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                let rest = 1 + TAB_HINT.chars().count();
+                if !ages.is_empty() && used + ages.chars().count() + rest <= width {
+                    spans.push(Span::styled(ages, red().patch(base)));
+                }
                 spans.push(Span::styled(")", base));
             }
         }
@@ -310,9 +326,21 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     // short title; the age is shown even without a note
                     let id = format!("#{} ", c.id);
                     let title = format!(" {}", fit(&c.title, 12));
-                    let fixed = 3 + 11 + if holds { 15 } else { 9 } + id.chars().count() + title.chars().count();
+                    // holders end in ` · idle w/ card` plus how long they have been idle
+                    let held_for = if holds { crate::tui::idle_hold_age(app, a).chars().count() } else { 0 };
+                    let tail = if holds { 15 + held_for } else { 9 };
+                    // a row that ends in a duration is budgeted to the column (` name ` is 12),
+                    // so the duration is never the part that gets cut
+                    let lead = if held_for > 0 { 12 } else { 11 };
+                    let fixed = 3 + lead + tail + id.chars().count() + title.chars().count();
                     let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
-                    if act.is_empty() {
+                    // what a holder's title may take so that ` · idle w/ card (1h20m)` still fits
+                    let title_room = width.saturating_sub(3 + 12 + id.chars().count() + tail);
+                    if act.is_empty() && held_for > 0 && title_room >= 4 {
+                        // no room for the activity next to the duration: the duration says the
+                        // same age, so keep the warning whole and shorten the title instead
+                        format!("{id}{}", fit(&c.title, title_room))
+                    } else if act.is_empty() {
                         format!("{id}{}", c.title)
                     } else {
                         format!("{id}{act}{title}")
@@ -321,7 +349,7 @@ fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
             let text = if holds {
-                format!(" {:<10} {} · idle w/ card", fit(&a.name, 10), what)
+                format!(" {:<10} {} · idle w/ card{}", fit(&a.name, 10), what, crate::tui::idle_hold_age(app, a))
             } else {
                 format!(" {:<10} {:<8} {}", fit(&a.name, 10), a.status, what)
             };
@@ -636,11 +664,20 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
         None => card.title.clone(),
     };
     lines.push(Line::styled(title, bold()));
-    let (base, warn) = meta_fit(card, &app.snap, inner.width as usize);
+    let (base, warn, q) = meta_fit_quiet(card, &app.snap, inner.width as usize);
     let mut meta = vec![Span::styled(base, dim())];
     if !warn.is_empty() {
         meta.push(Span::raw(" "));
         meta.push(Span::styled(warn, red()));
+    }
+    // the quiet marker is shown whole or not at all
+    let used: usize = meta.iter().map(|s| s.content.chars().count()).sum();
+    let lead = usize::from(used > 0);
+    if !q.is_empty() && used + lead + q.chars().count() <= inner.width as usize {
+        if lead > 0 {
+            meta.push(Span::raw(" "));
+        }
+        meta.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(meta));
     let detail = app.popup.as_ref().filter(|d| d.card.id == card.id).cloned();

@@ -1,4 +1,21 @@
 //! v2: the agent that did the work cannot approve its own REVIEW card.
+/// A fake `gh` that answers `repo view` positively (for `config github`'s existence
+/// check) and nothing else; shared by tests that pin `TB_GH` to a nonexistent path.
+fn fake_gh_ok() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static GH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    GH.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("tb-fake-gh-{}", std::process::id()));
+        std::fs::write(&p, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    })
+    .clone()
+}
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
 use std::process::{Command, Output};
@@ -12,7 +29,7 @@ fn tb(db: &Path, who: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tb"))
         .args(args)
         .env("TB_DB", db)
-        .env("TB_GH", "/nonexistent/gh")
+        .env("TB_GH", fake_gh_ok())
         .env("TB_AS", who)
         .env("TB_NO_HERDR", "1")
         .output()

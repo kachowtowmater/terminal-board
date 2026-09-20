@@ -2,7 +2,7 @@
 
 use crate::github::{self, GhView};
 use crate::herdr::{self, Agent, AgentsState};
-use crate::plain::{card_head, event_line, fit, meta_fit};
+use crate::plain::{card_head, event_line, fit, meta_fit_quiet};
 use crate::store::{fmt_age, CardDetail, Card, Snapshot, Store, COLUMNS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -1509,13 +1509,13 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     first.push(Span::styled(fit(&card.title, room), hl));
     let mut lines = vec![Line::from(first)];
 
-    let (base, warn) = meta_fit(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let (base, warn, q) = meta_fit_quiet(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let sep = if base.is_empty() || warn.is_empty() { "" } else { " " };
+    let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
         second.push(Span::raw(meta_gh));
@@ -1523,7 +1523,11 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
     if !warn.is_empty() {
-        second.push(Span::styled(warn, red()));
+        second.push(Span::styled(warn.clone(), red()));
+    }
+    if !q.is_empty() {
+        second.push(Span::raw(if warn.is_empty() { "" } else { " " }));
+        second.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(second));
     if card.column == "doing" {
@@ -1600,7 +1604,20 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     f.render_widget(block, area);
     let sel = if focused { Some(app.row[ci].min(n.saturating_sub(1))) } else { None };
     if cards.is_empty() {
-        f.render_widget(Paragraph::new(Line::styled(" -", dim())), inner);
+        // first-run hint: a bare '-' told a new user nothing. It wraps at words to fit the
+        // column; a column too small for that gets the short form, and one too small for
+        // even that keeps the bare '-' — never a cut word.
+        let hint = if ci == 0 && app.snap.cards.is_empty() {
+            let (w, h) = ((inner.width as usize).saturating_sub(1), inner.height as usize);
+            [FIRST_CARD_HINT, FIRST_CARD_SHORT].into_iter().find_map(|t| wrap_whole(t, w, h))
+        } else {
+            None
+        };
+        let lines: Vec<Line> = match hint {
+            Some(wrapped) => wrapped.into_iter().map(|l| Line::styled(format!(" {l}"), dim())).collect(),
+            None => vec![Line::styled(" -", dim())],
+        };
+        f.render_widget(Paragraph::new(lines), inner);
     } else if inner.height < 3 || inner.width < 8 {
         app.drawn_styles.borrow_mut().push((ci, "compact"));
         draw_compact(f, app, &cards, sel, inner);
@@ -1800,7 +1817,13 @@ fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
-                        spans.push(Span::styled("! idle, holds card", st));
+                        // the duration is shown whole or not at all: a panel too narrow for it
+                        // keeps the plain warning
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let flag = "! idle, holds card";
+                        let age = idle_hold_age(app, a);
+                        let fits = used + flag.chars().count() + age.chars().count() <= width;
+                        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
                     } else {
                         let age = app
                             .snap
@@ -1837,6 +1860,9 @@ fn detail_strip(app: &App) -> Vec<Line<'static>> {
         rest.push(t.clone());
     }
     rest.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
+    if let Some(r) = &c.reviewer {
+        rest.push(format!("review {r}"));
+    }
     first.push(Span::styled(format!(" - {}", rest.join(" - ")), dim()));
     let events = app
         .snap
@@ -1939,6 +1965,9 @@ fn draw_popup(f: &mut Frame, app: &App, d: &CardDetail, full_width: bool) {
         meta.push(t.clone());
     }
     meta.push(c.owner.clone().unwrap_or_else(|| "unowned".into()));
+    if let Some(r) = &c.reviewer {
+        meta.push(format!("review {r}"));
+    }
     meta.push(format!("{} {}", c.column, fmt_age(app.snap.now - c.column_since)));
     let meta = format!(" {} ", meta.join(" - "));
     let hint = " up/down select  enter check  a add  d delete  n note  esc close ";
@@ -2138,6 +2167,11 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         layouts::draw_tidy_list(f, app, s, Rect { y, height: bottom - y, ..inner }, focused);
         return;
     };
+    if s.prs.is_empty() && s.issues.is_empty() {
+        // first-run hint: a quiet repo says so instead of an empty table area
+        f.render_widget(Paragraph::new(Line::styled(" no open issues or PRs", dim())), Rect { y, height: 1, ..inner });
+        return;
+    }
     let age = |ts: &str| github::age_of(ts, now).map(crate::store::coarse_age).unwrap_or_else(|| "?".into());
     // row budget: PRs get up to a third (min 1 if any), issues the rest (+1 for "+N more")
     let pr_rows = if s.prs.is_empty() { 0 } else { s.prs.len().min((avail.saturating_sub(2) / 3).max(1)) };
@@ -2293,6 +2327,19 @@ fn holds_card(app: &App, a: &Agent) -> bool {
         })
 }
 
+/// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
+pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
+    let agents = agent_list(app);
+    let held = app
+        .snap
+        .cards
+        .iter()
+        .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
+    held.and_then(|c| app.snap.last_event_at.get(&c.id))
+        .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
+        .unwrap_or_default()
+}
+
 
 
 
@@ -2430,6 +2477,20 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("apps", "board --json · watch --json · every write takes --json"),
     ]),
 ];
+
+/// The empty-TODO hint on a board with no cards, and its form for tiny columns.
+pub const FIRST_CARD_HINT: &str = "press a to add your first card";
+pub const FIRST_CARD_SHORT: &str = "a: add a card";
+
+/// `text` wrapped at spaces into at most `height` lines of `width`, or None when that would
+/// split a word or need more lines.
+fn wrap_whole(text: &str, width: usize, height: usize) -> Option<Vec<String>> {
+    if text.split_whitespace().any(|word| word.chars().count() > width) {
+        return None;
+    }
+    let lines = wrap_words(text, width);
+    (lines.len() <= height).then_some(lines)
+}
 
 /// Split `text` into lines of at most `width` characters, at spaces (a longer word is cut).
 fn wrap_words(text: &str, width: usize) -> Vec<String> {

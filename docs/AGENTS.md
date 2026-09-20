@@ -44,6 +44,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
+| claim the top REVIEW card you did not do | `tb next --review --as NAME` |
 | take one specific TODO card | `tb take ID` |
 | see every card, by column | `tb list` |
 | one card in full (brief, checklist, notes, history) | `tb show ID` |
@@ -110,6 +111,8 @@ criteria; then `tb done ID` (→ DONE) with a note of what you checked, or send 
 owner with `tb move ID doing "what is missing"` (it then shows its round `r2`, `r3`, …; `round`
 in JSON). You cannot approve a card you moved to REVIEW (its owner, if GitHub moved it): you
 get `you did this work — …`; the full-screen board asks `approve your own work? y/n` instead.
+Claim before you check, so two verifiers never take the same card: `tb next --review --as NAME`
+takes the top REVIEW card you did not do (atomic; `tb move ID review` frees a stale claim).
 
 **Your card came back:** it is in DOING again, showing `r2`. `tb show ID` — the last
 `returned` event says what to fix. Fix it, note it, and `tb done ID` again.
@@ -204,6 +207,7 @@ tb block 1 "#2"
 tb block 1 --clear
 tb prio 2 top
 tb done 1
+tb next --review --as bob
 tb done 1 --as bob
 tb take 2
 tb drop 2
