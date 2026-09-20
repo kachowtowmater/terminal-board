@@ -184,6 +184,116 @@ fn config_lists_all_and_sets_panels() {
 }
 
 #[test]
+fn mistyped_commands_get_a_next_step_hint() {
+    let b = Board::new();
+    let o = b.run(&["start", "4", "1"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("tb --help") && err.contains("tb guide"), "hint present: {err}");
+    let o = b.run(&["frobnicate", "x"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("unknown command 'frobnicate'") && err.contains("tb --help"), "{err}");
+    // a bare unknown word stays the documented board-open behavior (`tb myboard`).
+    // Board names need boards mode (a temp HOME, no pinned TB_DB file — a pinned file refuses
+    // them), so this one runs there, on a board that exists.
+    let home = tempfile::tempdir().unwrap();
+    let boards_mode = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("HOME", home.path())
+            .env_remove("TB_DB")
+            .env_remove("TTYBOARD_DB")
+            .env_remove("TB_BOARD")
+            .env_remove("TTYBOARD_BOARD")
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("HERDR_AGENT_NAME")
+            .output()
+            .unwrap()
+    };
+    let o = boards_mode(&["myboard", "add", "plain: first card"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = boards_mode(&["myboard"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // under the pinned TB_DB file the same word is still read as a board name (and refused
+    // as one), never as an unknown command
+    let o = b.run(&["myboard"]);
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(!err.contains("unknown command") && err.contains("board names are ignored"), "{err}");
+    // --help still prints its text and succeeds
+    let o = b.run(&["--help"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn missing_named_board_fails_instead_of_creating() {
+    // multi-board mode (no TB_DB): boards live in their own dir
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("tbhome");
+    let run_at = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("HOME", &home)
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("TB_DB")
+            .output()
+            .unwrap()
+    };
+    let _ = std::fs::create_dir_all(&home);
+    let o = run_at(&["add", "docs: real work lives here"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let b = Board::new();
+    b.ok(&["-b", "default", "boards"]);
+    // read on a missing non-default board: error, nothing on disk
+    // read on a missing non-default board: error, nothing on disk
+    let o = run_at(&["demo-typo", "list"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("no board 'demo-typo'"), "{err}");
+    assert!(err.contains("boards:"), "names the existing boards: {err}");
+    assert!(err.contains("'tb demo-typo add"), "create hint: {err}");
+    let boards_out = String::from_utf8_lossy(&run_at(&["boards"]).stdout).to_string();
+    assert!(!boards_out.contains("demo-typo"), "nothing created: {boards_out}");
+    // next on a missing named board: same
+    let o = run_at(&["demo-typo", "next", "--as", "bot-1"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no board 'demo-typo'"));
+    let boards_out = String::from_utf8_lossy(&run_at(&["boards"]).stdout).to_string();
+    assert!(!boards_out.contains("demo-typo"));
+    // --json: the standard error object, with the same hint
+    let o = run_at(&["demo-typo", "list", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert!(v["hint"].as_str().unwrap().contains("create it with"), "{}", v);
+    // add DOES create the named board
+    let o = run_at(&["demo-typo", "add", "docs: now it exists"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&run_at(&["boards"]).stdout).contains("demo-typo"));
+    // and config creates too (setting a value on a new board)
+    let o = run_at(&["demo-fresh", "config", "wip", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&run_at(&["boards"]).stdout).contains("demo-fresh"));
+    // negative control: the DEFAULT board keeps today's behaviour — a read shows it empty
+    // (error only when the file truly does not exist AND the command would print a board;
+    // here the default board file exists because we added), and next auto-creates it
+    let dir2 = tempfile::tempdir().unwrap();
+    let db2 = dir2.path().join("fresh-default.db");
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["next", "--as", "bot-1"])
+        .env("TB_DB", &db2)
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "no todo cards is still the failure: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no todo cards"), "default board behaviour unchanged");
+    assert!(db2.exists(), "the default board is created by a write, as before");
+}
+
+#[test]
 fn blank_as_is_refused_not_silently_replaced() {
     let b = Board::new();
     b.ok(&["--as", "lead", "add", "plain: x"]);
@@ -251,4 +361,39 @@ fn parse_errors_answer_json_under_json_flag() {
     // --help with --json still prints help text, exit 0
     let o = b.run(&["--help", "--json"]);
     assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Usage:"));
+}
+
+#[test]
+fn a_board_name_with_tb_db_is_refused() {
+    let b = Board::new();
+    b.ok(&["add", "plain: on the pinned file"]);
+    for args in [
+        vec!["other", "add", "plain: mixed in"],
+        vec!["-b", "other", "add", "plain: mixed in"],
+        vec!["--board", "other", "list"],
+        vec!["other", "list"],
+    ] {
+        let o = b.run(&args);
+        assert!(!o.status.success(), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(err.contains("TB_DB is set") && err.contains("unset TB_DB"), "{args:?}: {err}");
+    }
+    // nothing mixed in: the pinned file holds only the default board's card
+    let list = b.ok(&["list"]);
+    assert!(list.contains("on the pinned file") && !list.contains("mixed in"), "{list}");
+    // TB_BOARD env: same refusal
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["list"])
+        .env("TB_DB", &b.db)
+        .env("TB_BOARD", "other")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("TB_DB is set"));
+    // bare and default name keep working under TB_DB
+    b.ok(&["default", "list"]);
+    let v: serde_json::Value = serde_json::from_str(&b.ok(&["board", "--json"])).unwrap();
+    assert_eq!(v["board"], "default", "JSON reports the board actually opened");
 }

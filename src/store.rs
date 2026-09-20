@@ -43,6 +43,21 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The refusal for moving someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+    let mine: Vec<i64> = {
+        let mut st =
+            tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
+        let v = st.query_map([actor], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
+    Ok(BoardError(format!(
+        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+    )))
+}
+
 /// The actor-aware WIP message: the board-wide limit with who holds what, and what the
 /// actor can actually do (finish their own card, or wait — never finish someone else's).
 fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
@@ -139,6 +154,14 @@ pub struct Event {
     pub actor: String,
     pub kind: String,
     pub text: String,
+}
+
+/// An event with its database id (for `tb watch --events` resumption).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchEvent {
+    pub id: i64,
+    #[serde(flatten)]
+    pub event: Event,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -752,6 +775,35 @@ impl Store {
         Ok(CardDetail { card, checklist, events, round })
     }
 
+    /// Events with `id > after`, oldest first (for `tb watch --events`).
+    pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, card_id, ts, actor, kind, text FROM events WHERE id > ? ORDER BY id")?;
+        let v = st
+            .query_map([after], |r| {
+                Ok(WatchEvent {
+                    id: r.get(0)?,
+                    event: Event {
+                        card_id: r.get(1)?,
+                        ts: r.get(2)?,
+                        actor: r.get(3)?,
+                        kind: r.get(4)?,
+                        text: r.get(5)?,
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
+    /// The id of the last event strictly before `ts` (0 when none) — `--since` resumption:
+    /// streaming `id > cursor` yields exactly the events at/after `ts`.
+    pub fn events_cursor_at(&self, ts: i64) -> Result<i64> {
+        // a DB error must surface, not silently replay the whole history from 0
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events WHERE ts < ?", [ts], |r| r.get(0))?)
+    }
+
     pub fn snapshot(&self) -> Result<Snapshot> {
         let cards = self.list()?;
         let wip = self.wip()?;
@@ -1024,6 +1076,19 @@ impl Store {
         if c.column == column {
             return Ok(c);
         }
+        // Card ids are small shared integers: an off-by-one must not move someone else's
+        // work. Leaving DOING requires the owner (or --force, logged as its own event).
+        // The `github` automation is exempt: its moves are evidence-driven and logged.
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                }
+            }
+        }
         if column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
@@ -1051,11 +1116,20 @@ impl Store {
             "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
+        // a block set while in REVIEW must not survive into DONE (or it renders as a live
+        // problem on a finished card); reaching done clears it, logged as part of the move.
+        // Any other move keeps the block untouched (QA: 'block 1' then 'done 1' from DOING
+        // must NOT clear it — only the DONE transition does).
+        let block_cleared = column == "done" && c.blocked.is_some();
         let pos = bottom_of(&tx, &column)?;
         tx.execute(
-            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=? WHERE id=?"#,
-            params![column, owner, now(), pos, id],
+            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?,
+               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
+            params![column, owner, now(), pos, column, id],
         )?;
+        if block_cleared {
+            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        }
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
         if let (true, Some(r)) = (send_back, reason) {
             Self::log(&tx, id, actor, "returned", r)?;
@@ -1201,20 +1275,44 @@ impl Store {
         }
     }
 
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.drop_card_inner(id, actor, true)
+    }
+
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
-        let c = self.card(id)?;
+        self.drop_card_inner(id, actor, false)
+    }
+
+    /// Back to todo, unowned. Someone else's DOING card is refused (the same hazard as moving
+    /// it, see move_card) unless forced; the check, the `force` event and the drop are one
+    /// transaction.
+    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let c = get_card(&tx, id)?;
         if c.column == "todo" && c.owner.is_none() {
             return Ok(c);
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
+                }
+            }
+        }
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
             r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=? WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
+        let c = get_card(&tx, id)?;
         tx.commit()?;
-        self.card(id)
+        Ok(c)
     }
 }
 

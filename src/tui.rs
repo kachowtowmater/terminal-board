@@ -165,6 +165,9 @@ pub enum Confirm {
     ForceDone(i64),
     /// Approve a REVIEW card the actor moved to review themselves (the forced, logged path).
     ApproveOwn(i64),
+    /// Move someone else's DOING card to the column the key asked for (card, target): the
+    /// forced, logged path.
+    NotMine(i64, String),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -622,6 +625,13 @@ impl App {
                                 self.focus_card(id);
                             }
                         }
+                        Confirm::NotMine(id, to) => {
+                            let r = store.move_to_forced(id, &to, &actor);
+                            if self.report(r, |c| format!("#{} -> {} (not yours, logged)", c.id, c.column)).is_some() {
+                                self.reload(store);
+                                self.focus_card(id);
+                            }
+                        }
                         Confirm::ApproveOwn(id) => {
                             let r = store.move_to_forced(id, "done", &actor);
                             if self.report(r, |c| format!("#{} -> done (own work, logged)", c.id)).is_some() {
@@ -792,11 +802,29 @@ impl App {
                 _ => "done".into(),
             },
         };
+        // someone else's DOING card: ask y/n (the store refuses without --force)
+        if column == "doing" {
+            if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
+                let mine = c.owner.as_deref().is_none_or(|o| o.eq_ignore_ascii_case(&self.actor));
+                if !mine && self.actor != "github" {
+                    self.mode = Mode::Confirm {
+                        prompt: format!(
+                            "#{} is held by {} — move it to {} anyway? y/n (logged)",
+                            id,
+                            c.owner.clone().unwrap_or_default(),
+                            to
+                        ),
+                        action: Confirm::NotMine(id, to),
+                    };
+                    return;
+                }
+            }
+        }
         if to == "done" && column != "done" {
             if let Some(n) = self.open_on_github(id) {
                 self.mode = Mode::Confirm {
                     action: Confirm::ForceDone(id),
-                    prompt: format!("issue #{n} still open on GitHub — mark done anyway? y/n"),
+                    prompt: format!("issue gh#{n} still open on GitHub — mark done anyway? y/n"),
                 };
                 return;
             }
@@ -2091,7 +2119,7 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
     let pr_rows = if s.prs.is_empty() { 0 } else { s.prs.len().min((avail.saturating_sub(2) / 3).max(1)) };
     let pr_h = if pr_rows > 0 { pr_rows + 1 } else { 0 };
     let issue_space = avail.saturating_sub(pr_h);
-    // PR table: PR 6 · TITLE flex · CI 5 · REVIEW 7 · AGE 5 · BRANCH / ISSUE 30
+    // PR table: GH# 8 · TITLE flex · CI 5 · REVIEW 7 · AGE 5 · BRANCH / ISSUE 30
     if pr_h > 0 {
         let title_w = pr_title as usize;
         // selection: GitHub row i (1-based after the repo row) is PR i-1
@@ -2106,12 +2134,12 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
             .take(pr_rows)
             .map(|(k, (p, link))| {
                 let br = match link {
-                    Some((i, who)) => format!("{} -> #{i} ({who})", p.head_ref),
+                    Some((i, who)) => format!("{} -> gh#{i} ({who})", p.head_ref),
                     None => p.head_ref.clone(),
                 };
                 let draft = if p.is_draft { "(draft) " } else { "" };
                 let cells = vec![
-                    Cell::from(format!("#{}", p.number)),
+                    Cell::from(format!("gh#{}", p.number)),
                     Cell::from(fit(&format!("{draft}{}", github::short_title(&p.title)), title_w)),
                     Cell::from(fail_red(&p.ci)),
                     Cell::from(p.review.clone()),
@@ -2122,7 +2150,7 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
                 if sel_pr == Some(k) { row.style(sel_style) } else { row }
             })
             .collect();
-        let header = Row::new(keep_cells(["PR", "TITLE", "CI", "REVIEW", "AGE", "BRANCH / ISSUE"].to_vec(), &pr_keep)).style(bold());
+        let header = Row::new(keep_cells(["GH#", "TITLE", "CI", "REVIEW", "AGE", "BRANCH / ISSUE"].to_vec(), &pr_keep)).style(bold());
         let t = Table::new(rows, table_widths(&PR_COLS, &pr_keep)).header(header).column_spacing(1);
         f.render_widget(t, Rect { x: inner.x + 1, y, width: w, height: pr_h as u16 });
         y += pr_h as u16;
@@ -2149,7 +2177,7 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         .take(shown)
         .map(|(k, r)| {
             let cells = vec![
-                Cell::from(format!("#{}", r.number)),
+                Cell::from(format!("gh#{}", r.number)),
                 Cell::from(fit(&github::short_title(&r.title), title_w)),
                 Cell::from(fail_red(&fit(&r.state, 15))),
                 Cell::from(fit(&r.who, 8)),
@@ -2160,7 +2188,7 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
             if sel_is == Some(k) { row.style(sel_style) } else { row }
         })
         .collect();
-    let header = Row::new(keep_cells(["ISSUE", "TITLE", "STATE", "WHO", "AGE", "LABELS"].to_vec(), &is_keep)).style(bold());
+    let header = Row::new(keep_cells(["GH#", "TITLE", "STATE", "WHO", "AGE", "LABELS"].to_vec(), &is_keep)).style(bold());
     let h = (shown + 1) as u16;
     f.render_widget(
         Table::new(rows, table_widths(&ISSUE_COLS, &is_keep)).header(header).column_spacing(1),
@@ -2176,8 +2204,8 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
 /// The TITLE column of a wide GitHub table never shrinks below this; tidy rows instead.
 pub const GH_TITLE_MIN: u16 = 30;
 /// Wide-table columns (name, width; TITLE = 0 is the flexible one).
-const PR_COLS: [(&str, u16); 6] = [("pr", 6), ("title", 0), ("ci", 5), ("review", 7), ("age", 5), ("branch", 30)];
-const ISSUE_COLS: [(&str, u16); 6] = [("issue", 6), ("title", 0), ("state", 15), ("who", 8), ("age", 5), ("labels", 16)];
+const PR_COLS: [(&str, u16); 6] = [("pr", 8), ("title", 0), ("ci", 5), ("review", 7), ("age", 5), ("branch", 30)];
+const ISSUE_COLS: [(&str, u16); 6] = [("issue", 8), ("title", 0), ("state", 15), ("who", 8), ("age", 5), ("labels", 16)];
 /// Optional columns, dropped in this order before the title goes below `GH_TITLE_MIN`.
 const GH_DROP: [&str; 5] = ["labels", "branch", "age", "who", "review"];
 

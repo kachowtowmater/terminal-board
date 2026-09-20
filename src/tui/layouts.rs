@@ -135,7 +135,7 @@ fn tidy_stats(app: &App, s: &github::GhSnapshot, width: u16) -> Vec<Line<'static
 fn tidy_rows(app: &App, s: &github::GhSnapshot, width: usize) -> Vec<Line<'static>> {
     let fac = github::factory(s, &app.snap.cards, app.snap.now);
     let row = |kind: &str, n: i64, title: &str, status: String| {
-        let head = format!(" {kind:<6}{:<7}", format!("#{n}"));
+        let head = format!(" {kind:<6}{:<8}", format!("gh#{n}"));
         let room = width.saturating_sub(head.chars().count() + 8 + 2);
         let mut spans = vec![Span::raw(head), Span::raw(format!("{:<room$} ", fit(title, room)))];
         let status = format!("{:>8}", fit(&status, 8));
@@ -148,6 +148,7 @@ fn tidy_rows(app: &App, s: &github::GhSnapshot, width: usize) -> Vec<Line<'stati
     }
     for r in &fac.issues {
         let status = match r.kind {
+            // the 8-char status cell: the linked PR's CI (the row's number is the ISSUE's)
             github::StateKind::Pr => format!("PR {}", r.pr_ci.clone().unwrap_or_else(|| "-".into())),
             github::StateKind::InProgress => r.who.clone(),
             github::StateKind::OnBoard => "board".into(),

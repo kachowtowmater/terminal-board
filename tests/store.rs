@@ -157,6 +157,65 @@ fn gh_ref_parses_case_insensitively() {
 }
 
 #[test]
+fn done_clears_a_block_and_records_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: blocked in review", "", &[], "me").unwrap();
+    s.move_to(id, "review", "me").unwrap();
+    s.block(id, Some("#9"), "me").unwrap();
+    assert_eq!(s.card(id).unwrap().blocked.as_deref(), Some("#9"));
+    let c = s.done(id, "rev").unwrap();
+    assert_eq!(c.column, "done");
+    assert_eq!(c.blocked, None, "the block must not survive into done");
+    let d = s.show(id).unwrap();
+    let kinds: Vec<_> = d.events.iter().map(|e| (e.kind.as_str(), e.text.as_str())).collect();
+    assert!(kinds.contains(&("unblocked", "cleared on done")), "{kinds:?}");
+    // a todo→doing move keeps the block behaviour untouched (blocks clear only via block --clear)
+    let id2 = s.add("plain: blocked still", "", &[], "me").unwrap();
+    s.block(id2, Some("#1"), "me").unwrap();
+    s.take(id2, "me").unwrap();
+    assert_eq!(s.card(id2).unwrap().blocked.as_deref(), Some("#1"));
+}
+
+#[test]
+fn done_approve_records_without_moving() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: awaiting merge", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    s.done(id, "me").unwrap();
+    assert_eq!(s.card(id).unwrap().column, "review");
+    let _ = s.note_kind(id, "rev", "approved (the card stays in review; done waits for the merge)", "approved");
+    assert_eq!(s.card(id).unwrap().column, "review", "approval must not move the card");
+    let ev = s.show(id).unwrap().events;
+    let a = ev.iter().find(|e| e.kind == "approved").unwrap();
+    assert_eq!(a.actor, "rev");
+    assert!(a.text.contains("approved"), "{a:?}");
+}
+
+#[test]
+fn moves_keep_blocks_except_into_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // a DOING card blocked on an external wait: finishing it to REVIEW keeps the block
+    let id = s.add("plain: blocked while working", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    s.block(id, Some("waiting on API key"), "me").unwrap();
+    s.done(id, "me").unwrap();
+    let c = s.card(id).unwrap();
+    assert_eq!(c.column, "review");
+    assert_eq!(c.blocked.as_deref(), Some("waiting on API key"), "DOING->REVIEW keeps the block");
+    // and reaching DONE clears it
+    s.done_forced(id, "rev").unwrap();
+    assert_eq!(s.card(id).unwrap().blocked, None, "DONE clears the block");
+    // a TODO -> REVIEW move keeps a block too
+    let id2 = s.add("plain: blocked in todo", "", &[], "me").unwrap();
+    s.block(id2, Some("#9"), "me").unwrap();
+    s.move_to(id2, "review", "me").unwrap();
+    assert_eq!(s.card(id2).unwrap().blocked.as_deref(), Some("#9"));
+}
+
+#[test]
 fn only_a_leading_gh_ref_is_taken_out_of_the_title() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
