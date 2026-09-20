@@ -67,7 +67,7 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `dropped` | — (owner cleared) |
 | `edit` | what changed |
 | `prio` | the move within the column |
-| `github` | the automation reason (e.g. `github: PR #30 open → review`) |
+| `github` | the automation reason (e.g. `PR gh#30 open → review`) |
 
 ### board_events
 Board-level events (no card):

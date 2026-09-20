@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Polish (from running several agents on one board)
+- GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
+  text/JSON fields already carried the number; the panel never shows a bare `#N` for a
+  GitHub number next to card ids).
+- Mistyped commands fail with the usual tb error shape plus a next step
+  (`tb --help` / `tb guide`); `--help` still prints and succeeds.
+- A block set while in REVIEW is cleared when the card reaches DONE (logged
+  `unblocked: cleared on done`), and `tb show` hides the marker on done cards.
+- GitHub auto-move event texts drop the repeated `github:` prefix (the actor and kind
+  already say it): `PR gh#9 merged → done`.
+- `tb done ID --approve` records a reviewer's approval as an `approved` event without
+  moving the card — REVIEW stays REVIEW and DONE still waits for the merge.
+### Watching
+- `tb watch --events --json [--since TS]`: an opt-in event stream for orchestrators — one
+  NDJSON line per event (`{v, ts, card_id, actor, kind, from, to, text}`; `from`/`to` are
+  the column transition of every event that changes a column: created, taken, dropped, moved) instead of the whole board. `--since` resumes
+  after a restart with only the events at/after that unix second. Plain `tb watch --json`
+  output is unchanged byte-for-byte.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that
@@ -19,6 +37,12 @@
   with `#1 changed while you were editing — description has newer text; reopen with e` and
   nothing is overwritten. The event log names only the fields actually written. The CLI
   `tb edit` is unchanged (it passes no baseline and writes exactly what it is given).
+### A mistyped board name fails instead of creating a phantom
+- On a non-default board that does not exist, every command except `add` and `config` (and a
+  bare `tb` in a terminal) fails with `no board 'demo-typo' — boards: … · create it with
+  'tb demo-typo add "…"'` (text and `--json`) and creates nothing — a typo no longer reads as
+  an empty board or leaves a phantom in `tb boards`. The default board keeps today's
+  behaviour, and boards pinned by `TB_DB` (one file) are unaffected.
 ### GitHub
 - A one-off `gh` failure no longer shakes the board: no extra row, the last good snapshot
   stays, and the panel header quietly reads `synced HH:MM · offline, retrying` (network/

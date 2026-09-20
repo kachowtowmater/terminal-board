@@ -87,7 +87,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force` |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`); the set is open — see the forward-compatibility rule above |
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -98,6 +98,24 @@ other processes and GitHub cache refreshes both count). Exits cleanly when stdou
 ```sh
 tb watch --json | while read -r line; do …; done
 ```
+
+## `tb watch --events --json [--since TS]` — one line per event (opt-in)
+
+Plain `tb watch --json` above is unchanged byte-for-byte; the event stream is opt-in:
+
+```sh
+tb watch --events --json                # one NDJSON line per event
+tb watch --events --json --since 1789777000   # resume: only events at/after that unix second
+```
+
+Each line is `{v, ts, card_id, actor, kind, from, to, text}`: `kind` is the event kind
+(`created`, `taken`, `moved`, `note`, `check`, …); `from`/`to` are the column transition of
+every event that changes a card's column — `created` (null → `todo`), `taken` (`todo` →
+`doing`), `dropped` (e.g. `doing` → `todo`) and `moved` (e.g. `doing` → `review`) — so following
+them tracks every card's column; they are null for every other kind; `text` is the event's
+text (the note, the block reason, …). `--since` resumes after a restart: only events at/after
+that unix second are streamed, in `(ts, id)` order — an orchestrator records the last event
+it saw and passes the next start second on restart.
 
 ## Writes — `--json` results
 
@@ -111,7 +129,7 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 ```
 
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
-`sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "github: PR #20 merged → done" } ] }`.
+`sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
 Failure (non-zero exit), for any command run with `--json` — including **argument errors**
 (bad value, missing argument, unknown flag): the parser's plain text never replaces the JSON
