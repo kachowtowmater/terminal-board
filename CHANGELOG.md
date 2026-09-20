@@ -14,6 +14,10 @@
   an explicit non-default name under `TB_DB` is refused: `TB_DB is set — board names are
   ignored; unset TB_DB to use boards`. Bare `tb` and the `default` name keep working, and
   JSON reports the board actually opened.
+### Installer: no `sudo` when it cannot help
+- The setup wizard's gh-install suggestion (`sudo apt install gh` and friends) now omits the
+  `sudo` prefix when `sudo` is not on the PATH, or when the process already runs as root —
+  the clean-container case. A regular user with sudo sees the same commands as before.
 ### Polish (from running several agents on one board)
 - GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
   text/JSON fields already carried the number; the panel never shows a bare `#N` for a

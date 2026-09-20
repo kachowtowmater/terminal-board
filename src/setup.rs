@@ -137,19 +137,53 @@ fn tty_stdin() -> Stdio {
     std::fs::File::open(path).map(Stdio::from).unwrap_or_else(|_| Stdio::inherit())
 }
 
-/// The command that installs the GitHub CLI here, if we know one.
-fn gh_install_cmd() -> Option<&'static str> {
+/// A package manager tb knows how to install the GitHub CLI with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Pkg {
+    Brew,
+    Pacman,
+    Apt,
+    Dnf,
+}
+
+/// The package manager on this machine (all PATH probing lives here).
+fn detect_pkg() -> Option<Pkg> {
     if cfg!(target_os = "macos") {
-        on_path("brew").then_some("brew install gh")
-    } else if on_path("pacman") {
-        Some("sudo pacman -S github-cli")
-    } else if on_path("apt-get") {
-        Some("sudo apt install gh")
-    } else if on_path("dnf") {
-        Some("sudo dnf install gh")
-    } else {
-        None
+        return on_path("brew").then_some(Pkg::Brew);
     }
+    [("pacman", Pkg::Pacman), ("apt-get", Pkg::Apt), ("dnf", Pkg::Dnf)].into_iter().find(|(bin, _)| on_path(bin)).map(|(_, p)| p)
+}
+
+/// Is this process running as uid 0?
+fn is_root() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("Uid:")).and_then(|l| l.split_whitespace().nth(1).map(str::to_string)))
+            .is_some_and(|uid| uid == "0")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+    }
+}
+
+/// The install command for `pkg` (pure). `sudo` is suggested only when it exists and we are
+/// not root: a root container without sudo gets the bare command. Homebrew never uses sudo.
+pub(crate) fn install_cmd(pkg: Pkg, root: bool, has_sudo: bool) -> String {
+    let pfx = if has_sudo && !root { "sudo " } else { "" };
+    match pkg {
+        Pkg::Brew => "brew install gh".into(),
+        Pkg::Pacman => format!("{pfx}pacman -S github-cli"),
+        Pkg::Apt => format!("{pfx}apt install gh"),
+        Pkg::Dnf => format!("{pfx}dnf install gh"),
+    }
+}
+
+/// The command that installs the GitHub CLI here, if we know one.
+fn gh_install_cmd() -> Option<String> {
+    detect_pkg().map(|p| install_cmd(p, is_root(), on_path("sudo")))
 }
 
 /// Replace (or add) the marked snippet block in `file`; the rest of the file is kept.
@@ -374,7 +408,7 @@ impl Wizard {
                         note(&format!("would run: {cmd}"));
                         return self.o.github.clone();
                     }
-                    let ok = Command::new("sh").args(["-c", cmd]).stdin(tty_stdin()).status().is_ok_and(|s| s.success());
+                    let ok = Command::new("sh").args(["-c", cmd.as_str()]).stdin(tty_stdin()).status().is_ok_and(|s| s.success());
                     if !ok || !on_path(&gh_bin()) {
                         note("gh did not install; skipping GitHub for now.");
                         return None;
@@ -495,4 +529,26 @@ pub fn first_run() -> bool {
     boards::list().iter().all(|n| {
         Store::open(&boards::path_for(n)).is_ok_and(|s| !s.is_set_up().unwrap_or(true))
     })
+}
+
+#[cfg(test)]
+mod install_cmd_tests {
+    use super::{install_cmd, Pkg};
+
+    #[test]
+    fn sudo_only_for_a_regular_user_with_sudo() {
+        for (pkg, bare) in [(Pkg::Apt, "apt install gh"), (Pkg::Pacman, "pacman -S github-cli"), (Pkg::Dnf, "dnf install gh")] {
+            // no sudo on PATH (the issue's root container): bare
+            assert_eq!(install_cmd(pkg, true, false), bare, "{pkg:?} root, no sudo");
+            assert_eq!(install_cmd(pkg, false, false), bare, "{pkg:?} no sudo");
+            // sudo present but running as root: bare
+            assert_eq!(install_cmd(pkg, true, true), bare, "{pkg:?} root with sudo");
+            // a regular user with sudo: prefixed
+            assert_eq!(install_cmd(pkg, false, true), format!("sudo {bare}"), "{pkg:?} user with sudo");
+        }
+        // Homebrew refuses to run as root and never needs sudo
+        for (root, sudo) in [(false, true), (true, true), (false, false)] {
+            assert_eq!(install_cmd(Pkg::Brew, root, sudo), "brew install gh");
+        }
+    }
 }
