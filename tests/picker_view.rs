@@ -58,6 +58,7 @@ fn col(line: &str, needle: &str) -> usize {
 
 #[test]
 fn layout_groups_and_alignment_at_100_wide() {
+    common::pin_clock();
     let (_d, _s, app) = setup();
     let (screen, _) = render(&app, 104, 40); // popup width = min(100, 104 - 4) = 100
     for want in ["Pick a GitHub repo", "search: _", "off   turn GitHub off", "REPO", "PUSHED", "DESCRIPTION", "6 of 6 repos · * = current", "type to search  up/down select  enter pick  esc cancel"] {
@@ -93,6 +94,7 @@ fn layout_groups_and_alignment_at_100_wide() {
 
 #[test]
 fn owner_headers_are_not_selectable() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     let mut seen = Vec::new();
     for _ in 0..10 {
@@ -116,6 +118,7 @@ fn owner_headers_are_not_selectable() {
 
 #[test]
 fn filter_hides_empty_groups_and_offers_owner_repo() {
+    common::pin_clock();
     let (_d, mut s, mut app) = setup();
     for c in "WIDG".chars() {
         app.handle_key(key(KeyCode::Char(c)), &mut s);
@@ -140,6 +143,7 @@ fn filter_hides_empty_groups_and_offers_owner_repo() {
 
 #[test]
 fn background_is_painted_and_states_render() {
+    common::pin_clock();
     let (_d, _s, mut app) = setup();
     let (w, h) = (120u16, 44u16);
     let (screen, buf) = render(&app, w, h);
