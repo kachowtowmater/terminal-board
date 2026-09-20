@@ -103,7 +103,12 @@ enum Cmd {
         #[arg(long, conflicts_with = "reason")]
         clear: bool,
     },
-    Drop { id: i64 },
+    Drop {
+        id: i64,
+        /// Take someone else's DOING card back to todo (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
     Rm { id: i64 },
     Prio { id: i64, how: String },
     Edit {
@@ -378,6 +383,13 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     }
     let env = terminal_board::env("BOARD");
     let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
+    // TB_DB pins ONE file: a board NAME would silently alias it (every name opens the same
+    // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
+    if terminal_board::env("DB").is_some() && name != boards::DEFAULT_BOARD {
+        return Err(BoardError(
+            "TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string(),
+        ));
+    }
     if let Some(Cmd::Setup { yes, github, no_github, agents, no_agents, agents_md, dry_run }) = cli.cmd {
         let agents = if agents { Some(true) } else if no_agents { Some(false) } else { None };
         let o = setup::Options { yes, github, no_github, agents, agents_md, dry_run, first_run: false };
@@ -555,8 +567,12 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Drop { id } => {
-            store.drop_card(id, &actor)?;
+        Cmd::Drop { id, force } => {
+            if force {
+                store.drop_card_forced(id, &actor)?;
+            } else {
+                store.drop_card(id, &actor)?;
+            }
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
         }
         Cmd::Rm { id } => {

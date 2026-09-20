@@ -408,3 +408,59 @@ fn consumers_must_tolerate_unknown_fields_and_kinds() {
     assert_eq!((r.id, r.title.as_str(), r.column.as_str(), r.owner.as_deref()), (id, "future proof", "doing", Some("me")));
     assert!(r.events.iter().any(|e| e.kind == "scrying"));
 }
+
+/// A fake `gh` for setup runs that must stay offline.
+fn setup_env(home: &Path, gh: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(args)
+        .env("HOME", home)
+        .env_remove("TB_DB")
+        .env_remove("TB_BOARD")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", gh)
+        .output()
+        .unwrap()
+}
+
+/// Lines of the setup summary that name the skill.
+fn skill_summary_lines(out: &str) -> Vec<String> {
+    out.lines().filter(|l| l.trim_start().starts_with("- ") && l.contains("Claude Code skill")).map(|l| l.trim().to_string()).collect()
+}
+
+#[test]
+fn setup_offers_the_skill_only_with_claude_dir() {
+    let ghdir = tempfile::tempdir().unwrap();
+    let gh = ghdir.path().join("gh");
+    std::fs::write(&gh, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    const QUESTION: &str = "Install the Claude Code skill";
+    // 1. no ~/.claude, a REAL run (no --dry-run): no question, the skip is explained,
+    //    nothing is written under ~/.claude, and the summary lists the skip exactly once
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Claude Code not detected"), "the skip is explained: {out}");
+    assert!(!out.contains(QUESTION), "no question without ~/.claude: {out}");
+    assert!(!home.path().join(".claude").exists(), "a real run creates nothing under ~/.claude");
+    assert_eq!(skill_summary_lines(&out), ["- Claude Code skill (no ~/.claude)"], "one skip line: {out}");
+    // 2. with ~/.claude: the question is asked (--yes answers its default, skip)
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--dry-run"]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains(QUESTION), "offered when ~/.claude exists: {out}");
+    assert_eq!(skill_summary_lines(&out).len(), 1, "one skip line: {out}");
+    // 3. --agents forces the skill even without ~/.claude
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--agents", "--dry-run"]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Would install the Claude Code skill"), "forced by --agents: {out}");
+}

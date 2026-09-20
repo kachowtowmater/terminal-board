@@ -165,6 +165,9 @@ pub enum Confirm {
     ForceDone(i64),
     /// Approve a REVIEW card the actor moved to review themselves (the forced, logged path).
     ApproveOwn(i64),
+    /// Move someone else's DOING card to the column the key asked for (card, target): the
+    /// forced, logged path.
+    NotMine(i64, String),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -622,6 +625,13 @@ impl App {
                                 self.focus_card(id);
                             }
                         }
+                        Confirm::NotMine(id, to) => {
+                            let r = store.move_to_forced(id, &to, &actor);
+                            if self.report(r, |c| format!("#{} -> {} (not yours, logged)", c.id, c.column)).is_some() {
+                                self.reload(store);
+                                self.focus_card(id);
+                            }
+                        }
                         Confirm::ApproveOwn(id) => {
                             let r = store.move_to_forced(id, "done", &actor);
                             if self.report(r, |c| format!("#{} -> done (own work, logged)", c.id)).is_some() {
@@ -792,6 +802,24 @@ impl App {
                 _ => "done".into(),
             },
         };
+        // someone else's DOING card: ask y/n (the store refuses without --force)
+        if column == "doing" {
+            if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
+                let mine = c.owner.as_deref().is_none_or(|o| o.eq_ignore_ascii_case(&self.actor));
+                if !mine && self.actor != "github" {
+                    self.mode = Mode::Confirm {
+                        prompt: format!(
+                            "#{} is held by {} — move it to {} anyway? y/n (logged)",
+                            id,
+                            c.owner.clone().unwrap_or_default(),
+                            to
+                        ),
+                        action: Confirm::NotMine(id, to),
+                    };
+                    return;
+                }
+            }
+        }
         if to == "done" && column != "done" {
             if let Some(n) = self.open_on_github(id) {
                 self.mode = Mode::Confirm {

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Only the owner moves their DOING card
+- `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
+  `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is
+  logged as its own event; the TUI asks y/n instead of refusing. The `github` automation and
+  REVIEW→DONE reviewers are unaffected (card ids are small shared integers; an off-by-one
+  must not move someone else's work or hijack the author record).
+### `TB_DB` and board names no longer mix silently
+- With `TB_DB=/path/file.db` set, every board name opened the SAME file while JSON and the
+  header reported the name you typed — a script could blend boards with no sign of it. Now
+  an explicit non-default name under `TB_DB` is refused: `TB_DB is set — board names are
+  ignored; unset TB_DB to use boards`. Bare `tb` and the `default` name keep working, and
+  JSON reports the board actually opened.
+### Installer: no `sudo` when it cannot help
+- The setup wizard's gh-install suggestion (`sudo apt install gh` and friends) now omits the
+  `sudo` prefix when `sudo` is not on the PATH, or when the process already runs as root —
+  the clean-container case. A regular user with sudo sees the same commands as before.
 ### Polish (from running several agents on one board)
 - GitHub references read `gh#N` everywhere (tables, tidy rows, links, prompts, `tb github`
   text/JSON fields already carried the number; the panel never shows a bare `#N` for a
@@ -20,6 +36,11 @@
   the column transition of every event that changes a column: created, taken, dropped, moved) instead of the whole board. `--since` resumes
   after a restart with only the events at/after that unix second. Plain `tb watch --json`
   output is unchanged byte-for-byte.
+### Setup: the Claude Code skill is offered only to Claude Code users
+- The wizard asked to install the skill even on machines without Claude Code (and would
+  create `~/.claude/skills/...`). Now step 4 skips silently when `~/.claude` does not exist
+  (`No ~/.claude — Claude Code not detected; skipping the skill (use --agents to force it)`);
+  it is offered when `~/.claude` exists, and `--agents` forces the agent steps regardless.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that

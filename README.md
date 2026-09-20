@@ -245,7 +245,7 @@ to use another — it is created the first time you add to it:
 ```sh
 tb home add "call the plumber"
 tb home list
-tb -b work list
+tb -b home list
 tb boards
 ```
 
@@ -346,17 +346,17 @@ Add `--json` to any command for machine-readable output.
 ```sh
 tb add "docs: fix typo in README"
 tb list
-tb show 4
+tb show 3
 tb next --as alice
-tb take 4
-tb note 4 "found the typo"
-tb check 4 --add "proofread"
-tb check 4 1
-tb check 4 --rm 1
-tb block 1 "#4"
+tb take 3
+tb note 3 "found the typo"
+tb check 3 --add "proofread"
+tb check 3 1
+tb check 3 --rm 1
+tb block 1 "#3"
 tb block 1 --clear
-tb move 4 review
-tb done 4 --as bob
+tb move 3 review
+tb done 3 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
@@ -456,7 +456,9 @@ and `tb config theme dark|light`.
 
 - Boards: `~/.local/state/terminal-board/boards/<name>.db` (one SQLite file per board).
 - **Back up** by copying that folder (ideally while `tb` is closed).
-- `TB_DB=/path/to/file.db` makes `tb` use a specific file.
+- `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
+  not available (every name would alias the same file): an explicit non-default name fails
+  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
 
 ## Troubleshooting
 
