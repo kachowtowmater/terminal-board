@@ -97,7 +97,7 @@ struct Wizard {
 }
 
 fn note(s: &str) {
-    println!("    {s}");
+    println!("    {}", crate::text::sanitize_lines(s));
 }
 
 fn step(n: usize, title: &str) {
