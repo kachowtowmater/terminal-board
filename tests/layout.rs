@@ -218,6 +218,153 @@ fn medium_bars_when_panels_do_not_fit() {
     assert!(screen.contains(" AGENTS 4 working · 2 idle"), "{screen}");
 }
 
+/// An idle agent holding a card is a problem, so its warning is never the part that gets cut:
+/// the stacked and rail AGENTS panels keep `idle w/ card (<how long>)` whole at the narrow sizes
+/// where the row has no room left for the activity text, and the AGENTS bar says the words
+/// before the duration.
+#[test]
+fn idle_holder_warning_stays_whole_at_narrow_sizes() {
+    for (w, h) in [(52u16, 56u16), (52, 60), (52, 80), (54, 56), (140, 16), (140, 20), (140, 28), (144, 16)] {
+        let (_d, _s, app) = setup();
+        let screen = render(&app, w, h);
+        let row = screen.lines().find(|l| l.contains("! bot-2")).unwrap_or_else(|| panic!("{w}x{h}: no idle holder row:\n{screen}"));
+        assert!(row.contains("#5 "), "{w}x{h}: the held card: {row}");
+        let at = row.find(" · idle w/ card (").unwrap_or_else(|| panic!("{w}x{h}: the warning and its duration are cut: {row}"));
+        assert!(row[at..].contains("m)"), "{w}x{h}: the duration is whole: {row}");
+    }
+    let (_d, _s, app) = setup();
+    let bar = render(&app, 95, 35);
+    assert!(bar.contains("(! bot-2 idle w/ card (0m))"), "the bar: words first, then the duration:\n{bar}");
+    // a narrow bar drops the duration before the words, and never shows half of it
+    for w in [48u16, 50, 52, 54] {
+        let narrow = render(&app, w, 12);
+        let row = narrow.lines().find(|l| l.contains("(! bot-2")).unwrap_or_else(|| panic!("{w}x12: no bar:\n{narrow}"));
+        let at = row.find("(! bot-2 idle w/ card").unwrap_or_else(|| panic!("{w}x12: the words are cut: {row}"));
+        let after = &row[at + "(! bot-2 idle w/ card".len()..];
+        assert!(after.starts_with(" (0m))") || !after.contains('('), "{w}x12: a cut duration: {row}");
+    }
+    // the full panel shows the duration whole or not at all
+    for w in [100u16, 102, 104, 110, 126] {
+        let screen = render(&app, w, 35);
+        let row = screen.lines().find(|l| l.contains("! idle, holds card")).unwrap_or_else(|| panic!("{w}x35: no holder row:\n{screen}"));
+        let after = &row[row.find("! idle, holds card").unwrap() + "! idle, holds card".len()..];
+        assert!(after.starts_with(" (0m)") || !after.contains('('), "{w}x35: a cut duration: {row}");
+    }
+    let wide = render(&app, 126, 41);
+    assert!(wide.contains("! idle, holds card (0m)"), "126x41: the duration shows:\n{wide}");
+}
+
+/// Push every event of a card (and its clocks) back in time.
+fn backdate(dir: &tempfile::TempDir, card: i64, secs: i64) {
+    let c = rusqlite::Connection::open(dir.path().join("b.db")).unwrap();
+    c.execute("UPDATE events SET ts = ts - ?1 WHERE card_id = ?2", rusqlite::params![secs, card]).unwrap();
+    c.execute("UPDATE cards SET column_since = column_since - ?1, created_at = created_at - ?1 WHERE id = ?2", rusqlite::params![secs, card])
+        .unwrap();
+}
+
+/// The 12-card board with quiet work on it: 1 = an idle holder quiet for 1h20m and a working
+/// agent quiet for 2h, with notes; 2 = no notes, 2d and 5h; 3 = two idle holders, 1h20m and 3d.
+fn quiet_board(n: usize) -> (tempfile::TempDir, Store, App) {
+    let (dir, mut s, mut app) = setup();
+    match n {
+        1 => {
+            s.note(5, "retrying the upload with a smaller chunk size", "bot-2").unwrap();
+            s.note(4, "plus-addresses parse now; writing the regression test", "bot-1").unwrap();
+            s.note(6, "took 3 of 5 screenshots", "bot-3").unwrap();
+            backdate(&dir, 5, 80 * 60 + 20);
+            backdate(&dir, 4, 2 * 3600 + 20);
+        }
+        2 => {
+            backdate(&dir, 5, 51 * 3600 + 20);
+            backdate(&dir, 6, 5 * 3600 + 20);
+        }
+        _ => {
+            let id = s.add("ops: a very long title for the second idle holder card to test fitting", "", &[], "alice").unwrap();
+            s.move_to(id, "doing", "lead").unwrap();
+            s.note(5, "short note", "bot-2").unwrap();
+            backdate(&dir, 5, 80 * 60 + 20);
+            backdate(&dir, id, 72 * 3600 + 20);
+        }
+    }
+    app.reload(&s);
+    (dir, s, app)
+}
+
+/// Every `quiet` on the screen is whole: followed by a whole duration or by nothing, and a
+/// card's meta line never ends in a piece of the word.
+fn assert_quiet_is_whole(ctx: &str, screen: &str) {
+    const AGES: [&str; 5] = ["1h20m", "2h", "2d", "5h", "3d"];
+    const OWNERS: [&str; 4] = ["bot-1", "bot-2", "bot-3", "lead"];
+    for line in screen.lines() {
+        for seg in line.split(['│', '┃']) {
+            let toks: Vec<&str> = seg.split_whitespace().collect();
+            for (i, t) in toks.iter().enumerate() {
+                if *t == "quiet" {
+                    let next = toks.get(i + 1);
+                    assert!(next.is_none_or(|a| AGES.contains(a)), "{ctx}: a cut duration after 'quiet': {seg:?}\n{screen}");
+                }
+            }
+            let last = toks.last().copied().unwrap_or("");
+            let cut = !last.is_empty() && last.len() < 5 && "quiet".starts_with(last);
+            assert!(!(cut && OWNERS.iter().any(|o| toks.contains(o))), "{ctx}: a cut 'quiet': {seg:?}\n{screen}");
+        }
+    }
+}
+
+/// The AGENTS bar shows an idle holder's duration only with room for all of it: the closing
+/// `)` and the `tab >` hint are never cut to make space for it.
+fn assert_bar_keeps_its_hint(ctx: &str, screen: &str) {
+    for line in screen.lines().filter(|l| l.trim_start().starts_with("AGENTS ") && l.contains("idle w/ card (")) {
+        assert!(line.trim_end().ends_with("))   tab >"), "{ctx}: the duration cut the hint: {line:?}");
+    }
+}
+
+/// Quiet work at every size: the `quiet` marker and the idle holder's duration are shown
+/// whole, in a shorter whole form, or not at all - never cut mid-token - and they never cost
+/// the AGENTS bar its `tab >` hint.
+#[test]
+fn quiet_work_is_never_cut_at_any_size() {
+    const HEIGHTS: [u16; 13] = [10, 12, 14, 16, 20, 24, 28, 35, 41, 45, 56, 60, 80];
+    for n in 1..=3 {
+        let (_d, s, mut app) = quiet_board(n);
+        for w in (30u16..=200).step_by(2) {
+            for h in HEIGHTS {
+                let screen = render(&app, w, h);
+                assert_quiet_is_whole(&format!("board {n} {w}x{h}"), &screen);
+                assert_bar_keeps_its_hint(&format!("board {n} {w}x{h}"), &screen);
+            }
+        }
+        // every layout preference, and the focus view
+        for pref in LAYOUTS {
+            s.set_layout(pref).unwrap();
+            app.reload(&s);
+            app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+            for w in (30u16..=200).step_by(10) {
+                for h in [16u16, 28, 45, 73] {
+                    let screen = render(&app, w, h);
+                    assert_quiet_is_whole(&format!("board {n} {pref} {w}x{h}"), &screen);
+                    assert_bar_keeps_its_hint(&format!("board {n} {pref} {w}x{h}"), &screen);
+                }
+            }
+        }
+    }
+    // with room, both are there in full
+    let (_d, _s, app) = quiet_board(1);
+    let wide = render(&app, 160, 45);
+    assert!(wide.contains("quiet 1h20m") && wide.contains("quiet 2h"), "160x45: the quiet markers:\n{wide}");
+    let bar = render(&app, 70, 12);
+    assert!(bar.contains("(! bot-2 idle w/ card (1h20m))   tab >"), "70x12: duration and hint:\n{bar}");
+    // 56..64 wide: no room for the duration next to the hint, so the hint wins
+    for w in [58u16, 60, 62, 64] {
+        let screen = render(&app, w, 12);
+        let row = screen.lines().find(|l| l.contains("(! bot-2")).unwrap_or_else(|| panic!("{w}x12: no bar:\n{screen}"));
+        assert!(row.trim_end().ends_with("(! bot-2 idle w/ card)   tab >"), "{w}x12: the hint is whole: {row:?}");
+    }
+    // a narrow card keeps the owner and the whole marker, and gives up the tag first
+    let narrow = render(&app, 74, 41);
+    assert!(narrow.contains("bot-2 - 1h20m quiet 1h20m") || narrow.contains("bot-2 quiet 1h20m"), "74x41: the marker is whole:\n{narrow}");
+}
+
 #[test]
 fn tiny_tab_pages_through_the_panels() {
     common::pin_clock();

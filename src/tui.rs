@@ -2,7 +2,7 @@
 
 use crate::github::{self, GhView};
 use crate::herdr::{self, Agent, AgentsState};
-use crate::plain::{card_head, event_line, fit, meta_fit};
+use crate::plain::{card_head, event_line, fit, meta_fit_quiet};
 use crate::store::{fmt_age, CardDetail, Card, Snapshot, Store, COLUMNS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -1509,13 +1509,13 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     first.push(Span::styled(fit(&card.title, room), hl));
     let mut lines = vec![Line::from(first)];
 
-    let (base, warn) = meta_fit(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let (base, warn, q) = meta_fit_quiet(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let sep = if base.is_empty() || warn.is_empty() { "" } else { " " };
+    let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
         second.push(Span::raw(meta_gh));
@@ -1523,7 +1523,11 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
     if !warn.is_empty() {
-        second.push(Span::styled(warn, red()));
+        second.push(Span::styled(warn.clone(), red()));
+    }
+    if !q.is_empty() {
+        second.push(Span::raw(if warn.is_empty() { "" } else { " " }));
+        second.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(second));
     if card.column == "doing" {
@@ -1813,7 +1817,13 @@ fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
                     spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
                     spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
                     if holds {
-                        spans.push(Span::styled("! idle, holds card", st));
+                        // the duration is shown whole or not at all: a panel too narrow for it
+                        // keeps the plain warning
+                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                        let flag = "! idle, holds card";
+                        let age = idle_hold_age(app, a);
+                        let fits = used + flag.chars().count() + age.chars().count() <= width;
+                        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
                     } else {
                         let age = app
                             .snap
@@ -2291,6 +2301,19 @@ fn holds_card(app: &App, a: &Agent) -> bool {
         && app.snap.cards.iter().any(|c| {
             c.column == "doing" && herdr::find_owner(agent_list(app), c).is_some_and(|o| o.pane_id == a.pane_id)
         })
+}
+
+/// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
+pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
+    let agents = agent_list(app);
+    let held = app
+        .snap
+        .cards
+        .iter()
+        .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
+    held.and_then(|c| app.snap.last_event_at.get(&c.id))
+        .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
+        .unwrap_or_default()
 }
 
 
