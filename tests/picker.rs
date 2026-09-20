@@ -121,7 +121,7 @@ fn picker_and_cli() {
     app.handle_key(key(KeyCode::Enter), &mut s);
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(s.github_repo().unwrap().as_deref(), Some("me/widgets"));
-    assert_eq!(s.github_cache().unwrap().0, None, "cache cleared on repo change");
+    assert_eq!(s.github_cache().unwrap(), (None, None, 0), "cache cleared on repo change");
     assert!(render(&app, 160, 50).contains("github: me/widgets"), "status names the pick");
     app.handle_key(key(KeyCode::Esc), &mut s); // clear the status line
     let screen = render(&app, 160, 50);

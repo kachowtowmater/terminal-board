@@ -68,7 +68,7 @@ fn store_refuses_the_author_and_accepts_another_agent() {
     assert!(!kinds(&s, id).contains(&"force".to_string()));
     // other moves out of review stay open to the author
     let id = in_review(&mut s, "bot-1");
-    assert_eq!(s.move_to(id, "doing", "bot-1").unwrap().column, "doing");
+    assert_eq!(s.send_back(id, "not done yet", "bot-1").unwrap().column, "doing");
     // forced: allowed, and logged as its own event
     assert_eq!(s.done(id, "bot-1").unwrap().column, "review");
     assert_eq!(s.done_forced(id, "bot-1").unwrap().column, "done");
@@ -81,10 +81,10 @@ fn store_refuses_the_author_and_accepts_another_agent() {
 fn author_is_the_mover_or_the_owner_after_github_sync() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
-    // a person moved bot-1's card to review: the person is the author
+    // a person moved bot-1's card to review (forced: not the owner): the person is the author
     let id = s.add("a", "", &[], "lead").unwrap();
     s.take(id, "bot-1").unwrap();
-    s.move_to(id, "review", "lead").unwrap();
+    s.move_to_forced(id, "review", "lead").unwrap();
     assert_eq!(s.author(id).unwrap().as_deref(), Some("lead"));
     assert!(s.done(id, "lead").is_err());
     assert_eq!(s.done(id, "bot-1").unwrap().column, "done");
