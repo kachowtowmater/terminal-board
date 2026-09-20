@@ -4,6 +4,9 @@ Apps and agents drive Terminal Board through `tb … --json`. Every object below
 fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking change bumps
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
+With `TB_DB` set there is a single file — an explicit non-default board name is refused
+(`TB_DB is set — board names are ignored; unset TB_DB to use boards`), so `board` never
+reports a name that was not opened.
 
 **Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
 fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
