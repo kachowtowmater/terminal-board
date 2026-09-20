@@ -124,6 +124,9 @@ pub struct Card {
     /// Order within its column (0 = top).
     #[serde(default)]
     pub position: i64,
+    /// Who claimed the card for review (`tb next --review`); None when unclaimed.
+    #[serde(default)]
+    pub reviewer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,8 +229,14 @@ impl Snapshot {
     }
 }
 
+/// The clock. `TB_NOW` (unix seconds) pins it; that is for the test suite only, so that
+/// fixtures such as `now - 3h` do not depend on the time of day. Unset or unparsable =
+/// the real clock.
 pub fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    match crate::env("NOW") {
+        Some(v) => v.trim().parse::<i64>().unwrap_or_else(|_| chrono::Utc::now().timestamp()),
+        None => chrono::Utc::now().timestamp(),
+    }
 }
 
 /// Split `tag: rest` and `gh#N` out of a title.
@@ -332,7 +341,7 @@ CREATE TABLE IF NOT EXISTS config (
 "#;
 
 const CARD_COLS: &str =
-    r#"id, title, tag, description, "column", owner, due, gh_ref, created_at, column_since, blocked, position"#;
+    r#"id, title, tag, description, "column", owner, due, gh_ref, created_at, column_since, blocked, position, reviewer"#;
 
 fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
     Ok(Card {
@@ -348,6 +357,7 @@ fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
         column_since: r.get(9)?,
         blocked: r.get(10)?,
         position: r.get(11)?,
+        reviewer: r.get(12)?,
     })
 }
 
@@ -432,6 +442,19 @@ impl Store {
                 Err(e) if e.to_string().contains("duplicate column") => {}
                 Err(e) => return Err(e.into()),
                 _ => {}
+            }
+        }
+        // migration: `reviewer` (v2, `tb next --review`)
+        let has_reviewer: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='reviewer'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_reviewer == 0 {
+            if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN reviewer TEXT") {
+                if !e.to_string().contains("duplicate column") {
+                    return Err(e.into());
+                }
             }
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
@@ -863,6 +886,49 @@ impl Store {
         self.claim(None, actor)
     }
 
+    /// Atomically claim the top unclaimed, unblocked REVIEW card that `actor` did not author.
+    /// Same `BEGIN IMMEDIATE` lock and compare-and-swap as `next`, so two reviewers never
+    /// get the same card. Does not count against the WIP limit.
+    pub fn next_review(&mut self, actor: &str) -> Result<Card> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cards: Vec<Card> = {
+            let mut st = tx.prepare(&format!(
+                r#"SELECT {CARD_COLS} FROM cards WHERE "column"='review' AND blocked IS NULL AND reviewer IS NULL ORDER BY position, id"#
+            ))?;
+            let v = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            v
+        };
+        let mut own = 0;
+        let mut target = None;
+        for c in &cards {
+            if author_of(&tx, c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
+                own += 1;
+            } else {
+                target = Some(c.id);
+                break;
+            }
+        }
+        let Some(target) = target else {
+            return err(if own > 0 {
+                let waiting = if own == 1 { "the one waiting is".to_string() } else { format!("the {own} waiting are") };
+                format!("no review cards for you — {waiting} your own work; ask another person or agent to review it, and take new work with 'tb next'")
+            } else {
+                "no review cards waiting — take new work with 'tb next'".to_string()
+            });
+        };
+        let changed = tx.execute(
+            r#"UPDATE cards SET reviewer=? WHERE id=? AND "column"='review' AND reviewer IS NULL"#,
+            params![actor, target],
+        )?;
+        if changed != 1 {
+            return err(format!("card #{target} was claimed by someone else — try 'tb next --review'"));
+        }
+        Self::log(&tx, target, actor, "reviewing", "")?;
+        let card = get_card(&tx, target)?;
+        tx.commit()?;
+        Ok(card)
+    }
+
     /// Atomically take a specific todo card.
     pub fn take(&mut self, id: i64, actor: &str) -> Result<Card> {
         self.claim(Some(id), actor)
@@ -908,7 +974,7 @@ impl Store {
         }
         let pos = bottom_of(&tx, "doing")?;
         let changed = tx.execute(
-            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=? WHERE id=? AND "column"='todo'"#,
+            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=?, reviewer=NULL WHERE id=? AND "column"='todo'"#,
             params![actor, now(), pos, target],
         )?;
         if changed != 1 {
@@ -1074,6 +1140,14 @@ impl Store {
             ));
         }
         if c.column == column {
+            // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
+            if column == "review" && c.reviewer.is_some() {
+                tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+                Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
+                let c = get_card(&tx, id)?;
+                tx.commit()?;
+                return Ok(c);
+            }
             return Ok(c);
         }
         // Card ids are small shared integers: an off-by-one must not move someone else's
@@ -1122,10 +1196,13 @@ impl Store {
         // must NOT clear it — only the DONE transition does).
         let block_cleared = column == "done" && c.blocked.is_some();
         let pos = bottom_of(&tx, &column)?;
+        // the reviewer stays on the card that reaches done (who approved it); any other move
+        // ends the review, so the next round is claimed afresh
+        let reviewer = if column == "done" { c.reviewer.clone() } else { None };
         tx.execute(
-            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?,
+            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, reviewer=?,
                blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
-            params![column, owner, now(), pos, column, id],
+            params![column, owner, now(), pos, reviewer, column, id],
         )?;
         if block_cleared {
             Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
@@ -1306,7 +1383,7 @@ impl Store {
         }
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
-            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=? WHERE id=?"#,
+            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=?, reviewer=NULL WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;

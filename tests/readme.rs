@@ -1,5 +1,22 @@
 //! Every `tb …` line in the README's code blocks runs, in order, against temp boards.
 //! A code block right after `<!-- no-test -->` is skipped (GitHub, installer, watch).
+/// A fake `gh` that answers `repo view` positively (for `config github`'s existence
+/// check) and nothing else; shared by tests that pin `TB_GH` to a nonexistent path.
+fn fake_gh_ok() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static GH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    GH.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("tb-fake-gh-{}", std::process::id()));
+        std::fs::write(&p, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    })
+    .clone()
+}
 use std::process::Command;
 
 #[test]
@@ -75,7 +92,7 @@ fn run_doc_mode(md: &str, name: &str, boards_mode: bool) -> usize {
             .env("TB_BIN", bin)
             .env("TB_AS", "alice")
             .env("TB_NO_HERDR", "1")
-            .env("TB_GH", "/nonexistent/gh")
+            .env("TB_GH", fake_gh_ok())
             .env_remove("TB_BOARD")
             .output()
             .unwrap();

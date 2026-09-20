@@ -10,6 +10,31 @@
   never looks up DONE cards. When that lookup fails for another reason (network, rate
   limit, auth) the ref is reported as `gh#N: could not check on GitHub (…)` instead
   (`--json`: `unchecked_refs`). An issue closed long ago still counts as found.
+### `config github` verifies the repo exists
+- `tb config github OWNER/REPO` (like the full-screen picker already did) checks the repo via
+  `gh` and refuses `no repo 'R' on GitHub (or no access) — see 'tb github repos'` instead of
+  saving a name that would fail every later `tb github`/`tb sync` with a cut-off, auth-flavoured
+  error; `tb setup --github R` refuses the same way (exit 1, `--json` too).
+- A repo that is already saved but gh cannot find is named in full everywhere: `tb github`,
+  `tb sync` and the stored panel error say `no repo 'R' on GitHub (or no access)` with the hint
+  `see 'tb github repos', then 'tb config github OWNER/REPO'`. The `gh auth status` hint now
+  appears only for an auth failure; any other failure says to try again.
+### First-run empty states
+- A fresh board's empty TODO column reads `press a to add your first card` instead of a bare
+  `-` in the third-h, half-h and half-v views, wrapped at whole words; a column too small
+  for that reads `a: add a card`, and one too small for even that keeps the `-`. The focus
+  view keeps its own `nothing here yet` line, and third-v still folds an empty section into
+  its header, so it shows no hint.
+- A connected repo with zero open issues and PRs reads `no open issues or PRs` in the wide
+  GitHub panel instead of two 0-open rows, and the one-third rail keeps its stats rows.
+  A board with cards keeps today's look.
+### Hints carry an explicitly named board
+- Every success and error hint names the board when it was chosen by name or `-b` (anywhere
+  on the command line) and is not `default`: `added #1 — take it with 'tb work take 1'`,
+  `no card #99 — see 'tb work list' for ids`, and an empty board's `'tb work add …'` (text
+  and `--json` `hint`). Copying a hint into a fresh shell can no longer act on the
+  default board. A board picked by `TB_BOARD` travels in the environment, so its hints stay
+  bare; default-board output is unchanged byte-for-byte.
 ### Only the owner moves their DOING card
 - `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
   `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is
@@ -149,11 +174,34 @@
 ### JSON
 - Checklist items have the same shape in `tb show --json` and `tb board --json`: `{n, idx, text, done}`. `n` is the canonical item number; `idx` (what `show` used before) stays as a deprecated alias with the same value, so existing readers keep working.
 
+### Board
+- Quiet work shows up: a DOING card with no event for **60 minutes** (fixed, documented; no
+  setting) shows `quiet 1h20m` inside its existing box, as plain dim text — the word is the
+  signal, red stays reserved for real problems. The marker goes through the meta line's
+  width budget and is never cut: a narrow card drops tag, checklist and age to keep
+  `quiet 1h20m` whole, then shows the bare word `quiet`, then nothing; the owner outranks
+  it. The idle-agent flag gains its duration
+  (`! bot-2 idle w/ card (1h20m)`): how long its card has been quiet, i.e. since the card's
+  last event — a proxy for how long the agent has been idle. The duration is shown whole or
+  not at all: a narrow AGENTS row shortens the card title to keep `idle w/ card (1h20m)`
+  readable, and a bar or panel with no room for it keeps the plain warning (the bar shows it only when the
+  `tab >` hint still fits whole). JSON exposes only timestamps (`card.last_event_at`,
+  unix seconds), never durations.
 ### Agents
 - The AGENTS row says what the agent is doing, in its own words: the held card's last note
   and its age inside the existing row (e.g. `bot-2 #7 "tests pass, opening PR" 3m`). An
   agent that never writes notes shows an old age — which is itself the signal. `tb agents
   --json` adds `last_note` and `last_event_at` (unix seconds; the screen computes the age).
+
+### Added
+- **Reviewers claim cards: `tb next --review --as NAME`.** Atomically claims the top unblocked
+  REVIEW card that NAME did not author and nobody else has claimed (same lock as `tb next`,
+  so two reviewers never get the same card; no WIP limit). The card shows `review NAME` next
+  to its owner; JSON cards gain a nullable `reviewer` field, and the database a nullable
+  `reviewer` column (added on open). The reviewer stays on a card that reaches DONE; any other
+  move clears it, and `tb move ID review` on a claimed card releases the claim (logged as
+  `unclaimed`) when its reviewer stopped.
+
 ### Changed
 - **Nobody approves their own work.** REVIEW → DONE is refused when you are the card's
   author — whoever moved it DOING → REVIEW, or its owner when GitHub sync made that move —

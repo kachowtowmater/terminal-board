@@ -1,5 +1,6 @@
 //! Repo picker (R) and `github repos` / `config github` CLI, via a fake gh (TB_GH).
 //! One test function: TB_GH is process-wide, so scenarios run in order.
+mod common;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -47,7 +48,7 @@ fn fake_ok(dir: &Path) -> PathBuf {
 case "$1 $2" in
   "repo list") if [ "$3" = "acme" ]; then cat {d}/org.json; else cat {d}/own.json; fi;;
   "api user/orgs") echo acme;;
-  "repo view") if [ "$3" = "good/repo" ]; then echo '{{"nameWithOwner":"good/repo"}}'; else echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1; fi;;
+  "repo view") case "$3" in good/repo|me/widgets) echo "{{\"nameWithOwner\":\"$3\"}}";; *) echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1;; esac;;
   *) echo '[]';;
 esac
 "#
@@ -86,6 +87,7 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 #[test]
 fn picker_and_cli() {
+    common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let ok = fake_ok(dir.path());
     let out = fake_logged_out(dir.path());
@@ -148,7 +150,8 @@ fn picker_and_cli() {
     app.handle_key(key(KeyCode::Enter), &mut s);
     assert!(matches!(app.mode, Mode::Picker { .. }), "stays open on error");
     let screen = render(&app, 160, 50);
-    assert!(screen.contains("Could not resolve"), "{screen}");
+    // check_repo now reports the name, not gh's raw cut-off GraphQL line
+    assert!(screen.contains("no repo 'bad/nope' on GitHub"), "{screen}");
     assert_eq!(s.github_repo().unwrap(), None);
     for _ in 0.."bad/nope".len() {
         app.handle_key(key(KeyCode::Backspace), &mut s);

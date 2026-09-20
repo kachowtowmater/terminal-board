@@ -22,7 +22,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N
-Flow    next (take the top todo) · take ID · done ID [--force] · drop ID
+Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
@@ -69,7 +69,11 @@ enum Cmd {
     },
     List,
     Show { id: i64 },
-    Next,
+    Next {
+        /// Claim the top REVIEW card you did not do yourself, instead of a TODO card.
+        #[arg(long)]
+        review: bool,
+    },
     Take { id: i64 },
     Note { id: i64, text: String },
     Check {
@@ -190,6 +194,48 @@ fn pretty<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
 }
 
+/// The command a hint names: `tb take 1` on the default board, `tb work take 1` on an
+/// explicitly named non-default board (a copied hint must not act on the default board).
+/// A board picked by `TB_BOARD` travels in the env, so the bare form is right there too.
+fn cmd_hint(explicit: Option<&str>, rest: &str) -> String {
+    match explicit {
+        Some(name) if name != boards::DEFAULT_BOARD => format!("'tb {name} {rest}'"),
+        _ => format!("'tb {rest}'"),
+    }
+}
+
+/// The board named on the command line (a first-argument name or `-b`), unless it is
+/// `default`. A board picked by `TB_BOARD` travels in the environment, so it is not
+/// "explicit": its hints stay bare on every path.
+fn explicit_board<'a>(positional: Option<&'a str>, flag: Option<&'a str>) -> Option<&'a str> {
+    positional.or(flag).filter(|n| *n != boards::DEFAULT_BOARD)
+}
+
+/// Put an explicitly named board into every command a text hints at
+/// (`'tb list'` -> `'tb work list'`); unchanged without one.
+fn with_board(text: &str, explicit: Option<&str>) -> String {
+    match explicit {
+        Some(name) => {
+            // hints built with cmd_hint already carry the board: leave those alone
+            let done = [format!("'tb {name} "), format!("`tb {name} ")];
+            let marks = ["\u{0}q", "\u{0}b"];
+            let mut t = text.replace(&done[0], marks[0]).replace(&done[1], marks[1]);
+            t = t.replace("'tb ", &done[0]).replace("`tb ", &done[1]);
+            t.replace(marks[0], &done[0]).replace(marks[1], &done[1])
+        }
+        None => text.to_string(),
+    }
+}
+
+/// Plain board/list text: an empty board's `'tb add …'` hint names an explicit board too.
+fn plain_hinted(text: String, empty: bool, explicit: Option<&str>) -> String {
+    if empty {
+        with_board(&text, explicit)
+    } else {
+        text
+    }
+}
+
 /// `{"ok":true,"card":…}` for --json, else the human line.
 fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(), BoardError> {
     if jsonout {
@@ -259,7 +305,13 @@ impl<'a> EventLine<'a> {
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
 /// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text}` line per
 /// event, resuming from `since` (unix seconds) after a restart.
-fn watch(store: &Store, jsonout: bool, events: bool, since: Option<i64>) -> Result<(), BoardError> {
+fn watch(
+    store: &Store,
+    jsonout: bool,
+    events: bool,
+    since: Option<i64>,
+    explicit: Option<&str>,
+) -> Result<(), BoardError> {
     let mut out = std::io::stdout().lock();
     if events {
         // Resume: the id of the last event at/after `since` (0 = stream from the start).
@@ -287,7 +339,8 @@ fn watch(store: &Store, jsonout: bool, events: bool, since: Option<i64>) -> Resu
             let text = if jsonout {
                 serde_json::to_string(&contract::board(store)?).unwrap_or_default()
             } else {
-                format!("{}\n", plain::board(&store.snapshot()?))
+                let snap = store.snapshot()?;
+                format!("{}\n", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit))
             };
             if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
                 return Ok(()); // reader went away
@@ -408,6 +461,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             || (c.writes() && name == boards::DEFAULT_BOARD)
     });
     let mut store = open_board(&name, creates)?;
+    // hints carry the board name only when it was chosen explicitly in this shell
+    let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
     let j = cli.json;
     let Some(cmd) = cmd else {
@@ -418,7 +473,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         if j {
             println!("{}", pretty(&contract::board(&store)?));
         } else {
-            print_lines!("{}", plain::board(&store.snapshot()?));
+            let snap = store.snapshot()?;
+            print_lines!("{}", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit));
         }
         return Ok(());
     };
@@ -426,14 +482,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     match cmd {
         Cmd::Add { title, desc, checks } => {
             let id = store.add(&title, &desc, &checks, &actor)?;
-            done_card(&store, j, id, format!("added #{id} — take it with 'tb take {id}'"))?;
+            done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
         Cmd::List => {
             let snap = store.snapshot()?;
             if j {
                 println!("{}", pretty(&snap.cards));
             } else {
-                print_lines!("{}", plain::list(&snap));
+                print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
         }
         Cmd::Show { id } => {
@@ -448,10 +504,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&contract::board(&store)?));
             } else {
-                print_lines!("{}", plain::board(&store.snapshot()?));
+                let snap = store.snapshot()?;
+                print_lines!("{}", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit));
             }
         }
-        Cmd::Watch { events, since } => watch(&store, j, events, since)?,
+        Cmd::Watch { events, since } => watch(&store, j, events, since, explicit)?,
         Cmd::Agents => {
             let list = agents_now(&store)?;
             if j {
@@ -465,15 +522,25 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Next | Cmd::Take { .. } => {
+        Cmd::Next { review: true } => {
+            let card = store.next_review(&actor)?;
+            let human = format!(
+                "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
+                plain::detail(&store.show(card.id)?, now).trim_end(),
+                id = card.id
+            );
+            done_card(&store, j, card.id, human)?;
+        }
+        Cmd::Next { .. } | Cmd::Take { .. } => {
             let card = match cmd {
                 Cmd::Take { id } => store.take(id, &actor)?,
                 _ => store.next(&actor)?,
             };
             let human = format!(
-                "{}\ntaken by {actor} — log progress with 'tb note {id} \"...\"', finish with 'tb done {id}'",
+                "{}\ntaken by {actor} — log progress with {}, finish with {}",
                 plain::detail(&store.show(card.id)?, now).trim_end(),
-                id = card.id
+                cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
+                cmd_hint(explicit, &format!("done {}", card.id))
             );
             done_card(&store, j, card.id, human)?;
         }
@@ -485,11 +552,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let human = match (n, add, rm) {
                 (_, _, Some(r)) => {
                     store.remove_check(id, r, &actor)?;
-                    format!("#{id} item {r} deleted, the rest renumbered — see 'tb show {id}'")
+                    format!("#{id} item {r} deleted, the rest renumbered — see {}", cmd_hint(explicit, &format!("show {id}")))
                 }
                 (_, Some(text), None) => {
                     let n = store.add_check(id, &text, &actor)?;
-                    format!("#{id} item {n} added — toggle it with 'tb check {id} {n}'")
+                    format!("#{id} item {n} added — toggle it with {}", cmd_hint(explicit, &format!("check {id} {n}")))
                 }
                 (Some(n), None, None) => {
                     let on = store.check(id, n, &actor)?;
@@ -497,7 +564,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 (None, None, None) => {
                     return Err(BoardError(format!(
-                        "give an item number, --add or --rm — 'tb check {id} 1', 'tb check {id} --add \"text\"'"
+                        "give an item number, --add or --rm — {}, {}",
+                        cmd_hint(explicit, &format!("check {id} 1")),
+                        cmd_hint(explicit, &format!("check {id} --add \"text\""))
                     )))
                 }
             };
@@ -543,7 +612,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             let c = if force { store.done_forced(id, &actor)? } else { store.done(id, &actor)? };
             let human = if c.column == "review" {
-                format!("#{id} is now in review — close it with 'tb done {id}' once verified")
+                format!("#{id} is now in review — close it with {} once verified", cmd_hint(explicit, &format!("done {id}")))
             } else {
                 format!("#{id} is done")
             };
@@ -557,11 +626,13 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 (Some(r), false) => {
                     store.block(id, Some(&r), &actor)?;
-                    format!("#{id} blocked — clear it with 'tb block {id} --clear'")
+                    format!("#{id} blocked — clear it with {}", cmd_hint(explicit, &format!("block {id} --clear")))
                 }
                 (None, false) => {
                     return Err(BoardError(format!(
-                        "say what blocks it — 'tb block {id} \"#7\"' or 'tb block {id} --clear'"
+                        "say what blocks it — {} or {}",
+                        cmd_hint(explicit, &format!("block {id} \"#7\"")),
+                        cmd_hint(explicit, &format!("block {id} --clear"))
                     )))
                 }
             };
@@ -601,7 +672,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             })?;
             let r = github::fetch(&repo, now);
             store.save_github(&r)?;
-            let snap = r.map_err(|e| BoardError(format!("github: {e} — check 'gh auth status', then 'tb sync'")))?;
+            let snap = r.map_err(|e| BoardError(format!("github: {e} — {}", github::fetch_hint(&e, "tb sync"))))?;
             let cards = store.list()?;
             // one lookup per not-done ref the open lists can't vouch for: its state, or a 404
             // (no such issue or PR), or a failed call (nothing known — never reported as missing)
@@ -678,6 +749,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("github".into(), json!(r))
                 }
                 ("github", Some(repo)) => {
+                    // the picker checks the repo exists; the CLI must not save a name that
+                    // will fail every later sync with an auth-flavoured error
+                    github::check_repo(&repo).map_err(BoardError)?;
                     store.set_github(Some(&repo))?;
                     ("github".into(), json!(repo))
                 }
@@ -746,7 +820,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let r = github::fetch(&repo, now);
                 store.save_github(&r)?;
                 if let (Err(e), None) = (&r, &view.snap) {
-                    return Err(BoardError(format!("github: {e} — check 'gh auth status', then 'tb github --refresh'")));
+                    return Err(BoardError(format!("github: {e} — {}", github::fetch_hint(e, "tb github --refresh"))));
                 }
             }
             let view = store.github_view()?;
@@ -807,12 +881,22 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
     }
 }
 
+/// A `-b NAME` / `--board NAME` read off the raw arguments, for when the parse failed.
+fn raw_board_flag(rest: &[std::ffi::OsString]) -> Option<&str> {
+    rest.windows(2).find(|w| w[0] == "-b" || w[0] == "--board").and_then(|w| w[1].to_str())
+}
+
 fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let jsonout = args.iter().any(|a| a == "--json");
+    // the board named on the command line (positional or -b), for hints on the error paths too
+    let mut explicit: Option<String> = None;
     let parsed = match split_board(args.clone()) {
-        Ok((board, rest)) => match Cli::try_parse_from(rest) {
-            Ok(cli) => run(cli, board),
+        Ok((board, rest)) => match Cli::try_parse_from(&rest) {
+            Ok(cli) => {
+                explicit = explicit_board(board.as_deref(), cli.board.as_deref()).map(str::to_string);
+                run(cli, board)
+            }
             // --help/--version print their text and succeed, with or without --json
             Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
                 let _ = e.print();
@@ -821,6 +905,7 @@ fn main() -> ExitCode {
             // a parse failure is still a documented `--json` failure: the error object on
             // stdout (non-zero exit), not plain text on stderr with empty stdout
             Err(e) if jsonout => {
+                let explicit = explicit_board(board.as_deref(), raw_board_flag(&rest));
                 let (what, usage) = parse_error_parts(&e.to_string());
                 let more = "see 'tb --help' for every command or 'tb guide' for the manual";
                 let hint = match (e.kind(), usage) {
@@ -831,7 +916,7 @@ fn main() -> ExitCode {
                     (_, Some(u)) => format!("usage: {u} — {more}"),
                     (_, None) => more.into(),
                 };
-                let v = contract::error(&format!("argument error: {what} — {hint}"));
+                let v = contract::error(&with_board(&format!("argument error: {what} — {hint}"), explicit));
                 println!("{}", pretty(&v));
                 return ExitCode::from(2); // usage error, as without --json
             }
@@ -839,7 +924,8 @@ fn main() -> ExitCode {
             // what to run next (an unknown command is named)
             Err(e) => {
                 let _ = e.print();
-                let more = "run 'tb --help' for every command or 'tb guide' for the manual";
+                let explicit = explicit_board(board.as_deref(), raw_board_flag(&rest));
+                let more = with_board("run 'tb --help' for every command or 'tb guide' for the manual", explicit);
                 match e.get(clap::error::ContextKind::InvalidSubcommand) {
                     Some(c) if e.kind() == clap::error::ErrorKind::InvalidSubcommand => {
                         eprintln!("tb: unknown command '{c}' — {more}")
@@ -854,6 +940,7 @@ fn main() -> ExitCode {
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            let e = BoardError(with_board(&e.0, explicit.as_deref()));
             if jsonout {
                 println!("{}", pretty(&contract::error(&e.to_string())));
             } else {

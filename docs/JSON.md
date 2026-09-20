@@ -60,6 +60,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column": "doing",
   "position": 0,
   "owner": "bot-2",
+  "reviewer": null,
   "due": null,
   "gh_ref": 327,
   "blocked": null,
@@ -83,13 +84,15 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
+| `reviewer` | string\|null | who claimed it with `tb next --review`; kept when it reaches DONE, cleared by any other move |
 | `due` | string\|null | free text |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
+| `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -148,6 +151,9 @@ An argument error names what is missing and gives the usage line, e.g. `tb note 
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
+When the board was chosen **explicitly by name or `-b`** and is not `default`, the command in a
+hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
+the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
 
 ## `tb agents --json`
 
