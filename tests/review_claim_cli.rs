@@ -66,3 +66,59 @@ fn cli_two_reviewers_author_refused_and_claims_cleared() {
     let list = String::from_utf8_lossy(&tb(&db, "x", &["list"]).stdout).into_owned();
     assert!(!list.contains("review rev-1"), "no stale reviewer on the board:\n{list}");
 }
+
+/// The ownership guard (only the holder moves their DOING card) and the review claim meet:
+/// `next --review` never reaches a DOING card, a claim gives no rights over the card once it
+/// is back in DOING, and a reviewer who is not the owner can still claim, send back and
+/// approve a REVIEW card without `--force`.
+#[test]
+fn cli_review_claim_respects_the_ownership_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let o = tb(&db, "bot-1", &["add", "held", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let id = v["card"]["id"].as_i64().unwrap().to_string();
+    assert!(tb(&db, "bot-1", &["take", &id]).status.success());
+    // a DOING card is not reviewable: nothing is claimed and the holder keeps it
+    let (ok, v) = cli_json(&db, "rev-1", &["next", "--review", "--json"]);
+    assert!(!ok && v["error"] == "no review cards waiting", "{v}");
+    let (_, v) = cli_json(&db, "x", &["show", &id, "--json"]);
+    assert_eq!((v["column"].as_str(), v["owner"].as_str(), v["reviewer"].as_str()), (Some("doing"), Some("bot-1"), None), "{v}");
+    // in REVIEW, someone who is not the owner claims it; the owner stays the owner
+    assert!(tb(&db, "bot-1", &["done", &id]).status.success());
+    let (ok, v) = cli_json(&db, "rev-1", &["next", "--review", "--json"]);
+    assert!(ok, "a reviewer claims a REVIEW card they do not own: {v}");
+    assert_eq!(
+        (v["card"]["column"].as_str(), v["card"]["owner"].as_str(), v["card"]["reviewer"].as_str()),
+        (Some("review"), Some("bot-1"), Some("rev-1")),
+        "{v}"
+    );
+    // the reviewer sends it back without --force: it returns to its holder, the claim ends
+    let (ok, v) = cli_json(&db, "rev-1", &["move", &id, "doing", "tests are missing", "--json"]);
+    assert!(ok, "{v}");
+    assert_eq!(
+        (v["card"]["column"].as_str(), v["card"]["owner"].as_str(), v["card"]["reviewer"].as_str()),
+        (Some("doing"), Some("bot-1"), None),
+        "{v}"
+    );
+    // back in DOING it is its holder's again: the past reviewer cannot finish, drop or move it
+    for args in [vec!["done", id.as_str()], vec!["drop", id.as_str()], vec!["move", id.as_str(), "review"]] {
+        let o = tb(&db, "rev-1", &args);
+        let e = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(!o.status.success() && e.contains("held by bot-1"), "{args:?}: {e}");
+    }
+    let (ok, v) = cli_json(&db, "rev-1", &["next", "--review", "--json"]);
+    assert!(!ok && v["error"] == "no review cards waiting", "{v}");
+    let (_, v) = cli_json(&db, "x", &["show", &id, "--json"]);
+    assert_eq!((v["column"].as_str(), v["owner"].as_str(), v["reviewer"].as_str()), (Some("doing"), Some("bot-1"), None), "{v}");
+    // second round: claimed afresh and approved by the reviewer, no --force, no `force` event
+    assert!(tb(&db, "bot-1", &["done", &id]).status.success());
+    let (ok, v) = cli_json(&db, "rev-1", &["next", "--review", "--json"]);
+    assert!(ok && v["card"]["reviewer"] == "rev-1", "{v}");
+    let (ok, v) = cli_json(&db, "rev-1", &["done", &id, "--json"]);
+    assert!(ok, "{v}");
+    assert_eq!((v["card"]["column"].as_str(), v["card"]["reviewer"].as_str()), (Some("done"), Some("rev-1")), "{v}");
+    let (_, v) = cli_json(&db, "x", &["show", &id, "--json"]);
+    let kinds: Vec<&str> = v["events"].as_array().unwrap().iter().filter_map(|e| e["kind"].as_str()).collect();
+    assert!(!kinds.contains(&"force"), "{kinds:?}");
+}
