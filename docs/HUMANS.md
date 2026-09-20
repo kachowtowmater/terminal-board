@@ -47,6 +47,10 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 From the command line: `tb move 3 doing`, `tb done 3`, `tb drop 3` (back to TODO),
 `tb prio 3 top`.
 
+Sending a REVIEW card back (Shift+← or `<`) asks why on the footer line; the card returns
+to its owner in DOING and shows its rework round, `r2`. From the command line:
+`tb move 3 doing "the export still drops the header"`.
+
 Some terminals and multiplexers swallow Shift+arrows; `<` `>` `K` `J` always work.
 
 ### Checklists

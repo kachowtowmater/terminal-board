@@ -91,7 +91,7 @@ fn shift_arrows_and_jk_reorder_and_move() {
     app.handle_key(key(KeyCode::Left), &mut s);
     app.handle_key(shift(KeyCode::Right), &mut s);
     assert_eq!(s.card(3).unwrap().column, "todo");
-    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2)"));
+    assert!(app.status.as_ref().unwrap().0.contains("doing is full (2/2:"));
     // Shift+Left back
     app.col = 1;
     app.row[1] = 0;
@@ -141,7 +141,7 @@ fn position_migration_orders_existing_cards_by_created_at() {
 
 #[test]
 fn edit_form_cursor_ops() {
-    let mut f = EditForm { id: 1, title: "abc".into(), desc: String::new(), field: 0, cursor: 3, from_popup: false };
+    let mut f = EditForm { id: 1, title: "abc".into(), open_title: "abc".into(), desc: String::new(), open_desc: String::new(), field: 0, cursor: 3, from_popup: false };
     f.key(KeyCode::Home);
     f.key(KeyCode::Right);
     f.key(KeyCode::Delete); // removes 'b'
@@ -215,6 +215,7 @@ fn pr(n: i64, closes: &[i64], branch: &str) -> Pr {
         created_at: "2026-09-18T08:00:00Z".into(),
         author: "bot".into(),
         closes: closes.to_vec(),
+        updated_at: String::new(),
     }
 }
 
@@ -234,18 +235,21 @@ fn auto_move_matrix() {
         id
     };
     s.set_wip(99).unwrap();
+    // TODO cards have no owner: an open PR leaves them in TODO, a closed issue still moves
+    // them to DONE; DOING cards (owned by 'me') move on an open PR as before
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
     let closed = mk(&mut s, "gh#21 a closed issue", "todo");
     let open_rev = mk(&mut s, "gh#11 open, in review", "review");
     let unmerged = mk(&mut s, "gh#22 closed unmerged pr", "doing");
+    let linked_owned = mk(&mut s, "gh#13 linked by closes, taken", "doing");
     let done_open = mk(&mut s, "gh#10 already done", "done");
     let plain = mk(&mut s, "no gh ref", "doing");
     let snap = GhSnapshot {
         repo: "o/r".into(),
-        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing")],
-        issues: vec![issue(10), issue(11), issue(12)],
+        prs: vec![pr(30, &[10], "x"), pr(31, &[], "fix/12-thing"), pr(32, &[13], "y")],
+        issues: vec![issue(10), issue(11), issue(12), issue(13)],
         ..Default::default()
     };
     let cards = s.list().unwrap();
@@ -257,25 +261,26 @@ fn auto_move_matrix() {
         (22, RefState { closed: true, pr: true, merged: false }),
     ]
     .into();
-    let moves = plan_moves(&snap, &cards, &states);
+    let moves = plan_moves(&snap, &cards, &states, &HashMap::new());
     let got: Vec<(i64, &str, &str)> = moves.iter().map(|m| (m.card_id, m.to.as_str(), m.text.as_str())).collect();
     assert_eq!(
         got,
         [
-            (linked, "review", "github: PR #30 open → review"),
-            (branch, "review", "github: PR #31 open → review"),
-            (merged, "done", "github: PR #20 merged → done"),
-            (closed, "done", "github: issue #21 closed → done"),
+            (branch, "review", "PR gh#31 open → review"),
+            (merged, "done", "PR gh#20 merged → done"),
+            (closed, "done", "issue gh#21 closed → done"),
+            (linked_owned, "review", "PR gh#32 open → review"),
         ]
     );
-    let untouched = [open_rev, unmerged, done_open, plain];
+    // the unowned TODO card with an open PR stays in TODO
+    let untouched = [linked, open_rev, unmerged, done_open, plain];
     assert!(moves.iter().all(|m| !untouched.contains(&m.card_id)), "no backwards, no evidence, no move");
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
     assert_eq!(s.card(merged).unwrap().column, "done");
     let ev = s.show(merged).unwrap().events;
-    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "github: PR #20 merged → done"));
+    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "PR gh#20 merged → done"));
     // a second pass moves nothing (review never goes back to review, done stays done)
-    let moves = plan_moves(&snap, &s.list().unwrap(), &states);
+    let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
 }
 
@@ -328,6 +333,8 @@ esac
     for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
         tb(&db, &gh, &["add", t]);
     }
+    // an open PR moves only work someone took; merged/closed move unowned TODO cards too
+    tb(&db, &gh, &["take", "1"]);
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -355,7 +362,7 @@ fn forced_done_prompt_and_cli_force() {
     // TUI: d on a todo gh card whose issue is open asks first
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ForceDone(1), .. }));
-    assert!(render(&app, 140, 40).contains("issue #11 still open on GitHub — mark done anyway? y/n"));
+    assert!(render(&app, 140, 40).contains("issue gh#11 still open on GitHub — mark done anyway? y/n"));
     app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(1).unwrap().column, "todo");
     app.handle_key(key(KeyCode::Char('d')), &mut s);
@@ -371,7 +378,7 @@ fn forced_done_prompt_and_cli_force() {
     let o = tb(&db, gh, &["done", "1"]);
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("issue #11 still open on GitHub") && e.contains("--force"), "{e}");
+    assert!(e.contains("issue gh#11 still open on GitHub") && e.contains("--force"), "{e}");
     let o = tb(&db, gh, &["move", "1", "done", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], false);
@@ -388,8 +395,12 @@ fn help_overlay_and_footer() {
     let (_d, mut s, mut app) = board(&["a"]);
     let screen = render(&app, 160, 50);
     assert!(screen.contains("a add  e edit  x del  enter open  shift+arrows move") && screen.contains("? help  q quit"), "{screen}");
+    // 60 columns is the focus shape: its footer keeps the focus arrow axis (issue: arrow
+    // behaviour and help text agree in every view), dropping `enter open` to fit
     let narrow = render(&app, 60, 25);
-    assert!(narrow.contains("a add  enter open  ? help  q quit") && !narrow.contains("shift+arrows"), "{narrow}");
+    let footer = narrow.lines().last().unwrap_or("");
+    assert!(footer.contains("arrows card/col") && footer.contains("shift+<> move") && footer.contains("? help"), "{narrow}");
+    assert!(!footer.contains("shift+arrows"), "{narrow}");
     app.handle_key(key(KeyCode::Char('?')), &mut s);
     assert_eq!(app.mode, Mode::Help);
     let screen = render(&app, 160, 50);
@@ -403,4 +414,158 @@ fn help_overlay_and_footer() {
     assert_eq!(app.mode, Mode::Normal);
     // panels have their own hints + ? help
     app.handle_key(key(KeyCode::Tab), &mut s);
+}
+
+#[test]
+fn auto_move_event_text_carries_no_repeated_source() {
+    // the actor is `github` and the kind is `github`; the text must not repeat "github:"
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: merge me", "", &[], "me").unwrap();
+    s.take(id, "me").unwrap();
+    let _ = s.note_kind(id, "github", "PR gh#9 merged → done", "github");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().find(|e| e.actor == "github" && e.kind == "github").unwrap();
+    assert!(!e.text.starts_with("github: "), "no triple 'github' in one line: {}", e.text);
+    assert!(e.text.starts_with("PR gh#"), "{}", e.text);
+}
+
+#[test]
+fn approve_refuses_the_author() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("plain: mine", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    s.done(id, "bot-1").unwrap(); // bot-1 moved it to review: the author
+    let gh = Path::new("/nonexistent/gh");
+    let ids = id.to_string();
+    let as_ = |who: &str| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(["done", &ids, "--approve"])
+            .env("TB_DB", &db)
+            .env("TB_GH", gh)
+            .env("TB_AS", who)
+            .env("TB_NO_HERDR", "1")
+            .output()
+            .unwrap()
+    };
+    // the author is refused through the CLI, and nothing is recorded
+    let o = as_("BOT-1");
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("you did this work"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!s.show(id).unwrap().events.iter().any(|e| e.kind == "approved"));
+    // another agent's approval is recorded; the card stays in review
+    let o = as_("rev");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(s.show(id).unwrap().events.iter().any(|e| e.kind == "approved" && e.actor == "rev"));
+    assert_eq!(s.card(id).unwrap().column, "review");
+    // a card that is not in review cannot be approved
+    let doing = s.add("plain: still working", "", &[], "lead").unwrap();
+    s.take(doing, "bot-1").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["done", &doing.to_string(), "--approve"])
+        .env("TB_DB", &db)
+        .env("TB_GH", gh)
+        .env("TB_AS", "rev")
+        .env("TB_NO_HERDR", "1")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not in review"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(s.card(doing).unwrap().column, "doing");
+    assert!(!s.show(doing).unwrap().events.iter().any(|e| e.kind == "approved"));
+}
+
+#[test]
+fn form_save_writes_only_changed_fields_and_refuses_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: first card", "original desc", &[], "lead").unwrap();
+    // the form opened with these values
+    let (open_title, open_desc) = ("plain: first card", "original desc");
+    // an agent edits the description while the form is open
+    s.edit(id, None, Some("new brief from an agent"), "bot-1", None).unwrap();
+    // person adds '!' to the title only: the unchanged (stale) desc must NOT be written
+    let typed_title = "plain: first card!";
+    let c = s
+        .edit(id, Some(typed_title), Some(open_desc), "lead", Some((open_title, open_desc)))
+        .unwrap();
+    assert_eq!(c.title, "first card!", "tag/plain: is stripped by parse");
+    assert_eq!(c.description, "new brief from an agent", "the agent's desc survives");
+    let ev = s.show(id).unwrap().events;
+    let e = ev.iter().rev().find(|e| e.kind == "edit").unwrap();
+    assert_eq!(e.text, "title edited", "the log names only the written field: {e:?}");
+    // a REAL conflict: the person also changed the desc, which moved since open — refused
+    let e = s
+        .edit(id, Some(typed_title), Some("my own wording"), "lead", Some((open_title, open_desc)))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("changed while you were editing") && e.contains("reopen with e"), "{e}");
+    // nothing was overwritten by the refused save
+    assert_eq!(s.card(id).unwrap().description, "new brief from an agent");
+    // negative control on the CLI path: no baseline, unchanged field writes as before
+    let c2 = s.edit(id, None, Some("cli desc wins"), "bot-2", None).unwrap();
+    assert_eq!(c2.description, "cli desc wins");
+}
+
+#[test]
+fn sync_never_moves_an_unowned_todo_card_to_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    // unowned todo card linked to an issue that has an open PR
+    let unowned = s.add("plain: gh#60 nobody took it", "", &[], "lead").unwrap();
+    // an owned one, for the positive control
+    let owned = s.add("plain: gh#61 taken", "", &[], "lead").unwrap();
+    s.take(owned, "bot-1").unwrap();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 2,
+        // each card's issue has its own open PR: the unowned one (#62 closes #60) moved on main
+        prs: vec![pr(62, &[60], "fix/60"), pr(61, &[61], "fix/61")],
+        issues: vec![issue(60), issue(61)],
+        ..Default::default()
+    };
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> = [
+        (60, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+        (61, terminal_board::github::RefState { pr: true, merged: false, closed: false }),
+    ]
+    .into();
+    let moves = terminal_board::github::plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
+    assert!(moves.iter().all(|m| m.card_id != unowned), "unowned card stays in todo: {moves:?}");
+    assert!(moves.iter().any(|m| m.card_id == owned && m.to == "review"), "owned card moves: {moves:?}");
+    terminal_board::github::apply_moves(&mut s, &moves).unwrap();
+    assert_eq!(s.card(unowned).unwrap().column, "todo", "still todo, still unowned");
+    assert_eq!(s.card(unowned).unwrap().owner, None);
+    assert_eq!(s.card(owned).unwrap().column, "review");
+    // and the self-approval check has an author for every synced REVIEW card
+    for c in s.list().unwrap().into_iter().filter(|c| c.column == "review") {
+        assert!(s.author(c.id).unwrap().is_some(), "#{} in review without an author", c.id);
+    }
+}
+
+#[test]
+fn wip_full_message_is_actor_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(2).unwrap();
+    let a = s.add("plain: one", "", &[], "lead").unwrap();
+    let b = s.add("plain: two", "", &[], "lead").unwrap();
+    let c = s.add("plain: three", "", &[], "lead").unwrap();
+    s.take(a, "bot-1").unwrap();
+    s.take(b, "bot-2").unwrap();
+    // an actor holding none: holders listed, no 'tb done' suggestion
+    let e = s.take(c, "bot-4").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("you hold none; wait, or ask one of them to finish"), "{e}");
+    assert!(!e.contains("tb done"), "{e}");
+    // an actor holding one: their card named, with the exact command
+    let e = s.take(c, "bot-1").unwrap_err().to_string();
+    assert!(e.contains("doing is full (2/2: #1 bot-1, #2 bot-2)"), "{e}");
+    assert!(e.contains("finish #1 with 'tb done 1' first"), "{e}");
+    // next with json: same message in the hint path
+    let e = s.next("bot-2").unwrap_err().to_string();
+    assert!(e.contains("finish #2 with 'tb done 2' first"), "{e}");
 }

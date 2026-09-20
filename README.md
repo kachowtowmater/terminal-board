@@ -182,7 +182,8 @@ tb setup --dry-run --yes
 5. **Checklist.** In the open card, press `a` to add a checklist item ("kitchen"), Enter to
    save. Use ↑/↓ to pick an item and Enter to tick it. `esc` closes the card.
 6. **Done.** Press `d`: DOING goes to REVIEW (someone checks it), and `d` again moves it to
-   DONE. Press `q` to quit.
+   DONE. Because you moved it to review yourself, the board first asks `approve your own
+   work? y/n` — press `y` (on a shared board, someone else does this step). Press `q` to quit.
 
 Everything you did can also be done from the command line — this is how scripts and AI
 agents use the board:
@@ -212,7 +213,7 @@ Press `?` on the board to see all keys at any time.
 | `e` | edit the title and description |
 | `x` | delete the card (asks y/n) |
 | `enter` | open the card: description, checklist, history |
-| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE |
+| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
 | Shift+↑ / Shift+↓ (or `K` `J`) | move the card up / down in its column |
 | `n` | add a note to the card's history |
@@ -281,7 +282,8 @@ linked to issue or pull request N:
 - an open pull request for it → the card moves to **REVIEW**;
 - the pull request is merged, or the issue is closed → the card moves to **DONE**;
 - cards never move backwards on their own. This happens on every refresh (every minute)
-  and whenever you run `tb sync`.
+  and whenever you run `tb sync`. A card a reviewer sent back stays in DOING until its pull
+  request is updated after that.
 
 If you mark such a card done yourself while its issue is still open, the board asks first
 (the command line needs `--force`).
@@ -375,6 +377,7 @@ tb --version
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card |
+| `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb drop ID` | give a card back to TODO |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
