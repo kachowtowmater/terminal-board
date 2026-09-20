@@ -561,7 +561,7 @@ pub fn plan_moves(
                 } else if states.get(&n).is_some_and(|st| st.pr && !st.merged && !st.closed) && !returned.contains_key(&c.id) {
                     // gh#N is itself an open PR outside the newest-20 page (seen by the
                     // per-number lookup); a sent-back card waits until the page shows it
-                    out.push(mv("review", format!("github: PR #{n} open → review")));
+                    out.push(mv("review", format!("PR gh#{n} open → review")));
                 }
             }
         }
@@ -775,17 +775,30 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
 /// Segments of the one-line summary; `true` = red (only `FAIL`).
 /// `ISSUES 11 (+2, 5 unclaimed) · PRS 1 (1 FAIL) · MERGED 6 · MAIN ok`
 pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
-    let mut v = vec![(
-        format!(
-            "ISSUES {} (+{}, {} unclaimed{}) · PRS {}",
-            s.issues_open,
-            f.new_today,
-            f.unclaimed,
-            issue_page(s.issues.len()),
-            if s.prs.len() >= PAGE { pr_count(s.prs.len()) } else { s.prs.len().to_string() }
-        ),
-        false,
-    )];
+    compact(s, f, false)
+}
+
+/// The same line for a panel too narrow for a full page's labels:
+/// `ISSUES 60 (+1, 5/20 free) · PRS 20+ · …`. Never longer than the line without labels, so
+/// the labels cost no room where the plain counts fit. Without a full page it is the same line.
+pub fn compact_summary_terse(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
+    compact(s, f, true)
+}
+
+fn compact(s: &GhSnapshot, f: &Factory, terse: bool) -> Vec<(String, bool)> {
+    let (full_issues, full_prs) = (s.issues.len() >= PAGE, s.prs.len() >= PAGE);
+    let terse = terse && (full_issues || full_prs);
+    let unclaimed = match (terse, full_issues) {
+        (true, true) => format!("{}/{PAGE} free", f.unclaimed),
+        (true, false) => format!("{} free", f.unclaimed),
+        (false, _) => format!("{} unclaimed{}", f.unclaimed, issue_page(s.issues.len())),
+    };
+    let prs = match (full_prs, terse) {
+        (true, true) => format!("{}+", s.prs.len()),
+        (true, false) => pr_count(s.prs.len()),
+        (false, _) => s.prs.len().to_string(),
+    };
+    let mut v = vec![(format!("ISSUES {} (+{}, {unclaimed}) · PRS {prs}", s.issues_open, f.new_today), false)];
     if f.failing > 0 {
         v.push((format!(" ({} ", f.failing), false));
         v.push(("FAIL".into(), true));
@@ -818,7 +831,9 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         None => ("-".into(), "no runs".into()),
     };
     let issues2 = if s.issues.len() >= PAGE {
-        format!("newest {PAGE}: +{} · {} unclaimed", f.new_today, f.unclaimed)
+        // no longer than the line below ("free" is the tidy block's word for unclaimed), so
+        // the page label is never cut where the plain counts fit
+        format!("newest {PAGE}: +{} · {} free", f.new_today, f.unclaimed)
     } else {
         format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)
     };

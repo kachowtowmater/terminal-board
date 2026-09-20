@@ -451,7 +451,7 @@ fn a_ref_outside_the_newest_page_still_moves() {
         [(777, terminal_board::github::RefState { closed: false, pr: true, merged: false })].into();
     let moves = terminal_board::github::plan_moves(&snap, &cards, &states, &HashMap::new());
     assert!(
-        moves.iter().any(|m| m.card_id == id && m.to == "review" && m.text == "github: PR #777 open → review"),
+        moves.iter().any(|m| m.card_id == id && m.to == "review" && m.text == "PR gh#777 open → review"),
         "off-page open PR moves: {moves:?}"
     );
     // and a page-sized repo is labelled "newest" so 20 never reads as the total
@@ -763,5 +763,5 @@ esac
         .iter()
         .map(|m| (m["card_id"].as_i64().unwrap(), m["to"].as_str().unwrap().into(), m["text"].as_str().unwrap().into()))
         .collect();
-    assert_eq!(moves, [(1, "review".to_string(), "github: PR #950 open → review".to_string())]);
+    assert_eq!(moves, [(1, "review".to_string(), "PR gh#950 open → review".to_string())]);
 }

@@ -2098,8 +2098,13 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
         }
         y += 4;
     } else if y < bottom {
+        // a full page's "newest" labels are long: where they do not fit, the terse ones do
+        let mut segs = github::compact_summary(s, &fac);
+        if 1 + segs.iter().map(|(t, _)| t.chars().count()).sum::<usize>() > inner.width as usize {
+            segs = github::compact_summary_terse(s, &fac);
+        }
         let spans: Vec<Span> = std::iter::once(Span::raw(" "))
-            .chain(github::compact_summary(s, &fac).into_iter().map(|(t, r)| if r { Span::styled(t, red()) } else { Span::raw(t) }))
+            .chain(segs.into_iter().map(|(t, r)| if r { Span::styled(t, red()) } else { Span::raw(t) }))
             .collect();
         f.render_widget(Paragraph::new(Line::from(spans)), Rect { y, height: 1, ..inner });
         y += 1;

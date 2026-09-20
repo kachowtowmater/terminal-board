@@ -841,3 +841,73 @@ fn thirdv_spare_rows_go_to_github_not_to_a_gap() {
     let screen56 = render(&app, 52, 56);
     assert!(screen56.contains("GITHUB") && screen56.contains("DONE"), "{screen56}");
 }
+
+/// A GitHub page of `n` PRs and `n` issues from a repo with 60 open issues (20 = a full page).
+fn setup_page(n: i64) -> (tempfile::TempDir, Store, App) {
+    let (dir, s, mut app) = setup();
+    s.save_github(&Ok(GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 60,
+        prs: (0..n).map(|k| pr(400 + 2 * k, "speed up search indexing", "ok")).collect(),
+        issues: (0..n).map(|k| issue(301 + 2 * k, "csv export drops the header row")).collect(),
+        merged_today: vec![],
+        main_ci: Some(MainCi { state: "ok".into(), workflow: "ci".into(), created_at: ago(40 * 60) }),
+    }))
+    .unwrap();
+    app.reload(&s);
+    (dir, s, app)
+}
+
+/// Is `word` on a line containing `marker`, whole (followed by a space or the border)?
+fn whole_on(screen: &str, marker: &str, word: &str) -> bool {
+    screen.lines().filter(|l| l.contains(marker)).any(|l| {
+        l.match_indices(word).any(|(i, _)| matches!(l[i + word.len()..].chars().next(), None | Some(' ') | Some('│')))
+    })
+}
+
+/// The "newest" labels of a full page (20 items) at small sizes: never cut where the plain
+/// counts of a 19-item page fit, no word of the label cut, and no row moves.
+#[test]
+fn full_page_labels_fit_at_small_sizes() {
+    let (_d1, _s1, plain) = setup_page(19);
+    let (_d2, _s2, full) = setup_page(20);
+    let rows = |screen: &str| -> Vec<usize> {
+        screen.lines().enumerate().filter(|(_, l)| ["GITHUB", "GH# ", "AGENTS", "o TODO", "MERGED"].iter().any(|m| l.contains(m))).map(|(i, _)| i).collect()
+    };
+    let (mut tiles, mut summaries) = (0, 0);
+    for h in [30u16, 41, 60] {
+        for w in 64u16..=170 {
+            let (a, b) = (render(&plain, w, h), render(&full, w, h));
+            assert_eq!(rows(&a), rows(&b), "{w}x{h}: the page label moves no row:\n{b}");
+            // tiles: the second ISSUES line
+            if whole_on(&a, "today · ", "unclaimed") {
+                assert!(whole_on(&b, "newest 20: +", "free"), "{w}x{h}: page label cut where the plain counts fit:\n{b}");
+                tiles += 1;
+            }
+            // tiles: the PRS value
+            if whole_on(&a, "19 open", "open") && a.contains("PRS") && !a.contains("ISSUES 60 (") && !a.contains("PRS     19") {
+                assert!(whole_on(&b, "20 newest", "newest"), "{w}x{h}: PRS tile:\n{b}");
+            }
+            // the one-line summary of a short panel
+            if whole_on(&a, "ISSUES 60 (", "ok") {
+                let labelled = whole_on(&b, "unclaimed in newest 20) · PRS 20 newest", "ok") || whole_on(&b, "/20 free) · PRS 20+ ", "ok");
+                assert!(labelled, "{w}x{h}: summary line cut, or its page labels lost:\n{b}");
+                summaries += 1;
+            }
+            for l in b.lines().filter(|l| l.contains("newe")) {
+                assert!(l.contains("newest ") || l.contains("newest│"), "{w}x{h}: 'newest' cut mid-word: {l}");
+            }
+        }
+    }
+    assert!(tiles > 100 && summaries > 30, "the sweep saw the tiles ({tiles}) and the summary line ({summaries})");
+    // the reference sizes, spelled out
+    let half = render(&full, 126, 41);
+    assert!(half.contains("PULL REQUESTS  20 newest ") && whole_on(&half, "newest 20: +", "free"), "{half}");
+    let short = render(&full, 64, 30);
+    assert!(short.contains("/20 free) · PRS 20+ · MERGED 0 · MAIN ok"), "terse labels in a narrow short panel:\n{short}");
+    let roomy = render(&full, 126, 30);
+    assert!(roomy.contains("unclaimed in newest 20) · PRS 20 newest · MERGED 0 · MAIN ok"), "{roomy}");
+    let grid = render(&full, 80, 60);
+    assert!(grid.contains("60 open · newest 20: +") && whole_on(&grid, "newest 20: +", "free") && grid.contains("20 newest · all green"), "{grid}");
+}

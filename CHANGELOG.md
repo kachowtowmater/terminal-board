@@ -5,12 +5,15 @@
 ### GitHub counts are pages, and sync sees past the page
 - The panel fetches the 20 newest open PRs and issues; when a page is full its counts say so
   (`PRs 20 newest`, `ISSUES 60 (+1, 5 unclaimed in newest 20)`, tile `newest 20: +1 · 5
-  unclaimed`), so 20 never reads as the repo total. No extra `gh` calls on the refresh path.
+  free`), so 20 never reads as the repo total. No extra `gh` calls on the refresh path.
+  The labels cost no room: the tile line is as long as the plain one, and a short panel too
+  narrow for the long labels says `ISSUES 60 (+1, 5/20 free) · PRS 20+` instead of cutting
+  `MERGED` / `MAIN` off.
 - `tb sync` now moves a card whose linked PR is **outside** the newest 20: for each taken
   TODO/DOING card that no PR on the page links, sync runs one `gh pr list --search N` (capped
   at 20 per sync, never on the refresh path) and uses an open PR that `closes` N or is on a
   branch named for N. A `gh#N` that is itself an open PR off the page moves via the per-number
-  state lookup. Move texts keep the `PR #N` wording.
+  state lookup. Every move reads the same way: `PR gh#950 open → review`.
 ### Only the owner moves their DOING card
 - `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
   `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is
