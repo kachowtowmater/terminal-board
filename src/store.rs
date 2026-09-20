@@ -43,6 +43,21 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The refusal for moving someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+    let mine: Vec<i64> = {
+        let mut st =
+            tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
+        let v = st.query_map([actor], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
+    Ok(BoardError(format!(
+        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+    )))
+}
+
 /// The actor-aware WIP message: the board-wide limit with who holds what, and what the
 /// actor can actually do (finish their own card, or wait — never finish someone else's).
 fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
@@ -1061,6 +1076,19 @@ impl Store {
         if c.column == column {
             return Ok(c);
         }
+        // Card ids are small shared integers: an off-by-one must not move someone else's
+        // work. Leaving DOING requires the owner (or --force, logged as its own event).
+        // The `github` automation is exempt: its moves are evidence-driven and logged.
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                }
+            }
+        }
         if column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
@@ -1247,20 +1275,44 @@ impl Store {
         }
     }
 
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.drop_card_inner(id, actor, true)
+    }
+
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
-        let c = self.card(id)?;
+        self.drop_card_inner(id, actor, false)
+    }
+
+    /// Back to todo, unowned. Someone else's DOING card is refused (the same hazard as moving
+    /// it, see move_card) unless forced; the check, the `force` event and the drop are one
+    /// transaction.
+    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let c = get_card(&tx, id)?;
         if c.column == "todo" && c.owner.is_none() {
             return Ok(c);
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
+                }
+            }
+        }
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
             r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=? WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
+        let c = get_card(&tx, id)?;
         tx.commit()?;
-        self.card(id)
+        Ok(c)
     }
 }
 

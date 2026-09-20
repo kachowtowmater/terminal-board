@@ -65,7 +65,11 @@ fn send_back_needs_a_reason_keeps_the_owner_and_counts_rounds() {
     assert!(tb(&db, gh, "bot-1", &["done", &ids]).status.success());
     let o = tb(&db, gh, "rev", &["move", &ids, "doing", "still fails", "--json"]);
     assert_eq!(json(&o)["card"]["round"], 3);
+    // back to review: a DOING card is its holder's to move (the ownership guard refuses
+    // anyone else without --force), so the holder does it
     let o = tb(&db, gh, "rev", &["move", &ids, "review"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("held by bot-1"));
+    let o = tb(&db, gh, "bot-1", &["move", &ids, "review"]);
     assert!(o.status.success());
     // plain text says who has it now
     let o = tb(&db, gh, "rev", &["move", &ids, "doing", "one more thing"]);
