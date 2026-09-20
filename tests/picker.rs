@@ -1,5 +1,6 @@
 //! Repo picker (R) and `github repos` / `config github` CLI, via a fake gh (TB_GH).
 //! One test function: TB_GH is process-wide, so scenarios run in order.
+mod common;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -86,6 +87,7 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 #[test]
 fn picker_and_cli() {
+    common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let ok = fake_ok(dir.path());
     let out = fake_logged_out(dir.path());

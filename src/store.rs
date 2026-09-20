@@ -226,8 +226,14 @@ impl Snapshot {
     }
 }
 
+/// The clock. `TB_NOW` (unix seconds) pins it; that is for the test suite only, so that
+/// fixtures such as `now - 3h` do not depend on the time of day. Unset or unparsable =
+/// the real clock.
 pub fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    match crate::env("NOW") {
+        Some(v) => v.trim().parse::<i64>().unwrap_or_else(|_| chrono::Utc::now().timestamp()),
+        None => chrono::Utc::now().timestamp(),
+    }
 }
 
 /// Split `tag: rest` and `gh#N` out of a title.
