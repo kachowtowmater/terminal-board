@@ -493,11 +493,11 @@ pub fn plan_moves(
         let mv = |to: &str, text: String| AutoMove { card_id: c.id, gh_ref: n, from: c.column.clone(), to: to.into(), text };
         if let Some(st) = states.get(&n) {
             if st.pr && st.merged {
-                out.push(mv("done", format!("github: PR #{n} merged → done")));
+                out.push(mv("done", format!("PR gh#{n} merged → done")));
                 continue;
             }
             if !st.pr && st.closed {
-                out.push(mv("done", format!("github: issue #{n} closed → done")));
+                out.push(mv("done", format!("issue gh#{n} closed → done")));
                 continue;
             }
         }
@@ -515,7 +515,7 @@ pub fn plan_moves(
                         Some(t) => unix_time(&p.updated_at).is_some_and(|u| u > *t),
                     };
                     if updated_since_return {
-                        out.push(mv("review", format!("github: PR #{} open → review", p.number)));
+                        out.push(mv("review", format!("PR gh#{} open → review", p.number)));
                     }
                 }
             }
@@ -667,7 +667,7 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
             let card = card_for(i.number);
             let (kind, state, pr_ci, who) = match (pr, card) {
                 (Some(p), _) => {
-                    let st = if p.ci == "-" { format!("PR #{}", p.number) } else { format!("PR #{} {}", p.number, p.ci) };
+                    let st = if p.ci == "-" { format!("PR gh#{}", p.number) } else { format!("PR gh#{} {}", p.number, p.ci) };
                     (StateKind::Pr, st, Some(p.ci.clone()), who_for(i.number, p))
                 }
                 (None, Some(c)) if c.column == "doing" || c.column == "review" => {
@@ -743,7 +743,7 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         "all green".into()
     };
     let last = s.merged_today.iter().max_by(|a, b| a.merged_at.cmp(&b.merged_at));
-    let merged2 = last.map_or("none yet".into(), |m| format!("last: #{} {} ago", m.number, age(&m.merged_at)));
+    let merged2 = last.map_or("none yet".into(), |m| format!("last: gh#{} {} ago", m.number, age(&m.merged_at)));
     let (ci, ci2) = match &s.main_ci {
         Some(c) => (c.state.clone(), format!("{} · {}", c.workflow, age(&c.created_at))),
         None => ("-".into(), "no runs".into()),
@@ -774,9 +774,9 @@ pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n
     ln!("\nOPEN PRS");
     for (p, link) in s.prs.iter().zip(&f.pr_links).take(n) {
         let draft = if p.is_draft { " (draft)" } else { "" };
-        let link = link.as_ref().map(|(i, w)| format!(" -> #{i} ({w})")).unwrap_or_default();
+        let link = link.as_ref().map(|(i, w)| format!(" -> gh#{i} ({w})")).unwrap_or_default();
         ln!(
-            "  #{} {}{draft} · CI {} · review {} · {} · {} · {}{link}",
+            "  gh#{} {}{draft} · CI {} · review {} · {} · {} · {}{link}",
             p.number,
             p.title,
             p.ci,
@@ -789,14 +789,14 @@ pub fn text(s: &GhSnapshot, cards: &[crate::store::Card], error: Option<&str>, n
     ln!("\nISSUES (state · who)");
     for r in f.issues.iter().take(n) {
         let labels = if r.labels.is_empty() { String::new() } else { format!(" [{}]", r.labels.join(",")) };
-        ln!("  #{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
+        ln!("  gh#{} {}{labels} · {} · {} · {}", r.number, r.title, r.state, r.who, age(&r.created_at));
     }
     if f.issues.len() > n {
         ln!("  +{} more", f.issues.len() - n);
     }
     ln!("\nMERGED TODAY");
     for m in s.merged_today.iter().take(n) {
-        ln!("  #{} {}", m.number, m.title);
+        ln!("  gh#{} {}", m.number, m.title);
     }
     if let Some(c) = &s.main_ci {
         ln!("\nMAIN CI {} · {} · {}", c.state, c.workflow, age(&c.created_at));

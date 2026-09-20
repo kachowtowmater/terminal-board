@@ -1,10 +1,12 @@
-//! Every `tb …` line in the README's code blocks runs, in order, against one temp board.
+//! Every `tb …` line in the README's code blocks runs, in order, against temp boards.
 //! A code block right after `<!-- no-test -->` is skipped (GitHub, installer, watch).
 use std::process::Command;
 
 #[test]
 fn readme_examples_run() {
-    let ran = run_doc(include_str!("../README.md"), "README");
+    // boards mode (a temp HOME, no TB_DB): the README uses board names (`tb home add …`),
+    // which a pinned TB_DB file refuses
+    let ran = run_doc_mode(include_str!("../README.md"), "README", true);
     assert!(ran >= 35, "only {ran} README commands found");
 }
 
@@ -26,6 +28,12 @@ fn agent_manual_walkthrough_runs() {
 
 /// Run every `tb …` line in `md`'s code blocks, in order, against one temp board.
 fn run_doc(md: &str, name: &str) -> usize {
+    run_doc_mode(md, name, false)
+}
+
+/// `boards_mode`: run with a temp HOME (boards-dir mode) instead of a pinned `TB_DB` —
+/// for docs whose examples use board names (the README's Boards section).
+fn run_doc_mode(md: &str, name: &str, boards_mode: bool) -> usize {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("readme.db");
     let bin = env!("CARGO_BIN_EXE_tb");
@@ -55,11 +63,16 @@ fn run_doc(md: &str, name: &str) -> usize {
             continue;
         }
         let rest = cmd.strip_prefix("tb").unwrap();
-        let o = Command::new("sh")
-            .arg("-c")
-            .arg(format!("\"$TB_BIN\"{rest}"))
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(format!("\"$TB_BIN\"{rest}"));
+        if boards_mode {
+            // boards-dir mode: every board is its own file under this temp HOME
+            c.env("HOME", dir.path()).env_remove("TB_DB").env_remove("TTYBOARD_DB").env_remove("XDG_STATE_HOME");
+        } else {
+            c.env("TB_DB", &db);
+        }
+        let o = c
             .env("TB_BIN", bin)
-            .env("TB_DB", &db)
             .env("TB_AS", "alice")
             .env("TB_NO_HERDR", "1")
             .env("TB_GH", "/nonexistent/gh")

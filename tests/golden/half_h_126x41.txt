@@ -21,13 +21,13 @@
 ││ ISSUES  10 open            │ │ PULL REQUESTS  2 open       │ │ MERGED  0 today            │ │ MAIN CI  ok                ││
 ││ +5 today · 2 unclaimed     │ │ 1 failing CI                │ │ none yet                   │ │ ci · 40m                   ││
 │└────────────────────────────┘ └─────────────────────────────┘ └────────────────────────────┘ └────────────────────────────┘│
-│ PR     TITLE                                                             CI    REVIEW  AGE   BRANCH / ISSUE                │
-│ #306   fix login form validation                                         FAIL  -       2h    fix/305 -> #305 (bot-1)       │
-│ #308   speed up search indexing                                          ok    -       2h    fix/307 -> #307 (bot-1)       │
-│ ISSUE  TITLE                                                                STATE           WHO      AGE   LABELS          │
-│ #305   login form rejects plus-addresses                                    PR #306 FAIL    bot-1    3h    bug             │
-│ #307   search index lags behind writes                                      PR #308 ok      bot-1    3h    bug             │
-│ #301   csv export drops the header row                                      on board        -        3h    bug             │
+│ GH#      TITLE                                                           CI    REVIEW  AGE   BRANCH / ISSUE                │
+│ gh#306   fix login form validation                                       FAIL  -       2h    fix/305 -> gh#305 (bot-1)     │
+│ gh#308   speed up search indexing                                        ok    -       2h    fix/307 -> gh#307 (bot-1)     │
+│ GH#      TITLE                                                              STATE           WHO      AGE   LABELS          │
+│ gh#305   login form rejects plus-addresses                                  PR gh#306 FAIL  bot-1    3h    bug             │
+│ gh#307   search index lags behind writes                                    PR gh#308 ok    bot-1    3h    bug             │
+│ gh#301   csv export drops the header row                                    on board        -        3h    bug             │
 │   +2 more issues · tb github for all                                                                                       │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ AGENTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

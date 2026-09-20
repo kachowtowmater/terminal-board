@@ -16,6 +16,32 @@ fn sorted(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
+/// Spawn `tb watch` and a watchdog that kills it after `secs` — a watcher that never emits
+/// must fail the test, not hang it.
+fn spawn_watched(db: &Path, args: &[&str], secs: u64) -> (std::process::Child, BufReader<std::process::ChildStdout>, std::sync::mpsc::Sender<()>) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(args)
+        .env("TB_DB", db)
+        .env("TB_NO_HERDR", "1")
+        .env("TB_AS", "tester")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        if rx.recv_timeout(std::time::Duration::from_secs(secs)).is_err() {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+        }
+    });
+    let out = BufReader::new(child.stdout.take().unwrap());
+    (child, out, tx)
+}
+
+fn drop_watch(tx: std::sync::mpsc::Sender<()>) {
+    let _ = tx.send(()); // disarm the watchdog
+}
+
 fn tb(db: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tb"))
         .args(args)
@@ -196,6 +222,151 @@ fn watch_streams_a_new_object_after_a_write() {
 }
 
 #[test]
+fn watch_events_streams_one_line_per_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let id = {
+        let s = Store::open(&db).unwrap();
+        s.add("widgets: stream me", "", &[], "me").unwrap()
+    };
+    let (mut child, stdout, wd) = spawn_watched(&db, &["watch", "--events", "--json"], 30);
+    let mut lines = stdout.lines();
+    tb(&db, &["note", &id.to_string(), "repro confirmed"]);
+    tb(&db, &["take", &id.to_string()]);
+    tb(&db, &["move", &id.to_string(), "review"]);
+    // replay starts with the card's `created` event; read until we hold all four kinds
+    let mut got = Vec::new();
+    while got.len() < 4 {
+        let l = lines
+            .next()
+            .unwrap_or_else(|| panic!("watcher stopped after {} events (watchdog fired)", got.len()))
+            .unwrap();
+        got.push(serde_json::from_str::<serde_json::Value>(&l).unwrap());
+    }
+    drop_watch(wd);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(
+        keys(&got[0]),
+        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text"]),
+        "one NDJSON line per event: {got:?}"
+    );
+    let kinds: Vec<&str> = got.iter().map(|g| g["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["created", "note", "taken", "moved"], "{got:?}");
+    let note = &got[1];
+    assert_eq!(note["card_id"], id);
+    assert!(note["from"].is_null() && note["to"].is_null(), "non-moves carry no transition: {note}");
+    let mv = &got[3];
+    assert_eq!(mv["to"], "review");
+    assert_eq!(mv["from"], "doing", "take moved it to doing first");
+}
+
+#[test]
+fn watch_events_carry_every_column_change() {
+    // add, take, drop, take, done: every line that changes a column says from where to where
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let id = {
+        let s = Store::open(&db).unwrap();
+        s.add("widgets: follow my columns", "", &[], "me").unwrap()
+    };
+    let ids = id.to_string();
+    for args in [&["take", &ids][..], &["drop", &ids], &["take", &ids], &["done", &ids]] {
+        assert!(tb(&db, args).status.success(), "{args:?}");
+    }
+    let (mut child, stdout, wd) = spawn_watched(&db, &["watch", "--events", "--json"], 30);
+    let mut lines = stdout.lines();
+    let mut got = Vec::new();
+    while got.len() < 5 {
+        let l = lines.next().unwrap_or_else(|| panic!("watcher stopped after {} events: {got:?}", got.len())).unwrap();
+        got.push(serde_json::from_str::<serde_json::Value>(&l).unwrap());
+    }
+    drop_watch(wd);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let steps: Vec<(String, serde_json::Value, serde_json::Value)> =
+        got.iter().map(|g| (g["kind"].as_str().unwrap().to_string(), g["from"].clone(), g["to"].clone())).collect();
+    let j = |s: &str| serde_json::Value::String(s.into());
+    let null = serde_json::Value::Null;
+    assert_eq!(
+        steps,
+        [
+            ("created".into(), null.clone(), j("todo")),
+            ("taken".into(), j("todo"), j("doing")),
+            ("dropped".into(), j("doing"), j("todo")),
+            ("taken".into(), j("todo"), j("doing")),
+            ("moved".into(), j("doing"), j("review")),
+        ],
+        "{got:?}"
+    );
+}
+
+#[test]
+fn watch_events_since_resumes_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = s.add("widgets: resume me", "", &[], "me").unwrap();
+    s.note(id, "old note", "me").unwrap();
+    s.take(id, "me").unwrap();
+    s.note(id, "new note", "me").unwrap();
+    // --since = the exact ts of the last written event: the stream resumes AT that event
+    // (the cursor is the last event strictly before `since`), so a restarted orchestrator
+    // sees the tail and every newer event, and nothing is lost to second-granularity races.
+    let since: i64 = s.show(id).unwrap().events.last().map(|e| e.ts).unwrap_or(0);
+    let (mut child, stdout, wd) =
+        spawn_watched(&db, &["watch", "--events", "--json", "--since", &format!("{since}")], 30);
+    let mut lines = stdout.lines();
+    // Events at/after `since` stream first — writes inside the same second all share its ts,
+    // so the tail may begin earlier in that second (e.g. the card's `created` event). Read
+    // until the recorded tail's last event arrives.
+    let mut tail = Vec::new();
+    loop {
+        let l = lines
+            .next()
+            .unwrap_or_else(|| panic!("watcher emitted nothing after --since (watchdog fired)"))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&l).unwrap();
+        tail.push(v.clone());
+        if v["text"] == "new note" {
+            break;
+        }
+        assert!(tail.len() <= 4, "tail grew past the recorded events: {tail:?}");
+    }
+    assert_eq!(tail.last().unwrap()["kind"], "note", "tail ends at the pre-restart note");
+    // a new write appears immediately after
+    s.note(id, "post-restart note", "me").unwrap();
+    let second = lines
+        .next()
+        .unwrap_or_else(|| panic!("no live event after the write (watchdog fired)"))
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(v["text"], "post-restart note");
+    drop_watch(wd);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // --since 0 replays the whole history from the start
+    let (mut child, stdout, wd) = spawn_watched(&db, &["watch", "--events", "--json", "--since", "0"], 30);
+    let mut lines = stdout.lines();
+    let first = lines.next().unwrap_or_else(|| panic!("--since 0 replays history (watchdog fired)")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(v["kind"], "created", "--since 0 = stream from the start: {v}");
+    drop_watch(wd);
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn watch_flags_are_validated() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let o = tb(&db, &["watch", "--events"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--json"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = tb(&db, &["watch", "--since", "123"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--events"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
 fn consumers_must_tolerate_unknown_fields_and_kinds() {
     // docs/JSON.md: "consumers must ignore unknown fields and unknown event kinds".
     // Pinned here: the shapes that today's readers rely on keep working when a future tb
@@ -236,4 +407,60 @@ fn consumers_must_tolerate_unknown_fields_and_kinds() {
     let r: ReaderCard = serde_json::from_value(v).expect("a typed reader ignores unknown fields");
     assert_eq!((r.id, r.title.as_str(), r.column.as_str(), r.owner.as_deref()), (id, "future proof", "doing", Some("me")));
     assert!(r.events.iter().any(|e| e.kind == "scrying"));
+}
+
+/// A fake `gh` for setup runs that must stay offline.
+fn setup_env(home: &Path, gh: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(args)
+        .env("HOME", home)
+        .env_remove("TB_DB")
+        .env_remove("TB_BOARD")
+        .env("TB_AS", "tester")
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", gh)
+        .output()
+        .unwrap()
+}
+
+/// Lines of the setup summary that name the skill.
+fn skill_summary_lines(out: &str) -> Vec<String> {
+    out.lines().filter(|l| l.trim_start().starts_with("- ") && l.contains("Claude Code skill")).map(|l| l.trim().to_string()).collect()
+}
+
+#[test]
+fn setup_offers_the_skill_only_with_claude_dir() {
+    let ghdir = tempfile::tempdir().unwrap();
+    let gh = ghdir.path().join("gh");
+    std::fs::write(&gh, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    const QUESTION: &str = "Install the Claude Code skill";
+    // 1. no ~/.claude, a REAL run (no --dry-run): no question, the skip is explained,
+    //    nothing is written under ~/.claude, and the summary lists the skip exactly once
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Claude Code not detected"), "the skip is explained: {out}");
+    assert!(!out.contains(QUESTION), "no question without ~/.claude: {out}");
+    assert!(!home.path().join(".claude").exists(), "a real run creates nothing under ~/.claude");
+    assert_eq!(skill_summary_lines(&out), ["- Claude Code skill (no ~/.claude)"], "one skip line: {out}");
+    // 2. with ~/.claude: the question is asked (--yes answers its default, skip)
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--dry-run"]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains(QUESTION), "offered when ~/.claude exists: {out}");
+    assert_eq!(skill_summary_lines(&out).len(), 1, "one skip line: {out}");
+    // 3. --agents forces the skill even without ~/.claude
+    let home = tempfile::tempdir().unwrap();
+    let o = setup_env(home.path(), &gh, &["setup", "--yes", "--no-github", "--agents", "--dry-run"]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("Would install the Claude Code skill"), "forced by --agents: {out}");
 }
