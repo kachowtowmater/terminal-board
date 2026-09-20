@@ -102,8 +102,8 @@ fn arrows_walk_columns_github_agents_and_back() {
     // rows: repo, 1 PR, 2 issues -> 3 downs to the last, one more -> AGENTS
     press(&mut app, &mut s, KeyCode::Down, 1);
     let (screen, buf) = render(&app);
-    let (row, line) = screen.lines().enumerate().find(|(_, l)| l.contains("┃ #335 ")).unwrap();
-    let x = line[..line.find("#335").unwrap()].chars().count() as u16;
+    let (row, line) = screen.lines().enumerate().find(|(_, l)| l.contains("┃ gh#335 ")).unwrap();
+    let x = line[..line.find("gh#335").unwrap()].chars().count() as u16;
     assert!(buf[(x, row as u16)].modifier.contains(Modifier::REVERSED), "selected PR row reversed");
     press(&mut app, &mut s, KeyCode::Down, 2);
     assert_eq!((app.focus, app.gh_sel), (Focus::Github, 3));
