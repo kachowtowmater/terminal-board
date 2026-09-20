@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `config github` verifies the repo exists
+- `tb config github OWNER/REPO` (like the full-screen picker already did) checks the repo via
+  `gh` and refuses `no repo 'R' on GitHub (or no access) — see 'tb github repos'` instead of
+  saving a name that would fail every later `tb github`/`tb sync` with a cut-off, auth-flavoured
+  error; `tb setup --github R` refuses the same way (exit 1, `--json` too).
+- A repo that is already saved but gh cannot find is named in full everywhere: `tb github`,
+  `tb sync` and the stored panel error say `no repo 'R' on GitHub (or no access)` with the hint
+  `see 'tb github repos', then 'tb config github OWNER/REPO'`. The `gh auth status` hint now
+  appears only for an auth failure; any other failure says to try again.
 ### Only the owner moves their DOING card
 - `tb done` / `tb drop` / `tb move` out of DOING by an actor who is not the owner are refused:
   `#1 is held by bot-1 — your cards: #2 · … use --force (logged)`. `--force` works and is

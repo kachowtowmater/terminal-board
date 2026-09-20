@@ -1,5 +1,22 @@
-//! v2: inside a herdr pane the actor is the pane's herdr agent name, not the login name.
 #![cfg(unix)]
+//! v2: inside a herdr pane the actor is the pane's herdr agent name, not the login name.
+/// A fake `gh` that answers `repo view` positively (for `config github`'s existence
+/// check) and nothing else; shared by tests that pin `TB_GH` to a nonexistent path.
+fn fake_gh_ok() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static GH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    GH.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("tb-fake-gh-{}", std::process::id()));
+        std::fs::write(&p, "#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{\"nameWithOwner\":\"acme/widgets\"}';;\n  *) exit 0;;\nesac\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    })
+    .clone()
+}
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,7 +54,7 @@ impl Env {
         for k in ["TB_AS", "TTYBOARD_AS", "TB_NO_HERDR", "HERDR_AGENT_NAME", "HERDR_PANE_ID", "HERDR_ENV", "HERDR_BIN_PATH"] {
             c.env_remove(k);
         }
-        c.env("TB_DB", &db).env("TB_GH", "/nonexistent/gh").env("USER", "login-user").env("PATH", "/usr/bin:/bin");
+        c.env("TB_DB", &db).env("TB_GH", fake_gh_ok()).env("USER", "login-user").env("PATH", "/usr/bin:/bin");
         c.envs(env.iter().copied());
         let o = c.output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));

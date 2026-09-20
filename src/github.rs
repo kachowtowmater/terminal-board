@@ -282,6 +282,11 @@ fn gh(args: &[&str]) -> Result<String, String> {
 
 /// Fetch a full snapshot (5 gh calls). Any failure -> Err(short message).
 pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
+    // a missing repo gets its full name back (gh's line is cut at 80 chars) and no auth talk
+    fetch_raw(repo, now).map_err(|e| if is_not_found(&e) { no_repo(repo) } else { e })
+}
+
+fn fetch_raw(repo: &str, now: i64) -> Result<GhSnapshot, String> {
     use chrono::{Local, TimeZone};
     if !valid_repo(repo) {
         return Err(format!("bad repo '{repo}' — use 'tb config github owner/repo'"));
@@ -340,9 +345,37 @@ pub fn parse_repo_list(json: &str) -> Result<Vec<RepoEntry>, String> {
 }
 
 /// Friendlier wording for the common gh failures.
-fn explain(e: String) -> String {
+/// gh said it is not logged in / the token was refused.
+pub fn is_auth_error(e: &str) -> bool {
     let l = e.to_ascii_lowercase();
-    if l.contains("auth login") || l.contains("not logged") || l.contains("authentication") {
+    l.contains("auth login") || l.contains("not logged") || l.contains("authentication") || l.contains("http 401") || l.contains("bad credentials")
+}
+
+/// gh said the repository does not exist (or is not visible to this account).
+pub fn is_not_found(e: &str) -> bool {
+    let l = e.to_ascii_lowercase();
+    l.contains("could not resolve to a repository") || l.contains("not found") || l.contains("http 404")
+}
+
+/// The full, name-carrying message for a repo gh cannot find.
+pub fn no_repo(repo: &str) -> String {
+    format!("no repo '{repo}' on GitHub (or no access)")
+}
+
+/// What to run next after a failed fetch: the repo hint for a missing repo, the auth hint only
+/// for an auth failure, otherwise just try again. `cmd` is e.g. `tb sync`.
+pub fn fetch_hint(e: &str, cmd: &str) -> String {
+    if e.starts_with("no repo '") {
+        "see 'tb github repos', then 'tb config github OWNER/REPO'".into()
+    } else if is_auth_error(e) {
+        format!("check 'gh auth status', then '{cmd}'")
+    } else {
+        format!("try '{cmd}' again")
+    }
+}
+
+fn explain(e: String) -> String {
+    if is_auth_error(&e) {
         "gh not logged in — run 'gh auth login'".into()
     } else {
         e
@@ -374,11 +407,19 @@ pub fn check_repo(repo: &str) -> Result<String, String> {
     if !valid_repo(repo) {
         return Err(format!("'{repo}' is not owner/repo"));
     }
-    let out = gh(&["repo", "view", repo, "--json", "nameWithOwner"]).map_err(|e| explain(format!("{repo}: {e}")))?;
+    let out = gh(&["repo", "view", repo, "--json", "nameWithOwner"]).map_err(|e| {
+        if is_auth_error(&e) {
+            explain(e)
+        } else if is_not_found(&e) {
+            format!("{} — see 'tb github repos'", no_repo(repo))
+        } else {
+            format!("{repo}: {e}")
+        }
+    })?;
     let v: Value = serde_json::from_str(&out).map_err(|_| format!("{repo}: unexpected gh output"))?;
     let name = st(&v, "nameWithOwner");
     if name.is_empty() {
-        Err(format!("{repo}: not found"))
+        Err(format!("{} — see 'tb github repos'", no_repo(repo)))
     } else {
         Ok(name)
     }

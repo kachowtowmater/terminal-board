@@ -601,7 +601,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             })?;
             let r = github::fetch(&repo, now);
             store.save_github(&r)?;
-            let snap = r.map_err(|e| BoardError(format!("github: {e} — check 'gh auth status', then 'tb sync'")))?;
+            let snap = r.map_err(|e| BoardError(format!("github: {e} — {}", github::fetch_hint(&e, "tb sync"))))?;
             let cards = store.list()?;
             let states = github::fetch_states(&repo, &github::needs_state(&snap, &cards));
             let moves = github::plan_moves(&snap, &cards, &states, &store.returned_at()?);
@@ -649,6 +649,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("github".into(), json!(r))
                 }
                 ("github", Some(repo)) => {
+                    // the picker checks the repo exists; the CLI must not save a name that
+                    // will fail every later sync with an auth-flavoured error
+                    github::check_repo(&repo).map_err(BoardError)?;
                     store.set_github(Some(&repo))?;
                     ("github".into(), json!(repo))
                 }
@@ -717,7 +720,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let r = github::fetch(&repo, now);
                 store.save_github(&r)?;
                 if let (Err(e), None) = (&r, &view.snap) {
-                    return Err(BoardError(format!("github: {e} — check 'gh auth status', then 'tb github --refresh'")));
+                    return Err(BoardError(format!("github: {e} — {}", github::fetch_hint(e, "tb github --refresh"))));
                 }
             }
             let view = store.github_view()?;
