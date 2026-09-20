@@ -20,6 +20,12 @@
   already say it): `PR gh#9 merged → done`.
 - `tb done ID --approve` records a reviewer's approval as an `approved` event without
   moving the card — REVIEW stays REVIEW and DONE still waits for the merge.
+### Watching
+- `tb watch --events --json [--since TS]`: an opt-in event stream for orchestrators — one
+  NDJSON line per event (`{v, ts, card_id, actor, kind, from, to, text}`; `from`/`to` are
+  the column transition of every event that changes a column: created, taken, dropped, moved) instead of the whole board. `--since` resumes
+  after a restart with only the events at/after that unix second. Plain `tb watch --json`
+  output is unchanged byte-for-byte.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that
