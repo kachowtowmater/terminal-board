@@ -35,6 +35,11 @@
   the column transition of every event that changes a column: created, taken, dropped, moved) instead of the whole board. `--since` resumes
   after a restart with only the events at/after that unix second. Plain `tb watch --json`
   output is unchanged byte-for-byte.
+### Setup: the Claude Code skill is offered only to Claude Code users
+- The wizard asked to install the skill even on machines without Claude Code (and would
+  create `~/.claude/skills/...`). Now step 4 skips silently when `~/.claude` does not exist
+  (`No ~/.claude — Claude Code not detected; skipping the skill (use --agents to force it)`);
+  it is offered when `~/.claude` exists, and `--agents` forces the agent steps regardless.
 ### Contracts (docs + tests, no features)
 - docs/JSON.md states the forward-compatibility rule — consumers must ignore unknown fields
   and unknown event kinds — pinned by a contract test that feeds an event of a kind that
