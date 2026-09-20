@@ -122,8 +122,8 @@ echo "(f) install then tb setup --yes --no-github --no-agents"
 new_home
 "$INSTALL" --yes --no-github --no-agents >"$SCRATCH/out" 2>&1
 check "setup ran (numbered steps + summary)" 'grep -q "\[1/5\] Board" "$SCRATCH/out" && grep -q "^Summary" "$SCRATCH/out"'
-check "github off + panel hidden" 'tbcfg | grep -Eq "^github +off$" && tbcfg | grep -Eq "^github-panel +hidden$"'
-check "agents panel hidden" 'tbcfg | grep -Eq "^agents-panel +hidden$"'
+check "github off + panel hidden" 'grep -Eq "^github +off$" <<<"$(tbcfg)" && grep -Eq "^github-panel +hidden$" <<<"$(tbcfg)"'
+check "agents panel hidden" 'grep -Eq "^agents-panel +hidden$" <<<"$(tbcfg)"'
 check "setup_done written" 'setup_done'
 check "no skill" '[ ! -e "$HOME/.claude/skills/terminal-board" ]'
 
@@ -132,8 +132,8 @@ new_home
 fake_gh "$FAKE" ok
 "$INSTALL" --yes --no-setup >/dev/null 2>&1
 TB_GH="$FAKE/gh" "$TB" setup --yes --github acme/widgets --no-agents >"$SCRATCH/out" 2>&1
-check "repo saved" 'tbcfg | grep -Eq "^github +acme/widgets$"'
-check "panel shown" 'tbcfg | grep -Eq "^github-panel +shown$"'
+check "repo saved" 'grep -Eq "^github +acme/widgets$" <<<"$(tbcfg)"'
+check "panel shown" 'grep -Eq "^github-panel +shown$" <<<"$(tbcfg)"'
 check "success line" 'grep -q "connected to acme/widgets" "$SCRATCH/out"'
 
 echo "(h) gh not logged in, --yes: clean skip"
@@ -144,7 +144,7 @@ rc=0
 TB_GH="$FAKE/gh" "$TB" setup --yes --github acme/widgets --no-agents >"$SCRATCH/out" 2>&1 || rc=$?
 check "exit 0" '[ "$rc" = 0 ]'
 check "explains the skip" 'grep -q "gh auth login" "$SCRATCH/out"'
-check "github off + hidden" 'tbcfg | grep -Eq "^github +off$" && tbcfg | grep -Eq "^github-panel +hidden$"'
+check "github off + hidden" 'grep -Eq "^github +off$" <<<"$(tbcfg)" && grep -Eq "^github-panel +hidden$" <<<"$(tbcfg)"'
 
 echo "(i) skill + snippet; a re-run does not duplicate"
 new_home
@@ -156,7 +156,7 @@ check "skill installed" 'grep -q "^name: terminal-board" "$HOME/.claude/skills/t
 check "one snippet block" '[ "$(grep -c "terminal-board:start" "$HOME/AGENTS.md")" = 1 ] && [ "$(grep -c "terminal-board:end" "$HOME/AGENTS.md")" = 1 ]'
 check "snippet body present" 'grep -q "tb next --as" "$HOME/AGENTS.md"'
 check "own content kept" 'grep -q "keep this line" "$HOME/AGENTS.md"'
-check "agents panel shown" 'tbcfg | grep -Eq "^agents-panel +shown$"'
+check "agents panel shown" 'grep -Eq "^agents-panel +shown$" <<<"$(tbcfg)"'
 
 echo "(j) tb setup --dry-run changes nothing"
 new_home
@@ -170,17 +170,28 @@ new_home
 "$INSTALL" --yes --no-setup >/dev/null 2>&1
 TB_TTY=$(answers '\n\n\n\n\n') "$TB" setup >"$SCRATCH/out" 2>&1
 check "asked [y]es / [S]kip" 'grep -q "Connect GitHub.*\[y\]es / \[S\]kip" "$SCRATCH/out"'
-check "github hidden" 'tbcfg | grep -Eq "^github-panel +hidden$"'
-check "agents hidden, no skill" 'tbcfg | grep -Eq "^agents-panel +hidden$" && [ ! -e "$HOME/.claude" ]'
+check "github hidden" 'grep -Eq "^github-panel +hidden$" <<<"$(tbcfg)"'
+check "agents hidden, no skill" 'grep -Eq "^agents-panel +hidden$" <<<"$(tbcfg)" && [ ! -e "$HOME/.claude" ]'
 check "summary lists the skips" 'grep -q "^Skipped:" "$SCRATCH/out"'
+
+echo "(k2) interactive, no ~/.claude: the skill question is not asked"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+TB_TTY=$(answers '\n\n~/NOTES.md\n') "$TB" setup >"$SCRATCH/out" 2>&1
+check "skill question absent" '! grep -q "Install the Claude Code skill" "$SCRATCH/out"'
+check "skip explained" 'grep -q "Claude Code not detected" "$SCRATCH/out"'
+check "one skip line, no ~/.claude created" '[ "$(grep -c "^ *- Claude Code skill" "$SCRATCH/out")" = 1 ] && [ ! -e "$HOME/.claude" ]'
+check "next answer reaches the snippet prompt" 'grep -q "terminal-board:start" "$HOME/NOTES.md"'
 
 echo "(l) interactive: github yes, pick #1, skill yes, snippet path"
 new_home
 fake_gh "$FAKE" ok
 "$INSTALL" --yes --no-setup >/dev/null 2>&1
+# a Claude Code user: ~/.claude exists, so the skill question is asked
+mkdir -p "$HOME/.claude"
 TB_GH="$FAKE/gh" TB_TTY=$(answers "y\n1\ns\ny\n~/CLAUDE.md\n") "$TB" setup >"$SCRATCH/out" 2>&1
 check "list shown numbered" 'grep -q "1) me/first" "$SCRATCH/out"'
-check "repo picked from the list" 'tbcfg | grep -Eq "^github +me/first$"'
+check "repo picked from the list" 'grep -Eq "^github +me/first$" <<<"$(tbcfg)"'
 check "skill installed" '[ -f "$HOME/.claude/skills/terminal-board/SKILL.md" ]'
 check "~ expanded for the snippet" 'grep -q "terminal-board:start" "$HOME/CLAUDE.md"'
 
@@ -228,10 +239,10 @@ expect eof
 puts SECOND-OK
 EXP
     first=$(expect -f "$SCRATCH/first.exp" 2>&1 || true)
-    check "first run prompts, then opens the board" 'echo "$first" | grep -q FIRST-OK'
+    check "first run prompts, then opens the board" 'grep -q FIRST-OK <<<"$first"'
     check "skip still marks setup done" 'setup_done'
     second=$(expect -f "$SCRATCH/second.exp" 2>&1 || true)
-    check "second run opens the board directly" 'echo "$second" | grep -q SECOND-OK'
+    check "second run opens the board directly" 'grep -q SECOND-OK <<<"$second"'
     export TB_TTY=/dev/null
 else
     echo "  skip (expect not installed)"

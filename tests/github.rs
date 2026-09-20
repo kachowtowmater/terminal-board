@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use terminal_board::github::{
     branch_matches, factory, parse_issues, parse_main_ci, parse_merged, parse_prs, short_title, tiles, GhSnapshot,
-    GhView, StateKind,
+    GhView, StateKind, RED_AFTER_FAILS,
 };
 use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
@@ -147,10 +147,10 @@ fn state_derivation_matrix() {
     let by = |n: i64| f.issues.iter().find(|r| r.number == n).unwrap().clone();
     // closingIssuesReferences; WHO = board card owner over PR author
     let r = by(315);
-    assert_eq!((r.kind, r.state.as_str(), r.who.as_str()), (StateKind::Pr, "PR #335 FAIL", "bot-5"));
+    assert_eq!((r.kind, r.state.as_str(), r.who.as_str()), (StateKind::Pr, "PR gh#335 FAIL", "bot-5"));
     // branch fallback (feat-310-facets), WHO = PR author (no card)
     let r = by(310);
-    assert_eq!((r.kind, r.state.as_str(), r.who.as_str()), (StateKind::Pr, "PR #333 run", "bot-3"));
+    assert_eq!((r.kind, r.state.as_str(), r.who.as_str()), (StateKind::Pr, "PR gh#333 run", "bot-3"));
     // board card in doing
     let r = by(327);
     assert_eq!((r.kind, r.state.as_str(), r.who.as_str()), (StateKind::InProgress, "in progress", "bot-2"));
@@ -184,7 +184,7 @@ fn tile_contents() {
     assert_eq!(t[0], ("ISSUES".into(), "11 open".into(), format!("+{} today · 2 unclaimed", f.new_today)));
     assert!(f.new_today >= 1, "the 1h-old issue is from today (unless run just after midnight)");
     assert_eq!(t[1], ("PULL REQUESTS".into(), "4 open (1 draft)".into(), "1 failing CI".into()));
-    assert_eq!(t[2], ("MERGED".into(), "2 today".into(), "last: #333 12m ago".into()));
+    assert_eq!(t[2], ("MERGED".into(), "2 today".into(), "last: gh#333 12m ago".into()));
     assert_eq!(t[3], ("MAIN CI".into(), "FAIL".into(), "ci-main · 41m".into()));
 }
 
@@ -229,7 +229,7 @@ fn board_app(view: GhView) -> (tempfile::TempDir, App) {
 }
 
 fn on(snap: Option<GhSnapshot>, error: Option<&str>) -> GhView {
-    GhView { repo: Some("acme/widgets".into()), snap, error: error.map(str::to_string) }
+    GhView { repo: Some("acme/widgets".into()), snap, error: error.map(str::to_string), fails: error.is_some() as i64 }
 }
 
 /// Column x of `needle` in the first line containing `anchor`.
@@ -250,11 +250,11 @@ fn panel_tiles_tables_and_only_fail_is_red() {
             "4 open (1 draft)",
             "1 failing CI",
             "MERGED  2 today",
-            "last: #333 12m ago",
+            "last: gh#333 12m ago",
             "MAIN CI  ok",
             "ci-main · 41m",
-            "fix/315 -> #315 (bot-5)",
-            "PR #335 FAIL",
+            "fix/315 -> gh#315 (bot-5)",
+            "PR gh#335 FAIL",
             "in progress",
             "bot-2",
             "rate limit ignores burst",
@@ -267,13 +267,13 @@ fn panel_tiles_tables_and_only_fail_is_red() {
         assert!((tile_row.contains("PRS") || tile_row.contains("PULL REQUESTS")) && tile_row.contains("MERGED") && tile_row.contains("MAIN CI"), "{w}: {tile_row}");
         // tables aligned: header columns line up with the cells below
         let ci_h = col_in(&screen, "BRANCH / ISSUE", "CI ");
-        let ci_c = col_in(&screen, "│ #335 ", "FAIL");
+        let ci_c = col_in(&screen, "│ gh#335  ", "FAIL");
         assert_eq!(ci_h, ci_c, "{w}: CI column aligned");
         let st_h = col_in(&screen, "LABELS", "STATE");
-        let st_c = col_in(&screen, "│ #327 ", "in progress");
+        let st_c = col_in(&screen, "│ gh#327  ", "in progress");
         assert_eq!(st_h, st_c, "{w}: STATE column aligned");
         let who_h = col_in(&screen, "LABELS", "WHO");
-        let who_c = col_in(&screen, "│ #327 ", "bot-2");
+        let who_c = col_in(&screen, "│ gh#327  ", "bot-2");
         assert_eq!(who_h, who_c, "{w}: WHO column aligned");
         // header rows bold
         let (x, y) = (ci_h as u16, screen.lines().position(|l| l.contains("BRANCH / ISSUE")).unwrap() as u16);
@@ -283,16 +283,16 @@ fn panel_tiles_tables_and_only_fail_is_red() {
         runs.dedup();
         assert_eq!(runs, ["FAIL"], "{w}: only FAIL is red");
         // coarse ages in the AGE columns: 1h42m -> 1h, 10h -> 10h, 1d+ -> 1d
-        let pr_row = screen.lines().find(|l| l.contains("│ #333 ")).unwrap();
+        let pr_row = screen.lines().find(|l| l.contains("│ gh#333  ")).unwrap();
         assert!(pr_row.contains(" 1h ") && !pr_row.contains("1h42"), "{pr_row}");
         let age_h = col_in(&screen, "BRANCH / ISSUE", "AGE");
-        assert_eq!(col_in(&screen, "│ #333 ", " 1h ") + 1, age_h, "{w}: AGE aligned");
-        let is_row = screen.lines().find(|l| l.contains("│ #327 ")).unwrap();
+        assert_eq!(col_in(&screen, "│ gh#333  ", " 1h ") + 1, age_h, "{w}: AGE aligned");
+        let is_row = screen.lines().find(|l| l.contains("│ gh#327  ")).unwrap();
         assert!(is_row.contains(" 10h "), "{is_row}");
         // ordering + more line
-        let r2104 = screen.lines().position(|l| l.contains("│ #315 ")).unwrap();
-        let r2116 = screen.lines().position(|l| l.contains("│ #327 ")).unwrap();
-        let r2123 = screen.lines().position(|l| l.contains("│ #334 ")).unwrap_or(usize::MAX);
+        let r2104 = screen.lines().position(|l| l.contains("│ gh#315  ")).unwrap();
+        let r2116 = screen.lines().position(|l| l.contains("│ gh#327  ")).unwrap();
+        let r2123 = screen.lines().position(|l| l.contains("│ gh#334  ")).unwrap_or(usize::MAX);
         assert!(r2104 < r2116 && r2116 < r2123, "linked, then in progress, then unclaimed");
     }
     // main CI failing: tile value FAIL red too
@@ -313,7 +313,7 @@ fn panel_more_line_and_compact_fallback() {
     let (screen, _) = screen_of(&app, 110, 22);
     assert!(screen.contains("GITHUB · widgets"), "{screen}");
     assert!(screen.contains("ISSUES  11 open") && screen.contains("MERGED    2 today") && screen.contains("MAIN CI  ok"), "{screen}");
-    assert!(screen.contains("PR    #335") && screen.contains("CI FAIL"), "{screen}");
+    assert!(screen.contains("PR    gh#335") && screen.contains("CI FAIL"), "{screen}");
 }
 
 #[test]
@@ -336,13 +336,42 @@ fn panel_hidden_when_unconfigured_toggled_or_narrow() {
 }
 
 #[test]
-fn panel_shows_errors() {
+fn panel_hiccup_keeps_layout_and_goes_red_only_after_three() {
+    // one-off failure: no extra row, last good snapshot stays, quiet words in the header
+    let (_d, app) = board_app(on(Some(snapshot("success")), Some("gh pr timed out")));
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(screen.contains("synced") && screen.contains("offline, retrying"), "{screen}");
+    assert!(!screen.contains("github: gh pr timed out"), "no raw error row:\n{screen}");
+    assert!(screen.contains("PULL REQUESTS"), "stale data stays:\n{screen}");
+    assert!(red_runs(&buf).iter().all(|r| r == "FAIL"), "1 failure: nothing new is red:\n{screen}");
+    // a non-network error gets the other quiet wording
+    let (_d, app) = board_app(on(Some(snapshot("success")), Some("HTTP 401: Bad credentials")));
+    let (screen, _) = screen_of(&app, 160, 50);
+    assert!(screen.contains("gh error") && !screen.contains("offline, retrying"), "{screen}");
+    // never-synced: still no extra row — the header carries the quiet wording; the raw
+    // error lives in `tb github` / `--json`
     let (_d, app) = board_app(on(None, Some("HTTP 401: Bad credentials")));
     let (screen, _) = screen_of(&app, 140, 45);
-    assert!(screen.contains("github: HTTP 401: Bad credentials") && screen.contains("synced never"), "{screen}");
-    let (_d, app) = board_app(on(Some(snapshot("success")), Some("gh pr timed out")));
-    let (screen, _) = screen_of(&app, 160, 50);
-    assert!(screen.contains("github: gh pr timed out") && screen.contains("PULL REQUESTS"), "stale data stays:\n{screen}");
+    assert!(screen.contains("synced never · gh error") && !screen.contains("github: HTTP 401"), "{screen}");
+}
+
+#[test]
+fn panel_third_consecutive_failure_turns_header_red() {
+    let base = GhView {
+        repo: Some("acme/widgets".into()),
+        snap: Some(snapshot("success")),
+        error: Some("Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout".into()),
+        fails: RED_AFTER_FAILS,
+    };
+    let (_d, app) = board_app(base.clone());
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(screen.contains("offline, retrying"), "{screen}");
+    let reds = red_runs(&buf);
+    assert!(reds.iter().any(|r| r.contains("offline, retrying")), "header is red now: {reds:?}\n{screen}");
+    // and not at 2
+    let (_d, app) = board_app(GhView { fails: RED_AFTER_FAILS - 1, ..base });
+    let (screen, buf) = screen_of(&app, 160, 50);
+    assert!(red_runs(&buf).iter().all(|r| r == "FAIL"), "2 failures: header not red yet:\n{screen}");
 }
 
 // ---------- CLI ----------
@@ -436,13 +465,13 @@ fn cli_serves_fresh_cache_without_calling_gh() {
     for want in [
         "GITHUB · acme/widgets · synced",
         "issues 11 open · PRs 4 open (1 draft) · merged today 2 · main CI FAIL · 3 unclaimed",
-        "#335 api: rate limit ignores burst setting · CI FAIL · review chg",
-        "fix/315 -> #315 (bot)",
-        "#327 login form rejects plus-addresses [bug] · in progress · bot-2",
-        "#334 ui: totals overflow on wide tables (#315) [bug] · unclaimed · -",
-        "#315 rate limit resets too early — see ticket 4 [bug,enhancement] · PR #335 FAIL · bot",
+        "gh#335 api: rate limit ignores burst setting · CI FAIL · review chg",
+        "fix/315 -> gh#315 (bot)",
+        "gh#327 login form rejects plus-addresses [bug] · in progress · bot-2",
+        "gh#334 ui: totals overflow on wide tables (#315) [bug] · unclaimed · -",
+        "gh#315 rate limit resets too early — see ticket 4 [bug,enhancement] · PR gh#335 FAIL · bot",
         "MERGED TODAY",
-        "#330 dark theme",
+        "gh#330 dark theme",
         "MAIN CI FAIL · ci-main",
     ] {
         assert!(t.contains(want), "missing {want:?}:\n{t}");
@@ -480,5 +509,18 @@ fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
     // failing refresh keeps the last good snapshot and says so
     let o = e.run(&["github", "--refresh"], &bad);
     assert!(o.status.success());
-    assert!(out(&o).contains("github: HTTP 401") && out(&o).contains("#334"), "{}", out(&o));
+    assert!(out(&o).contains("github: HTTP 401") && out(&o).contains("gh#334"), "{}", out(&o));
+    // --json exposes the full error, the fail count and the snapshot's age
+    let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--json"], &bad))).unwrap();
+    assert!(j["error"].as_str().unwrap().contains("HTTP 401"), "{}", j);
+    assert_eq!(j["fails"], 1);
+    assert!(j["fetched_at"].as_i64().unwrap() > 0);
+    // two more failing refreshes -> 3 in a row (the UI threshold); a success resets it
+    for want in [2, 3] {
+        let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--refresh", "--json"], &bad))).unwrap();
+        assert_eq!(j["fails"], want, "{}", j);
+    }
+    let j: serde_json::Value = serde_json::from_str(&out(&e.run(&["github", "--refresh", "--json"], &ok))).unwrap();
+    assert_eq!(j["fails"], 0, "success resets the counter: {}", j);
+    assert!(j["error"].is_null());
 }

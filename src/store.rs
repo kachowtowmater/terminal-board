@@ -43,6 +43,21 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
+/// The refusal for moving someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+    let mine: Vec<i64> = {
+        let mut st =
+            tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
+        let v = st.query_map([actor], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
+    Ok(BoardError(format!(
+        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+    )))
+}
+
 /// The actor-aware WIP message: the board-wide limit with who holds what, and what the
 /// actor can actually do (finish their own card, or wait — never finish someone else's).
 fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardError {
@@ -144,6 +159,14 @@ pub struct Event {
     pub text: String,
 }
 
+/// An event with its database id (for `tb watch --events` resumption).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchEvent {
+    pub id: i64,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CardDetail {
     #[serde(flatten)]
@@ -161,6 +184,8 @@ pub struct Snapshot {
     pub wip: i64,
     /// last note text per card
     pub last_note: HashMap<i64, String>,
+    /// unix ts of each card's last event (any kind)
+    pub last_event_at: HashMap<i64, i64>,
     /// last two events per card, oldest first
     pub recent: HashMap<i64, Vec<Event>>,
     /// (done, total) checklist counts per card
@@ -293,7 +318,8 @@ CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
     json TEXT,
-    error TEXT
+    error TEXT,
+    fails INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS board_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -397,6 +423,19 @@ impl Store {
                 }
                 Err(e) if e.to_string().contains("duplicate column") => {}
                 Err(e) => return Err(e.into()),
+            }
+        }
+        // migration: github fail counter (red only after 3 consecutive failed refreshes)
+        let has_fails: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_fails == 0 {
+            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.into()),
+                _ => {}
             }
         }
         // migration: `reviewer` (v2, `tb next --review`)
@@ -541,21 +580,21 @@ impl Store {
     }
 
     /// Store a fetch result: a snapshot replaces the cache and clears the error; an error is
-    /// recorded next to the last good snapshot.
+    /// recorded next to the last good snapshot, and counted (red only after 3 in a row).
     pub fn save_github(&self, r: &std::result::Result<crate::github::GhSnapshot, String>) -> Result<()> {
         match r {
             Ok(s) => {
                 let json = serde_json::to_string(s).unwrap_or_default();
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, fetched_at, json, error) VALUES (1, ?, ?, NULL)
-                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, ?, ?, NULL, 0)
+                     ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, json=excluded.json, error=NULL, fails=0",
                     params![s.fetched_at, json],
                 )?;
             }
             Err(e) => {
                 self.conn.execute(
-                    "INSERT INTO github_snapshot(key, error) VALUES (1, ?)
-                     ON CONFLICT(key) DO UPDATE SET error=excluded.error",
+                    "INSERT INTO github_snapshot(key, fetched_at, json, error, fails) VALUES (1, 0, NULL, ?, 1)
+                     ON CONFLICT(key) DO UPDATE SET error=excluded.error, fails=fails+1",
                     params![e],
                 )?;
             }
@@ -563,23 +602,25 @@ impl Store {
         Ok(())
     }
 
-    /// Raw cached snapshot JSON and its error, if any.
-    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>)> {
+    /// Raw cached snapshot JSON, its error (if any) and consecutive fail count.
+    pub fn github_cache(&self) -> Result<(Option<String>, Option<String>, i64)> {
         Ok(self
             .conn
-            .query_row("SELECT json, error FROM github_snapshot WHERE key=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT json, error, fails FROM github_snapshot WHERE key=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?
-            .unwrap_or((None, None)))
+            .unwrap_or((None, None, 0)))
     }
 
-    /// Repo + cached snapshot (only if it is for that repo) + last error.
+    /// Repo + cached snapshot (only if it is for that repo) + last error + fail count.
     pub fn github_view(&self) -> Result<crate::github::GhView> {
         let repo = self.github_repo()?;
-        let (json, error) = self.github_cache()?;
+        let (json, error, fails) = self.github_cache()?;
         let snap = json
             .and_then(|j| serde_json::from_str::<crate::github::GhSnapshot>(&j).ok())
             .filter(|s| Some(&s.repo) == repo.as_ref());
-        Ok(crate::github::GhView { repo, snap, error })
+        Ok(crate::github::GhView { repo, snap, error, fails })
     }
 
     /// `github-panel` / `agents-panel`: shown (default) or hidden.
@@ -751,10 +792,40 @@ impl Store {
         Ok(CardDetail { card, checklist, events, round })
     }
 
+    /// Events with `id > after`, oldest first (for `tb watch --events`).
+    pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, card_id, ts, actor, kind, text FROM events WHERE id > ? ORDER BY id")?;
+        let v = st
+            .query_map([after], |r| {
+                Ok(WatchEvent {
+                    id: r.get(0)?,
+                    event: Event {
+                        card_id: r.get(1)?,
+                        ts: r.get(2)?,
+                        actor: r.get(3)?,
+                        kind: r.get(4)?,
+                        text: r.get(5)?,
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
+    /// The id of the last event strictly before `ts` (0 when none) — `--since` resumption:
+    /// streaming `id > cursor` yields exactly the events at/after `ts`.
+    pub fn events_cursor_at(&self, ts: i64) -> Result<i64> {
+        // a DB error must surface, not silently replay the whole history from 0
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events WHERE ts < ?", [ts], |r| r.get(0))?)
+    }
+
     pub fn snapshot(&self) -> Result<Snapshot> {
         let cards = self.list()?;
         let wip = self.wip()?;
         let mut last_note = HashMap::new();
+        let mut last_event_at: HashMap<i64, i64> = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
         let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
@@ -765,6 +836,7 @@ impl Store {
             if e.kind == "note" {
                 last_note.insert(e.card_id, e.text.clone());
             }
+            last_event_at.insert(e.card_id, e.ts);
             if e.kind == "returned" {
                 *rounds.entry(e.card_id).or_insert(1) += 1;
             }
@@ -790,6 +862,7 @@ impl Store {
             cards,
             wip,
             last_note,
+            last_event_at,
             recent,
             checks,
             rounds,
@@ -1071,6 +1144,19 @@ impl Store {
             }
             return Ok(c);
         }
+        // Card ids are small shared integers: an off-by-one must not move someone else's
+        // work. Leaving DOING requires the owner (or --force, logged as its own event).
+        // The `github` automation is exempt: its moves are evidence-driven and logged.
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                }
+            }
+        }
         if column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
@@ -1098,14 +1184,23 @@ impl Store {
             "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
+        // a block set while in REVIEW must not survive into DONE (or it renders as a live
+        // problem on a finished card); reaching done clears it, logged as part of the move.
+        // Any other move keeps the block untouched (QA: 'block 1' then 'done 1' from DOING
+        // must NOT clear it — only the DONE transition does).
+        let block_cleared = column == "done" && c.blocked.is_some();
         let pos = bottom_of(&tx, &column)?;
         // the reviewer stays on the card that reaches done (who approved it); any other move
         // ends the review, so the next round is claimed afresh
         let reviewer = if column == "done" { c.reviewer.clone() } else { None };
         tx.execute(
-            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, reviewer=? WHERE id=?"#,
-            params![column, owner, now(), pos, reviewer, id],
+            r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, reviewer=?,
+               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
+            params![column, owner, now(), pos, reviewer, column, id],
         )?;
+        if block_cleared {
+            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        }
         Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
         if let (true, Some(r)) = (send_back, reason) {
             Self::log(&tx, id, actor, "returned", r)?;
@@ -1163,11 +1258,50 @@ impl Store {
     }
 
     /// Edit title (re-parsing `tag:` and `gh#N`; an absent gh#N keeps the old ref) and/or description.
-    pub fn edit(&mut self, id: i64, raw_title: Option<&str>, desc: Option<&str>, actor: &str) -> Result<Card> {
+    /// Edit a card. `raw_title`/`desc` of `None` leave that field alone (only the fields
+    /// the caller changed are written). `baseline` = what the caller saw when they started
+    /// (the TUI form): a field the caller changed that someone else changed since the form
+    /// opened is refused instead of overwritten — the form never puts old values back.
+    pub fn edit(
+        &mut self,
+        id: i64,
+        raw_title: Option<&str>,
+        desc: Option<&str>,
+        actor: &str,
+        baseline: Option<(&str, &str)>,
+    ) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        let (mut skip_title, mut skip_desc) = (false, false);
+        if let Some((base_title, base_desc)) = baseline {
+            // Only fields the caller CHANGED are written. A field typed back at its
+            // open-time value is skipped (never written — no stale overwrite). A field
+            // they changed that someone else changed since the form opened is refused.
+            let conflict = |field: &str, base: &str, now: &str, typed: &str| -> Option<String> {
+                (now != base && typed != now).then(|| {
+                    format!("#{id} changed while you were editing — {field} has newer text; reopen with e")
+                })
+            };
+            if let Some(t) = raw_title {
+                // the baseline for titles is the raw `tag: gh#N title` string, not the
+                // parsed title the card stores
+                let now_raw = crate::store::raw_title(&c);
+                if t == base_title {
+                    skip_title = true;
+                } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
+                    return err(e);
+                }
+            }
+            if let Some(d) = desc {
+                if d == base_desc {
+                    skip_desc = true;
+                } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
+                    return err(e);
+                }
+            }
+        }
         let mut what = Vec::new();
-        if let Some(t) = raw_title {
+        if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
                 return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
             }
@@ -1178,7 +1312,7 @@ impl Store {
             )?;
             what.push("title");
         }
-        if let Some(d) = desc {
+        if let (Some(d), false) = (desc, skip_desc) {
             tx.execute("UPDATE cards SET description=? WHERE id=?", params![d.trim(), id])?;
             what.push("description");
         }
@@ -1212,20 +1346,44 @@ impl Store {
         }
     }
 
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
+    pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
+        self.drop_card_inner(id, actor, true)
+    }
+
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
-        let c = self.card(id)?;
+        self.drop_card_inner(id, actor, false)
+    }
+
+    /// Back to todo, unowned. Someone else's DOING card is refused (the same hazard as moving
+    /// it, see move_card) unless forced; the check, the `force` event and the drop are one
+    /// transaction.
+    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let c = get_card(&tx, id)?;
         if c.column == "todo" && c.owner.is_none() {
             return Ok(c);
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if c.column == "doing" && actor != "github" {
+            if let Some(owner) = c.owner.as_deref() {
+                if !owner.eq_ignore_ascii_case(actor) {
+                    if !force {
+                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
+                }
+            }
+        }
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
             r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=?, reviewer=NULL WHERE id=?"#,
             params![now(), pos, id],
         )?;
         Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
+        let c = get_card(&tx, id)?;
         tx.commit()?;
-        self.card(id)
+        Ok(c)
     }
 }
 

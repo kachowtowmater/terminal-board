@@ -102,8 +102,8 @@ fn arrows_walk_columns_github_agents_and_back() {
     // rows: repo, 1 PR, 2 issues -> 3 downs to the last, one more -> AGENTS
     press(&mut app, &mut s, KeyCode::Down, 1);
     let (screen, buf) = render(&app);
-    let (row, line) = screen.lines().enumerate().find(|(_, l)| l.contains("┃ #335 ")).unwrap();
-    let x = line[..line.find("#335").unwrap()].chars().count() as u16;
+    let (row, line) = screen.lines().enumerate().find(|(_, l)| l.contains("┃ gh#335 ")).unwrap();
+    let x = line[..line.find("gh#335").unwrap()].chars().count() as u16;
     assert!(buf[(x, row as u16)].modifier.contains(Modifier::REVERSED), "selected PR row reversed");
     press(&mut app, &mut s, KeyCode::Down, 2);
     assert_eq!((app.focus, app.gh_sel), (Focus::Github, 3));
@@ -275,4 +275,46 @@ fn focus_view_shift_arrows_move_and_help_says_the_axis() {
     let (help, _) = render(&app);
     assert!(help.contains("move the card to the next column"), "{help}");
     assert!(help.contains("focus view arrows") && help.contains("left/right card, up/down column"), "help names the focus axis: {help}");
+}
+
+/// `?` at 60x14 and 40x14: every key stands apart from its description, every word of every
+/// description can be scrolled into view whole, and Up works right after scrolling past the
+/// end. Driven by keys and rendered text only.
+#[test]
+fn help_is_readable_and_scrollable_in_small_panes() {
+    use terminal_board::tui::HELP_GROUPS;
+    let frame = |c: char| "─│┌┐└┘┏┓┗┛━┃".contains(c);
+    for (w, h) in [(60u16, 14u16), (40, 14)] {
+        let (_d, mut s, mut app) = setup();
+        let _ = render_small(&app, w, h);
+        app.handle_key(key(KeyCode::Char('?')), &mut s);
+        assert_eq!(app.mode, Mode::Help);
+        // every scroll position, top to bottom (and well past it)
+        let mut seen = String::new();
+        let mut bottom = String::new();
+        for _ in 0..120 {
+            bottom = render_small(&app, w, h);
+            seen.push_str(&bottom);
+            seen.push('\n');
+            app.handle_key(key(KeyCode::Down), &mut s);
+        }
+        let clean: String = seen.chars().map(|c| if frame(c) { ' ' } else { c }).collect();
+        let tokens: std::collections::HashSet<&str> = clean.split_whitespace().collect();
+        for (_, keys) in HELP_GROUPS {
+            for (k, d) in keys.iter() {
+                for word in d.split_whitespace() {
+                    assert!(tokens.contains(word), "{w}x{h}: '{word}' of \"{d}\" is never shown whole");
+                }
+                let apart = clean.lines().map(str::trim_start).any(|l| {
+                    l.strip_prefix(k).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+                });
+                assert!(apart, "{w}x{h}: key '{k}' runs into its description");
+            }
+        }
+        // past the end, Up scrolls back at once
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Up), &mut s);
+        }
+        assert_ne!(render_small(&app, w, h), bottom, "{w}x{h}: Up does nothing after scrolling past the end");
+    }
 }

@@ -1,4 +1,13 @@
 use clap::{Parser, Subcommand};
+// all output through `terminal_board::write_stdout` (see lib.rs): a closed stdout is a clean exit
+macro_rules! println {
+    () => { terminal_board::write_stdout("\n") };
+    ($($a:tt)*) => { terminal_board::write_stdout(&format!("{}\n", format_args!($($a)*))) };
+}
+macro_rules! print {
+    ($($a:tt)*) => { terminal_board::write_stdout(&format!($($a)*)) };
+}
+
 use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -87,6 +96,10 @@ enum Cmd {
         id: i64,
         #[arg(long)]
         force: bool,
+        /// Record your approval without moving the card (REVIEW stays in REVIEW; the gh#
+        /// card still waits for its merge to reach done).
+        #[arg(long, conflicts_with = "force")]
+        approve: bool,
     },
     Block {
         id: i64,
@@ -94,7 +107,12 @@ enum Cmd {
         #[arg(long, conflicts_with = "reason")]
         clear: bool,
     },
-    Drop { id: i64 },
+    Drop {
+        id: i64,
+        /// Take someone else's DOING card back to todo (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
     Rm { id: i64 },
     Prio { id: i64, how: String },
     Edit {
@@ -112,7 +130,15 @@ enum Cmd {
     },
     Boards,
     Board,
-    Watch,
+    /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
+    Watch {
+        /// Print one NDJSON line per event instead of the whole board on every change.
+        #[arg(long, requires = "json")]
+        events: bool,
+        /// Start from events at/after this unix-second timestamp.
+        #[arg(long, value_name = "TS", requires = "events")]
+        since: Option<i64>,
+    },
     Agents,
     Sync,
     Guide,
@@ -187,7 +213,7 @@ fn guard_done(store: &Store, id: i64, force: bool, cmd: &str) -> Result<(), Boar
     let (Some(n), Some(snap)) = (c.gh_ref, store.github_view()?.snap) else { return Ok(()) };
     if github::still_open(&snap, n) {
         return Err(BoardError(format!(
-            "issue #{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
+            "issue gh#{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
         )));
     }
     Ok(())
@@ -198,12 +224,65 @@ fn agents_now(store: &Store) -> Result<Vec<contract::AgentJ>, BoardError> {
         terminal_board::herdr::AgentsState::Agents(a) => a,
         _ => Vec::new(),
     };
-    Ok(contract::agents(&list, &store.list()?))
+    Ok(contract::agents(&list, &store.snapshot()?))
+}
+
+/// One `tb watch --events --json` line: the event plus the column transition of every event
+/// that changes a card's column (`created` → todo, `taken` todo → doing, `moved`/`dropped`
+/// from their `a -> b` text); `from`/`to` stay null for events that move nothing.
+#[derive(serde::Serialize)]
+struct EventLine<'a> {
+    v: u32,
+    ts: i64,
+    card_id: i64,
+    actor: &'a str,
+    kind: &'a str,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    text: &'a str,
+}
+
+impl<'a> EventLine<'a> {
+    fn of(e: &'a terminal_board::store::Event) -> Self {
+        let column = |c: &'a str| COLUMNS.iter().copied().find(|k| *k == c);
+        let (from, to) = match e.kind.as_str() {
+            "created" => (None, Some("todo")),
+            "taken" => (Some("todo"), Some("doing")),
+            "moved" | "dropped" => e
+                .text
+                .split_once(" -> ")
+                .and_then(|(f, t)| Some((column(f.trim())?, column(t.trim())?)))
+                .map(|(f, t)| (Some(f), Some(t)))
+                .unwrap_or((None, None)),
+            _ => (None, None),
+        };
+        EventLine { v: contract::SCHEMA_VERSION, ts: e.ts, card_id: e.card_id, actor: &e.actor, kind: &e.kind, from, to, text: &e.text }
+    }
 }
 
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
-fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
+/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text}` line per
+/// event, resuming from `since` (unix seconds) after a restart.
+fn watch(store: &Store, jsonout: bool, events: bool, since: Option<i64>) -> Result<(), BoardError> {
     let mut out = std::io::stdout().lock();
+    if events {
+        // Resume: the id of the last event at/after `since` (0 = stream from the start).
+        let mut last = match since {
+            None => 0,
+            Some(ts) => store.events_cursor_at(ts)?,
+        };
+        loop {
+            for e in store.events_since(last)? {
+                last = e.id;
+                let line = EventLine::of(&e.event);
+                let text = serde_json::to_string(&line).unwrap_or_default();
+                if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
+                    return Ok(()); // reader went away
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    }
     let mut last = None;
     loop {
         let v = store.data_version()?;
@@ -224,16 +303,27 @@ fn watch(store: &Store, jsonout: bool) -> Result<(), BoardError> {
 
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
-    if !path.exists() && !create {
-        // read on a board that doesn't exist yet: empty, and nothing is created
+    if !path.exists() {
+        if create {
+            let store = Store::open(&path)?.named(name);
+            warn!("created board '{name}'");
+            return Ok(store);
+        }
+        // A missing non-default board is a typo until shown otherwise: fail with the
+        // existing boards and the create hint instead of acting on an empty phantom
+        // (reads showed "no cards", `next`/`take` silently created it on disk).
+        // (TB_DB pins one file per board name — no boards dir, no list, no gate.)
+        if name != boards::DEFAULT_BOARD && terminal_board::env("DB").is_none() {
+            let names = boards::list();
+            let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+            return Err(BoardError(format!(
+                "no board '{name}' — boards: {all} · create it with 'tb {name} add \"…\"'"
+            )));
+        }
+        // the default board keeps today's behaviour: reads show it empty, writes create it
         return Ok(Store::open(Path::new(":memory:"))?.named(name));
     }
-    let existed = path.exists();
-    let store = Store::open(&path)?.named(name);
-    if !existed {
-        warn!("created board '{name}'");
-    }
-    Ok(store)
+    Ok(Store::open(&path)?.named(name))
 }
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
@@ -297,6 +387,13 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     }
     let env = terminal_board::env("BOARD");
     let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
+    // TB_DB pins ONE file: a board NAME would silently alias it (every name opens the same
+    // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
+    if terminal_board::env("DB").is_some() && name != boards::DEFAULT_BOARD {
+        return Err(BoardError(
+            "TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string(),
+        ));
+    }
     if let Some(Cmd::Setup { yes, github, no_github, agents, no_agents, agents_md, dry_run }) = cli.cmd {
         let agents = if agents { Some(true) } else if no_agents { Some(false) } else { None };
         let o = setup::Options { yes, github, no_github, agents, agents_md, dry_run, first_run: false };
@@ -307,8 +404,14 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
         setup::run(&name, setup::Options { first_run: true, ..Default::default() })?;
     }
-    let create = cli.cmd.as_ref().map_or(tty, Cmd::writes);
-    let mut store = open_board(&name, create)?;
+    let cmd_ref = cli.cmd.as_ref();
+    // on a named board only `add` and `config` (and bare `tb` in a terminal) may create it;
+    // every other command on a missing board must fail with the boards list + create hint
+    let creates = cmd_ref.map_or(tty, |c| {
+        matches!(c, Cmd::Add { .. } | Cmd::Config { .. })
+            || (c.writes() && name == boards::DEFAULT_BOARD)
+    });
+    let mut store = open_board(&name, creates)?;
     let cmd = cli.cmd;
     let j = cli.json;
     let Some(cmd) = cmd else {
@@ -352,7 +455,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print_lines!("{}", plain::board(&store.snapshot()?));
             }
         }
-        Cmd::Watch => watch(&store, j)?,
+        Cmd::Watch { events, since } => watch(&store, j, events, since)?,
         Cmd::Agents => {
             let list = agents_now(&store)?;
             if j {
@@ -429,7 +532,25 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Done { id, force } => {
+        Cmd::Done { id, force, approve } => {
+            if approve {
+                if store.card(id)?.column != "review" {
+                    return Err(BoardError(format!(
+                        "#{id} is not in review — approval records a review pass; move it to review first"
+                    )));
+                }
+                // the self-approval rule (#11) applies to --approve too: the card's author
+                // cannot record their own approval
+                if store.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(&actor)) {
+                    return Err(BoardError(format!(
+                        "you did this work — ask another person or agent to approve #{id}"
+                    )));
+                }
+                store.note_kind(id, &actor, "approved (the card stays in review; done waits for the merge)", "approved")?;
+                let human = format!("#{id} approved by {actor} — it stays in review until the gh# PR merges");
+                done_card(&store, j, id, human)?;
+                return Ok(());
+            }
             if store.card(id)?.column != "doing" {
                 guard_done(&store, id, force, &format!("done {id}"))?;
             }
@@ -459,8 +580,12 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Drop { id } => {
-            store.drop_card(id, &actor)?;
+        Cmd::Drop { id, force } => {
+            if force {
+                store.drop_card_forced(id, &actor)?;
+            } else {
+                store.drop_card(id, &actor)?;
+            }
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
         }
         Cmd::Rm { id } => {
@@ -477,7 +602,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
         }
         Cmd::Edit { id, title, desc } => {
-            store.edit(id, title.as_deref(), desc.as_deref(), &actor)?;
+            store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
             done_card(&store, j, id, format!("#{id} saved"))?;
         }
         Cmd::Sync => {
@@ -611,9 +736,10 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let view = store.github_view()?;
             let cards = store.list()?;
             if j {
-                // raw cached snapshot, plus the factory view per issue (state/who)
-                let raw = store.github_cache()?.0.unwrap_or_else(|| "null".into());
-                let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                // raw cached snapshot, plus the factory view per issue (state/who) and the
+                // sync state (full error text, consecutive fails, when the snapshot was fetched)
+                let (raw, error, fails) = store.github_cache()?;
+                let mut v: serde_json::Value = serde_json::from_str(raw.as_deref().unwrap_or("null").trim()).unwrap_or(serde_json::Value::Null);
                 if let (Some(s), Some(list)) = (&view.snap, v.get_mut("issues").and_then(|i| i.as_array_mut())) {
                     let f = github::factory(s, &cards, now);
                     for item in list.iter_mut() {
@@ -624,6 +750,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         }
                     }
                 }
+                v["error"] = match &error {
+                    Some(e) => json!(e),
+                    None => serde_json::Value::Null,
+                };
+                v["fails"] = json!(fails);
                 println!("{}", pretty(&v));
             } else if let Some(s) = &view.snap {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
@@ -640,6 +771,19 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
     match first {
         Some(a) if !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()) => {
             boards::validate(&a)?;
+            // a bare first word is a board name (`tb work`); a first word followed by a
+            // non-command word is a typo'd command — say so instead of silently opening a
+            // board that will not exist (`tb frobnicate x`)
+            if args.len() > 2
+                && args
+                    .get(2)
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| !x.starts_with('-') && !boards::COMMANDS.contains(&x))
+            {
+                return Err(BoardError(format!(
+                    "unknown command '{a}' — run 'tb --help' for every command or 'tb guide' for the manual"
+                )));
+            }
             args.remove(1);
             Ok((Some(a), args))
         }
@@ -675,8 +819,19 @@ fn main() -> ExitCode {
                 println!("{}", pretty(&v));
                 return ExitCode::from(2); // usage error, as without --json
             }
-            // without --json: the parser's own message and exit code, unchanged
-            Err(e) => e.exit(),
+            // without --json: the parser's own message and exit code, then one line saying
+            // what to run next (an unknown command is named)
+            Err(e) => {
+                let _ = e.print();
+                let more = "run 'tb --help' for every command or 'tb guide' for the manual";
+                match e.get(clap::error::ContextKind::InvalidSubcommand) {
+                    Some(c) if e.kind() == clap::error::ErrorKind::InvalidSubcommand => {
+                        eprintln!("tb: unknown command '{c}' — {more}")
+                    }
+                    _ => eprintln!("tb: {more}"),
+                }
+                return ExitCode::from(e.exit_code().clamp(1, 255) as u8);
+            }
         },
         Err(e) => Err(e),
     };
