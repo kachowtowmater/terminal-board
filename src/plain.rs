@@ -33,6 +33,32 @@ pub fn fit(s: &str, w: usize) -> String {
 /// Priority when space runs out: warnings > owner > age > checklist x/y > tag. Lower-priority
 /// parts are dropped whole (never cut mid-token); display order stays tag - owner - age - x/y.
 pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) {
+    let (base, warn, _) = meta_fit_with(card, snap, width, 0);
+    (base, warn)
+}
+
+/// The meta line plus the quiet marker as (plain part, warnings, quiet), all inside `width`.
+/// The marker is never cut: it is shown whole (`quiet 1h20m`), or without its duration
+/// (`quiet`), or not at all. It ranks below the warnings and the owner and above the rest, so
+/// tag, checklist and age make room for it first; a line too narrow for owner + `quiet` is
+/// fitted exactly as if the card were not quiet.
+pub fn meta_fit_quiet(card: &Card, snap: &Snapshot, width: usize) -> (String, String, String) {
+    let q = quiet(card, snap);
+    if !q.is_empty() {
+        for form in [q.as_str(), "quiet"] {
+            let (base, warn, whole) = meta_fit_with(card, snap, width, form.chars().count());
+            if whole {
+                return (base, warn, form.to_string());
+            }
+        }
+    }
+    let (base, warn) = meta_fit(card, snap, width);
+    (base, warn, String::new())
+}
+
+/// `meta_fit` with `reserve` chars kept free after the line (plus the space before them). The
+/// flag says the reserve really fits and cost neither the owner nor part of a warning.
+fn meta_fit_with(card: &Card, snap: &Snapshot, width: usize, reserve: usize) -> (String, String, bool) {
     let warn = warnings(card).join(" ");
     // (display order, drop priority: higher = dropped first, text)
     let mut parts: Vec<(u8, String)> = Vec::new();
@@ -58,15 +84,17 @@ pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) 
     let len = |p: &[(u8, String)]| {
         let b = join(p).chars().count();
         let w = warn.chars().count();
-        b + w + usize::from(b > 0 && w > 0)
+        let line = b + w + usize::from(b > 0 && w > 0);
+        line + if reserve > 0 { reserve + usize::from(line > 0) } else { 0 }
     };
     while !parts.is_empty() && len(&parts) > width {
         let worst = (0..parts.len()).max_by_key(|&i| parts[i].0).unwrap_or(0);
         parts.remove(worst);
     }
+    let whole = len(&parts) <= width && (card.owner.is_none() || parts.iter().any(|p| p.0 == 1));
     let base = join(&parts);
     let warn = if base.is_empty() { fit(&warn, width) } else { warn };
-    (base, warn)
+    (base, warn, whole)
 }
 
 /// `tag - owner - age - x/y  ! warnings  quiet 1h20m`, unfitted (CLI output).

@@ -392,6 +392,38 @@ fn quiet_doing_card_warns_only_past_sixty_minutes() {
     assert!(j["last_event_at"].as_i64().unwrap() > 0);
 }
 
+/// The quiet marker goes through the meta line's width budget: it is whole, or the bare word,
+/// or absent - and a line with no marker is fitted exactly as before.
+#[test]
+fn quiet_marker_is_budgeted_never_cut() {
+    use terminal_board::plain::{meta_fit_quiet, quiet};
+    let (_d, s) = seeded();
+    let snap = s.snapshot().unwrap();
+    for c in &snap.cards {
+        let full = quiet(c, &snap);
+        for w in 0..60 {
+            let (base, warn, q) = meta_fit_quiet(c, &snap, w);
+            assert!(q.is_empty() || q == "quiet" || q == full, "a cut marker at {w}: {q:?}");
+            if q.is_empty() {
+                assert_eq!((base, warn), meta_fit(c, &snap, w), "no marker at {w}: the line is fitted as before");
+            } else {
+                let n = [&base, &warn, &q].iter().filter(|p| !p.is_empty()).map(|p| p.chars().count() + 1).sum::<usize>() - 1;
+                assert!(n <= w, "{base:?} {warn:?} {q:?} > {w}");
+                assert!(c.owner.as_ref().is_none_or(|o| base.split(" - ").any(|t| t == o)), "the owner outranks the marker at {w}: {base:?}");
+            }
+        }
+    }
+    let quote = snap.cards.iter().find(|c| c.title == "vendor quote").unwrap();
+    let full = quiet(quote, &snap);
+    assert!(full.starts_with("quiet "), "the 2-day-old DOING card is quiet: {full:?}");
+    let fits = |w: usize| meta_fit_quiet(quote, &snap, w);
+    assert_eq!(fits(60), ("admin - alice - 2d".into(), String::new(), full.clone()));
+    assert_eq!(fits(13 + full.len()).0, "alice - 2d", "the tag makes room first");
+    assert_eq!(fits(6 + full.len()), ("alice".into(), String::new(), full.clone()), "then the age");
+    assert_eq!(fits(11), ("alice".into(), String::new(), "quiet".into()), "then the marker's own duration");
+    assert_eq!(fits(10), ("alice - 2d".into(), String::new(), String::new()), "no room: as if not quiet");
+}
+
 #[test]
 fn quiet_marker_negative_control_on_main_shape() {
     // a board where every DOING card is fresh: no 'quiet' anywhere

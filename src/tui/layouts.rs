@@ -61,9 +61,11 @@ pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
                 let ages = if ages.is_empty() { String::new() } else { format!(" ({})", ages.join(", ")) };
                 spans.push(Span::styled(" (", base));
                 spans.push(Span::styled(format!("! {} idle w/ card", holders.join(", ")), red().patch(base)));
-                // shown whole or not at all: a bar too narrow for it keeps the plain warning
+                // shown whole or not at all, and never at the cost of the `tab >` hint: a bar
+                // without room for all of it keeps the plain warning
                 let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                if !ages.is_empty() && used + ages.chars().count() < width {
+                let rest = 1 + TAB_HINT.chars().count();
+                if !ages.is_empty() && used + ages.chars().count() + rest <= width {
                     spans.push(Span::styled(ages, red().patch(base)));
                 }
                 spans.push(Span::styled(")", base));
@@ -653,15 +655,19 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
         None => card.title.clone(),
     };
     lines.push(Line::styled(title, bold()));
-    let (base, warn) = meta_fit(card, &app.snap, inner.width as usize);
+    let (base, warn, q) = meta_fit_quiet(card, &app.snap, inner.width as usize);
     let mut meta = vec![Span::styled(base, dim())];
     if !warn.is_empty() {
         meta.push(Span::raw(" "));
         meta.push(Span::styled(warn, red()));
     }
-    let q = crate::plain::quiet(card, &app.snap);
-    if !q.is_empty() {
-        meta.push(Span::raw(" "));
+    // the quiet marker is shown whole or not at all
+    let used: usize = meta.iter().map(|s| s.content.chars().count()).sum();
+    let lead = usize::from(used > 0);
+    if !q.is_empty() && used + lead + q.chars().count() <= inner.width as usize {
+        if lead > 0 {
+            meta.push(Span::raw(" "));
+        }
         meta.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(meta));

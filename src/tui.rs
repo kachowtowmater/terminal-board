@@ -2,7 +2,7 @@
 
 use crate::github::{self, GhView};
 use crate::herdr::{self, Agent, AgentsState};
-use crate::plain::{card_head, event_line, fit, meta_fit};
+use crate::plain::{card_head, event_line, fit, meta_fit_quiet};
 use crate::store::{fmt_age, CardDetail, Card, Snapshot, Store, COLUMNS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -1509,13 +1509,12 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     first.push(Span::styled(fit(&card.title, room), hl));
     let mut lines = vec![Line::from(first)];
 
-    let (base, warn) = meta_fit(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let (base, warn, q) = meta_fit_quiet(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let q = crate::plain::quiet(card, &app.snap);
     let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
