@@ -79,7 +79,7 @@ pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
 }
 
 /// Cut a line of spans to `width` chars (the last visible span gets an ellipsis).
-fn fit_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+pub(super) fn fit_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
     let mut out = Vec::new();
     let mut left = width;
     for s in spans {

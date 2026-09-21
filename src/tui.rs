@@ -2205,9 +2205,11 @@ fn draw_github(f: &mut Frame, app: &App, area: Rect) {
             let (title, value) = pick.unwrap_or_else(|| (if short { "PRS".to_string() } else { title }, value));
             let fitting = labelled.iter().map(|f| f[k].2.clone()).find(|l| *l != line2 && l.chars().count() <= iw);
             let line2 = fitting.unwrap_or(line2);
+            // both lines through the dense tile's fit helper: a line with no shorter whole
+            // form left (the quiet-repo empty state has none) ends in `…`, never mid-word
             let lines = vec![
-                Line::from(vec![Span::styled(format!("{title}  "), bold()), Span::styled(value, v_style)]),
-                Line::raw(line2),
+                layouts::fit_line(vec![Span::styled(format!("{title}  "), bold()), Span::styled(value, v_style)], iw),
+                layouts::fit_line(vec![Span::raw(line2)], iw),
             ];
             let b = frame(false, None).padding(Padding::horizontal(1));
             f.render_widget(Paragraph::new(lines).block(b), cells[k]);

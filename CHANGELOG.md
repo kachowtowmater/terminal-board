@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- **A GitHub tile line is never silently cut.** The wide tile row now shortens an over-long
+  line the way the narrow one always did — with a trailing `…` — instead of letting it run
+  off the edge mid-word. At exactly 102 columns the ISSUES tile read `no open issues or PR`,
+  which looked like a typo; it now reads as shortened. Every other width is unchanged.
+
 ## 2.0.0 — 2026-09-20
 
 Dogfooding — several agents and a person sharing one board — turned into 32 changes since
