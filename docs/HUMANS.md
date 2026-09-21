@@ -47,6 +47,11 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 From the command line: `tb move 3 doing`, `tb done 3`, `tb drop 3` (back to TODO),
 `tb prio 3 top`.
 
+Nobody approves their own work: `d` on a REVIEW card you moved there yourself asks
+`approve your own work? y/n` (the CLI refuses it and takes `--force`), and a card someone
+else holds in DOING is not yours to finish or drop — the board asks, the CLI needs
+`--force`. Both ways through are written into the card's history.
+
 Sending a REVIEW card back (Shift+← or `<`) asks why on the footer line; the card returns
 to its owner in DOING and shows its rework round, `r2`. From the command line:
 `tb move 3 doing "the export still drops the header"`.
@@ -66,9 +71,11 @@ Select DOING and press `+` / `-`, or run `tb config wip 4`.
 
 ## Boards
 
-Keep separate boards for separate things. `tb` opens `default`; any other name opens (and
-creates on first use) that board. (With `TB_DB` set there is one file only — board names are
-refused; unset `TB_DB` to use boards.)
+Keep separate boards for separate things. `tb` opens `default`; any other name opens that
+board. A board is created by its first `tb <name> add …` (or `tb <name> config …`) — any
+other command on a name that does not exist says so and lists the boards you have, so a typo
+never leaves a phantom board behind. (With `TB_DB` set there is one file only — board names
+are refused; unset `TB_DB` to use boards.)
 
 ```sh
 tb home                      # open the board called "home"
@@ -78,6 +85,10 @@ tb boards                    # every board with its counts
 ```
 
 `TB_BOARD=work` in your shell makes `work` the default.
+
+On the board, `B` opens the board picker: every board with its counts, `enter` switches to
+the one you choose without quitting, `esc` cancels. (`TB_DB` pins one file, so the picker
+says so instead of offering a choice.)
 
 ## GitHub
 

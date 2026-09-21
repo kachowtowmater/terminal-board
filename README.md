@@ -105,6 +105,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
+| `--binary PATH` | install this `tb` binary instead of downloading one |
 | `--no-build` | never fall back to building from source |
 | `--dry-run` | show what would happen, change nothing |
 | `--uninstall` | remove Terminal Board (asks separately before deleting your boards) |
@@ -149,7 +150,8 @@ Terminal Board) defaults to **skip** and is only done after you say yes.
 3. **AGENTS panel.** Show the live view of your herdr agents? (The default is yes when
    herdr is installed.)
 4. **Claude Code skill.** Install a skill so Claude Code knows how to use the board
-   (`~/.claude/skills/terminal-board/SKILL.md`).
+   (`~/.claude/skills/terminal-board/SKILL.md`). Skipped silently when there is no
+   `~/.claude` directory; `tb setup --agents` asks anyway.
 5. **Agent instructions.** Type the path of an `AGENTS.md` / `CLAUDE.md` and it adds a
    marked block that teaches any AI agent the `tb` commands. Running it again replaces the
    block instead of adding a second one.
@@ -275,9 +277,12 @@ tb github repos
 tb sync
 ```
 
+`tb config github` checks the repository exists on GitHub before saving it, so a typo fails
+there (`no repo 'acme/widgts' on GitHub (or no access)`) instead of in every later sync.
+
 **The panel** shows four tiles (issues, pull requests, merged today, main CI), a table of
 pull requests (CI, review, branch and the issue it fixes) and a table of issues with their
-**state**: `PR #N` (a pull request is open for it), `in progress` (a card for it is in DOING
+**state**: `PR gh#N` (a pull request is open for it), `in progress` (a card for it is in DOING
 or REVIEW), `on board` (a card waits in TODO) or `unclaimed`. Red only ever means a
 failure: a failing check (`FAIL`), a blocked card, or an idle agent holding a card.
 
@@ -386,14 +391,16 @@ tb --version
 | `tb note ID "text"` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
-| `tb move ID todo\|doing\|review\|done` | move a card |
+| `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
-| `tb drop ID` | give a card back to TODO |
+| `tb done ID --approve` | record your approval without moving the card |
+| `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D]` | change title/description |
 | `tb rm ID` | delete a card |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
+| `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
@@ -523,6 +530,8 @@ your login.
 - [docs/HUMANS.md](docs/HUMANS.md) — using the board day to day (people).
 - [docs/AGENTS.md](docs/AGENTS.md) — the agent manual, also `tb guide` (AI agents).
 - [docs/JSON.md](docs/JSON.md) — the JSON contract for scripts and apps.
+- [docs/SCHEMA.md](docs/SCHEMA.md) — the SQLite file as a read-only interface.
+- [UPGRADING.md](UPGRADING.md) — coming from 1.x: what is refused now, and the way through.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
 
 ## License
