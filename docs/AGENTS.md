@@ -179,7 +179,7 @@ herdr agents + the card each holds. Field names are stable (schema `"v":1`); see
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
-| `issue #N still open on GitHub` | close the issue / merge the PR first |
+| `issue gh#N still open on GitHub` | close the issue / merge the PR first |
 | `you did this work — ask another person or agent to review it` | leave it in REVIEW for another agent |
 | `say why it goes back` | `tb move ID doing "what to fix"` |
 | `no card #ID` | `tb list` to find the right ID |

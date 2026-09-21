@@ -1,6 +1,7 @@
 # Terminal Board schema (the SQLite contract)
 
-One board = one SQLite file (`tb home` prints it; `TB_DB` overrides it), in WAL mode.
+One board = one SQLite file — `~/.local/state/terminal-board/boards/<board>.db`, or the
+path in `TB_DB`, which overrides everything — in WAL mode.
 **This file documents the schema as a supported read-only interface:** dashboards, apps and
 orchestrators may open the file read-only and query it. **Writes go through `tb`** — the
 tool owns the events log, positions and migrations, and a foreign writer skips the invariants
@@ -71,6 +72,9 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `github` | the automation reason (e.g. `PR gh#30 open → review`) |
 | `reviewing` | — (the actor claimed it with `tb next --review`) |
 | `unclaimed` | the reviewer whose claim was released |
+| `returned` | why a REVIEW card was sent back to its owner |
+| `approved` | — (a reviewer's `tb done ID --approve`; the card does not move) |
+| `force` | what `--force` got past (moving a held card, approving your own work) |
 
 ### board_events
 Board-level events (no card):
@@ -105,8 +109,9 @@ Key/value settings.
 ## Reading safely
 
 ```sh
-sqlite3 "$(tb home)" "SELECT id, title FROM cards WHERE \"column\"='doing' ORDER BY position"
-sqlite3 "$(tb home)" "SELECT ts, actor, kind, text FROM events WHERE card_id=3 ORDER BY ts, id"
+DB=~/.local/state/terminal-board/boards/default.db   # or "$TB_DB"
+sqlite3 "$DB" "SELECT id, title FROM cards WHERE \"column\"='doing' ORDER BY position"
+sqlite3 "$DB" "SELECT ts, actor, kind, text FROM events WHERE card_id=3 ORDER BY ts, id"
 ```
 
 Open the file read-only (`sqlite3 "file:…?mode=ro"`) to be certain you cannot corrupt it.

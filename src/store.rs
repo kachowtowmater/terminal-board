@@ -13,7 +13,7 @@ pub const MAX_WIP: i64 = 99;
 /// Layout preferences, in the order `L` cycles through them.
 pub const LAYOUTS: [&str; 6] = ["auto", "focus", "third-h", "third-v", "half-h", "half-v"];
 
-/// Pre-1.2 layout names still found in old boards.
+/// Older layout names still found in boards written by earlier versions.
 fn layout_alias(l: &str) -> &str {
     match l {
         "full" => "half-h",

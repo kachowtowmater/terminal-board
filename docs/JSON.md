@@ -39,7 +39,7 @@ this card", not as an error.
 | `board` | string | board name |
 | `wip` | int | WIP limit for DOING |
 | `theme` | `"dark"`\|`"light"` | |
-| `layout` | `"auto"`\|`"full"`\|`"sidebar"`\|`"strip"` | TUI layout preference |
+| `layout` | `"auto"`\|`"focus"`\|`"third-h"`\|`"third-v"`\|`"half-h"`\|`"half-v"` | TUI layout preference (older names in a board file are reported as the view they became) |
 | `github.repo` | string\|null | `owner/repo`, null when GitHub is off |
 | `github.snapshot` | object\|null | the cached GitHub snapshot (same as `tb github --json` without the per-issue `state`/`who`) |
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
@@ -150,7 +150,7 @@ An argument error names what is missing and gives the usage line, e.g. `tb note 
 `"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"` (exit 2).
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
-or `issue #11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
+or `issue gh#11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
 When the board was chosen **explicitly by name or `-b`** and is not `default`, the command in a
 hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
 the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
