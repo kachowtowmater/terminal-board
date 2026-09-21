@@ -532,7 +532,7 @@ and `tb config theme dark|light`.
   line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
 - **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
   a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
-  alike. A board path may be a symbolic link (`boards/work.db -> /vault/work.db`): the board
+  alike. A board path may be a symbolic link (`boards/work.db -> /mnt/secure/work.db`): the board
   is the file the link leads to, and tb creates *that* file `0600`; a link into a folder that
   does not exist, or a loop of links, is refused, and tb never changes the mode of anything
   through a link. A board made by an earlier version is `0644`; tb never changes the mode of an

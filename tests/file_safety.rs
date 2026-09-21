@@ -626,13 +626,13 @@ fn a_board_created_through_a_symbolic_link_is_private_too() {
     // the boards folder: default.db is a dangling RELATIVE link, through a CHAIN of two
     let s = Scratch::new();
     let boards = s.home().join(".local/state/terminal-board/boards");
-    std::fs::create_dir_all(s.home().join("vault")).unwrap();
+    std::fs::create_dir_all(s.home().join("elsewhere")).unwrap();
     symlink("hop.db", &boards.join("default.db"));
-    symlink("../../../../vault/default.db", &boards.join("hop.db"));
-    ok(under_umask(s.cmd(), "000", &["add", "plain: in the vault"]).output().unwrap());
-    assert_eq!(mode(&s.home().join("vault/default.db")), 0o600);
+    symlink("../../../../elsewhere/default.db", &boards.join("hop.db"));
+    ok(under_umask(s.cmd(), "000", &["add", "plain: kept elsewhere"]).output().unwrap());
+    assert_eq!(mode(&s.home().join("elsewhere/default.db")), 0o600);
     assert!(is_link(&boards.join("default.db")) && is_link(&boards.join("hop.db")));
-    assert!(out(&ok(s.cmd().args(["list"]).output().unwrap())).contains("in the vault"));
+    assert!(out(&ok(s.cmd().args(["list"]).output().unwrap())).contains("kept elsewhere"));
 }
 
 #[cfg(unix)]

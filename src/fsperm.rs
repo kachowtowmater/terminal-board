@@ -7,7 +7,7 @@
 //! group on purpose. A wider existing file is reported (`Store::open`), and tightened only by
 //! `tb config file-mode private`, which says what it did.
 //!
-//! Symbolic links. A board path may be a link (`boards/work.db -> /vault/work.db`): the board
+//! Symbolic links. A board path may be a link (`boards/work.db -> /mnt/secure/work.db`): the board
 //! is the file the chain of links ends at, exactly as SQLite sees it. But tb — not SQLite —
 //! creates that file: `create_board` follows the chain itself and creates the TARGET with
 //! `O_EXCL` and 0600 (`O_EXCL` never follows a link, so "it exists" on a dangling link must
