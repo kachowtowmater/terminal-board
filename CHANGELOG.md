@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### GitHub links refuse to be silently wrong
+- `gh#N` in a title is recognised case-insensitively (`GH#6`, `Gh#6`), in `add` and `edit`.
+- `tb sync` reports linked refs GitHub answers 404 for — `gh#999: no such issue or PR in
+  OWNER/REPO` (text; `--json` gains an additive `unknown_refs` array). It uses the per-number
+  lookup sync already makes for refs the open lists don't cover (no extra `gh` calls), and
+  never looks up DONE cards. When that lookup fails for another reason (network, rate
+  limit, auth) the ref is reported as `gh#N: could not check on GitHub (…)` instead
+  (`--json`: `unchecked_refs`). An issue closed long ago still counts as found.
 ### `config github` verifies the repo exists
 - `tb config github OWNER/REPO` (like the full-screen picker already did) checks the repo via
   `gh` and refuses `no repo 'R' on GitHub (or no access) — see 'tb github repos'` instead of
