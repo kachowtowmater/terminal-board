@@ -1140,3 +1140,125 @@ fn first_card_hint_is_never_cut_in_any_forced_layout() {
         assert!(words == long || words == short || words == ["-"], "{pref} {w}x{h}: {words:?}");
     }
 }
+
+/// A GitHub page of `np` PRs and `ni` issues from a repo with 60 open issues (20 = a full
+/// page); `busy` makes one PR fail CI and one a draft. Returns the counts the tiles show.
+fn setup_page(np: i64, ni: i64, busy: bool) -> (tempfile::TempDir, Store, App, terminal_board::github::Factory) {
+    let (dir, s, mut app) = setup();
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: if np == 0 && ni == 0 { 0 } else { 60 },
+        prs: (0..np)
+            .map(|k| Pr { is_draft: busy && k == 2, ..pr(400 + 2 * k, "speed up search indexing", if busy && k == 1 { "FAIL" } else { "ok" }) })
+            .collect(),
+        issues: (0..ni).map(|k| issue(301 + 2 * k, "csv export drops the header row")).collect(),
+        merged_today: vec![],
+        main_ci: Some(MainCi { state: "ok".into(), workflow: "ci".into(), created_at: ago(40 * 60) }),
+    };
+    let counts = terminal_board::github::factory(&snap, &s.list().unwrap(), terminal_board::store::now());
+    s.save_github(&Ok(snap)).unwrap();
+    app.reload(&s);
+    (dir, s, app, counts)
+}
+
+/// The GitHub panel's head: its rows from the title down to the first PR / issue row.
+fn gh_head(screen: &str) -> String {
+    let from = screen.lines().position(|l| l.contains("GITHUB")).unwrap_or(0);
+    screen.lines().skip(from + 1).take_while(|l| !l.contains("gh#")).collect::<Vec<_>>().join("\n")
+}
+
+/// Is `tok` in `text` as a whole token (no letter, digit or `#` on either side)?
+fn whole(text: &str, tok: &str) -> bool {
+    let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '#');
+    text.match_indices(tok).any(|(i, _)| edge(text[..i].chars().next_back()) && edge(text[i + tok.len()..].chars().next()))
+}
+
+/// Issue #34: a full page (20 items) is labelled `newest` — and the label is the only thing
+/// that gives way. Next to a 19-item page (same text lengths, no label) at every width:
+/// no row moves; every count and note the 19-item page shows whole, the full page shows
+/// whole (`(1 draft)`, `1 failing CI`, the unclaimed count, MERGED, MAIN …); and a label is
+/// either whole or absent, never cut.
+#[test]
+fn full_page_labels_fit_at_small_sizes() {
+    common::pin_clock();
+    let rows = |screen: &str| -> Vec<usize> {
+        screen.lines().enumerate().filter(|(_, l)| ["GITHUB", "GH# ", "AGENTS", "o TODO", "MERGED"].iter().any(|m| l.contains(m))).map(|(i, _)| i).collect()
+    };
+    let (mut long, mut terse, mut bare) = (0, 0, 0);
+    for (np, ni, busy) in [(20, 20, false), (20, 20, true), (20, 5, true), (5, 20, true)] {
+        let (_d1, s1, mut plain, c1) = setup_page(np.min(19), ni.min(19), busy);
+        let (_d2, s2, mut full, c2) = setup_page(np, ni, busy);
+        for layout in ["auto", "half-v"] {
+            for (s, app) in [(&s1, &mut plain), (&s2, &mut full)] {
+                s.set_layout(layout).unwrap();
+                app.reload(s);
+                app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+            }
+            for h in [30u16, 41, 60] {
+                for w in (60u16..=170).filter(|w| layout == "auto" || *w < 104) {
+                    let (a, b) = (render(&plain, w, h), render(&full, w, h));
+                    let at = format!("{np}x{ni} busy={busy} {layout} {w}x{h}");
+                    assert_eq!(rows(&a), rows(&b), "{at}: the page label moves no row:\n{b}");
+                    let (a, b) = (gh_head(&a), gh_head(&b));
+                    // what the 19-item page shows whole -> what the full page must show whole
+                    let mut kept: Vec<(String, String)> = ["(1 draft)", "1 failing CI", "(1 FAIL)", "60 open", "ISSUES", "PULL REQUESTS", "MERGED", "none yet", "MAIN", "ok", "40m"]
+                        .iter()
+                        .map(|t| (t.to_string(), t.to_string()))
+                        .collect();
+                    kept.push((format!("+{}", c1.new_today), format!("+{}", c2.new_today)));
+                    kept.push((c1.unclaimed.to_string(), c2.unclaimed.to_string()));
+                    for (was, is) in kept {
+                        assert!(!whole(&a, &was) || whole(&b, &is), "{at}: `{is}` cut or lost where the plain page shows `{was}`:\n{a}\n--- full page:\n{b}");
+                    }
+                    // a label is whole or absent
+                    for l in b.lines() {
+                        assert!(!l.contains("newe") || whole(l, "newest"), "{at}: 'newest' cut: {l}");
+                        assert!(!l.contains("newest 20:") || whole(l, "free"), "{at}: tile label cut: {l}");
+                        assert!(!l.contains("/20") || whole(l, "free"), "{at}: terse label cut: {l}");
+                        assert!(!l.contains("in newest") || whole(l, "in newest 20)"), "{at}: summary label cut: {l}");
+                    }
+                    long += usize::from(b.contains("newest"));
+                    terse += usize::from(!b.contains("newest") && (b.contains("20+") || b.contains("/20 free")));
+                    bare += usize::from(!b.contains("newest") && !b.contains("20+") && !b.contains("/20 free"));
+                }
+            }
+        }
+    }
+    assert!(long > 800 && terse > 50, "the sweep saw long ({long}) and terse ({terse}) labels; {bare} screens had room for none");
+
+    // the sizes a reviewer found cut, spelled out (20 PRs with a draft and a failing one)
+    let (_d, s, mut full, _) = setup_page(20, 20, true);
+    let wide = render(&full, 110, 41);
+    assert!(wide.contains("PRS  20+ (1 draft) ") && whole(&wide, "free"), "terse PR label, draft note whole:\n{wide}");
+    let half = render(&full, 126, 41);
+    assert!(half.contains("PRS  20 newest (1 draft) ") && half.contains(" newest 20: +20 · 17 free "), "{half}");
+    let roomy = render(&full, 160, 50);
+    assert!(roomy.contains("PULL REQUESTS  20 newest (1 draft) "), "{roomy}");
+    let line = render(&full, 126, 30);
+    assert!(line.contains("17 unclaimed in newest 20) · PRS 20 newest (1 FAIL) · MERGED 0 · MAIN ok"), "{line}");
+    let line = render(&full, 64, 30);
+    assert!(line.contains(" ISSUES 60 (+20, 17 unclaimed) · PRS 20 (1 FAIL) · MERGED 0 · "), "no room: the line without labels:\n{line}");
+    s.set_layout("half-v").unwrap();
+    full.reload(&s);
+    let line = render(&full, 80, 30);
+    assert!(line.contains("17/20 free) · PRS 20+ (1 FAIL) · MERGED 0 · MAIN ok"), "terse labels in a narrow short panel:\n{line}");
+    let grid = render(&full, 90, 60);
+    assert!(grid.contains("60 open · newest 20: +20 · 17 free ") && grid.contains("20 newest (1 draft) · 1 failing CI "), "{grid}");
+    let grid = render(&full, 76, 60);
+    assert!(grid.contains("20+ (1 draft) · 1 failing CI ") && grid.contains("60 open · +20 today · 17/20 free "), "{grid}");
+    let grid = render(&full, 66, 60);
+    assert!(grid.contains("60 open · +20 today · 17 un…") && grid.contains("20 open (1 draft) · 1 fail…"), "no room: the counts stay, the label goes:\n{grid}");
+
+    // a quiet repo is never a page: its empty state is the same whatever the label
+    let (_d, s, mut quiet, _) = setup_page(0, 0, false);
+    // every width, including those where a full page gets the long, terse or no label
+    for (w, h) in [(160u16, 50u16), (126, 41), (110, 41), (104, 41), (90, 60), (76, 60), (66, 60), (61, 30)] {
+        let screen = render(&quiet, w, h);
+        assert!(screen.contains("no open issues or PRs") || screen.contains("0 issues"), "{w}x{h}: the empty state:\n{screen}");
+        assert!(!screen.contains("newest") && !screen.contains("20+") && !screen.contains("/20"), "{w}x{h}: no page label on a quiet repo:\n{screen}");
+    }
+    s.set_layout("half-v").unwrap();
+    quiet.reload(&s);
+    assert!(render(&quiet, 80, 60).contains("no open issues or PRs"));
+}

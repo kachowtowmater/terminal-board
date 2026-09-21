@@ -678,7 +678,11 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             // (no such issue or PR), or a failed call (nothing known — never reported as missing)
             let lookups = github::lookup_refs(&repo, &github::needs_state(&snap, &cards));
             let states = github::found_states(&lookups);
-            let moves = github::plan_moves(&snap, &cards, &states, &store.returned_at()?);
+            // the page holds only the newest 20 open PRs: look up PRs linking the board's
+            // other refs (sync only, capped) so an older issue's PR still moves its card
+            let mut plan = snap.clone();
+            plan.prs.extend(github::linked_prs_beyond_page(&repo, &snap, &github::refs_beyond_page(&snap, &cards)));
+            let moves = github::plan_moves(&plan, &cards, &states, &store.returned_at()?);
             github::apply_moves(&mut store, &moves)?;
             let unknown: Vec<i64> =
                 lookups.iter().filter(|(_, l)| *l == github::RefLookup::Missing).map(|(n, _)| *n).collect();

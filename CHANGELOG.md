@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### GitHub counts are pages, and sync sees past the page
+- tb fetches the 20 newest open PRs and issues; when a page is full, `tb github` and the
+  full panel's tiles and one-line summary say so (`PRs 20 newest`, tile `newest 20: +1 · 5
+  free`, `ISSUES 60 (+1, 5 unclaimed in newest 20) · PRS 20 newest`), so 20 does not read
+  as the repo total there. No extra `gh` calls on the refresh path. (The narrow tidy block
+  and the one-line bar are not labelled yet.)
+- The label is the only thing that gives way in a small panel: it is shown where it fits
+  whole, else a terse one (`20+`, `5/20 free`), else none — then the tile or line is exactly
+  what a page that is not full shows. Counts, `(1 draft)`, `1 failing CI`, `MERGED` and
+  `MAIN` are never cut or pushed out by it, and no row moves.
+- `tb sync` now moves a card whose linked PR is **outside** the newest 20: for each taken
+  TODO/DOING card that no PR on the page links, sync runs one `gh pr list --search N` (capped
+  at 20 per sync, never on the refresh path) and uses an open PR that `closes` N or is on a
+  branch named for N. A `gh#N` that is itself an open PR off the page moves via the per-number
+  state lookup. Every move reads the same way: `PR gh#950 open → review`.
 ### GitHub links refuse to be silently wrong
 - `gh#N` in a title is recognised case-insensitively (`GH#6`, `Gh#6`), in `add` and `edit`.
 - `tb sync` reports linked refs GitHub answers 404 for — `gh#999: no such issue or PR in

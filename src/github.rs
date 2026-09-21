@@ -280,6 +280,48 @@ fn gh(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// The fields every `gh pr list` asks for (the page and the sync-only lookups).
+const PR_FIELDS: &str =
+    "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences,updatedAt";
+
+/// Board refs (owned, not done) that no PR on the newest page links — by number, `closes`
+/// or branch name — and that are not PRs themselves: sync looks these up past the page.
+pub fn refs_beyond_page(s: &GhSnapshot, cards: &[crate::store::Card]) -> Vec<i64> {
+    let mut v: Vec<i64> = cards
+        .iter()
+        .filter(|c| c.column == "todo" || c.column == "doing")
+        .filter(|c| c.owner.is_some())
+        .filter_map(|c| c.gh_ref)
+        .filter(|n| {
+            !s.prs.iter().any(|p| p.number == *n || p.closes.contains(n) || branch_matches(&p.head_ref, *n))
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(MAX_STATE_CHECKS);
+    v
+}
+
+/// Open PRs outside the newest page that link `nums` (`closes N`, or a branch named for N):
+/// one `gh pr list --search N` per ref. Only `tb sync` calls this — never the refresh path.
+/// Failed lookups are skipped (the card just is not moved this time).
+pub fn linked_prs_beyond_page(repo: &str, s: &GhSnapshot, nums: &[i64]) -> Vec<Pr> {
+    let mut out: Vec<Pr> = Vec::new();
+    for n in nums {
+        let q = n.to_string();
+        let Ok(json) = gh(&["pr", "list", "-R", repo, "--state", "open", "--search", &q, "--limit", "20", "--json", PR_FIELDS]) else {
+            continue;
+        };
+        let Ok(prs) = parse_prs(&json) else { continue };
+        if let Some(p) = prs.into_iter().find(|p| p.closes.contains(n) || branch_matches(&p.head_ref, *n)) {
+            if !s.prs.iter().chain(out.iter()).any(|q| q.number == p.number) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 /// Fetch a full snapshot (5 gh calls). Any failure -> Err(short message).
 pub fn fetch(repo: &str, now: i64) -> Result<GhSnapshot, String> {
     // a missing repo gets its full name back (gh's line is cut at 80 chars) and no auth talk
@@ -297,8 +339,7 @@ fn fetch_raw(repo: &str, now: i64) -> Result<GhSnapshot, String> {
         .map(|t| t.format("%Y-%m-%d").to_string())
         .unwrap_or_default();
     let prs = parse_prs(&gh(&[
-        "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
-        "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,createdAt,author,closingIssuesReferences,updatedAt",
+        "pr", "list", "-R", repo, "--state", "open", "--limit", "20", "--json", PR_FIELDS,
     ])?)?;
     let issues = parse_issues(&gh(&[
         "issue", "list", "-R", repo, "--state", "open", "--limit", "20", "--json",
@@ -592,6 +633,10 @@ pub fn plan_moves(
                     if updated_since_return {
                         out.push(mv("review", format!("PR gh#{} open → review", p.number)));
                     }
+                } else if states.get(&n).is_some_and(|st| st.pr && !st.merged && !st.closed) && !returned.contains_key(&c.id) {
+                    // gh#N is itself an open PR outside the newest-20 page (seen by the
+                    // per-number lookup); a sent-back card waits until the page shows it
+                    out.push(mv("review", format!("PR gh#{n} open → review")));
                 }
             }
         }
@@ -623,14 +668,28 @@ pub fn unix_time(ts: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(ts).ok().map(|t| t.timestamp())
 }
 
+/// The panel fetches one page of 20 open PRs and 20 open issues. A full page may be only the
+/// newest of more, so its counts say "newest" instead of reading as "all of them".
+pub const PAGE: usize = 20;
+
+/// `20 newest` for a full page, `N open` otherwise.
+fn pr_count(len: usize) -> String {
+    if len >= PAGE { format!("{len} newest") } else { format!("{len} open") }
+}
+
+/// ` in newest 20` when the counts come from a full issue page, else nothing.
+fn issue_page(len: usize) -> String {
+    if len >= PAGE { format!(" in newest {PAGE}") } else { String::new() }
+}
+
 /// `issues 42 open · PRs 5 open (1 draft) · merged today 4 · main CI ok` as (text, main_ci_failed).
 pub fn summary(s: &GhSnapshot) -> (String, String) {
     let drafts = s.prs.iter().filter(|p| p.is_draft).count();
     let draft = if drafts > 0 { format!(" ({drafts} draft)") } else { String::new() };
     let head = format!(
-        "issues {} open · PRs {} open{draft} · merged today {} · main CI ",
+        "issues {} open · PRs {}{draft} · merged today {} · main CI ",
         s.issues_open,
-        s.prs.len(),
+        pr_count(s.prs.len()),
         s.merged_today.len()
     );
     (head, s.main_ci.as_ref().map(|c| c.state.clone()).unwrap_or_else(|| "-".into()))
@@ -788,10 +847,42 @@ pub fn factory(s: &GhSnapshot, cards: &[crate::store::Card], now: i64) -> Factor
     }
 }
 
+/// How a full page (20 items) is labelled where room is short. The label is what gives
+/// way: `Long` where it fits whole, else `Terse`, else `None` — the text of a page that is
+/// not full, so nothing else is ever cut or lost to make room for a label.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageLabel {
+    Long,
+    Terse,
+    None,
+}
+
+impl PageLabel {
+    /// Try these in order; `None` is drawn when neither fits.
+    pub const LABELLED: [PageLabel; 2] = [PageLabel::Long, PageLabel::Terse];
+}
+
 /// Segments of the one-line summary; `true` = red (only `FAIL`).
 /// `ISSUES 11 (+2, 5 unclaimed) · PRS 1 (1 FAIL) · MERGED 6 · MAIN ok`
 pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
-    let mut v = vec![(format!("ISSUES {} (+{}, {} unclaimed) · PRS {}", s.issues_open, f.new_today, f.unclaimed, s.prs.len()), false)];
+    compact_summary_as(s, f, PageLabel::Long)
+}
+
+/// The one-line summary with a full page labelled as `label` says: `… 5 unclaimed in newest
+/// 20) · PRS 20 newest`, or terse `… 5/20 free) · PRS 20+` (never longer than no label).
+pub fn compact_summary_as(s: &GhSnapshot, f: &Factory, label: PageLabel) -> Vec<(String, bool)> {
+    let (full_issues, full_prs) = (s.issues.len() >= PAGE, s.prs.len() >= PAGE);
+    let unclaimed = match (label, full_issues) {
+        (PageLabel::Long, true) => format!("{} unclaimed{}", f.unclaimed, issue_page(s.issues.len())),
+        (PageLabel::Terse, true) => format!("{}/{PAGE} free", f.unclaimed),
+        _ => format!("{} unclaimed", f.unclaimed),
+    };
+    let prs = match (label, full_prs) {
+        (PageLabel::Long, true) => pr_count(s.prs.len()),
+        (PageLabel::Terse, true) => format!("{}+", s.prs.len()),
+        _ => s.prs.len().to_string(),
+    };
+    let mut v = vec![(format!("ISSUES {} (+{}, {unclaimed}) · PRS {prs}", s.issues_open, f.new_today), false)];
     if f.failing > 0 {
         v.push((format!(" ({} ", f.failing), false));
         v.push(("FAIL".into(), true));
@@ -806,6 +897,14 @@ pub fn compact_summary(s: &GhSnapshot, f: &Factory) -> Vec<(String, bool)> {
 
 /// The four tiles as (title, value, line 2). Value `FAIL` is the only red.
 pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String); 4] {
+    tiles_as(s, f, now, PageLabel::Long)
+}
+
+/// The tiles with a full page labelled as `label` says: PRs `20 newest` / `20+` / `20 open`,
+/// ISSUES line 2 `newest 20: +1 · 5 free` / `+1 today · 5/20 free` / `+1 today · 5 unclaimed`.
+/// No labelled text is longer than the unlabelled one except `20 newest`. A quiet repo's
+/// empty state (`no open issues or PRs`) is the same whatever the label.
+pub fn tiles_as(s: &GhSnapshot, f: &Factory, now: i64, label: PageLabel) -> [(String, String, String); 4] {
     let age = |ts: &str| age_of(ts, now).map(crate::store::fmt_age).unwrap_or_else(|| "?".into());
     let drafts = if f.drafts > 0 { format!(" ({} draft)", f.drafts) } else { String::new() };
     let pr2 = if f.failing > 0 {
@@ -824,13 +923,24 @@ pub fn tiles(s: &GhSnapshot, f: &Factory, now: i64) -> [(String, String, String)
         None => ("-".into(), "no runs".into()),
     };
     let issues2 = if s.issues_open == 0 && s.prs.is_empty() {
+        // a quiet repo says so; it is never a full page, which has 20 of something
         "no open issues or PRs".to_string()
     } else {
-        format!("+{} today · {} unclaimed", f.new_today, f.unclaimed)
+        match (label, s.issues.len() >= PAGE) {
+            // as long as the unlabelled line ("free" is the tidy block's word for unclaimed)
+            (PageLabel::Long, true) => format!("newest {PAGE}: +{} · {} free", f.new_today, f.unclaimed),
+            (PageLabel::Terse, true) => format!("+{} today · {}/{PAGE} free", f.new_today, f.unclaimed),
+            _ => format!("+{} today · {} unclaimed", f.new_today, f.unclaimed),
+        }
+    };
+    let prs = match (label, s.prs.len() >= PAGE) {
+        (PageLabel::Long, true) => pr_count(s.prs.len()),
+        (PageLabel::Terse, true) => format!("{}+", s.prs.len()),
+        _ => format!("{} open", s.prs.len()),
     };
     [
         ("ISSUES".into(), format!("{} open", s.issues_open), issues2),
-        ("PULL REQUESTS".into(), format!("{} open{drafts}", s.prs.len()), pr2),
+        ("PULL REQUESTS".into(), format!("{prs}{drafts}"), pr2),
         ("MERGED".into(), format!("{} today", s.merged_today.len()), merged2),
         ("MAIN CI".into(), ci, ci2),
     ]

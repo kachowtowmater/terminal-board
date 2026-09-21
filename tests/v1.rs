@@ -429,6 +429,53 @@ fn help_overlay_and_footer() {
 }
 
 #[test]
+fn a_ref_outside_the_newest_page_still_moves() {
+    common::pin_clock();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: gh#777 old issue with an open PR", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    // the snapshot page holds PRs 900..; the board's ref 777 is NOT in it
+    let snap = GhSnapshot {
+        repo: "acme/widgets".into(),
+        fetched_at: terminal_board::store::now(),
+        issues_open: 63,
+        prs: (900..920)
+            .map(|n| Pr {
+                number: n,
+                title: format!("pr {n}"),
+                head_ref: format!("fix/{n}"),
+                is_draft: false,
+                review: "-".into(),
+                ci: "ok".into(),
+                created_at: "2026-09-18T07:00:00Z".into(),
+                author: "x".into(),
+                closes: vec![],
+                updated_at: String::new(),
+            })
+            .collect(),
+        issues: vec![],
+        ..Default::default()
+    };
+    let cards = s.list().unwrap();
+    // needs_state: 777 is not on the page, so a per-number lookup is planned
+    assert_eq!(terminal_board::github::needs_state(&snap, &cards), vec![777]);
+    let states: std::collections::HashMap<i64, terminal_board::github::RefState> =
+        [(777, terminal_board::github::RefState { closed: false, pr: true, merged: false })].into();
+    let moves = terminal_board::github::plan_moves(&snap, &cards, &states, &HashMap::new());
+    assert!(
+        moves.iter().any(|m| m.card_id == id && m.to == "review" && m.text == "PR gh#777 open → review"),
+        "off-page open PR moves: {moves:?}"
+    );
+    // and a page-sized repo is labelled "newest" so 20 never reads as the total
+    let (head, _) = terminal_board::github::summary(&snap);
+    assert!(head.contains("PRs 20 newest"), "{head}");
+    let small = GhSnapshot { prs: snap.prs[..3].to_vec(), ..snap.clone() };
+    let (head, _) = terminal_board::github::summary(&small);
+    assert!(head.contains("PRs 3 open ·") && !head.contains("newest"), "{head}");
+}
+
+#[test]
 fn ref_lookups_report_missing_only_on_a_real_404() {
     use terminal_board::github::{classify_lookup, found_states, RefLookup, RefState};
     let closed = r#"{"state":"closed"}"#.to_string();
@@ -688,4 +735,70 @@ fn wip_full_message_is_actor_aware() {
     // next with json: same message in the hint path
     let e = s.next("bot-2").unwrap_err().to_string();
     assert!(e.contains("finish #2 with 'tb done 2' first"), "{e}");
+}
+
+/// Issue #34's repro through `tb sync` and a fake gh: the page holds the newest 20 open PRs;
+/// an older issue's open PR (#950, `closes #777`) is only found by the sync-only lookup.
+#[test]
+fn sync_finds_an_older_issues_pr_beyond_the_newest_page() {
+    common::pin_clock();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let page: Vec<String> = (900..920)
+        .map(|n| format!(r#"{{"number":{n},"title":"pr {n}","headRefName":"feat/x{n}","isDraft":false,"reviewDecision":"","statusCheckRollup":[],"createdAt":"2026-09-18T08:00:00Z","author":{{"login":"bot"}},"closingIssuesReferences":[]}}"#))
+        .collect();
+    std::fs::write(d.join("page.json"), format!("[{}]", page.join(","))).unwrap();
+    std::fs::write(d.join("pr950.json"), r#"[{"number":950,"title":"fix the old one","headRefName":"feat/y","isDraft":false,"reviewDecision":"","statusCheckRollup":[],"createdAt":"2026-09-01T08:00:00Z","author":{"login":"bot"},"closingIssuesReferences":[{"number":777}]}]"#).unwrap();
+    let issues: Vec<String> = (700..720)
+        .chain([777, 778])
+        .map(|n| format!(r#"{{"number":{n},"title":"issue {n}","labels":[],"assignees":[],"createdAt":"2026-09-01T07:00:00Z"}}"#))
+        .collect();
+    std::fs::write(d.join("issues.json"), format!("[{}]", issues.join(","))).unwrap();
+    let gh = script(
+        d,
+        &format!(
+            r#"#!/bin/sh
+echo "$*" >> {p}/calls.log
+case "$*" in
+  *"--search 777"*) cat {p}/pr950.json; exit 0;;
+  *"--search"*"merged"*) echo '[]'; exit 0;;
+  *"--search"*) echo '[]'; exit 0;;
+esac
+case "$1 $2" in
+  "repo view") echo '{{"nameWithOwner":"o/r"}}';;
+  "pr list") cat {p}/page.json;;
+  "issue list") cat {p}/issues.json;;
+  "run list") echo '[]';;
+  "api repos/o/r/issues/777") echo '{{"state":"open"}}';;
+  "api repos/o/r/issues/778") echo '{{"state":"open"}}';;
+  api*) echo 60;;
+  *) exit 2;;
+esac
+"#,
+            p = d.display()
+        ),
+    );
+    let db = d.join("b.db");
+    tb(&db, &gh, &["add", "gh#777 an older issue"]);
+    tb(&db, &gh, &["add", "gh#778 an issue with no PR"]);
+    tb(&db, &gh, &["take", "1"]);
+    tb(&db, &gh, &["take", "2"]);
+    tb(&db, &gh, &["config", "github", "o/r"]);
+    // the panel: a full page is labelled, and the refresh path never runs the extra lookup
+    let o = tb(&db, &gh, &["github", "--refresh"]);
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(text.contains("PRs 20 newest"), "{text}");
+    let log = std::fs::read_to_string(d.join("calls.log")).unwrap();
+    assert!(!log.contains("--search 777"), "no extra lookup on refresh: {log}");
+    // sync: the card for issue 777 moves on its off-page PR; 778 has none and stays
+    let o = tb(&db, &gh, &["sync", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let moves: Vec<(i64, String, String)> = v["moves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["card_id"].as_i64().unwrap(), m["to"].as_str().unwrap().into(), m["text"].as_str().unwrap().into()))
+        .collect();
+    assert_eq!(moves, [(1, "review".to_string(), "PR gh#950 open → review".to_string())]);
 }

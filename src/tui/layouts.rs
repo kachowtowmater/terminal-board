@@ -101,11 +101,20 @@ fn fit_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
 /// Four tiles, 2x2, each 3 rows with the label in its border (half-v, narrow full panels).
 pub(super) fn draw_dense_tiles(f: &mut Frame, app: &App, s: &github::GhSnapshot, area: Rect) {
     let fac = github::factory(s, &app.snap.cards, app.snap.now);
-    let tiles = github::tiles(s, &fac, app.snap.now);
+    // a full page's label only where the whole tile line fits (long, else terse); else the
+    // unlabelled line, cut as ever — the label never costs a count its place
+    let tiles = github::tiles_as(s, &fac, app.snap.now, github::PageLabel::None);
+    let labelled = github::PageLabel::LABELLED.map(|l| github::tiles_as(s, &fac, app.snap.now, l));
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(area);
     for (k, (title, value, line2)) in tiles.into_iter().enumerate() {
         let halves = Layout::horizontal([Constraint::Ratio(1, 2); 2]).spacing(1).split(rows[k / 2]);
         let cell = halves[k % 2];
+        let room = cell.width.saturating_sub(4) as usize;
+        let fitting = labelled
+            .iter()
+            .map(|f| (f[k].1.clone(), f[k].2.clone()))
+            .find(|(v, l)| (*v != value || *l != line2) && v.chars().count() + 3 + l.chars().count() <= room);
+        let (value, line2) = fitting.unwrap_or((value, line2));
         let v_style = if value == "FAIL" { red() } else { bold() };
         let fg = palette(&app.snap.theme).fg;
         let label = if title == "PULL REQUESTS" { "PRS".to_string() } else { title };
