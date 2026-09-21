@@ -44,6 +44,19 @@ fit, so an 80-column terminal with DOING selected showed `a add  enter open  ? h
 `a add`), the way the focus view's footer already did. `shift+arrows move` — the only board
 action that is not discoverable anywhere else on screen — and `?`, where every dropped hint
 is documented, are never dropped. Widths that already showed the whole footer are unchanged.
+
+### `TB_NOW` refuses a value outside a sane range
+
+The test clock override `TB_NOW` (legacy `TTYBOARD_NOW`) accepted any integer — `0`, a
+negative number, `i64::MAX` — and wrote it verbatim as a card timestamp into a real board,
+while unparsable text silently fell back to the real clock. It now validates: unset or empty
+means the real clock, and anything else must be an integer between 946684800
+(2000-01-01) and 4102444800 (2100-01-01). A bad value exits non-zero, names the variable and
+the accepted range, and writes nothing (with `--json`, the usual
+`{ok, error, hint}` object). The rule documented once: an environment variable that changes
+what tb writes must validate its value and refuse; one that only changes what tb reads or
+executes may stay lenient.
+
 ### Fixed
 - **Who "did the work" on a card is now its owner, not whoever last moved it to REVIEW.**
   The never-self-approve rule used to key on the actor of the `doing -> review` move, which

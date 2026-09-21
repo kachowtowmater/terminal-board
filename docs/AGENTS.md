@@ -80,7 +80,7 @@ tb done ID                   # finished: DOING -> REVIEW
 `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move
 ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, skips the WIP limit.
 Text from a file arrives byte for byte (backticks, `$`, quotes, newlines — a quoted string cannot promise
-that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
+that) once blank space around it is trimmed and a leading byte-order mark is dropped: UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
 
 ### Create and delete cards, boards and settings
 
@@ -136,7 +136,7 @@ takes the top REVIEW card you did not do (atomic; `tb move ID review` frees a st
 - Never approve your own work: REVIEW → DONE is another agent's `tb done`.
 - No `--force` unless a person told you to use it.
 
-## Identity
+## Environment variables and identity
 
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr
 pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`.
@@ -145,6 +145,21 @@ Inside a named herdr agent you can leave out `--as`; anywhere else pass it on ev
 same name every time. Names are self-asserted: the review rule stops honest mistakes, not an
 agent that lies about its name — never pass another agent's name to get past it. The AGENTS
 panel matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
+
+| variable | what it does | knob or test hook |
+|---|---|---|
+| `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
+| `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
+| `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
+| `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
+| `TB_TTY` / `TTYBOARD_TTY` | the tty `setup` prompts read from | test hook |
+| `TB_NO_HERDR` | set to anything: tb does not ask herdr for agents | test hook |
+| `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
+| `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000–2100); unset or empty = the real clock | test hook |
+
+A variable that changes what tb **writes** must validate its value and refuse; one that only
+changes what tb reads or executes may stay lenient — today that binds `TB_NOW` only: a value
+that is not an integer in that range exits non-zero and nothing is written (unset = real clock).
 
 ## GitHub
 
@@ -170,7 +185,7 @@ tb sync                      # apply GitHub evidence to the board now
 
 ## JSON
 
-Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures answer
+Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`; failures answer
 `{"ok":false,"error":"…","hint":"…"}` and exit non-zero. `tb next --as NAME --json` is the
 card you got, `tb show ID --json` one card with checklist and notes, `tb board --json` the
 whole board, `tb watch --json` NDJSON (the board again on every change), `tb agents --json`
@@ -198,7 +213,7 @@ Paste this into an agent's instructions:
 > `tb note`, tick `tb check`, and `tb done` when finished (`tb drop` if you stop,
 > `tb block` if stuck). Full manual: `tb guide`.
 
-## Walkthrough (every command above, run in order by the test suite)
+## Walkthrough (run in order by the test suite)
 
 ```sh
 tb add "docs: write the install guide" -d "Done = guide merged" --check "draft" --check "review"

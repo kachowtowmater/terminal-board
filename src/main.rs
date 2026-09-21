@@ -529,7 +529,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         }
         return Ok(());
     };
-    let now = terminal_board::store::now();
+    // `TB_NOW` changes what tb writes to the durable store, so it must validate before
+    // anything is written (reads may fall back to the real clock; a pinned clock may not be
+    // absurd). One gate, here: `store::now()` is a library read.
+    let now = match terminal_board::store::pinned_now() {
+        Ok(t) => t.unwrap_or_else(terminal_board::store::now),
+        Err(e) => return Err(e),
+    };
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
             let id = store.add(&title, &desc, &checks, &actor)?;

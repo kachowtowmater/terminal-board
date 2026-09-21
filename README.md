@@ -47,6 +47,7 @@ Is this healthy? No. Is it faster? Absolutely.
 - [Command-line reference](#command-line-reference)
 - [Layouts and themes](#layouts-and-themes)
 - [Where your data lives](#where-your-data-lives)
+- [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [For app developers (JSON)](#for-app-developers-json)
@@ -528,6 +529,15 @@ and `tb config theme dark|light`.
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails
   with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
+
+## Testing
+
+Tests and scripted replays can pin the clock: `TB_NOW=<unix seconds>` (legacy name
+`TTYBOARD_NOW`) makes every card timestamp and event use that second instead of the real
+one, so fixtures are stable whatever the time of day. Because the value is written into a
+real board, it is validated: unset or empty means the real clock, and anything else must be
+an integer between `946684800` (2000-01-01) and `4102444800` (2100-01-01) — anything else
+exits non-zero, names the variable and the range, and writes nothing.
 
 ## Troubleshooting
 
