@@ -1,0 +1,2 @@
+todo    #2 renew the domain  [1h10m  x blocked by #1]
+doing   #1 gh#12 login form rejects long names  [widgets - bot-1 - 1h03m - 1/2 - r2  quiet 1h03m]

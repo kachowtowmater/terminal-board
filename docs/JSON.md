@@ -29,7 +29,8 @@ this card", not as an error.
     "doing":  [ card, … ],
     "review": [ card, … ],
     "done":   [ card, … ]
-  }
+  },
+  "actors": [ identity, … ]
 }
 ```
 
@@ -46,6 +47,7 @@ this card", not as an error.
 | `github.fails` | int | consecutive failed refreshes; the board UI goes red only after 3 |
 | `github.fetched_at` | int | unix seconds of the last good snapshot (0 = never fetched) |
 | `columns.*` | card[] | todo/doing/review in `position` order; **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
+| `actors[]` | identity[] | every identity an event in `columns` points at with its `actor_id` (see **identity** below), in `id` order; `[]` when no event has one |
 
 A bare `tb --json` (not a terminal) prints the same object.
 
@@ -71,8 +73,8 @@ A bare `tb --json` (not a terminal) prints the same object.
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
   "round": 1,
   "events": [
-    { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "" },
-    { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "" }
+    { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
+    { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "", "actor_id": 4 }
   ]
 }
 ```
@@ -96,7 +98,31 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+
+### identity
+
+Who a name was when it wrote an event — the record behind the short `actor`, so work can be
+traced back to the session that did it (docs/SCHEMA.md, table `actors`).
+
+```json
+{ "id": 4, "actor": "bot-2", "harness": "claude-code", "model": "model-x", "role": "coder",
+  "session": "0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70", "host": "buildbox",
+  "first_seen": 1789763036, "last_seen": 1789766636 }
+```
+
+| field | type | notes |
+|---|---|---|
+| `id` | int | what an event's `actor_id` points at; one id per distinct `(actor, harness, model, role, session, host)`, so every command of one session shares it |
+| `actor` | string | the display name, the same string as the event's `actor` |
+| `harness` | string\|null | the agent harness, without its version: `$TB_HARNESS`, else what the harness exports, else herdr's record of the pane |
+| `model`, `role` | string\|null | `$TB_MODEL`, `$TB_ROLE` — explicit only; no harness exports them and tb never guesses |
+| `session` | string\|null | the harness's session id (`$TB_SESSION`, else exported by the harness, else from herdr). Never a path: a session file's path becomes the identifier in its name, or `path-` + 12 hex digits |
+| `host` | string\|null | the machine: `$TB_HOST`, else the first label of its host name |
+| `first_seen`, `last_seen` | int | unix seconds of this identity's first and latest event |
+
+Every value is **self-reported** — a claim, like the name itself, not proof — and arrives
+cleaned of control characters and cut to 64 characters.
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -117,14 +143,16 @@ tb watch --events --json                # one NDJSON line per event
 tb watch --events --json --since 1789777000   # resume: only events at/after that unix second
 ```
 
-Each line is `{v, ts, card_id, actor, kind, from, to, text}`: `kind` is the event kind
+Each line is `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity}`: `kind` is the event kind
 (`created`, `taken`, `moved`, `note`, `check`, …); `from`/`to` are the column transition of
 every event that changes a card's column — `created` (null → `todo`), `taken` (`todo` →
 `doing`), `dropped` (e.g. `doing` → `todo`) and `moved` (e.g. `doing` → `review`) — so following
 them tracks every card's column; they are null for every other kind; `text` is the event's
 text (the note, the block reason, …). `--since` resumes after a restart: only events at/after
 that unix second are streamed, in `(ts, id)` order — an orchestrator records the last event
-it saw and passes the next start second on restart.
+it saw and passes the next start second on restart. `actor_id` and `identity` say who `actor`
+was: a stream has no `actors[]` to look an id up in, so the whole **identity** object (above)
+is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
@@ -191,7 +219,7 @@ herdr agent panes merged with the board (empty array when herdr is not available
 ## Other read commands
 
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`).
-- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
+- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

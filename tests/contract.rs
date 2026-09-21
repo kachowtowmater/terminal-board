@@ -90,7 +90,7 @@ fn golden_board_shape() {
     tb(&db, &["add", "widgets: gh#7 fix it", "--check", "repro"]);
     tb(&db, &["config", "github", "o/r"]);
     let v = json(&tb(&db, &["board", "--json"]));
-    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "github", "columns"]));
+    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "github", "columns", "actors"]));
     assert_eq!(v["v"], 1);
     assert_eq!((v["wip"].as_i64(), v["theme"].as_str(), v["layout"].as_str()), (Some(3), Some("dark"), Some("auto")));
     assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error", "fails", "fetched_at"]));
@@ -104,7 +104,7 @@ fn golden_board_shape() {
     assert_eq!(keys(card), sorted(CARD));
     assert_eq!((card["tag"].as_str(), card["gh_ref"].as_i64(), card["position"].as_i64()), (Some("widgets"), Some(7), Some(0)));
     assert_eq!(keys(&card["checklist"][0]), sorted(&["n", "idx", "text", "done"]));
-    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text"]));
+    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
     // bare `tb --json` (not a TTY) prints the same object
     let bare = json(&tb(&db, &["--json"]));
@@ -269,7 +269,7 @@ fn watch_events_streams_one_line_per_event() {
     child.wait().unwrap();
     assert_eq!(
         keys(&got[0]),
-        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text"]),
+        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity"]),
         "one NDJSON line per event: {got:?}"
     );
     let kinds: Vec<&str> = got.iter().map(|g| g["kind"].as_str().unwrap()).collect();

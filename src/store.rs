@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod actors;
 pub mod due;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -170,6 +171,9 @@ pub struct Event {
     pub actor: String,
     pub kind: String,
     pub text: String,
+    /// The identity behind `actor` (`actors.id`, see `store::actors`); None when nothing but
+    /// the name is known, and on every event written before identities were recorded.
+    pub actor_id: Option<i64>,
 }
 
 /// An event with its database id (for `tb watch --events` resumption).
@@ -188,6 +192,8 @@ pub struct CardDetail {
     pub events: Vec<Event>,
     /// Rework round: 1, plus one per send-back (`returned` event).
     pub round: i64,
+    /// The identities behind this card's events (`Event::actor_id`), in id order.
+    pub actors: Vec<actors::Actor>,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -381,6 +387,7 @@ fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         actor: r.get(2)?,
         kind: r.get(3)?,
         text: r.get(4)?,
+        actor_id: r.get(5)?,
     })
 }
 
@@ -470,6 +477,8 @@ impl Store {
                 }
             }
         }
+        // migration: who did the work (`actors`, `events.actor_id`, `board_events.actor_id`)
+        actors::migrate(&conn)?;
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
     }
 
@@ -508,10 +517,24 @@ impl Store {
         Ok(())
     }
 
+    /// Every card event is written here, so this is where it gets its identity (`actor_id`).
     fn log(conn: &Connection, id: i64, actor: &str, kind: &str, text: &str) -> Result<()> {
+        let ts = now();
+        let actor_id = actors::stamp(conn, actor, ts)?;
         conn.execute(
-            "INSERT INTO events(card_id, ts, actor, kind, text) VALUES (?,?,?,?,?)",
-            params![id, now(), actor, kind, text],
+            "INSERT INTO events(card_id, ts, actor, kind, text, actor_id) VALUES (?,?,?,?,?,?)",
+            params![id, ts, actor, kind, text, actor_id],
+        )?;
+        Ok(())
+    }
+
+    /// Every board-level event is written here (the `log` of `board_events`).
+    fn log_board(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
+        let ts = now();
+        let actor_id = actors::stamp(conn, actor, ts)?;
+        conn.execute(
+            "INSERT INTO board_events(ts, actor, kind, text, actor_id) VALUES (?,?,?,?,?)",
+            params![ts, actor, kind, text, actor_id],
         )?;
         Ok(())
     }
@@ -532,10 +555,7 @@ impl Store {
         let old = self.wip()?;
         self.set_wip(n)?;
         if old != n {
-            self.conn.execute(
-                "INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,'wip',?)",
-                params![now(), actor, format!("wip {old} -> {n}")],
-            )?;
+            Self::log_board(&self.conn, actor, "wip", &format!("wip {old} -> {n}"))?;
         }
         Ok(())
     }
@@ -808,18 +828,19 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut st = self.conn.prepare(
-            "SELECT card_id, ts, actor, kind, text FROM events WHERE card_id=? ORDER BY ts, id",
+            "SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id",
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
-        Ok(CardDetail { card, checklist, events, round })
+        let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
+        Ok(CardDetail { card, checklist, events, round, actors })
     }
 
     /// Events with `id > after`, oldest first (for `tb watch --events`).
     pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, card_id, ts, actor, kind, text FROM events WHERE id > ? ORDER BY id")?;
+            .prepare("SELECT id, card_id, ts, actor, kind, text, actor_id FROM events WHERE id > ? ORDER BY id")?;
         let v = st
             .query_map([after], |r| {
                 Ok(WatchEvent {
@@ -830,6 +851,7 @@ impl Store {
                         actor: r.get(3)?,
                         kind: r.get(4)?,
                         text: r.get(5)?,
+                        actor_id: r.get(6)?,
                     },
                 })
             })?
@@ -852,7 +874,7 @@ impl Store {
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
         let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut st = self.conn.prepare(
-            "SELECT card_id, ts, actor, kind, text FROM events ORDER BY card_id, ts, id",
+            "SELECT card_id, ts, actor, kind, text, actor_id FROM events ORDER BY card_id, ts, id",
         )?;
         for e in st.query_map([], row_event)? {
             let e = e?;
@@ -1240,10 +1262,7 @@ impl Store {
         tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM cards WHERE id=?", [id])?;
-        tx.execute(
-            "INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,'delete',?)",
-            params![now(), actor, format!("deleted #{id} \"{}\"", c.title)],
-        )?;
+        Self::log_board(&tx, actor, "delete", &format!("deleted #{id} \"{}\"", c.title))?;
         tx.commit()?;
         Ok(c)
     }

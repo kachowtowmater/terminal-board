@@ -35,7 +35,7 @@ Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--age
 
 Options
   --json         machine-readable output; every write prints {\"ok\":…}   (docs/JSON.md)
-  --as NAME      act as NAME (else $TB_AS, $HERDR_AGENT_NAME, $USER)
+  --as NAME      act as NAME (else $TB_AS, $HERDR_AGENT_NAME, $USER); $TB_MODEL, $TB_ROLE: recorded with it
   -b NAME        board (else a first-arg name, $TB_BOARD, default); $TB_DB = file
   -h, -V         help, version
 agents: run 'tb guide' for the full agent manual
@@ -303,10 +303,13 @@ struct EventLine<'a> {
     from: Option<&'a str>,
     to: Option<&'a str>,
     text: &'a str,
+    /// The identity behind `actor`, inlined: a stream has no `actors[]` to look an id up in.
+    actor_id: Option<i64>,
+    identity: Option<terminal_board::store::actors::Actor>,
 }
 
 impl<'a> EventLine<'a> {
-    fn of(e: &'a terminal_board::store::Event) -> Self {
+    fn of(e: &'a terminal_board::store::Event, identity: Option<terminal_board::store::actors::Actor>) -> Self {
         let column = |c: &'a str| COLUMNS.iter().copied().find(|k| *k == c);
         let (from, to) = match e.kind.as_str() {
             "created" => (None, Some("todo")),
@@ -319,12 +322,23 @@ impl<'a> EventLine<'a> {
                 .unwrap_or((None, None)),
             _ => (None, None),
         };
-        EventLine { v: contract::SCHEMA_VERSION, ts: e.ts, card_id: e.card_id, actor: &e.actor, kind: &e.kind, from, to, text: &e.text }
+        EventLine {
+            v: contract::SCHEMA_VERSION,
+            ts: e.ts,
+            card_id: e.card_id,
+            actor: &e.actor,
+            kind: &e.kind,
+            from,
+            to,
+            text: &e.text,
+            actor_id: e.actor_id,
+            identity,
+        }
     }
 }
 
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
-/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text}` line per
+/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity}` line per
 /// event, resuming from `since` (unix seconds) after a restart.
 fn watch(
     store: &Store,
@@ -343,7 +357,11 @@ fn watch(
         loop {
             for e in store.events_since(last)? {
                 last = e.id;
-                let line = EventLine::of(&e.event);
+                let identity = match e.event.actor_id {
+                    Some(id) => store.actor_by_id(id)?,
+                    None => None,
+                };
+                let line = EventLine::of(&e.event, identity);
                 let text = serde_json::to_string(&line).unwrap_or_default();
                 if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
                     return Ok(()); // reader went away
@@ -467,6 +485,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         ));
     }
     let actor = resolve_actor(cli.actor.as_deref());
+    // every event this process writes also records who `actor` is (store::actors)
+    terminal_board::store::actors::use_environment();
     if !terminal_board::env("DB").is_some() {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
             Ok(notes) => {

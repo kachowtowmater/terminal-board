@@ -142,7 +142,7 @@ You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a
 pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`.
 Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command
 (each command usually runs in a fresh shell, so an exported `TB_AS` does not last). Use the
-same name every time. Names are self-asserted: the review rule stops honest mistakes, not an
+same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work). Names are self-asserted: the review rule stops honest mistakes, not an
 agent that lies about its name — never pass another agent's name to get past it. The AGENTS
 panel matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
 
