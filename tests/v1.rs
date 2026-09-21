@@ -476,6 +476,21 @@ fn a_ref_outside_the_newest_page_still_moves() {
 }
 
 #[test]
+fn ref_lookups_report_missing_only_on_a_real_404() {
+    use terminal_board::github::{classify_lookup, found_states, RefLookup, RefState};
+    let closed = r#"{"state":"closed"}"#.to_string();
+    assert_eq!(classify_lookup(Ok(closed)), RefLookup::Found(RefState { closed: true, pr: false, merged: false }));
+    assert_eq!(classify_lookup(Err("gh: Not Found (HTTP 404)".into())), RefLookup::Missing);
+    // network, rate limit, auth: nothing is known, so it is never reported as missing
+    for e in ["error connecting to api.github.com", "HTTP 403: API rate limit exceeded", "HTTP 401: Bad credentials", "gh api timed out"] {
+        assert!(matches!(classify_lookup(Err(e.into())), RefLookup::Failed(_)), "{e}");
+    }
+    assert!(matches!(classify_lookup(Ok("not json".into())), RefLookup::Failed(_)));
+    let l = vec![(1, RefLookup::Missing), (2, RefLookup::Found(RefState { closed: true, pr: true, merged: true })), (3, RefLookup::Failed("x".into()))];
+    assert_eq!(found_states(&l).keys().copied().collect::<Vec<_>>(), [2]);
+}
+
+#[test]
 fn non_owner_done_drop_move_are_refused() {
     common::pin_clock();
     let dir = tempfile::tempdir().unwrap();

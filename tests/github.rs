@@ -552,6 +552,54 @@ fn cli_fetches_via_gh_when_stale_or_forced_and_reports_errors() {
     assert!(j["error"].is_null());
 }
 
+/// `tb sync` reports a gh#N that GitHub answers 404 for, says "could not check" when the
+/// lookup fails, looks each ref up once, and never looks up DONE cards.
+#[test]
+fn sync_reports_unknown_refs_once_per_ref_and_never_guesses() {
+    let env = Env::new();
+    let d = env.dir.path();
+    let _ = env.fake_gh("[]", false); // writes the list fixtures
+    let p = d.display();
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> {p}/calls.log\ncase \"$*\" in\n  *issues/991*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1;;\n  *issues/992*) echo 'error connecting to api.github.com' >&2; exit 1;;\n  *issues/993*) echo '{{\"state\":\"closed\"}}'; exit 0;;\n  *repos/*/issues/*) echo '{{\"state\":\"open\"}}'; exit 0;;\nesac\ncase \"$1 $2\" in\n  \"pr list\") case \"$*\" in *merged*) cat {p}/merged.json;; *) cat {p}/prs.json;; esac;;\n  \"issue list\") cat {p}/issues.json;;\n  \"run list\") echo '[]';;\n  api*) echo 42;;\n  *) exit 2;;\nesac\n"
+    );
+    let gh = d.join("gh-refs");
+    std::fs::write(&gh, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let s = Store::open(&env.db()).unwrap();
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.add("web: gh#991 mistyped ref", "", &[], "lead").unwrap();
+    s.add("web: gh#992 lookup fails", "", &[], "lead").unwrap();
+    s.add("web: gh#993 closed long ago", "", &[], "lead").unwrap();
+    let old = s.add("web: gh#994 finished work", "", &[], "lead").unwrap();
+    s.add("web: gh#995 fine", "", &[], "lead").unwrap();
+    drop(s);
+    let mut s = Store::open(&env.db()).unwrap();
+    s.move_to(old, "done", "lead").unwrap();
+    drop(s);
+    let log = || std::fs::read_to_string(d.join("calls.log")).unwrap_or_default();
+    let o = env.run(&["sync", "--json"], &gh);
+    assert!(o.status.success(), "{}", err(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["unknown_refs"], serde_json::json!([991]), "{v}");
+    assert_eq!(v["unchecked_refs"], serde_json::json!([992]), "{v}");
+    // one lookup per not-done ref, none for the DONE card
+    for n in [991, 992, 993] {
+        assert_eq!(log().matches(&format!("issues/{n}")).count(), 1, "issues/{n}: {}", log());
+    }
+    assert!(!log().contains("issues/994"), "a DONE card is never looked up: {}", log());
+    // plain text: the 404 is reported as missing, the failure as not checked
+    let o = env.run(&["sync"], &gh);
+    let text = out(&o);
+    assert!(text.contains("gh#991: no such issue or PR in acme/widgets"), "{text}");
+    assert!(text.contains("gh#992: could not check on GitHub") && !text.contains("gh#992: no such"), "{text}");
+    assert!(!text.contains("gh#993") && !text.contains("gh#994"), "{text}");
+}
+
 #[test]
 fn config_refuses_a_repo_that_does_not_exist() {
     let e = Env::new();
