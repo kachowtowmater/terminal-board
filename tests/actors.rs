@@ -162,6 +162,21 @@ fn a_session_is_recorded_with_every_event_and_shown_with_the_card() {
     assert_eq!(v["card"]["events"].as_array().unwrap().last().unwrap()["actor_id"], 1, "{v}");
 }
 
+/// Without `TB_HOST` the machine names itself (the kernel's file, else the `hostname` command):
+/// one label, the same on every command — so it cannot split a session over two rows.
+#[test]
+fn the_machine_names_itself_when_tb_host_is_not_set() {
+    let b = Board::new();
+    let env = [("CLAUDECODE", "1")];
+    b.ok(&env, &["add", "a card", "--as", "lead"]);
+    b.ok(&env, &["note", "1", "again", "--as", "lead"]);
+    let rows = b.actors();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let host = rows[0].strip_prefix("lead|claude-code|-|-|-|").unwrap_or_else(|| panic!("{rows:?}"));
+    assert!(host != "-" && !host.is_empty(), "the machine's name was not found: {rows:?}");
+    assert!(!host.contains(['/', ' ', '\n']) && (!host.contains('.') || host.chars().all(|c| c.is_ascii_digit() || c == '.')), "one clean label: {host:?}");
+}
+
 /// The risk the record lives or dies by: a key that is fuzzy in any way grows a row per
 /// command. 1000 commands from one session — eight at a time, so processes also race each
 /// other to make the row — leave exactly one.
