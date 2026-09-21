@@ -1382,3 +1382,91 @@ fn footer_degrades_one_hint_at_a_time() {
         "80x41 with DOING selected:\n{screen}"
     );
 }
+
+/// Every text a tile can be built from: the four tiles under every page label, each part on
+/// its own and in the two shapes a tile draws (`TITLE  value` wide, `value · line 2` dense).
+fn tile_texts(app: &App) -> Vec<String> {
+    use terminal_board::github::PageLabel;
+    let s = app.gh.snap.as_ref().expect("a GitHub snapshot");
+    let f = terminal_board::github::factory(s, &app.snap.cards, app.snap.now);
+    let mut out = Vec::new();
+    for label in [PageLabel::Long, PageLabel::Terse, PageLabel::None] {
+        for (title, value, line2) in terminal_board::github::tiles_as(s, &f, app.snap.now, label) {
+            // a narrow tile shortens this one title whole, so it is a source text too
+            let short = if title == "PULL REQUESTS" { "PRS".to_string() } else { title.clone() };
+            out.push(format!("{title}  {value}"));
+            out.push(format!("{short}  {value}"));
+            out.push(format!("{value} · {line2}"));
+            out.extend([title, short, value, line2]);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The text segments of the GITHUB panel's head (its six rows below the title, from its own
+/// left edge), split on the box-drawing characters so each tile's inner text stands alone.
+fn gh_panel_segments(screen: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(top) = lines.iter().position(|l| l.contains("GITHUB")) else { return Vec::new() };
+    let left = col_of(screen, "GITHUB").saturating_sub(2);
+    lines
+        .iter()
+        .skip(top + 1)
+        .take(6)
+        .flat_map(|l| {
+            let row: String = l.chars().skip(left).collect();
+            row.split(|c| "─│┌┐└┘┏┓┗┛━┃".contains(c)).map(|s| s.trim().to_string()).collect::<Vec<_>>()
+        })
+        .filter(|s| s.chars().count() >= 4)
+        .collect()
+}
+
+/// Issue #79: no tile line is a bare prefix of the text it was built from. A line that did
+/// not fit is either a shorter whole form (another page label, `PRS` for `PULL REQUESTS`) or
+/// visibly shortened with `…` — never silently cut mid-word.
+fn assert_no_silent_cut(ctx: &str, screen: &str, sources: &[String]) {
+    for seg in gh_panel_segments(screen) {
+        if seg.ends_with('…') || sources.contains(&seg) {
+            continue;
+        }
+        let cut = sources.iter().find(|s| s.starts_with(&seg) && s.chars().count() > seg.chars().count());
+        assert!(cut.is_none(), "{ctx}: `{seg}` is `{}` silently cut:\n{screen}", cut.unwrap());
+    }
+}
+
+/// Issue #79: the sweep. Widths 40-200 x every layout, on a quiet repo and a busy one: a
+/// tile line is whole or visibly shortened at every size. At exactly 102 columns the wide
+/// tile row left 20 columns for the 21-character `no open issues or PRs`, and the last
+/// letter went missing with nothing to show for it.
+#[test]
+fn tile_lines_are_never_silently_cut() {
+    common::pin_clock();
+    for (np, ni, busy, what) in [(0i64, 0i64, false, "quiet repo"), (20, 20, true, "busy repo")] {
+        let (_d, s, mut app, _) = setup_page(np, ni, busy);
+        let sources = tile_texts(&app);
+        for layout in LAYOUTS {
+            s.set_layout(layout).unwrap();
+            app.reload(&s);
+            app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+            for h in [24u16, 41, 60] {
+                for w in 40u16..=200 {
+                    assert_no_silent_cut(&format!("{what} {layout} {w}x{h}"), &render(&app, w, h), &sources);
+                }
+            }
+        }
+    }
+    // the reported size, spelled out: the sentence is whole, or shortened so it reads as
+    // shortened -- never `no open issues or PR`
+    let (_d, s, mut app, _) = setup_page(0, 0, false);
+    for layout in ["auto", "half-h"] {
+        s.set_layout(layout).unwrap();
+        app.reload(&s);
+        for w in [102u16, 103] {
+            let screen = render(&app, w, 41);
+            assert!(!screen.contains("no open issues or PR "), "{layout} {w}x41: the empty state cut mid-word:\n{screen}");
+            assert!(screen.contains("no open issues or PRs"), "{layout} {w}x41: the empty state is lost:\n{screen}");
+        }
+    }
+}

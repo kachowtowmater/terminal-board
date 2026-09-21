@@ -39,6 +39,10 @@ is documented, are never dropped. Widths that already showed the whole footer ar
   never to the `github` sync), so `tb sync` still leaves every synced REVIEW card with an
   author. `tb done`, `tb done --approve`, `tb move ID done` and `tb next --review` all read
   the same rule. `--force` remains the logged override.
+- **A GitHub tile line is never silently cut.** The wide tile row now shortens an over-long
+  line the way the narrow one always did — with a trailing `…` — instead of letting it run
+  off the edge mid-word. At exactly 102 columns the ISSUES tile read `no open issues or PR`,
+  which looked like a typo; it now reads as shortened. Every other width is unchanged.
 
 ## 2.0.0 — 2026-09-20
 
