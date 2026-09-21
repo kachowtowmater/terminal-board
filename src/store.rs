@@ -7,6 +7,8 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod due;
+
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
 pub const MAX_WIP: i64 = 99;
@@ -662,14 +664,18 @@ impl Store {
 
     /// Every setting, for `tb config` with no arguments.
     pub fn settings(&self) -> Result<Vec<(String, String)>> {
-        Ok(vec![
+        let mut all = vec![
             ("wip".into(), self.wip()?.to_string()),
             ("theme".into(), self.theme()?),
             ("layout".into(), self.layout()?),
             ("github".into(), self.github_repo()?.unwrap_or_else(|| "off".into())),
             ("github-panel".into(), if self.panel("github-panel")? { "shown" } else { "hidden" }.into()),
             ("agents-panel".into(), if self.panel("agents-panel")? { "shown" } else { "hidden" }.into()),
-        ])
+        ];
+        // due dates (store/due.rs): listed once the board sets them, so a board that sets
+        // nothing lists exactly what it always did
+        all.extend(self.due_settings()?);
+        Ok(all)
     }
 
     pub fn layout(&self) -> Result<String> {

@@ -12,6 +12,7 @@ use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Store, COLUMNS};
 use terminal_board::{boards, contract, github, plain, resolve_actor, setup, textin, tui};
 
@@ -22,6 +23,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
+Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -66,6 +68,9 @@ enum Cmd {
         desc: String,
         #[arg(long = "check")]
         checks: Vec<String>,
+        /// Due date, a calendar date: YYYY-MM-DD.
+        #[arg(long, value_name = "DATE")]
+        due: Option<String>,
         /// Read the description from a file, byte for byte (`-` = standard input).
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
@@ -131,6 +136,9 @@ enum Cmd {
         title: Option<String>,
         #[arg(long)]
         desc: Option<String>,
+        /// Due date, a calendar date: YYYY-MM-DD, or `none` to clear it.
+        #[arg(long, value_name = "DATE|none")]
+        due: Option<String>,
         /// Read the description from a file, byte for byte (`-` = standard input).
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
@@ -363,6 +371,17 @@ fn watch(
     }
 }
 
+/// The `--due` of `add` / `edit`, checked: `None` = no flag, `Some(None)` = `--due none`
+/// (clear it), `Some(Some(date))` = set it. The hint names the command that was being run.
+fn due_flag(cmd: Option<&Cmd>) -> Result<Option<Option<DueDate>>, BoardError> {
+    let (raw, example) = match cmd {
+        Some(Cmd::Add { due: Some(d), .. }) => (d, "tb add \"tag: title\" --due 2026-10-09".to_string()),
+        Some(Cmd::Edit { id, due: Some(d), .. }) => (d, format!("tb edit {id} --due 2026-10-09")),
+        _ => return Ok(None),
+    };
+    DueDate::parse(raw, &example).map(Some)
+}
+
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
     if !path.exists() {
@@ -484,6 +503,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         text_from_files(cmd)?;
     }
     let cmd_ref = cli.cmd.as_ref();
+    // a `--due` that is not a date is refused before the board file is opened (or created)
+    let due_arg = due_flag(cmd_ref)?;
     // on a named board only `add` and `config` (and bare `tb` in a terminal) may create it;
     // every other command on a missing board must fail with the boards list + create hint
     let creates = cmd_ref.map_or(tty, |c| {
@@ -512,12 +533,16 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
             let id = store.add(&title, &desc, &checks, &actor)?;
+            if let Some(Some(date)) = &due_arg {
+                store.set_due(id, Some(date), &actor)?;
+            }
             done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
         Cmd::List => {
             let snap = store.snapshot()?;
             if j {
-                println!("{}", pretty(&snap.cards));
+                let ctx = store.due_ctx()?;
+                println!("{}", pretty(&snap.cards.iter().map(|c| ctx.with(c, c)).collect::<Vec<_>>()));
             } else {
                 print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
@@ -525,7 +550,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Show { id } => {
             let d = store.show(id)?;
             if j {
-                println!("{}", pretty(&d));
+                println!("{}", pretty(&store.due_ctx()?.with(&d, &d.card)));
             } else {
                 print_lines!("{}", plain::detail(&d, now));
             }
@@ -690,7 +715,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
         }
         Cmd::Edit { id, title, desc, .. } => {
-            store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
+            // `--due` alone is a whole edit; with --title/--desc the date (already checked)
+            // is written after them
+            if due_arg.is_none() || title.is_some() || desc.is_some() {
+                store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
+            }
+            if let Some(date) = &due_arg {
+                store.set_due(id, date.as_ref(), &actor)?;
+            }
             done_card(&store, j, id, format!("#{id} saved"))?;
         }
         Cmd::Sync => {
@@ -808,6 +840,39 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     store.set_panel(panel, &value)?;
                     (panel.into(), json!(if store.panel(panel)? { "shown" } else { "hidden" }))
                 }
+                // due dates: `tz` decides what today is, `due-warn` how early a date is `soon`.
+                // Without a value each one is READ (its default when the board sets none).
+                ("tz" | "due-warn", _) if off => {
+                    return Err(BoardError(format!(
+                        "--off does not go with {key} — 'tb config tz local' clears the zone, 'tb config due-warn 3' is the default"
+                    )))
+                }
+                ("tz", value) => {
+                    let zone = match &value {
+                        Some(v) => store.set_tz(v)?,
+                        None => store.tz()?.map_or_else(|| due::LOCAL.to_string(), |z| z.name().to_string()),
+                    };
+                    if value.is_none() && !j {
+                        say!("{zone}");
+                        return Ok(());
+                    }
+                    ("tz".into(), json!(zone))
+                }
+                ("due-warn", Some(value)) => {
+                    let n: i64 = value.parse().map_err(|_| {
+                        BoardError(format!("due-warn must be a number of days, got '{value}' — try 'tb config due-warn 3'"))
+                    })?;
+                    store.set_due_warn(n)?;
+                    ("due-warn".into(), json!(n))
+                }
+                ("due-warn", None) => {
+                    let n = store.due_warn()?;
+                    if !j {
+                        say!("{n}");
+                        return Ok(());
+                    }
+                    ("due-warn".into(), json!(n))
+                }
                 _ => {
                     return Err(BoardError(format!(
                         "unknown or incomplete setting '{key}' — use 'tb config wip 3', 'config github owner/repo', 'config theme dark|light'"
@@ -821,6 +886,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("github", serde_json::Value::Null) => say!("github panel off for board '{}'", store.name),
                     ("github", r) => say!("github panel on: {} — see it with 'tb github' or 'G' on the board", r.as_str().unwrap_or("")),
                     ("wip", n) => say!("wip limit is now {n}"),
+                    ("tz", z) => say!("tz is now {} — it decides what 'today' is for due dates", z.as_str().unwrap_or("")),
+                    ("due-warn", n) => say!("due-warn is now {n} — a card is 'soon' from {n} day(s) before its due date"),
                     (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }
