@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Store, COLUMNS};
-use terminal_board::{boards, contract, github, plain, resolve_actor, setup, tui};
+use terminal_board::{boards, contract, github, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
@@ -22,7 +22,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
-        check ID N (toggle) | --add \"text\" | --rm N
+        check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
@@ -71,6 +71,9 @@ enum Cmd {
         /// Due date, a calendar date: YYYY-MM-DD.
         #[arg(long, value_name = "DATE")]
         due: Option<String>,
+        /// Read the description from a file, byte for byte (`-` = standard input).
+        #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
+        desc_file: Option<std::path::PathBuf>,
     },
     List,
     Show { id: i64 },
@@ -80,7 +83,14 @@ enum Cmd {
         review: bool,
     },
     Take { id: i64 },
-    Note { id: i64, text: String },
+    Note {
+        id: i64,
+        #[arg(required_unless_present = "file")]
+        text: Option<String>,
+        /// Read the note from a file, byte for byte (`-` = standard input).
+        #[arg(long, value_name = "PATH", conflicts_with = "text")]
+        file: Option<std::path::PathBuf>,
+    },
     Check {
         id: i64,
         n: Option<i64>,
@@ -129,6 +139,9 @@ enum Cmd {
         /// Due date, a calendar date: YYYY-MM-DD, or `none` to clear it.
         #[arg(long, value_name = "DATE|none")]
         due: Option<String>,
+        /// Read the description from a file, byte for byte (`-` = standard input).
+        #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
+        desc_file: Option<std::path::PathBuf>,
     },
     Config {
         key: Option<String>,
@@ -502,7 +515,29 @@ fn default_board_cmd(name: Option<&str>, clear: bool, json_out: bool) -> Result<
     Ok(())
 }
 
-fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+/// Text given as a file (`--desc-file PATH|-`, `note --file PATH|-`) becomes the plain text
+/// the command would have carried: read here, BEFORE the board is opened or created, so a bad
+/// path never leaves a new empty board behind, and the write paths below stay the ones
+/// `--desc` and note text already use. `add` stores its description as given, `edit` and
+/// `note` trim theirs — so the file's outer blank space is trimmed for `add` too, and one
+/// file always leaves the same text whichever command carried it.
+fn text_from_files(cmd: &mut Cmd) -> Result<(), BoardError> {
+    match cmd {
+        Cmd::Add { desc, desc_file: Some(path), .. } => {
+            *desc = textin::read(path, "add \"tag: title\" --desc-file")?.trim().to_string();
+        }
+        Cmd::Edit { id, desc, desc_file: Some(path), .. } => {
+            *desc = Some(textin::read(path, &format!("edit {id} --desc-file"))?);
+        }
+        Cmd::Note { id, text, file: Some(path) } => {
+            *text = Some(textin::read(path, &format!("note {id} --file"))?);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
     // silently lose to the fallback chain — refuse before anything is written
     if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
@@ -546,6 +581,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // first run: bare `tb` in a terminal on a machine where nothing is set up yet
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
         setup::run(&name, setup::Options { first_run: true, ..Default::default() })?;
+    }
+    if let Some(cmd) = cli.cmd.as_mut() {
+        text_from_files(cmd)?;
     }
     let cmd_ref = cli.cmd.as_ref();
     // a `--due` that is not a date is refused before the board file is opened (or created)
@@ -644,8 +682,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             );
             done_card(&store, j, card.id, human)?;
         }
-        Cmd::Note { id, text } => {
-            store.note(id, &text, &actor)?;
+        Cmd::Note { id, text, .. } => {
+            store.note(id, &text.unwrap_or_default(), &actor)?;
             done_card(&store, j, id, format!("noted #{id}"))?;
         }
         Cmd::Check { id, n, add, rm } => {
