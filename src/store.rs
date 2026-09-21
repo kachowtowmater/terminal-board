@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod archive;
 pub mod due;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -45,9 +46,10 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
-/// The refusal for moving someone else's DOING card: what it is held by, what the actor
-/// holds, and the escape hatch.
-fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+/// The refusal for changing someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch. `what` finishes "to … anyway": `move it to review`,
+/// `delete it`, `edit it`.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, what: &str) -> Result<BoardError> {
     let mine: Vec<i64> = {
         let mut st =
             tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
@@ -56,7 +58,7 @@ fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -
     };
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
     Ok(BoardError(format!(
-        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+        "#{id} is held by {owner} — your cards: {yours} · to {what} anyway use --force (logged)"
     )))
 }
 
@@ -675,6 +677,7 @@ impl Store {
         // due dates (store/due.rs): listed once the board sets them, so a board that sets
         // nothing lists exactly what it always did
         all.extend(self.due_settings()?);
+        all.extend(self.rm_settings()?);
         Ok(all)
     }
 
@@ -1206,7 +1209,7 @@ impl Store {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                        return Err(ownership_err(&tx, id, owner, actor, &format!("move it to {column}"))?);
                     }
                     let text = match kind {
                         Kind::Drop => format!("moved #{id} held by {owner} back to todo"),

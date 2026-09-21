@@ -137,6 +137,13 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 { "ok": true, "card": { …card… } }
 ```
 
+On a board set to `tb config rm archive`, `rm` archives instead of deleting and says so with
+one more field, `"archived": true` (absent on a plain delete). `tb restore ID --json` answers
+like any write, with the restored card. `tb list --archived --json` is an array, most
+recently archived first: `[{ "id": 3, "title": "…", "tag": null, "column": "review",
+"owner": "bot-1", "archived_at": 1790000000, "archived_by": "lead" }]` — `column` and `owner`
+are where the card was, and returns to. Archived cards appear in no other output.
+
 Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
 (`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
 note's `text` carry the file's text exactly (JSON is raw; only blank space around it is

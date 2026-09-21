@@ -75,7 +75,9 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `unclaimed` | the reviewer whose claim was released |
 | `returned` | why a REVIEW card was sent back to its owner |
 | `approved` | — (a reviewer's `tb done ID --approve`; the card does not move) |
-| `force` | what `--force` got past (moving a held card, approving your own work) |
+| `force` | what `--force` got past (moving, editing, blocking, deleting or archiving a held card; approving your own work) |
+| `archived` | — (`tb rm` on a board set to `rm archive`; the card leaves `cards` with this as its last event) |
+| `restored` | — (`tb restore ID` brought the card back) |
 
 ### board_events
 Board-level events (no card):
@@ -85,7 +87,7 @@ Board-level events (no card):
 | `id` | INTEGER PK | monotonically increasing |
 | `ts` | INTEGER | unix seconds |
 | `actor` | TEXT | who did it |
-| `kind` | TEXT | `delete`, … (same open-set rule as `events`) |
+| `kind` | TEXT | `delete`, `wip`, `archive`, `restore`, `rm` (the setting changed), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
 | `text` | TEXT | detail |
 
 ### github_snapshot
@@ -104,8 +106,26 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `rm`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
+
+### archived_cards
+Exists only on a board that was ever set to `tb config rm archive` (tb creates it then, not
+before). One row per card `tb rm` archived; `tb restore ID` moves the card back and deletes
+the row. An archived card is in NO other table, so nothing that reads `cards` can count it.
+
+| column | type | meaning |
+|---|---|---|
+| `card_id` | INTEGER PK | the card's id — restored under the same id (ids are never reused) |
+| `archived_at` | INTEGER | unix seconds |
+| `archived_by` | TEXT | who ran `tb rm` |
+| `title` | TEXT | the card's title, for listing |
+| `tag` | TEXT NULL | its tag |
+| `column` | TEXT | the column it was in, and returns to |
+| `owner` | TEXT NULL | who held it |
+| `card` | TEXT | its `cards` row as a JSON object, column name → value |
+| `checklist` | TEXT | its `checklist` rows, a JSON array of such objects |
+| `events` | TEXT | its `events` rows (ids included), a JSON array — the whole history |
 
 ## Reading safely
 
