@@ -51,7 +51,7 @@ The test clock override `TB_NOW` (legacy `TTYBOARD_NOW`) accepted any integer â€
 negative number, `i64::MAX` â€” and wrote it verbatim as a card timestamp into a real board,
 while unparsable text silently fell back to the real clock. It now validates: unset or empty
 means the real clock, and anything else must be an integer between 946684800
-(2000-01-01) and 4102444800 (2100-01-01). A bad value exits non-zero, names the variable and
+(2000-01-01) and 4102444800 (one past the last accepted, 4102444799). A bad value exits non-zero, names the variable and
 the accepted range, and writes nothing (with `--json`, the usual
 `{ok, error, hint}` object). The rule documented once: an environment variable that changes
 what tb writes must validate its value and refuse; one that only changes what tb reads or

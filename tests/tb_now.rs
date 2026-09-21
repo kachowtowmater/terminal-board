@@ -1,5 +1,5 @@
 //! The `TB_NOW` clock override (legacy `TTYBOARD_NOW`): an in-range value pins the clock,
-//! anything else — not an integer, or outside 946684800–4102444800 (2000–2100) — is refused
+//! anything else — not an integer, or outside 946684800–4102444800 (2000, the last second it accepts is 4102444799) — is refused
 //! before anything is written, in plain mode and under `--json`.
 //!
 //! The suite pins the clock by setting `TB_NOW` in the environment of the spawned binary
@@ -7,7 +7,7 @@
 use std::process::{Command, Output};
 
 const MIN: &str = "946684800"; // 2000-01-01T00:00:00Z — keep in step with store::TB_NOW_MIN
-const MAX: &str = "4102444800"; // 2100-01-01T00:00:00Z — keep in step with store::TB_NOW_MAX
+const MAX: &str = "4102444800"; // the first refused second, one past the window — keep in step with store::TB_NOW_MAX
 
 struct Board {
     _dir: tempfile::TempDir,
@@ -70,7 +70,7 @@ fn an_in_range_pin_is_used() {
     let v: serde_json::Value =
         serde_json::from_str(&String::from_utf8(b.run(Some("1789777000"), &["show", "1", "--json"]).stdout).unwrap()).unwrap();
     assert_eq!(v["created_at"], 1_789_777_000);
-    // the edges of the window are accepted too (first and last second of 2000–2100)
+    // the edges of the window are accepted too (first and last second of 2000 up to 4102444799)
     for edge in [MIN, MAX] {
         let e = Board::new();
         let o = e.run(Some(edge), &["add", "edge"]);

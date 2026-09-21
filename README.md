@@ -536,7 +536,8 @@ Tests and scripted replays can pin the clock: `TB_NOW=<unix seconds>` (legacy na
 `TTYBOARD_NOW`) makes every card timestamp and event use that second instead of the real
 one, so fixtures are stable whatever the time of day. Because the value is written into a
 real board, it is validated: unset or empty means the real clock, and anything else must be
-an integer between `946684800` (2000-01-01) and `4102444800` (2100-01-01) — anything else
+an integer between `946684800` (2000-01-01) and `4102444800` (one past the last accepted,
+`4102444799`) — anything else
 exits non-zero, names the variable and the range, and writes nothing.
 
 ## Troubleshooting

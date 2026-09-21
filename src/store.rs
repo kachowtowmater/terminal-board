@@ -249,7 +249,7 @@ impl Snapshot {
 /// is a library read, not a validated `--json` argument, so the refusal is raised by
 /// `tb_now()` at the CLI write boundary.
 pub const TB_NOW_MIN: i64 = 946_684_800; // 2000-01-01T00:00:00Z
-pub const TB_NOW_MAX: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
+pub const TB_NOW_MAX: i64 = 4_102_444_800; // the first refused second (one past the window)
 
 /// The clock to use: the pinned `TB_NOW` when it is set and in range, else the real clock.
 pub fn pinned_now() -> Result<Option<i64>> {
@@ -258,7 +258,7 @@ pub fn pinned_now() -> Result<Option<i64>> {
     match v.parse::<i64>() {
         Ok(t) if (TB_NOW_MIN..=TB_NOW_MAX).contains(&t) => Ok(Some(t)),
         _ => Err(BoardError(format!(
-            "TB_NOW is not a plausible unix second: '{v}' — unset it, or pass seconds between {TB_NOW_MIN} and {TB_NOW_MAX} (2000 to 2100)"
+            "TB_NOW is not a plausible unix second: '{v}' — unset it, or pass seconds between {TB_NOW_MIN} and {TB_NOW_MAX} (2000, last accepted 4102444799)"
         ))),
     }
 }

@@ -155,7 +155,7 @@ panel matches your name to your herdr pane; an idle agent holding a DOING card i
 | `TB_TTY` / `TTYBOARD_TTY` | the tty `setup` prompts read from | test hook |
 | `TB_NO_HERDR` | set to anything: tb does not ask herdr for agents | test hook |
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
-| `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000–2100); unset or empty = the real clock | test hook |
+| `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
 
 A variable that changes what tb **writes** must validate its value and refuse; one that only
 changes what tb reads or executes may stay lenient — today that binds `TB_NOW` only: a value
