@@ -89,7 +89,18 @@ fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardEr
     BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
 }
 
+/// Who did the work on a card: its OWNER — the agent that held it in DOING — whenever it has
+/// one. Only a card that reached REVIEW with no owner falls back to whoever moved it there,
+/// and never to the `github` sync (its moves are automation, not work).
+///
+/// Keying on the owner and not on the last mover is what makes the never-self-approve rule
+/// point at the right agent: a reviewer who pushes a stuck card into REVIEW does not inherit
+/// the work, and the worker who held the card cannot escape the rule by letting someone else
+/// move it.
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
+    if c.owner.is_some() {
+        return Ok(c.owner.clone());
+    }
     let mover: Option<String> = conn
         .query_row(
             "SELECT actor FROM events WHERE card_id=? AND kind='moved' AND text LIKE '% -> review' ORDER BY id DESC LIMIT 1",
@@ -99,7 +110,7 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
         .optional()?;
     Ok(match mover {
         Some(a) if a != "github" => Some(a),
-        _ => c.owner.clone(),
+        _ => None,
     })
 }
 
@@ -1111,8 +1122,8 @@ impl Store {
         Ok(v)
     }
 
-    /// Who did the work on a card: the actor of its last move into review, or the owner when
-    /// that move was a GitHub sync (or there is none).
+    /// Who did the work on a card: its owner, or — only for a card that reached review with
+    /// no owner — the actor of its last move into review (never the `github` sync).
     pub fn author(&self, id: i64) -> Result<Option<String>> {
         let c = get_card(&self.conn, id)?;
         author_of(&self.conn, &c)

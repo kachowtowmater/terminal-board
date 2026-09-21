@@ -11,6 +11,16 @@ fit, so an 80-column terminal with DOING selected showed `a add  enter open  ? h
 `a add`), the way the focus view's footer already did. `shift+arrows move` — the only board
 action that is not discoverable anywhere else on screen — and `?`, where every dropped hint
 is documented, are never dropped. Widths that already showed the whole footer are unchanged.
+### Fixed
+- **Who "did the work" on a card is now its owner, not whoever last moved it to REVIEW.**
+  The never-self-approve rule used to key on the actor of the `doing -> review` move, which
+  got it backwards in both directions: someone who pushed another agent's stuck card into
+  REVIEW with `--force` was then refused its approval, while the agent that actually held the
+  card was free to approve its own work. The author is now the card's owner whenever it has
+  one; only a card that reached REVIEW unowned falls back to whoever moved it there (and
+  never to the `github` sync), so `tb sync` still leaves every synced REVIEW card with an
+  author. `tb done`, `tb done --approve`, `tb move ID done` and `tb next --review` all read
+  the same rule. `--force` remains the logged override.
 
 ## 2.0.0 — 2026-09-20
 
