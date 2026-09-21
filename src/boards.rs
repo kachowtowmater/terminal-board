@@ -116,19 +116,43 @@ impl ArchiveRow {
     }
 }
 
-/// Card counts of a board file, read WITHOUT writing to it: an archived board must come back
-/// byte-for-byte, and the normal open runs migrations. `None` when it cannot be read.
+/// Card counts of a board file, read WITHOUT changing anything on disk: an archived board
+/// must come back exactly as it went in, and the normal open runs migrations. `None` when it
+/// cannot be read.
+///
+/// Read-only and `query_only` keep the `.db` itself untouched, but SQLite still makes a
+/// `-shm` (and can make a `-wal`) to read a WAL database, so anything this call created is
+/// removed again once the connection is closed. Sidecars that were already there are left
+/// alone — they belong to the archived board.
 fn counts_read_only(path: &Path) -> Option<[usize; 4]> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let mut st = conn.prepare(r#"SELECT "column", COUNT(*) FROM cards GROUP BY "column""#).ok()?;
-    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).ok()?;
-    let mut counts = [0usize; 4];
-    for (col, n) in rows.flatten() {
-        if let Some(i) = COLUMNS.iter().position(|c| *c == col) {
-            counts[i] = n.max(0) as usize;
+    let sidecars: Vec<(PathBuf, bool)> = ["-wal", "-shm"]
+        .iter()
+        .map(|ext| {
+            let p = PathBuf::from(format!("{}{ext}", path.display()));
+            let existed = p.exists();
+            (p, existed)
+        })
+        .collect();
+    let counts = (|| {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags).ok()?;
+        conn.execute_batch("PRAGMA query_only=ON").ok()?;
+        let mut st = conn.prepare(r#"SELECT "column", COUNT(*) FROM cards GROUP BY "column""#).ok()?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).ok()?;
+        let mut counts = [0usize; 4];
+        for (col, n) in rows.flatten() {
+            if let Some(i) = COLUMNS.iter().position(|c| *c == col) {
+                counts[i] = n.max(0) as usize;
+            }
+        }
+        Some(counts)
+    })();
+    for (p, existed) in sidecars {
+        if !existed {
+            let _ = std::fs::remove_file(&p);
         }
     }
-    Some(counts)
+    counts
 }
 
 /// Every archived board, oldest first within a name (so the last one for a name is newest).
@@ -154,10 +178,18 @@ pub fn archived() -> Vec<ArchiveRow> {
     v
 }
 
-/// Refused because another process has the board's SQLite file open.
-struct Busy;
+/// What `lock_exclusive` found.
+enum Lock {
+    /// The lock is held for as long as this connection lives.
+    Held(Connection),
+    /// Another process has the board open.
+    Busy,
+    /// There is no board file to lock — it never existed, or a racing `tb` archived it
+    /// between the open and the lock.
+    Gone,
+}
 
-/// Take the board's file exclusively, or report that someone else holds it.
+/// Take the board's file exclusively, or say why not.
 ///
 /// The sidecar files (`-wal`/`-shm`) are NOT a usable busy signal: they survive a crash, so
 /// testing for them refuses forever after one. The only honest test is taking the lock —
@@ -166,17 +198,64 @@ struct Busy;
 /// statement, then `BEGIN IMMEDIATE`. SQLITE_BUSY means another connection (a running `tb`
 /// window keeps one open) has it. The returned connection keeps the lock until it is
 /// dropped, so the caller can move the file with nobody able to open it.
-fn lock_exclusive(path: &Path) -> Result<std::result::Result<Connection, Busy>> {
-    let conn = Connection::open(path)?;
-    conn.busy_timeout(Duration::from_secs(0))?;
-    let _mode: String = conn.query_row("PRAGMA locking_mode=EXCLUSIVE", [], |r| r.get(0))?;
-    match conn.execute_batch("BEGIN IMMEDIATE") {
-        Ok(()) => {
-            conn.execute_batch("ROLLBACK")?;
-            Ok(Ok(conn))
+///
+/// The open is `READ_WRITE` WITHOUT `CREATE`, and the file is checked again while the lock
+/// is held: two `tb boards archive NAME` at once must not leave anything behind. A creating
+/// open let the loser of that race re-create an empty `NAME.db` after the winner's rename —
+/// an empty board that `tb boards` then listed and that blocked `tb boards restore`, which
+/// is exactly the hand-moving of files this command exists to remove.
+fn lock_exclusive(path: &Path) -> Result<Lock> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let attempt = (|| -> std::result::Result<Connection, rusqlite::Error> {
+        let conn = Connection::open_with_flags(path, flags)?;
+        conn.busy_timeout(Duration::from_secs(0))?;
+        let _mode: String = conn.query_row("PRAGMA locking_mode=EXCLUSIVE", [], |r| r.get(0))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        conn.execute_batch("ROLLBACK")?;
+        Ok(conn)
+    })();
+    // A racing `tb boards archive` can take the file out from under this attempt at any
+    // point, which shows up as a missing file, as SQLITE_BUSY, or as an I/O error on a
+    // sidecar that was just unlinked. Whatever SQLite said, if the board is not there any
+    // more then somebody else archived it — and a connection that got as far as opening it
+    // may have left sidecars beside a file that no longer exists.
+    let gone = || {
+        orphan_sidecars(path);
+        Ok(Lock::Gone)
+    };
+    match attempt {
+        Ok(conn) if path.is_file() => Ok(Lock::Held(conn)),
+        Ok(conn) => {
+            drop(conn);
+            gone()
         }
-        Err(e) if is_busy(&e) => Ok(Err(Busy)),
+        Err(_) if !path.is_file() => gone(),
+        Err(e) if is_busy(&e) => Ok(Lock::Busy),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// How many times a busy board is re-probed before `tb boards archive` reports it busy,
+/// and the pause between probes: 8–32ms, jittered so two racing `tb`s do not keep colliding.
+const LOCK_TRIES: usize = 12;
+
+fn lock_backoff() -> Duration {
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::from(d.subsec_nanos() % 25))
+        .unwrap_or(0);
+    Duration::from_millis(8 + jitter)
+}
+
+/// Remove `-wal`/`-shm` left beside a database file that is not there any more: without
+/// their `.db` they are unreadable leftovers, and an empty-looking board directory is the
+/// whole point of archiving.
+fn orphan_sidecars(path: &Path) {
+    if path.exists() {
+        return;
+    }
+    for ext in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
     }
 }
 
@@ -208,18 +287,38 @@ pub fn archive(name: &str) -> Result<PathBuf> {
         )));
     }
     let src = boards_dir().join(format!("{name}.db"));
-    if !src.is_file() {
+    let no_board = || {
         let names = list();
         let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
-        return Err(BoardError(format!("no board '{name}' — boards: {all} · see 'tb boards'")));
+        BoardError(format!("no board '{name}' — boards: {all} · see 'tb boards'"))
+    };
+    if !src.is_file() {
+        return Err(no_board());
     }
-    let conn = match lock_exclusive(&src)? {
-        Ok(c) => c,
-        Err(Busy) => {
-            return Err(BoardError(format!(
-                "board '{name}' is open in another process — close it (quit any 'tb {name}' window or 'tb {name} watch') and archive again"
-            )))
+    // From here on the file is only ever touched under the lock. Two `tb boards archive` at
+    // once can lock each other out — each holds the read lock its own connection took on
+    // open, so neither can upgrade — so a busy board is retried a few times, with a fresh
+    // connection and a jittered pause, before it is reported busy. A board a `tb` window
+    // really is holding stays busy through all of them.
+    let mut conn = None;
+    for attempt in 0..LOCK_TRIES {
+        match lock_exclusive(&src)? {
+            Lock::Held(c) => {
+                conn = Some(c);
+                break;
+            }
+            Lock::Gone => return Err(no_board()),
+            Lock::Busy => {
+                if attempt + 1 < LOCK_TRIES {
+                    std::thread::sleep(lock_backoff());
+                }
+            }
         }
+    }
+    let Some(conn) = conn else {
+        return Err(BoardError(format!(
+            "board '{name}' is open in another process — close it (quit any 'tb {name}' window or 'tb {name} watch') and archive again"
+        )));
     };
     let dir = archive_dir();
     std::fs::create_dir_all(&dir)
@@ -234,9 +333,7 @@ pub fn archive(name: &str) -> Result<PathBuf> {
     std::fs::rename(&src, &dst)
         .map_err(|e| BoardError(format!("cannot move {} to {}: {e} — check the state directory is writable", src.display(), dst.display())))?;
     drop(conn); // releases the lock; SQLite drops the now-empty sidecars
-    for ext in ["-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{ext}", src.display()));
-    }
+    orphan_sidecars(&src);
     Ok(dst)
 }
 

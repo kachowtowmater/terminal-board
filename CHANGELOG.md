@@ -15,7 +15,10 @@ card, and the archived file is yours to remove when you are sure. Archiving is r
 another process has the board's database open, decided by taking the board's SQLite lock
 rather than by looking for leftover sidecar files, so a crash never makes a board
 un-archivable; it is also refused for the board a bare `tb` opens and with `TB_DB` set.
-Restoring is refused when a live board of that name exists.
+Restoring is refused when a live board of that name exists. Two `tb boards archive` of the
+same board at once can lock each other out, so a busy board is re-probed a few times before
+it is reported busy: one of them archives the board and the others report it gone, and
+neither the board file nor a sidecar is ever left behind.
 
 ### The board footer keeps every hint that fits
 

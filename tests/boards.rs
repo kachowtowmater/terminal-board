@@ -1,6 +1,6 @@
 //! Named boards, driven through the real binary with a temp HOME (no TB_DB).
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -194,15 +194,37 @@ impl Home {
     fn archive_dir(&self) -> PathBuf {
         self.state().join("archive")
     }
+    /// A `tb` command against this HOME, ready to spawn (the tests above wait for output;
+    /// these need the child itself).
+    fn cmd(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args)
+            .env("HOME", self.dir.path())
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("TB_DB")
+            .env_remove("TB_BOARD")
+            .env_remove("TTYBOARD_DB")
+            .env_remove("TTYBOARD_BOARD")
+            .env_remove("HERDR_AGENT_NAME");
+        c
+    }
+    /// Every archived file for `name`, oldest first.
+    fn archives(&self, name: &str) -> Vec<PathBuf> {
+        let mut hits: Vec<PathBuf> = std::fs::read_dir(self.archive_dir())
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}@")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        hits.sort();
+        hits
+    }
     /// The one archived file for `name` (the test archives a name at most once).
     fn archived(&self, name: &str) -> PathBuf {
-        let mut hits: Vec<PathBuf> = std::fs::read_dir(self.archive_dir())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}@")))
-            .collect();
-        hits.sort();
+        let mut hits = self.archives(name);
         assert_eq!(hits.len(), 1, "one archive of '{name}': {hits:?}");
         hits.pop().unwrap()
     }
@@ -274,25 +296,11 @@ fn archive_ignores_sidecar_files_nobody_holds() {
 /// keeps one connection for as long as it runs, exactly as a `tb` window does.
 #[test]
 fn archive_refuses_while_another_process_holds_the_board() {
-    use std::process::Stdio;
     let h = Home::new();
     h.ok(&["scratch", "add", "one"]);
 
-    let mut child = {
-        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(["scratch", "watch", "--json", "--events"])
-            .env("HOME", h.dir.path())
-            .env("TB_AS", "tester")
-            .env("TB_NO_HERDR", "1")
-            .env_remove("TB_DB")
-            .env_remove("TB_BOARD")
-            .env_remove("TTYBOARD_DB")
-            .env_remove("TTYBOARD_BOARD")
-            .env_remove("HERDR_AGENT_NAME")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        c.spawn().unwrap()
-    };
+    let mut child =
+        h.cmd(&["scratch", "watch", "--json", "--events"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     // wait until it has actually opened the database (the -shm appears on connect). This is
     // only a start signal for the test — the refusal below must not depend on it.
     let shm = PathBuf::from(format!("{}-shm", h.db("scratch").display()));
@@ -399,4 +407,86 @@ fn the_board_picker_stops_offering_an_archived_board() {
     assert_eq!(names(), ["default"], "the picker still offers an archived board");
     h.ok(&["boards", "restore", "scratch"]);
     assert_eq!(names(), ["default", "scratch"]);
+}
+
+/// Two `tb boards archive NAME` at once must leave the boards directory clean. The loser
+/// used to re-create an empty `NAME.db` (its SQLite open created the file the winner had
+/// just renamed away), leaving a 0-byte board that `tb boards` listed and that made
+/// `tb boards restore` fail with "already exists" — the hand-moving of files this command
+/// exists to remove.
+#[test]
+fn concurrent_archives_leave_no_empty_board_behind() {
+    const ROUNDS: usize = 30;
+    const RACERS: usize = 3;
+    let mut wins = 0;
+    for round in 0..ROUNDS {
+        let h = Home::new();
+        h.ok(&["scratch", "add", "one"]);
+        h.ok(&["scratch", "add", "two"]);
+        let racers: Vec<_> = (0..RACERS)
+            .map(|_| h.cmd(&["boards", "archive", "scratch"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap())
+            .collect();
+        let out: Vec<_> = racers.into_iter().map(|c| c.wait_with_output().unwrap()).collect();
+
+        let won = out.iter().filter(|o| o.status.success()).count();
+        assert!(won <= 1, "round {round}: {won} of {RACERS} archives claimed the same board");
+        wins += won;
+        for o in out.iter().filter(|o| !o.status.success()) {
+            let e = String::from_utf8_lossy(&o.stderr).to_string();
+            assert!(
+                e.contains("no board 'scratch'") || e.contains("open in another process"),
+                "round {round}: a loser failed for an unexpected reason: {e}"
+            );
+        }
+        assert_eq!(h.archives("scratch").len(), won, "round {round}: one archived file per winner");
+        for ext in ["-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{ext}", h.db("scratch").display()));
+            assert!(!p.exists(), "round {round}: sidecar left behind: {}", p.display());
+        }
+
+        if won == 1 {
+            // nothing is left in boards/: no re-created file, no empty board in the listing
+            assert!(!h.db("scratch").exists(), "round {round}: an archive race re-created the board file");
+            let listed = h.ok(&["boards"]);
+            assert!(!listed.contains("scratch"), "round {round}: still listed:\n{listed}");
+            let restored = h.ok(&["boards", "restore", "scratch"]);
+            assert!(restored.contains("scratch"), "round {round}: {restored}");
+        } else {
+            // every racer refused (they can lock each other out): the board is untouched and
+            // archiving it on its own still works
+            assert!(h.db("scratch").is_file(), "round {round}: refused by all, and the board vanished");
+            h.ok(&["boards", "archive", "scratch"]);
+            h.ok(&["boards", "restore", "scratch"]);
+        }
+        // whichever way the race went, the board comes back whole
+        let list = h.ok(&["scratch", "list"]);
+        assert!(list.contains("one") && list.contains("two"), "round {round}: cards lost:\n{list}");
+    }
+    // a racer losing now and then is fine; systematically losing is a regression
+    assert!(wins >= ROUNDS - 2, "only {wins} of {ROUNDS} rounds archived the board at all");
+}
+
+/// `tb boards --archived` reads counts; it must not leave anything beside the archived file.
+#[test]
+fn listing_archived_boards_writes_nothing() {
+    let h = Home::new();
+    h.ok(&["scratch", "add", "one"]);
+    h.ok(&["boards", "archive", "scratch"]);
+    let arc = h.archived("scratch");
+    let before = std::fs::read(&arc).unwrap();
+
+    for _ in 0..3 {
+        assert!(h.ok(&["boards", "--archived"]).contains("todo 1"));
+        assert!(h.ok(&["boards", "--archived", "--json"]).contains("\"todo\""));
+    }
+    for ext in ["-wal", "-shm"] {
+        let p = PathBuf::from(format!("{}{ext}", arc.display()));
+        assert!(!p.exists(), "--archived left {} behind", p.display());
+    }
+    assert_eq!(std::fs::read(&arc).unwrap(), before, "--archived changed the archived board");
+    let names: Vec<String> = std::fs::read_dir(h.archive_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names.len(), 1, "archive/ holds only the board file: {names:?}");
 }
