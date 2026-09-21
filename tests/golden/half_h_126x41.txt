@@ -38,4 +38,4 @@
 │ * reviewer       claude  working  -                                                                                        │
 │ - lead           claude  idle     -                                                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- a add  e edit  x del  enter open  shift+arrows move  ? help  q quit
+ a add  e edit  x del  enter open  shift+arrows move  B boards  ? help  q quit

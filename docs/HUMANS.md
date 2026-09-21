@@ -86,6 +86,10 @@ tb boards                    # every board with its counts
 
 `TB_BOARD=work` in your shell makes `work` the default.
 
+On the board, `B` opens the board picker: every board with its counts, `enter` switches to
+the one you choose without quitting, `esc` cancels. (`TB_DB` pins one file, so the picker
+says so instead of offering a choice.)
+
 ## GitHub
 
 Each board can show one GitHub repository: open pull requests with CI status, issues with

@@ -223,6 +223,7 @@ Press `?` on the board to see all keys at any time.
 | `+` / `-` | raise / lower the WIP limit (with DOING selected) |
 | `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
 | ↓ from the last card | into the GITHUB / AGENTS panels |
+| `B` | boards: switch to another board without quitting |
 | `R` | pick the GitHub repository |
 | `G` / `A` | show or hide the GITHUB / AGENTS panel |
 | `L` | view: auto, focus, third-h, third-v, half-h, half-v |
@@ -253,6 +254,10 @@ tb boards
 ```
 
 You can also set `TB_BOARD=work` in your shell to change the default.
+
+On the board, `B` opens the board picker: the same rows as `tb boards` — name, card counts
+and the default board marked — and `enter` switches to the one you choose without quitting
+`tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
 ## GitHub
 
@@ -525,6 +530,8 @@ your login.
 - [docs/HUMANS.md](docs/HUMANS.md) — using the board day to day (people).
 - [docs/AGENTS.md](docs/AGENTS.md) — the agent manual, also `tb guide` (AI agents).
 - [docs/JSON.md](docs/JSON.md) — the JSON contract for scripts and apps.
+- [docs/SCHEMA.md](docs/SCHEMA.md) — the SQLite file as a read-only interface.
+- [UPGRADING.md](UPGRADING.md) — coming from 1.x: what is refused now, and the way through.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
 
 ## License

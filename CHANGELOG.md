@@ -4,11 +4,13 @@
 
 ## 2.0.0 — 2026-09-20
 
-Dogfooding — several agents and a person sharing one board — turned into 31 changes since
+Dogfooding — several agents and a person sharing one board — turned into 32 changes since
 1.1.0. Most are fixes to things that were quietly wrong. Several of those fixes **refuse a command
 that used to succeed**, which is why this is a major version: a script or agent that relied
 on the old, silent behaviour has to change. Nothing was renamed or removed, the JSON
 contract is still `"v": 1` (new fields only), and boards made by 1.x open unchanged.
+**[UPGRADING.md](UPGRADING.md)** has one section per change, each with the command that used
+to work, what it does now, and the way through.
 
 ### Breaking: commands that used to succeed are now refused
 Each one replaces silence with an error that says what to do instead; each has a way through.
@@ -27,6 +29,21 @@ Each one replaces silence with an error that says what to do instead; each has a
 - Two exit codes changed for the better: a closed pipe (`tb list | head -1`) ends with 0
   instead of a panic (101), and with `--json` an argument error is now JSON on stdout with
   exit 2 instead of text on stderr.
+
+### `B` switches boards without quitting
+- `B` on the board opens the **board picker**: an overlay, like the `?` help, listing every
+  board `tb boards` lists — name, todo / doing / review / done counts, `*` on the default
+  board — with the board you are on in bold. The counts are re-read when it opens. Arrows or
+  `j`/`k` move, `enter` switches, `esc` leaves everything as it was. The key is in the footer
+  hints and in `?`.
+- `enter` switches the running board **in place**: no restart. The header names the new
+  board, and its own settings follow it — WIP limit, theme, view, and whether the GITHUB and
+  AGENTS panels are shown, plus that board's GitHub repository (a fetch still in flight for
+  the board you left is dropped rather than saved into the new one).
+- No layout change: nothing on the board moves, and the overlay scrolls with the selection in
+  a short pane, dropping a count column whole rather than cutting a header in a narrow one.
+- With `TB_DB` set there is one board file and board names are refused, so `B` says
+  `TB_DB pins one board file — unset TB_DB to switch boards` instead of offering a choice.
 
 ### Reviewers claim REVIEW cards: `tb next --review --as NAME`
 - Atomically claims the top unblocked
@@ -132,7 +149,7 @@ Each one replaces silence with an error that says what to do instead; each has a
 - A TODO card nobody took, whose issue already has an open PR, used to be moved to REVIEW by
   `tb sync` — ownerless, authorless, approvable by anyone, accountable to nobody. Now sync
   leaves it in TODO (the GITHUB panel still shows the issue's open PR in its STATE column,
-  e.g. `PR #62 ok`); once someone
+  e.g. `PR gh#62 ok`); once someone
   takes the card, the next sync moves it as before. Every synced REVIEW card therefore has
   an owner and an author.
 
