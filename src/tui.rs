@@ -2014,8 +2014,16 @@ fn footer(app: &App, width: u16) -> Line<'static> {
                 hints.push(("R", "github: pick repo"));
             }
             hints.extend([("?", "help"), ("q", "quit")]);
-            if hints_len(&hints) > width as usize {
-                hints = vec![("a", "add"), ("enter", "open"), ("?", "help"), ("q", "quit")];
+            // degrade one hint at a time, least useful first, like the focus view above:
+            // `x` is destructive and rare, `e` has an obvious alternative (open the card),
+            // `R` costs 21 columns and the github panel already says how to pick, `+/-` and
+            // `B` are occasional. `shift+arrows` (the only non-obvious core action) and `?`
+            // (where every dropped hint is documented) are the floor and are never dropped.
+            for drop in ["x", "e", "R", "+/-", "B", "enter", "q", "a"] {
+                if hints_len(&hints) <= width as usize {
+                    break;
+                }
+                hints.retain(|(k, _)| *k != drop);
             }
             Line::from(hint_spans(&hints))
         }
