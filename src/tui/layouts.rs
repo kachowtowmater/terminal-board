@@ -604,8 +604,9 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             note_col(app, ci, Rect { height: 1, ..r });
             let col = COLUMNS[ci];
             let colour = column_colour_in(col, &app.snap.theme);
-            let name = if col == "done" { "DONE today".to_string() } else { col.to_ascii_uppercase() };
             let count = if col == "doing" { format!("{}/{}", counts[ci], app.snap.wip) } else { counts[ci].to_string() };
+            // ` o NAME (count)`: a label gives way in whole words before the count does
+            let name = column_name(&app.snap, col, (area.width as usize).saturating_sub(6 + count.len()));
             let l = Line::from(vec![
                 Span::styled(" o", Style::default().fg(colour)),
                 Span::styled(format!(" {name} ({count})"), bold().fg(colour)),
@@ -624,7 +625,11 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     app.shown.set((false, false));
     let w = area.width as usize;
     let n = |c: usize| app.col_cards(c).len();
-    let counts = format!(" TODO {} · DOING {}/{} · REVIEW {} · DONE {}", n(0), n(1), app.snap.wip, n(2), n(3));
+    let plain_counts = format!(" TODO {} · DOING {}/{} · REVIEW {} · DONE {}", n(0), n(1), app.snap.wip, n(2), n(3));
+    // with labels: the labelled line when it fits whole, the plain names otherwise
+    let lab = |c: usize| app.snap.display.column_label(COLUMNS[c]);
+    let labelled = format!(" {} {} · {} {}/{} · {} {} · {} {}", lab(0), n(0), lab(1), n(1), app.snap.wip, lab(2), n(2), lab(3), n(3));
+    let counts = if cells(&labelled) <= w { labelled } else { plain_counts };
     let bars_n = u16::from(app.show_github) + u16::from(app.show_agents);
     let bars_n = if area.height >= 6 + bars_n { bars_n } else { 0 };
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(bars_n), Constraint::Length(1)]).split(area);
@@ -651,7 +656,12 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
     };
     let colour = column_colour_in(&card.column, &app.snap.theme);
     let fg = palette(&app.snap.theme).fg;
-    let col_name = card.column.to_ascii_uppercase();
+    // ` o NAME ` on the left, ` #id ` on the right of the same border
+    let id_w = card.id.to_string().len() + 3;
+    let col_name = match app.snap.display.label(&card.column) {
+        Some(l) => label_words(&l, (body.width as usize).saturating_sub(2 + 5 + id_w)).unwrap_or_else(|| card.column.to_ascii_uppercase()),
+        None => card.column.to_ascii_uppercase(),
+    };
     let b = frame(true, Some(colour))
         .title(Span::styled(format!(" o {col_name} "), bold().fg(colour)))
         .title(Line::styled(format!(" #{} ", card.id), bold().fg(fg)).right_aligned())
@@ -664,8 +674,13 @@ pub(super) fn draw_focus(f: &mut Frame, app: &App, area: Rect) {
         None => card.title.clone(),
     };
     lines.push(Line::styled(title, bold()));
-    let (base, warn, q) = meta_fit_quiet(card, &app.snap, inner.width as usize);
+    let parts = meta_parts(card, &app.snap, inner.width as usize);
+    let (base, warn, q) = (parts.base, parts.warn, parts.quiet);
     let mut meta = vec![Span::styled(base, dim())];
+    if !parts.mark.is_empty() {
+        meta.push(Span::raw(" "));
+        meta.push(Span::styled(parts.mark, due_mark_style(parts.overdue)));
+    }
     if !warn.is_empty() {
         meta.push(Span::raw(" "));
         meta.push(Span::styled(warn, red()));

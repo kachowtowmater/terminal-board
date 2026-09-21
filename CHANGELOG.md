@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### The due date on the card line, a loud mark when it is close, and your own column names
+
+- **A loud due mark.** A card that is due within `due-warn` days, or overdue, shows `! due in 2d`,
+  `! due today` or `! overdue 3d` on its card line — in the full-screen board, the focus view and
+  `tb list` — bold, and red once overdue; never on a DONE card. In a narrow pane it outlives the
+  tag, the checklist count and the age, and shrinks in whole words (`! late 3d`, `! late`, `!`).
+- **`tb config card-line age|due`.** With `due`, a dated card shows `due Oct 27 - 18d` where its
+  age was. `age` is the default.
+- **`tb config label COLUMN "TEXT"`** (`--off` clears, no text reads): a display name for a
+  column, up to 24 characters, sanitised like all displayed text. **Display only:** every command
+  still takes `todo`, `doing`, `review`, `done`; JSON `column` never changes and gains the
+  additive `column_label` (plus `labels` on the board object, `"v"` stays 1). A message that
+  names a column names the one to type — `review (shown as WITH REVIEWER)` — and typing a label
+  is refused with the command to run. A label gives way in whole words in a narrow header and
+  never pushes the count off.
+- A column that the board orders by due date says `by due` in its header.
+- Due-date follow-ups: `tb watch` sends the board again when the board's day turns (local
+  midnight in its `tz`), so a watcher's `days_left` / `due_state` do not go stale; a stored `tz`
+  this version does not know is reported on every command instead of silently falling back to
+  the machine's zone; the docs now say that spaces around a `--due` value are dropped.
+- A board with no due dates and none of these settings renders byte for byte as before.
+
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
 
 Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`

@@ -2,7 +2,7 @@
 
 use crate::github::{self, GhView};
 use crate::herdr::{self, Agent, AgentsState};
-use crate::plain::{card_head, event_line, fit, meta_fit_quiet};
+use crate::plain::{card_head, event_line, fit, meta_parts};
 use crate::store::{fmt_age, CardDetail, Card, Snapshot, Store, COLUMNS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -1579,24 +1579,32 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     first.push(Span::styled(fit(&card.title, room), hl));
     let mut lines = vec![Line::from(first)];
 
-    let (base, warn, q) = meta_fit_quiet(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let parts = meta_parts(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let (base, warn, q) = (parts.base, parts.warn, parts.quiet);
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
+    let sep = if base.is_empty() || (parts.mark.is_empty() && warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
         second.push(Span::raw(meta_gh));
     }
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
+    // the due mark: loud (bold), and red — the colour of a real problem — only once overdue
+    if !parts.mark.is_empty() {
+        second.push(Span::styled(parts.mark.clone(), due_mark_style(parts.overdue)));
+        if !warn.is_empty() {
+            second.push(Span::raw(" "));
+        }
+    }
     if !warn.is_empty() {
         second.push(Span::styled(warn.clone(), red()));
     }
     if !q.is_empty() {
-        second.push(Span::raw(if warn.is_empty() { "" } else { " " }));
+        second.push(Span::raw(if warn.is_empty() && parts.mark.is_empty() { "" } else { " " }));
         second.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(second));
@@ -1609,6 +1617,58 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
         }
     }
     lines
+}
+
+/// The due mark's look: bold, and red only when the card is overdue.
+pub(crate) fn due_mark_style(overdue: bool) -> Style {
+    if overdue {
+        red().add_modifier(Modifier::BOLD)
+    } else {
+        bold()
+    }
+}
+
+/// Display width of `s` in terminal cells (a CJK character or an emoji takes two).
+pub(crate) fn cells(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// The words of `label` that fit in `room` cells, whole: a label is never cut inside a word.
+/// None when not even its first word fits.
+pub(crate) fn label_words(label: &str, room: usize) -> Option<String> {
+    let mut out = String::new();
+    for w in label.split_whitespace() {
+        let next = if out.is_empty() { w.to_string() } else { format!("{out} {w}") };
+        if cells(&next) > room {
+            break;
+        }
+        out = next;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A column's name for a header with `room` cells for it. Without a label this is the name
+/// tb always drew, whatever the room. A label is shown in whole words, as many as fit (then
+/// ` today` on DONE if that fits too); when not even its first word fits, the plain name is.
+pub(crate) fn column_name(snap: &Snapshot, col: &str, room: usize) -> String {
+    let plain = if col == "done" { "DONE today".to_string() } else { col.to_ascii_uppercase() };
+    let Some(label) = snap.display.label(col) else { return plain };
+    match label_words(&label, room) {
+        Some(l) if col == "done" && cells(&l) + 6 <= room => format!("{l} today"),
+        Some(l) => l,
+        None => plain,
+    }
+}
+
+/// ` by due` for the header of a column the board orders by due date, when `room` cells are
+/// left for it; nothing otherwise (it is the first thing a narrow header gives up).
+pub(crate) fn date_order_note(snap: &Snapshot, col: &str, room: usize) -> &'static str {
+    const NOTE: &str = "by due ";
+    if snap.display.date_ordered(col) && room >= NOTE.len() {
+        NOTE
+    } else {
+        ""
+    }
 }
 
 fn owner_agent<'a>(app: &'a App, card: &Card) -> Option<&'a Agent> {
@@ -1656,17 +1716,24 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     let focused = ci == app.col;
     let n = cards.len();
     let count = if col == "doing" { format!("{n}/{}", app.snap.wip) } else { n.to_string() };
-    let name = if col == "done" { "DONE today".to_string() } else { col.to_ascii_uppercase() };
+    // the header is ` o NAME (count) ` between the two corners: the count is never pushed off
+    let room = (area.width as usize).saturating_sub(2 + 7 + count.len());
+    let name = column_name(&app.snap, col, room);
+    let note = date_order_note(&app.snap, col, room.saturating_sub(cells(&name)));
     let full = col == "doing" && n as i64 >= app.snap.wip;
     let colour = column_colour_in(col, &app.snap.theme);
     let hs = bold().fg(colour);
-    let title = Line::from(vec![
+    let mut title = vec![
         Span::raw(" "),
         Span::styled("o", Style::default().fg(colour)),
         Span::styled(format!(" {name} ("), hs),
         Span::styled(count, if full { hs.add_modifier(Modifier::REVERSED) } else { hs }),
         Span::styled(") ", hs),
-    ]);
+    ];
+    if !note.is_empty() {
+        title.push(Span::styled(note, dim()));
+    }
+    let title = Line::from(title);
     // Column frame: plain fg (cards carry the colour now; less busy), thick when focused.
     // Column frame in the column's colour (same as its cards), thick when focused.
     let block = frame(focused, Some(colour)).title(title);
@@ -3223,4 +3290,61 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
     })();
     ratatui::restore();
     res
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+    use crate::store::display::Display;
+
+    fn snap(labels: [Option<&str>; 4], by_due: bool) -> Snapshot {
+        Snapshot { display: Display { labels: labels.map(|l| l.map(str::to_string)), by_due, ..Default::default() }, ..Default::default() }
+    }
+
+    /// The header FUNCTION, snapshotted: a label at every room it can be given.
+    #[test]
+    fn a_label_gives_way_in_whole_words_and_the_plain_name_is_the_last_resort() {
+        let s = snap([None, None, Some("WITH THE REVIEWER"), Some("FILED")], false);
+        let at = |room: usize| column_name(&s, "review", room);
+        assert_eq!(at(40), "WITH THE REVIEWER");
+        assert_eq!(at(17), "WITH THE REVIEWER");
+        assert_eq!(at(16), "WITH THE");
+        assert_eq!(at(8), "WITH THE");
+        assert_eq!(at(7), "WITH");
+        assert_eq!(at(4), "WITH");
+        assert_eq!(at(3), "REVIEW", "not even one word fits: the plain name, never half a word");
+        for room in 0..40 {
+            let name = at(room);
+            assert!(name == "REVIEW" || (cells(&name) <= room && "WITH THE REVIEWER".starts_with(&name)), "room {room}: {name:?}");
+            assert!(!name.ends_with(' '));
+        }
+        // DONE keeps its ` today` while it fits whole
+        assert_eq!(column_name(&s, "done", 11), "FILED today");
+        assert_eq!(column_name(&s, "done", 10), "FILED");
+        // no label: the name tb always drew, whatever the room
+        for room in [0, 3, 40] {
+            assert_eq!(column_name(&s, "todo", room), "TODO");
+            assert_eq!(column_name(&snap([None; 4], false), "done", room), "DONE today");
+        }
+    }
+
+    #[test]
+    fn wide_characters_count_as_the_cells_they_take() {
+        assert_eq!(cells("審査中"), 6);
+        assert_eq!(cells("OK ✅"), 5);
+        let s = snap([None, None, Some("審査中 担当者"), None], false);
+        assert_eq!(column_name(&s, "review", 13), "審査中 担当者");
+        assert_eq!(column_name(&s, "review", 12), "審査中", "13 cells do not fit in 12");
+        assert_eq!(column_name(&s, "review", 5), "REVIEW");
+    }
+
+    #[test]
+    fn a_date_ordered_column_says_so_when_there_is_room() {
+        let s = snap([None; 4], true);
+        assert_eq!(date_order_note(&s, "todo", 7), "by due ");
+        assert_eq!(date_order_note(&s, "review", 30), "by due ");
+        assert_eq!(date_order_note(&s, "todo", 6), "", "it is the first thing a narrow header gives up");
+        assert_eq!(date_order_note(&s, "doing", 30), "");
+        assert_eq!(date_order_note(&snap([None; 4], false), "todo", 30), "");
+    }
 }

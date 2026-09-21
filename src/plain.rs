@@ -18,6 +18,24 @@ pub fn column_header(col: &str, n: usize, wip: i64) -> String {
     }
 }
 
+/// `column_header` for this board: its label instead of the internal name — followed by the
+/// name a command accepts, `WITH REVIEWER (2) [review]` — and ` · by due` on a column the
+/// board orders by due date. A board with no labels and no `sort due` gets `column_header`.
+pub fn column_header_for(snap: &Snapshot, col: &str, n: usize) -> String {
+    let mut h = match snap.display.label(col) {
+        None => column_header(col, n, snap.wip),
+        Some(l) => match col {
+            "doing" => format!("{l} ({n}/{}) [{col}]", snap.wip),
+            "done" => format!("{l} today ({n}) [{col}]"),
+            _ => format!("{l} ({n}) [{col}]"),
+        },
+    };
+    if snap.display.date_ordered(col) {
+        h.push_str(" · by due");
+    }
+    h
+}
+
 /// Cut `s` to `w` chars, ending in `…` when cut.
 pub fn fit(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
@@ -33,8 +51,57 @@ pub fn fit(s: &str, w: usize) -> String {
 /// Priority when space runs out: warnings > owner > age > checklist x/y > tag. Lower-priority
 /// parts are dropped whole (never cut mid-token); display order stays tag - owner - age - x/y.
 pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) {
-    let (base, warn, _) = meta_fit_with(card, snap, width, 0);
-    (base, warn)
+    let f = meta_fit_with(card, snap, width, 0);
+    (f.base.clone(), f.warnings())
+}
+
+/// The fitted meta line in its parts, for a renderer that styles each one: the plain part,
+/// the due mark (`! overdue 3d`, loud; red only when overdue), the other warnings (red) and
+/// the quiet marker (dim). Same fitting as `meta_fit_quiet`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MetaParts {
+    pub base: String,
+    pub mark: String,
+    pub overdue: bool,
+    pub warn: String,
+    pub quiet: String,
+}
+
+pub fn meta_parts(card: &Card, snap: &Snapshot, width: usize) -> MetaParts {
+    let q = quiet(card, snap);
+    let overdue = snap.display.due_info(card).due_state == Some("overdue");
+    if !q.is_empty() {
+        for form in [q.as_str(), "quiet"] {
+            let f = meta_fit_with(card, snap, width, form.chars().count());
+            if f.whole {
+                return MetaParts { base: f.base, mark: f.mark, overdue, warn: f.warn, quiet: form.to_string() };
+            }
+        }
+    }
+    let f = meta_fit_with(card, snap, width, 0);
+    MetaParts { base: f.base, mark: f.mark, overdue, warn: f.warn, quiet: String::new() }
+}
+
+/// The loud due mark of a card that is `soon` or `overdue` (never a DONE card — it has no
+/// `due_state`), longest form first. Each shorter form drops whole words, never part of one;
+/// the last is a bare `!`, so the mark outlives everything else on a narrow card line.
+pub fn due_mark_forms(card: &Card, snap: &Snapshot) -> Vec<String> {
+    let info = snap.display.due_info(card);
+    match (info.due_state, info.days_left) {
+        (Some("overdue"), Some(d)) => vec![format!("! overdue {}d", -d), format!("! late {}d", -d), "! late".into(), "!".into()],
+        (Some("soon"), Some(0)) => vec!["! due today".into(), "! today".into(), "!".into()],
+        (Some("soon"), Some(d)) => vec![format!("! due in {d}d"), format!("! due {d}d"), format!("! {d}d"), "!".into()],
+        _ => Vec::new(),
+    }
+}
+
+/// `Oct 9` in the board's current year, the full `2027-01-05` otherwise.
+fn short_date(date: chrono::NaiveDate, today: Option<chrono::NaiveDate>) -> String {
+    use chrono::Datelike;
+    match today {
+        Some(t) if t.year() == date.year() => date.format("%b %-d").to_string(),
+        _ => date.format("%Y-%m-%d").to_string(),
+    }
 }
 
 /// The meta line plus the quiet marker as (plain part, warnings, quiet), all inside `width`.
@@ -43,23 +110,70 @@ pub fn meta_fit(card: &Card, snap: &Snapshot, width: usize) -> (String, String) 
 /// tag, checklist and age make room for it first; a line too narrow for owner + `quiet` is
 /// fitted exactly as if the card were not quiet.
 pub fn meta_fit_quiet(card: &Card, snap: &Snapshot, width: usize) -> (String, String, String) {
-    let q = quiet(card, snap);
-    if !q.is_empty() {
-        for form in [q.as_str(), "quiet"] {
-            let (base, warn, whole) = meta_fit_with(card, snap, width, form.chars().count());
-            if whole {
-                return (base, warn, form.to_string());
-            }
+    let p = meta_parts(card, snap, width);
+    let warn = Fitted { mark: p.mark, warn: p.warn, ..Default::default() }.warnings();
+    (p.base, warn, p.quiet)
+}
+
+/// One fitted meta line: the plain part, the due mark, the other warnings.
+#[derive(Debug, Clone, Default)]
+struct Fitted {
+    base: String,
+    mark: String,
+    warn: String,
+    /// It all fits and cost neither the owner nor part of a warning.
+    whole: bool,
+    fits: bool,
+}
+
+impl Fitted {
+    /// The due mark and the other warnings as the one string older callers expect.
+    fn warnings(&self) -> String {
+        match (self.mark.is_empty(), self.warn.is_empty()) {
+            (true, _) => self.warn.clone(),
+            (false, true) => self.mark.clone(),
+            (false, false) => format!("{} {}", self.mark, self.warn),
         }
     }
-    let (base, warn) = meta_fit(card, snap, width);
-    (base, warn, String::new())
 }
 
 /// `meta_fit` with `reserve` chars kept free after the line (plus the space before them). The
 /// flag says the reserve really fits and cost neither the owner nor part of a warning.
-fn meta_fit_with(card: &Card, snap: &Snapshot, width: usize, reserve: usize) -> (String, String, bool) {
-    let warn = warnings(card).join(" ");
+fn meta_fit_with(card: &Card, snap: &Snapshot, width: usize, reserve: usize) -> Fitted {
+    let forms = due_mark_forms(card, snap);
+    if forms.is_empty() {
+        return meta_fit_once(card, snap, width, reserve, "");
+    }
+    // the longest form of the mark that keeps the line whole (the owner stays), else the
+    // longest that fits at all. When nothing fits — another warning is too long — the mark
+    // stays as long as it can while that warning keeps room to be cut, else the bare `!`.
+    let tries: Vec<Fitted> = forms.iter().map(|m| meta_fit_once(card, snap, width, reserve, m)).collect();
+    let len = |i: usize| forms[i].chars().count();
+    let pick = tries
+        .iter()
+        .position(|f| f.whole)
+        .or_else(|| tries.iter().position(|f| f.fits))
+        .or_else(|| (0..forms.len()).find(|&i| len(i) + 1 + MIN_CUT <= width))
+        .or_else(|| (0..forms.len()).find(|&i| len(i) <= width))
+        .unwrap_or(forms.len() - 1);
+    tries.into_iter().nth(pick).unwrap_or_default()
+}
+
+/// The shortest a cut warning may be (`x bl…`); with less room it is left out.
+const MIN_CUT: usize = 5;
+
+/// `meta_fit_with` for one form of the due mark (`""` = the card has none: the line tb
+/// always drew).
+fn meta_fit_once(card: &Card, snap: &Snapshot, width: usize, reserve: usize, mark: &str) -> Fitted {
+    let blocked = warnings(card).join(" ");
+    let warn = Fitted { mark: mark.to_string(), warn: blocked.clone(), ..Default::default() }.warnings();
+    let shown = &snap.display;
+    // under `card-line due` a dated card shows its date where the age is, and the days left
+    // while nothing is close (the mark says it once it is)
+    let dated = match shown.card_line {
+        crate::store::display::CardLine::Due => card.due.as_deref().and_then(crate::store::due::parse_date),
+        crate::store::display::CardLine::Age => None,
+    };
     // (display order, drop priority: higher = dropped first, text)
     let mut parts: Vec<(u8, String)> = Vec::new();
     if let Some(t) = &card.tag {
@@ -71,11 +185,19 @@ fn meta_fit_with(card: &Card, snap: &Snapshot, width: usize, reserve: usize) -> 
     if let Some(r) = &card.reviewer {
         parts.push((1, format!("review {r}")));
     }
-    if card.column != "done" {
-        parts.push((2, fmt_age(snap.now - card.column_since)));
-    }
-    if let Some(due) = &card.due {
-        parts.push((3, format!("due {due}")));
+    if let Some(date) = dated {
+        parts.push((2, format!("due {}", short_date(date, shown.due.map(|d| d.today)))));
+        let info = shown.due_info(card);
+        if let (Some("ok"), Some(d)) = (info.due_state, info.days_left) {
+            parts.push((2, format!("{d}d")));
+        }
+    } else {
+        if card.column != "done" {
+            parts.push((2, fmt_age(snap.now - card.column_since)));
+        }
+        if let Some(due) = &card.due {
+            parts.push((3, format!("due {due}")));
+        }
     }
     if let Some((d, t)) = snap.checks.get(&card.id) {
         parts.push((3, format!("{d}/{t}")));
@@ -94,10 +216,21 @@ fn meta_fit_with(card: &Card, snap: &Snapshot, width: usize, reserve: usize) -> 
         let worst = (0..parts.len()).max_by_key(|&i| parts[i].0).unwrap_or(0);
         parts.remove(worst);
     }
-    let whole = len(&parts) <= width && (card.owner.is_none() || parts.iter().any(|p| p.0 == 1));
+    let fits = len(&parts) <= width;
+    let whole = fits && (card.owner.is_none() || parts.iter().any(|p| p.0 == 1));
     let base = join(&parts);
-    let warn = if base.is_empty() { fit(&warn, width) } else { warn };
-    (base, warn, whole)
+    if mark.is_empty() {
+        let warn = if base.is_empty() { fit(&warn, width) } else { warn };
+        return Fitted { base, mark: String::new(), warn, whole, fits };
+    }
+    // with a due mark the mark is kept whole; only the other warning is cut to what is left
+    let left = width.saturating_sub(mark.chars().count() + 1);
+    let blocked = match (base.is_empty() && !fits, left) {
+        (false, _) => blocked,
+        (true, l) if l < MIN_CUT => String::new(), // no room for even `x bl…`: the mark alone
+        (true, _) => fit(&blocked, left),
+    };
+    Fitted { base, mark: mark.to_string(), warn: blocked, whole, fits }
 }
 
 /// `tag - owner - age - x/y  ! warnings  quiet 1h20m`, unfitted (CLI output).
@@ -162,7 +295,7 @@ pub fn board(snap: &Snapshot) -> String {
     for col in COLUMNS {
         let cards = snap.on_board(col);
         out.push('\n');
-        line(&mut out, column_header(col, cards.len(), snap.wip));
+        line(&mut out, column_header_for(snap, col, cards.len()));
         if cards.is_empty() {
             line(&mut out, "  -");
         }
@@ -253,5 +386,156 @@ pub fn event_line(e: &crate::store::Event) -> String {
         "created" => format!("{t} added by {}", e.actor),
         _ if e.text.is_empty() => format!("{t} {} {}", e.kind, e.actor),
         _ => format!("{t} {} {}: {}", e.actor, e.kind, e.text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::display::{CardLine, Display};
+    use crate::store::due::DueCtx;
+
+    fn card(due: Option<&str>, column: &str) -> Card {
+        Card {
+            id: 7,
+            title: "send the renewal".into(),
+            tag: Some("permits".into()),
+            description: String::new(),
+            column: column.into(),
+            owner: Some("alice".into()),
+            due: due.map(str::to_string),
+            gh_ref: None,
+            created_at: 0,
+            column_since: 1_000_000 - 2 * 86400,
+            blocked: None,
+            position: 0,
+            reviewer: None,
+        }
+    }
+
+    fn snap(card_line: CardLine) -> Snapshot {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 9);
+        let display = Display { card_line, due: today.map(|today| DueCtx { today, warn: 3 }), ..Default::default() };
+        let mut s = Snapshot { now: 1_000_000, wip: 3, display, ..Default::default() };
+        s.checks.insert(7, (1, 4));
+        s
+    }
+
+    /// The layout FUNCTION, snapshotted: one card line at every width it can be given.
+    fn table(c: &Card, s: &Snapshot, widths: &[usize]) -> Vec<String> {
+        widths
+            .iter()
+            .map(|w| {
+                let (base, warn) = meta_fit(c, s, *w);
+                let line = [base, warn].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ");
+                assert!(line.chars().count() <= *w, "width {w}: {line:?} is {} wide", line.chars().count());
+                line
+            })
+            .collect()
+    }
+
+    #[test]
+    fn without_a_today_or_a_date_the_line_is_the_one_tb_always_drew() {
+        let mut s = snap(CardLine::Age);
+        s.display = Display::default();
+        assert_eq!(meta(&card(Some("2026-10-05"), "todo"), &s), "permits - alice - 2d - due 2026-10-05 - 1/4");
+        assert_eq!(meta(&card(None, "todo"), &snap(CardLine::Due)), "permits - alice - 2d - 1/4", "undated: its age");
+        assert!(due_mark_forms(&card(Some("2026-10-05"), "todo"), &s).is_empty());
+    }
+
+    #[test]
+    fn the_mark_is_loud_for_soon_and_overdue_and_never_on_done() {
+        let s = snap(CardLine::Age);
+        assert_eq!(meta(&card(Some("2026-10-06"), "todo"), &s), "permits - alice - 2d - due 2026-10-06 - 1/4  ! overdue 3d");
+        assert_eq!(meta(&card(Some("2026-10-09"), "doing"), &s), "permits - alice - 2d - due 2026-10-09 - 1/4  ! due today");
+        assert_eq!(meta(&card(Some("2026-10-12"), "review"), &s), "permits - alice - 2d - due 2026-10-12 - 1/4  ! due in 3d");
+        assert_eq!(meta(&card(Some("2026-10-13"), "todo"), &s), "permits - alice - 2d - due 2026-10-13 - 1/4", "ok: no mark");
+        assert_eq!(meta(&card(Some("2026-10-06"), "done"), &s), "permits - alice - due 2026-10-06 - 1/4", "done: never");
+        let mut blocked = card(Some("2026-10-06"), "todo");
+        blocked.blocked = Some("#3".into());
+        assert_eq!(meta(&blocked, &s), "permits - alice - 2d - due 2026-10-06 - 1/4  ! overdue 3d x blocked by #3");
+    }
+
+    #[test]
+    fn card_line_due_shows_the_date_and_the_days_left_where_the_age_was() {
+        let s = snap(CardLine::Due);
+        assert_eq!(meta(&card(Some("2026-10-27"), "todo"), &s), "permits - alice - due Oct 27 - 18d - 1/4");
+        assert_eq!(meta(&card(Some("2027-01-05"), "todo"), &s), "permits - alice - due 2027-01-05 - 88d - 1/4", "another year: in full");
+        assert_eq!(meta(&card(Some("2026-10-11"), "todo"), &s), "permits - alice - due Oct 11 - 1/4  ! due in 2d", "close: the mark counts the days");
+        assert_eq!(meta(&card(Some("2026-10-01"), "done"), &s), "permits - alice - due Oct 1 - 1/4");
+        assert_eq!(meta(&card(Some("Sep 22"), "todo"), &s), "permits - alice - 2d - due Sep 22 - 1/4", "free text: as before");
+    }
+
+    #[test]
+    fn a_narrow_line_gives_up_whole_parts_and_the_mark_outlives_the_age() {
+        let s = snap(CardLine::Age);
+        let c = card(Some("2026-10-06"), "todo");
+        let widths = [60, 48, 40, 30, 24, 20, 18, 14, 12, 8, 6, 3, 1];
+        assert_eq!(
+            table(&c, &s, &widths),
+            [
+                "permits - alice - 2d - due 2026-10-06 - 1/4 ! overdue 3d",
+                "alice - 2d - due 2026-10-06 - 1/4 ! overdue 3d", // the tag goes first, as it always did
+                "alice - 2d - due 2026-10-06 ! overdue 3d",
+                "alice - 2d ! overdue 3d",
+                "alice - 2d ! overdue 3d",
+                "alice ! overdue 3d",
+                "alice ! overdue 3d",
+                "alice ! late",
+                "alice ! late",
+                "alice !",
+                "! late",
+                "!",
+                "!",
+            ]
+        );
+        // under card-line due the date goes the way the age does; the mark is still there
+        let s = snap(CardLine::Due);
+        assert_eq!(
+            table(&c, &s, &[40, 30, 22, 18, 12, 9, 5]),
+            ["alice - due Oct 6 - 1/4 ! overdue 3d", "alice - due Oct 6 ! overdue 3d", "alice ! overdue 3d", "alice ! overdue 3d", "alice ! late", "alice !", "!"]
+        );
+        // every form of every mark is made of whole words
+        for due in ["2026-10-06", "2026-10-09", "2026-10-11"] {
+            let forms = due_mark_forms(&card(Some(due), "todo"), &s);
+            assert_eq!(forms.last().map(String::as_str), Some("!"));
+            for pair in forms.windows(2) {
+                assert!(pair[1].chars().count() < pair[0].chars().count(), "each form is shorter than the last: {pair:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_overdue_card_keeps_its_mark_whole_and_cuts_only_the_other_warning() {
+        let s = snap(CardLine::Age);
+        let mut c = card(Some("2026-10-06"), "todo");
+        c.blocked = Some("the signed copy from the other side".into());
+        for w in 1..70 {
+            let p = meta_parts(&c, &s, w);
+            assert!(due_mark_forms(&c, &s).contains(&p.mark), "width {w}: the mark {:?} is not one of its whole forms", p.mark);
+            let line = [p.base.as_str(), p.mark.as_str(), p.warn.as_str()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
+            assert!(line.chars().count() <= w, "width {w}: {line:?}");
+            assert!(p.warn.is_empty() || p.warn.starts_with("x b"), "width {w}: {:?}", p.warn);
+        }
+        assert_eq!(meta_parts(&c, &s, 69).warn, "x blocked by the signed copy from the other side");
+        let p = meta_parts(&c, &s, 30);
+        assert_eq!((p.base.as_str(), p.mark.as_str(), p.warn.as_str()), ("", "! overdue 3d", "x blocked by the…"));
+        let p = meta_parts(&c, &s, 12);
+        assert_eq!((p.mark.as_str(), p.warn.as_str()), ("! late", "x bl…"));
+        assert_eq!(meta_parts(&c, &s, 4).mark, "!");
+    }
+
+    #[test]
+    fn labelled_headers_name_the_column_to_type() {
+        let mut s = snap(CardLine::Age);
+        assert_eq!(column_header_for(&s, "review", 2), "REVIEW (2)");
+        assert_eq!(column_header_for(&s, "doing", 1), "DOING (1/3)");
+        assert_eq!(column_header_for(&s, "done", 4), "DONE today (4)");
+        s.display.labels = [Some("INTAKE".into()), None, Some("WITH REVIEWER".into()), Some("FILED".into())];
+        s.display.by_due = true;
+        assert_eq!(column_header_for(&s, "todo", 5), "INTAKE (5) [todo] · by due");
+        assert_eq!(column_header_for(&s, "doing", 1), "DOING (1/3)");
+        assert_eq!(column_header_for(&s, "review", 2), "WITH REVIEWER (2) [review] · by due");
+        assert_eq!(column_header_for(&s, "done", 4), "FILED today (4) [done]");
     }
 }

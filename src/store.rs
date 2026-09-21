@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod display;
 pub mod due;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -216,6 +217,9 @@ pub struct Snapshot {
     pub github_panel_hidden: bool,
     pub agents_panel_hidden: bool,
     pub now: i64,
+    /// The board's look (`store::display`): card line, column labels, the due mark's today.
+    /// Default = the look tb always had.
+    pub display: display::Display,
 }
 
 /// The board's DONE column only shows cards finished in the last 24h.
@@ -675,6 +679,7 @@ impl Store {
         // due dates (store/due.rs): listed once the board sets them, so a board that sets
         // nothing lists exactly what it always did
         all.extend(self.due_settings()?);
+        all.extend(self.display_settings()?);
         Ok(all)
     }
 
@@ -895,6 +900,7 @@ impl Store {
             github_panel_hidden,
             agents_panel_hidden,
             now: now(),
+            display: self.display()?,
         })
     }
 

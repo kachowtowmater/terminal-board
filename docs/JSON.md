@@ -40,6 +40,7 @@ this card", not as an error.
 | `wip` | int | WIP limit for DOING |
 | `theme` | `"dark"`\|`"light"` | |
 | `layout` | `"auto"`\|`"focus"`\|`"third-h"`\|`"third-v"`\|`"half-h"`\|`"half-v"` | TUI layout preference (older names in a board file are reported as the view they became) |
+| `labels` | object | `{todo, doing, review, done}` → each column's display name (its label, else the name in capitals). Chrome: the keys of `columns` and every `card.column` stay the internal names |
 | `github.repo` | string\|null | `owner/repo`, null when GitHub is off |
 | `github.snapshot` | object\|null | the cached GitHub snapshot (same as `tb github --json` without the per-issue `state`/`who`) |
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
@@ -64,6 +65,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "due": "2026-10-09",
   "days_left": 3,
   "due_state": "soon",
+  "column_label": "DOING",
   "gh_ref": 327,
   "blocked": null,
   "created_at": 1789763036,
@@ -87,9 +89,10 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
 | `reviewer` | string\|null | who claimed it with `tb next --review`; kept when it reaches DONE, cleared by any other move |
-| `due` | string\|null | the due date: a **calendar date** `YYYY-MM-DD`, exactly the text given to `--due`. It is never an instant and no time zone applies to it, so it reads the same everywhere. (A board file written by something other than tb may hold older free text here; it is reported as is.) |
+| `due` | string\|null | the due date: a **calendar date** `YYYY-MM-DD`, the text given to `--due` (spaces around it are dropped). It is never an instant and no time zone applies to it, so it reads the same everywhere. (A board file written by something other than tb may hold older free text here; it is reported as is.) |
 | `days_left` | int\|null | whole calendar days from the board's today to `due`: 0 = due today, negative = past. Today is the date in the board's `tz` setting (an IANA zone), or in the machine's local zone when unset — it turns over at local midnight there, not at UTC midnight. Null when `due` is null or not a `YYYY-MM-DD` date, and on a `done` card |
 | `due_state` | `ok`\|`soon`\|`overdue`\|null | `overdue` = `days_left` < 0 · `soon` = 0 to `due-warn` days (default 3) · `ok` above that. Null exactly when `days_left` is |
+| `column_label` | string | what a person reads for `column`: the board's label (`tb config label review "WITH REVIEWER"`), else the name in capitals. **Display only** — `column` is the name every command takes and it never changes |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
@@ -103,6 +106,8 @@ A bare `tb --json` (not a terminal) prints the same object.
 One full board object (as above) per line: the first line immediately, then a new line on
 every change by anyone (polls SQLite `PRAGMA data_version` every ~300 ms, so writes from
 other processes and GitHub cache refreshes both count). Exits cleanly when stdout closes.
+A board with open due dates is also sent again when its day turns — local midnight in the
+board's `tz` — because every `days_left` moved and a `due_state` may have flipped without a write.
 
 ```sh
 tb watch --json | while read -r line; do …; done
