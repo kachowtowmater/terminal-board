@@ -13,7 +13,7 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::{BoardError, Store, COLUMNS};
-use terminal_board::{boards, contract, github, plain, resolve_actor, setup, tui};
+use terminal_board::{boards, contract, github, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
@@ -21,7 +21,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
-        check ID N (toggle) | --add \"text\" | --rm N
+        check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -66,6 +66,9 @@ enum Cmd {
         desc: String,
         #[arg(long = "check")]
         checks: Vec<String>,
+        /// Read the description from a file, byte for byte (`-` = standard input).
+        #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
+        desc_file: Option<std::path::PathBuf>,
     },
     List,
     Show { id: i64 },
@@ -75,7 +78,14 @@ enum Cmd {
         review: bool,
     },
     Take { id: i64 },
-    Note { id: i64, text: String },
+    Note {
+        id: i64,
+        #[arg(required_unless_present = "file")]
+        text: Option<String>,
+        /// Read the note from a file, byte for byte (`-` = standard input).
+        #[arg(long, value_name = "PATH", conflicts_with = "text")]
+        file: Option<std::path::PathBuf>,
+    },
     Check {
         id: i64,
         n: Option<i64>,
@@ -121,6 +131,9 @@ enum Cmd {
         title: Option<String>,
         #[arg(long)]
         desc: Option<String>,
+        /// Read the description from a file, byte for byte (`-` = standard input).
+        #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
+        desc_file: Option<std::path::PathBuf>,
     },
     Config {
         key: Option<String>,
@@ -404,8 +417,29 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
     Ok(())
 }
 
+/// Text given as a file (`--desc-file PATH|-`, `note --file PATH|-`) becomes the plain text
+/// the command would have carried: read here, BEFORE the board is opened or created, so a bad
+/// path never leaves a new empty board behind, and the write paths below stay the ones
+/// `--desc` and note text already use. `add` stores its description as given, `edit` and
+/// `note` trim theirs — so the file's outer blank space is trimmed for `add` too, and one
+/// file always leaves the same text whichever command carried it.
+fn text_from_files(cmd: &mut Cmd) -> Result<(), BoardError> {
+    match cmd {
+        Cmd::Add { desc, desc_file: Some(path), .. } => {
+            *desc = textin::read(path, "add \"tag: title\" --desc-file")?.trim().to_string();
+        }
+        Cmd::Edit { id, desc, desc_file: Some(path), .. } => {
+            *desc = Some(textin::read(path, &format!("edit {id} --desc-file"))?);
+        }
+        Cmd::Note { id, text, file: Some(path) } => {
+            *text = Some(textin::read(path, &format!("note {id} --file"))?);
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
-fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
     // silently lose to the fallback chain — refuse before anything is written
     if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
@@ -446,6 +480,9 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
         setup::run(&name, setup::Options { first_run: true, ..Default::default() })?;
     }
+    if let Some(cmd) = cli.cmd.as_mut() {
+        text_from_files(cmd)?;
+    }
     let cmd_ref = cli.cmd.as_ref();
     // on a named board only `add` and `config` (and bare `tb` in a terminal) may create it;
     // every other command on a missing board must fail with the boards list + create hint
@@ -473,7 +510,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     };
     let now = terminal_board::store::now();
     match cmd {
-        Cmd::Add { title, desc, checks } => {
+        Cmd::Add { title, desc, checks, .. } => {
             let id = store.add(&title, &desc, &checks, &actor)?;
             done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
@@ -537,8 +574,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             );
             done_card(&store, j, card.id, human)?;
         }
-        Cmd::Note { id, text } => {
-            store.note(id, &text, &actor)?;
+        Cmd::Note { id, text, .. } => {
+            store.note(id, &text.unwrap_or_default(), &actor)?;
             done_card(&store, j, id, format!("noted #{id}"))?;
         }
         Cmd::Check { id, n, add, rm } => {
@@ -652,7 +689,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let c = store.reorder(id, &how.to_ascii_lowercase(), &actor)?;
             done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
         }
-        Cmd::Edit { id, title, desc } => {
+        Cmd::Edit { id, title, desc, .. } => {
             store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
             done_card(&store, j, id, format!("#{id} saved"))?;
         }

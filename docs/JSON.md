@@ -133,6 +133,14 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 { "ok": true, "card": { …card… } }
 ```
 
+Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
+(`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
+note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
+trimmed). A file that cannot be used is a runtime failure (exit 1) in the usual shape: no such
+file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or `-` with a
+terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
+`--desc-file`, note text with `--file`) is an argument error (exit 2).
+
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 

@@ -316,9 +316,9 @@ move cards with no extra explanation. Everything an agent needs is a `tb` comman
 |---|---|
 | take the next card | `tb next --as its-name` |
 | read the brief | `tb show ID` |
-| log progress | `tb note ID "what changed"` |
+| log progress | `tb note ID "what changed"` · a long one: `tb note ID --file notes.md` |
 | tick a checklist step | `tb check ID N` |
-| update the card | `tb edit ID --desc "Done = …"` · `tb check ID --add "step"` |
+| update the card | `tb edit ID --desc "Done = …"` · `tb edit ID --desc-file brief.md` · `tb check ID --add "step"` |
 | say it is stuck | `tb block ID "#N"` |
 | finish / hand back | `tb done ID` / `tb drop ID` |
 | move it anywhere | `tb move ID review` |
@@ -383,12 +383,12 @@ tb --version
 
 | command | what it does |
 |---|---|
-| `tb add "tag: title" [-d DESC] [--check ITEM]...` | add a card to TODO |
+| `tb add "tag: title" [-d DESC \| --desc-file PATH] [--check ITEM]...` | add a card to TODO |
 | `tb list` / `tb show ID` | all cards / one card in full |
 | `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
 | `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
-| `tb note ID "text"` | add a note to the card's history |
+| `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
@@ -397,7 +397,7 @@ tb --version
 | `tb done ID --approve` | record your approval without moving the card |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
-| `tb edit ID [--title T] [--desc D]` | change title/description |
+| `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb rm ID` | delete a card |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
@@ -410,6 +410,29 @@ tb --version
 
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
+
+**Long text from a file.** `-d "…"` and `tb note ID "…"` go through your shell, which eats
+backticks, `$` and quotes in a long string. `--desc-file PATH` (on `tb add` and `tb edit`) and
+`tb note ID --file PATH` read the text from a file instead, byte for byte; `-` reads standard
+input:
+
+<!-- no-test -->
+```sh
+tb add "docs: install guide" --desc-file brief.md
+tb edit 3 --desc-file brief.md
+tb note 3 --file findings.md
+some-command | tb note 3 --file -
+tb edit 3 --desc-file - < brief.md
+```
+
+The text must be UTF-8 and at most 256 KiB (262144 bytes). Blank space around it is trimmed;
+everything between is kept exactly — tabs, blank lines, Windows line ends (a leading
+byte-order mark is dropped). An empty file is refused, so a forgotten pipe can never blank a
+description; `--desc ""` still clears one on purpose. With `-`, standard input has to be a
+pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing. Give the
+text once — `--desc` with `--desc-file`, or note text with `--file`, is an argument error.
+Control characters are stored as they are and removed whenever the text is shown, like any
+other card text.
 
 ## Layouts and themes
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+- **Text from a file or from standard input.** `tb add … --desc-file PATH`, `tb edit ID
+  --desc-file PATH` and `tb note ID --file PATH` read the description or the note from a file,
+  and `-` reads standard input (`some-command | tb note 3 --file -`). A long string on the
+  command line goes through the shell, which eats backticks, `$` and quotes; a file arrives
+  byte for byte — tabs, blank lines and Windows line ends included. Only the blank space
+  around the text is trimmed (as `edit --desc` and notes always were) and a leading
+  byte-order mark is dropped. The text must be UTF-8, at most 256 KiB (262144 bytes), and not
+  empty — an empty file or an empty pipe is refused, so a forgotten `<` can never blank a
+  description. With `-`, a terminal on standard input is refused at once: tb never waits for
+  typing. Text given twice (`--desc` with `--desc-file`, note text with `--file`) is an
+  argument error. Every refusal names the next command, and `--json` answers in the usual
+  `{ok, error, hint}` shape. Control characters are stored as given and still removed
+  wherever the text is shown. Nothing changes for commands that do not use the new flags.
+
 ### The board footer keeps every hint that fits
 
 The footer used to swap its whole hint line for a fixed four the moment the full set did not

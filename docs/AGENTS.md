@@ -51,6 +51,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | the whole board as JSON | `tb board --json` |
 | follow changes live (one JSON line per change) | `tb watch --json` |
 | add a note to the log | `tb note ID "tests pass, opening PR"` |
+| a long note, from a file or a pipe (nothing to quote) | `tb note ID --file notes.md` · `… \| tb note ID --file -` |
 | tick (or untick) checklist item N | `tb check ID N` |
 | add a checklist item | `tb check ID --add "update the docs"` |
 | delete checklist item N (the rest renumber) | `tb check ID --rm N` |
@@ -63,6 +64,7 @@ tb done ID                   # finished: DOING -> REVIEW
 |---|---|
 | change the title | `tb edit ID --title "docs: install guide for macOS"` |
 | change the description / done criteria | `tb edit ID --desc "Done = …"` |
+| the description from a file or a pipe (`tb add` takes it too) | `tb edit ID --desc-file brief.md` · `--desc-file -` |
 | mark it stuck, and on what | `tb block ID "#12"` or `tb block ID "waiting for API key"` |
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
@@ -76,6 +78,8 @@ tb done ID                   # finished: DOING -> REVIEW
 
 `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move
 ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, skips the WIP limit.
+Text from a file arrives byte for byte (backticks, `$`, quotes, newlines — a quoted string cannot promise
+that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
 
 ### Create and delete cards, boards and settings
 
