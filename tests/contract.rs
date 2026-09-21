@@ -79,6 +79,8 @@ const CARD: &[&str] = &[
     "created_at", "column_since", "checklist", "round", "events",
     "id", "title", "tag", "description", "column", "position", "owner", "due", "gh_ref", "blocked", "created_at",
     "column_since", "last_event_at", "checklist", "round", "events",
+    // due dates: derived from `due`, the board's `tz` and `due-warn` (additive; null without a date)
+    "days_left", "due_state",
 ];
 
 #[test]

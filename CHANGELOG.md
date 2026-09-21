@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
+
+Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`
+and `tb edit ID --due DATE|none` do. A due date is a **local calendar date**: tb stores the
+`YYYY-MM-DD` text you typed and never converts it to a point in time, so it reads the same in
+every time zone, at 23:59 and across a daylight-saving change. Anything that is not a real
+date is refused before the board is touched, with the command to run instead.
+- `tb config tz America/Los_Angeles` sets the zone that decides what **today** is for the whole
+  board (`tz local`, the default, uses each machine's own zone); `tb config due-warn N` sets how
+  many days ahead a card counts as `soon` (default 3). Without a value, both print the setting.
+- JSON (additive, `"v"` stays 1): every card object gains `days_left` (whole calendar days; 0 =
+  today, negative = past) and `due_state` (`ok` | `soon` | `overdue`), null without a date and on
+  a `done` card. They turn over at local midnight in the board's zone, not at UTC midnight.
+- New event kind `due` (`2026-10-09 -> 2026-10-16`); `tb config` lists `tz` / `due-warn` only
+  once a board sets them, so a board that sets nothing prints exactly what it did.
+- New dependency: `chrono-tz` (the IANA zone data, compiled in — no network access, and no
+  reliance on the system's zone files, which a static binary in a small container does not have).
+
 ### The board footer keeps every hint that fits
 
 The footer used to swap its whole hint line for a fixed four the moment the full set did not

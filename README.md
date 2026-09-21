@@ -398,11 +398,13 @@ tb --version
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D]` | change title/description |
+| `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
 | `tb rm ID` | delete a card |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | the herdr agents and the card each holds |
 | `tb guide` | the manual for AI agents |
@@ -410,6 +412,36 @@ tb --version
 
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
+
+### Due dates
+
+For a board that tracks deadlines — filing dates, renewals, anything with a day on it:
+
+```sh
+tb deadlines add "permits: renew the fire permit" --due 2026-10-09
+tb deadlines edit 1 --due 2026-10-16
+tb deadlines config tz America/Los_Angeles
+tb deadlines config due-warn 5
+tb deadlines show 1 --json
+tb deadlines edit 1 --due none
+```
+
+A due date is a **calendar date**: `YYYY-MM-DD`, stored exactly as you typed it. tb never
+turns it into a point in time, so it cannot slip to the day before or the day after — not when
+the board is read in another time zone, not at 23:59, not across a daylight-saving change.
+Anything that is not a real date (`2026-02-30`, `10/09/2026`, `tomorrow`) is refused with the
+command to run instead, and nothing is written. Every change is in the card's history
+(`due: 2026-10-09 -> 2026-10-16`).
+
+The one thing a time zone decides is what **today** is. `tb config tz America/Los_Angeles`
+pins that for the board: everyone who reads it, wherever they sit, counts days from the same
+local midnight. `tb config tz local` (the default) uses each machine's own zone. From today,
+`--json` output gives every card `days_left` (whole calendar days: 0 = due today, negative =
+past) and `due_state` — `overdue`, `soon` (due within `due-warn` days; 3 unless you change it)
+or `ok`. A finished card carries neither. `tb config tz` and `tb config due-warn` with no value
+print the one in force; `tb config` lists them once the board sets them.
+
+A board with no due dates and neither setting looks and behaves exactly as it did before.
 
 ## Layouts and themes
 
