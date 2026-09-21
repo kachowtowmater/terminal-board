@@ -89,6 +89,7 @@ that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, ne
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue | `tb add "repo: gh#315 short title"` |
 | file work with a due date | `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
+| many cards from one JSON file, all or nothing (try it with `--dry-run` first) | `tb import cards.json` · `tb edit --from changes.json` (rows keyed by `id`; only the fields present change) |
 | delete a card you created by mistake | `tb rm ID` |
 | list boards with counts | `tb boards` |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |

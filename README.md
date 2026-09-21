@@ -436,6 +436,38 @@ text once — `--desc` with `--desc-file`, or note text with `--file`, is an arg
 Control characters are stored as they are and removed whenever the text is shown, like any
 other card text.
 
+**Many cards from one file.** `tb import cards.json` creates cards and `tb edit --from
+changes.json` changes existing ones, from a JSON file (`-` reads standard input). A row is the
+card object `tb show ID --json` and `tb board --json` already print, so a board can be exported,
+edited in a script or a spreadsheet tool, and fed back:
+
+<!-- no-test -->
+```sh
+tb import cards.json --dry-run     # a report per row; nothing is written
+tb import cards.json               # [{"title": "docs: write the guide", "due": "2026-10-09", "checklist": ["draft"]}, …]
+tb board --json > board.json       # export, change the dates in the file, then:
+tb edit --from board.json          # only what differs changes; [{"id": 7, "due": "2026-10-16"}, …] works too
+```
+
+- **All or nothing.** Every row is checked first; one bad row and nothing is written. Each
+  problem names its row, its card and its field — `row 250 (#41) due: '2026-02-30' is not a
+  real calendar date — use YYYY-MM-DD …` — so a long file is fixed in one pass. `--dry-run`
+  does the same work and reports exactly what the real run would do. Two imports at the same
+  moment wait for each other; they never mix.
+- **import** reads `title` (it may carry `tag:` and `gh#N`, as `tb add` accepts), `tag`,
+  `gh_ref`, `description`, `due`, `blocked` and `checklist` (texts, or `{"text", "done"}`).
+  New cards always land at the bottom of TODO with new ids, and their history starts with an
+  `imported` event that says which row of which file, and who ran it.
+- **edit --from** needs `id` and changes `title`, `tag`, `gh_ref`, `description`, `due` and
+  `blocked` — only the fields present in a row, `null` clears `due`, `blocked` and `tag`, and a
+  value the card already has is no change and logs nothing, so running a file twice is
+  harmless. Each change is written, and logged, exactly as `tb edit` and `tb block` would.
+  It never moves a card or changes its owner.
+- Anything else in a row — `column`, `owner`, `position`, timestamps, `events`, fields tb does
+  not know — is **ignored with one warning** that lists the fields. History is never imported.
+- Accepted documents: a JSON array of cards, `{"cards": […]}`, the whole `tb board --json`
+  object (its columns in board order), or one card object. At most 4 MiB of UTF-8.
+
 ### Due dates
 
 For a board that tracks deadlines — filing dates, renewals, anything with a day on it:

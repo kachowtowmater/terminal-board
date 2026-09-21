@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod bulk;
 pub mod due;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -724,7 +725,7 @@ impl Store {
         tx.execute(
             r#"INSERT INTO cards(title, tag, description, "column", gh_ref, created_at, column_since, position)
                VALUES (?,?,?,'todo',?,?,?,?)"#,
-            params![title, tag, desc, gh, t, t, pos],
+            params![title, tag, desc.trim(), gh, t, t, pos],
         )?;
         let id = tx.last_insert_rowid();
         for (i, c) in checks.iter().enumerate() {

@@ -19,36 +19,55 @@ use std::path::Path;
 /// Linux accepts, so nothing `--desc "…"` could ever carry is refused here.
 pub const MAX_TEXT_BYTES: usize = 256 * 1024;
 
-fn limit() -> String {
-    format!("{MAX_TEXT_BYTES} bytes ({} KiB)", MAX_TEXT_BYTES / 1024)
+/// The most one JSON document of cards may carry (`tb import`, `tb edit --from`): 4 MiB.
+pub const MAX_DOC_BYTES: usize = 4 * 1024 * 1024;
+
+/// What to do about too much text: one card's text, or a whole document of cards.
+fn shorten(max: usize) -> &'static str {
+    if max == MAX_TEXT_BYTES {
+        "shorten it, or keep the long text in a file and name its path on the card"
+    } else {
+        "split it into smaller files and run them one after another"
+    }
+}
+
+fn limit(max: usize) -> String {
+    format!("{max} bytes ({} KiB)", max / 1024)
 }
 
 /// The text in `source` (a path, or `-` for standard input). `usage` is the command up to and
 /// including the flag — `note 3 --file` — so every refusal can name the exact next command.
 pub fn read(source: &Path, usage: &str) -> Result<String, BoardError> {
+    read_up_to(source, usage, MAX_TEXT_BYTES)
+}
+
+/// `read` with another size limit (a document of many cards is bigger than one card's text).
+/// Every other rule is the same: UTF-8, no NUL, not empty, a terminal on `-` is refused.
+pub fn read_up_to(source: &Path, usage: &str, max: usize) -> Result<String, BoardError> {
     if source.as_os_str() == "-" {
         let stdin = std::io::stdin();
         let tty = stdin.is_terminal();
-        return from_stdin(tty, &mut stdin.lock(), usage);
+        return from_stdin(tty, &mut stdin.lock(), usage, max);
     }
-    from_file(source, usage)
+    from_file(source, usage, max)
 }
 
 /// Standard input, unless it is a terminal (checked before a single byte is read).
-fn from_stdin(is_terminal: bool, input: &mut dyn Read, usage: &str) -> Result<String, BoardError> {
+fn from_stdin(is_terminal: bool, input: &mut dyn Read, usage: &str, max: usize) -> Result<String, BoardError> {
     if is_terminal {
         return Err(terminal_refusal(usage));
     }
     let mut bytes = Vec::new();
     // never an unbounded read: one byte past the limit is enough to know it is too much
     input
-        .take(MAX_TEXT_BYTES as u64 + 1)
+        .take(max as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| BoardError(format!("could not read standard input: {e} — try a file instead: 'tb {usage} PATH'")))?;
-    if bytes.len() > MAX_TEXT_BYTES {
+    if bytes.len() > max {
         return Err(BoardError(format!(
-            "standard input is over the limit of {} for text from a file — shorten it, or keep the long text in a file and name its path on the card",
-            limit()
+            "standard input is over the limit of {} for text from a file — {}",
+            limit(max),
+            shorten(max)
         )));
     }
     text_of(bytes, "standard input", usage)
@@ -60,7 +79,7 @@ fn terminal_refusal(usage: &str) -> BoardError {
     ))
 }
 
-fn from_file(path: &Path, usage: &str) -> Result<String, BoardError> {
+fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError> {
     let shown = format!("'{}'", path.display());
     let again = format!("'tb {usage} PATH', or pipe the text: 'tb {usage} -'");
     let refuse = |e: &std::io::Error| match e.kind() {
@@ -83,18 +102,19 @@ fn from_file(path: &Path, usage: &str) -> Result<String, BoardError> {
     }
     let too_big = |size: String| {
         BoardError(format!(
-            "{shown} is {size}; text from a file is limited to {} — shorten it, or keep the long text in the file and name its path on the card",
-            limit()
+            "{shown} is {size}; text from a file is limited to {} — {}",
+            limit(max),
+            shorten(max).replace("in a file", "in the file")
         ))
     };
-    if meta.is_file() && meta.len() > MAX_TEXT_BYTES as u64 {
+    if meta.is_file() && meta.len() > max as u64 {
         return Err(too_big(format!("{} bytes", meta.len())));
     }
     // the size above can be wrong (a pipe, a device, a file still growing): read bounded anyway
     let mut bytes = Vec::new();
-    (&mut file).take(MAX_TEXT_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| refuse(&e))?;
-    if bytes.len() > MAX_TEXT_BYTES {
-        return Err(too_big(format!("over {MAX_TEXT_BYTES} bytes")));
+    (&mut file).take(max as u64 + 1).read_to_end(&mut bytes).map_err(|e| refuse(&e))?;
+    if bytes.len() > max {
+        return Err(too_big(format!("over {max} bytes")));
     }
     text_of(bytes, &shown, usage)
 }
@@ -140,7 +160,7 @@ mod tests {
 
     #[test]
     fn a_terminal_on_stdin_is_refused_before_any_read() {
-        let e = from_stdin(true, &mut Untouchable, "note 3 --file").unwrap_err().0;
+        let e = from_stdin(true, &mut Untouchable, "note 3 --file", MAX_TEXT_BYTES).unwrap_err().0;
         assert!(e.starts_with("'-' reads piped text, but standard input is a terminal — "), "{e}");
         assert!(e.contains("'tb note 3 --file - < FILE'") && e.contains("'tb note 3 --file FILE'"), "{e}");
     }
@@ -148,16 +168,16 @@ mod tests {
     #[test]
     fn piped_text_is_kept_byte_for_byte() {
         let nasty = "a `b` $c \"d\" 'e' \\f\tg\r\nh\n\n  i";
-        let got = from_stdin(false, &mut nasty.as_bytes(), "note 3 --file").unwrap();
+        let got = from_stdin(false, &mut nasty.as_bytes(), "note 3 --file", MAX_TEXT_BYTES).unwrap();
         assert_eq!(got, nasty);
     }
 
     #[test]
     fn the_limit_is_exact_and_the_read_is_bounded() {
         let at = vec![b'x'; MAX_TEXT_BYTES];
-        assert_eq!(from_stdin(false, &mut at.as_slice(), "note 3 --file").unwrap().len(), MAX_TEXT_BYTES);
+        assert_eq!(from_stdin(false, &mut at.as_slice(), "note 3 --file", MAX_TEXT_BYTES).unwrap().len(), MAX_TEXT_BYTES);
         // an endless producer: the read must stop on its own, one byte past the limit
-        let e = from_stdin(false, &mut std::io::repeat(b'x'), "note 3 --file").unwrap_err().0;
+        let e = from_stdin(false, &mut std::io::repeat(b'x'), "note 3 --file", MAX_TEXT_BYTES).unwrap_err().0;
         assert!(e.contains("over the limit of 262144 bytes (256 KiB)"), "{e}");
     }
 

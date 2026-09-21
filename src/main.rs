@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Store, COLUMNS};
-use terminal_board::{boards, contract, github, plain, resolve_actor, setup, textin, tui};
+use terminal_board::{boards, contract, github, import, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
@@ -24,6 +24,7 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS
+Bulk    import FILE.json|- · edit --from FILE.json|-   [--dry-run]   many cards from one JSON file, all or nothing
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -131,7 +132,10 @@ enum Cmd {
     Rm { id: i64 },
     Prio { id: i64, how: String },
     Edit {
-        id: i64,
+        // required — except with --from, which conflicts with it (a conflict with a present
+        // argument lifts the requirement); this keeps every ID message exactly as it was
+        #[arg(required = true)]
+        id: Option<i64>,
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
@@ -142,6 +146,13 @@ enum Cmd {
         /// Read the description from a file, byte for byte (`-` = standard input).
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
+        /// Change many cards from one JSON file (`-` = standard input): rows keyed by `id`,
+        /// only the fields present change, all or nothing.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["id", "title", "desc", "due", "desc_file"])]
+        from: Option<std::path::PathBuf>,
+        /// With --from: report what would change, write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     Config {
         key: Option<String>,
@@ -163,6 +174,13 @@ enum Cmd {
     Agents,
     Sync,
     Guide,
+    /// Create many cards from one JSON file (`-` = standard input), all or nothing.
+    Import {
+        file: std::path::PathBuf,
+        /// Report what would be created, write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     Github {
         what: Option<String>,
         #[arg(long)]
@@ -376,7 +394,7 @@ fn watch(
 fn due_flag(cmd: Option<&Cmd>) -> Result<Option<Option<DueDate>>, BoardError> {
     let (raw, example) = match cmd {
         Some(Cmd::Add { due: Some(d), .. }) => (d, "tb add \"tag: title\" --due 2026-10-09".to_string()),
-        Some(Cmd::Edit { id, due: Some(d), .. }) => (d, format!("tb edit {id} --due 2026-10-09")),
+        Some(Cmd::Edit { id: Some(id), due: Some(d), .. }) => (d, format!("tb edit {id} --due 2026-10-09")),
         _ => return Ok(None),
     };
     DueDate::parse(raw, &example).map(Some)
@@ -439,15 +457,15 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
 /// Text given as a file (`--desc-file PATH|-`, `note --file PATH|-`) becomes the plain text
 /// the command would have carried: read here, BEFORE the board is opened or created, so a bad
 /// path never leaves a new empty board behind, and the write paths below stay the ones
-/// `--desc` and note text already use. `add` stores its description as given, `edit` and
-/// `note` trim theirs — so the file's outer blank space is trimmed for `add` too, and one
-/// file always leaves the same text whichever command carried it.
+/// `--desc` and note text already use. Every write path trims the blank space around a
+/// description or a note, so one file always leaves the same text whichever command
+/// carried it.
 fn text_from_files(cmd: &mut Cmd) -> Result<(), BoardError> {
     match cmd {
         Cmd::Add { desc, desc_file: Some(path), .. } => {
             *desc = textin::read(path, "add \"tag: title\" --desc-file")?.trim().to_string();
         }
-        Cmd::Edit { id, desc, desc_file: Some(path), .. } => {
+        Cmd::Edit { id: Some(id), desc, desc_file: Some(path), .. } => {
             *desc = Some(textin::read(path, &format!("edit {id} --desc-file"))?);
         }
         Cmd::Note { id, text, file: Some(path) } => {
@@ -511,6 +529,20 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         matches!(c, Cmd::Add { .. } | Cmd::Config { .. })
             || (c.writes() && name == boards::DEFAULT_BOARD)
     });
+    // many cards from one file: read and checked BEFORE the board is opened, and a dry run or a
+    // file with problems never creates a board
+    let bulk = match cmd_ref {
+        Some(Cmd::Import { file, dry_run }) => Some(import::Request::read(import::Mode::Import, file, *dry_run)?),
+        Some(Cmd::Edit { from: Some(file), dry_run, .. }) => Some(import::Request::read(import::Mode::Edit, file, *dry_run)?),
+        // (the parser cannot say this: --from conflicts with ID, which switches its own rule off)
+        Some(Cmd::Edit { from: None, dry_run: true, .. }) => {
+            return Err(BoardError(
+                "--dry-run goes with --from; a single edit has no dry run — drop it, or 'tb edit --from FILE.json --dry-run'".into(),
+            ))
+        }
+        _ => None,
+    };
+    let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
     let mut store = open_board(&name, creates)?;
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
@@ -529,6 +561,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         }
         return Ok(());
     };
+    if let Some(request) = bulk {
+        return import::run(&mut store, request, &actor, j, &|text| with_board(text, explicit));
+    }
     let now = terminal_board::store::now();
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
@@ -715,6 +750,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
         }
         Cmd::Edit { id, title, desc, .. } => {
+            let id = id.expect("the parser requires ID unless --from is given, and --from is handled above");
             // `--due` alone is a whole edit; with --title/--desc the date (already checked)
             // is written after them
             if due_arg.is_none() || title.is_some() || desc.is_some() {
@@ -783,6 +819,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Guide => print!("{GUIDE}"),
+        Cmd::Import { .. } => unreachable!("handled above"),
         Cmd::Config { key: None, .. } => {
             let all = store.settings()?;
             if j {
@@ -1040,6 +1077,7 @@ fn main() -> ExitCode {
     };
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.0 == import::REPORTED => ExitCode::FAILURE,
         Err(e) => {
             let e = BoardError(with_board(&e.0, explicit.as_deref()));
             if jsonout {

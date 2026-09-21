@@ -160,5 +160,10 @@ background, so it looks the same whatever your terminal theme is.
   brief.md`, `tb edit 3 --desc-file brief.md`, `tb note 3 --file notes.md` (`-` reads a pipe:
   `some-command | tb note 3 --file -`). The text arrives exactly as written — backticks, `$`,
   quotes and blank lines included — up to 256 KiB of UTF-8. The README has the details.
+- Many cards at once: `tb import cards.json` creates them and `tb edit --from changes.json`
+  changes existing ones (rows keyed by `id`; only the fields in a row change) — for example a
+  due date for sixty cards in one command. Add `--dry-run` first: it reports every row and
+  writes nothing. One bad row and nothing is written; the report names the row and the field.
+  The README has the file format.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.
