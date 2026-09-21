@@ -17,7 +17,8 @@ struct Board {
 impl Board {
     fn new() -> Board {
         let dir = tempfile::tempdir().unwrap();
-        Board { _dir: dir, db: dir.path().join("board.db") }
+        let db = dir.path().join("board.db");
+        Board { _dir: dir, db }
     }
 
     fn run(&self, now: Option<&str>, args: &[&str]) -> Output {
@@ -41,7 +42,7 @@ impl Board {
         if !self.db.exists() {
             return String::new();
         }
-        let s = terminal_board::Store::open(&self.db).unwrap();
+        let s = terminal_board::store::Store::open(&self.db).unwrap();
         s.list()
             .unwrap()
             .iter()
@@ -54,7 +55,7 @@ impl Board {
         if !self.db.exists() {
             return 0;
         }
-        terminal_board::Store::open(&self.db).unwrap().list().unwrap().len()
+        terminal_board::store::Store::open(&self.db).unwrap().list().unwrap().len()
     }
 }
 
@@ -65,16 +66,16 @@ fn an_in_range_pin_is_used() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["card"]["created_at"], 1_789_777_000);
-    // the same pin in a second command reads back as fact
+    // the same pin in a second command reads back as fact (show --json is the card itself)
     let v: serde_json::Value =
         serde_json::from_str(&String::from_utf8(b.run(Some("1789777000"), &["show", "1", "--json"]).stdout).unwrap()).unwrap();
-    assert_eq!(v["card"]["created_at"], 1_789_777_000);
+    assert_eq!(v["created_at"], 1_789_777_000);
     // the edges of the window are accepted too (first and last second of 2000–2100)
     for edge in [MIN, MAX] {
         let e = Board::new();
         let o = e.run(Some(edge), &["add", "edge"]);
         assert!(o.status.success(), "edge {edge} refused: {}", String::from_utf8_lossy(&o.stderr));
-        let s = terminal_board::Store::open(&e.db).unwrap();
+        let s = terminal_board::store::Store::open(&e.db).unwrap();
         assert_eq!(s.list().unwrap()[0].created_at, edge.parse::<i64>().unwrap(), "edge {edge} pinned");
     }
     // the legacy name still pins
@@ -87,7 +88,7 @@ fn an_in_range_pin_is_used() {
         .env("TTYBOARD_NOW", "1789777000")
         .output()
         .unwrap();
-    let s = terminal_board::Store::open(&b.db).unwrap();
+    let s = terminal_board::store::Store::open(&b.db).unwrap();
     assert_eq!(s.list().unwrap().iter().map(|c| c.created_at).min(), Some(1_789_777_000), "legacy TTYBOARD_NOW pins too");
 }
 
@@ -98,8 +99,9 @@ fn a_bad_pin_is_refused_and_writes_nothing() {
     let before = b.dump();
     let count = b.card_count();
     // one of every refusal class: negative, zero, past the window, absurdly large,
-    // not a number, and surrounded by blank space (never silently trimmed into a pin)
-    for bad in ["0", "-1", "9223372036854775807", "1e9999", "abc", " 12 ", "", "946684799", "4102444801"] {
+    // not a number, and surrounded by blank space (never silently trimmed into a pin).
+    // ("", the empty pin, is the real-clock case — the next test.)
+    for bad in ["0", "-1", "9223372036854775807", "1e9999", "abc", " 12 ", "946684799", "4102444801"] {
         let o = b.run(Some(bad), &["add", "must not appear", "--as", "tester"]);
         assert!(!o.status.success(), "TB_NOW={bad:?} was accepted: {}", String::from_utf8_lossy(&o.stdout));
         let err = String::from_utf8_lossy(&o.stderr).to_string();
@@ -116,7 +118,7 @@ fn an_empty_or_unset_pin_is_the_real_clock() {
     let b = Board::new();
     let o = b.run(None, &["add", "real clock"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let s = terminal_board::Store::open(&b.db).unwrap();
+    let s = terminal_board::store::Store::open(&b.db).unwrap();
     let t = s.list().unwrap()[0].created_at;
     let real = chrono::Utc::now().timestamp();
     assert!((t - real).abs() < 300, "created_at {t} is not the real clock {real}");
@@ -124,7 +126,7 @@ fn an_empty_or_unset_pin_is_the_real_clock() {
     let e = Board::new();
     let o = e.run(Some(""), &["add", "real clock too"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let s = terminal_board::Store::open(&e.db).unwrap();
+    let s = terminal_board::store::Store::open(&e.db).unwrap();
     let t = s.list().unwrap()[0].created_at;
     assert!((t - chrono::Utc::now().timestamp()).abs() < 300, "empty pin must be the real clock, got {t}");
 }
