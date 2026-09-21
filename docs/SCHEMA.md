@@ -27,7 +27,7 @@ tool owns the events log, positions and migrations, and a foreign writer skips t
 | `description` | TEXT | the brief |
 | `column` | TEXT | `todo` / `doing` / `review` / `done` (quoted keyword — `"column"`) |
 | `owner` | TEXT NULL | who holds it |
-| `due` | TEXT NULL | free-text due hint |
+| `due` | TEXT NULL | due date: a local calendar date as text, `YYYY-MM-DD`, exactly as given to `--due` — never a timestamp, so it sorts as text and no time zone applies. tb writes nothing else here; text from another writer is kept as is |
 | `gh_ref` | INTEGER NULL | linked GitHub issue/PR number |
 | `created_at` | INTEGER | unix seconds |
 | `column_since` | INTEGER | unix seconds since the last column move |
@@ -68,6 +68,7 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `unblocked` | — |
 | `dropped` | — (owner cleared) |
 | `edit` | what changed |
+| `due` | `<old> -> <new>` due date (`none` = no date), e.g. `none -> 2026-10-09` |
 | `prio` | the move within the column |
 | `github` | the automation reason (e.g. `PR gh#30 open → review`) |
 | `reviewing` | — (the actor claimed it with `tb next --review`) |
@@ -103,7 +104,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`) |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ## Reading safely
