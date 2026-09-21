@@ -377,32 +377,25 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
     let def = boards::default_name();
-    let names = if terminal_board::env("DB").is_some() {
-        vec![def.clone()]
-    } else {
-        boards::list()
-    };
-    let mut rows = Vec::new();
-    for n in &names {
-        let snap = Store::open(&boards::path_for(n))?.named(n).snapshot()?;
-        let counts: Vec<usize> = COLUMNS.iter().map(|c| snap.in_column(c).len()).collect();
-        rows.push((n.clone(), *n == def, counts));
-    }
+    // the same rows the board picker (B) shows inside the TUI
+    let rows = boards::rows()?;
     if json_out {
         let v: Vec<_> = rows
             .iter()
-            .map(|(n, d, c)| {
-                serde_json::json!({"name": n, "default": d, "todo": c[0], "doing": c[1], "review": c[2], "done": c[3]})
+            .map(|b| {
+                let c = b.counts;
+                serde_json::json!({"name": b.name, "default": b.is_default, "todo": c[0], "doing": c[1], "review": c[2], "done": c[3]})
             })
             .collect();
         println!("{}", pretty(&v));
     } else if rows.is_empty() {
         say!("no boards yet — 'tb add \"title\"' creates '{def}', 'tb home add \"title\"' creates 'home'");
     } else {
-        for (n, d, c) in &rows {
+        for b in &rows {
+            let (n, c) = (&b.name, b.counts);
             say!(
                 "{} {n:<16} todo {:<3} doing {:<3} review {:<3} done {}",
-                if *d { "*" } else { " " },
+                if b.is_default { "*" } else { " " },
                 c[0], c[1], c[2], c[3]
             );
         }

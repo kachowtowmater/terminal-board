@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### `B` switches boards without quitting
+- `B` on the board opens the **board picker**: an overlay, like the `?` help, listing every
+  board `tb boards` lists — name, todo / doing / review / done counts, `*` on the default
+  board — with the board you are on in bold. The counts are re-read when it opens. Arrows or
+  `j`/`k` move, `enter` switches, `esc` leaves everything as it was. The key is in the footer
+  hints and in `?`.
+- `enter` switches the running board **in place**: no restart. The header names the new
+  board, and its own settings follow it — WIP limit, theme, view, and whether the GITHUB and
+  AGENTS panels are shown, plus that board's GitHub repository (a fetch still in flight for
+  the board you left is dropped rather than saved into the new one).
+- No layout change: nothing on the board moves, and the overlay scrolls with the selection in
+  a short pane, dropping a count column whole rather than cutting a header in a narrow one.
+- With `TB_DB` set there is one board file and board names are refused, so `B` says
+  `TB_DB pins one board file — unset TB_DB to switch boards` instead of offering a choice.
+
 ### GitHub counts are pages, and sync sees past the page
 - tb fetches the 20 newest open PRs and issues; when a page is full, `tb github` and the
   full panel's tiles and one-line summary say so (`PRs 20 newest`, tile `newest 20: +1 · 5

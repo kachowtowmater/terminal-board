@@ -1,6 +1,6 @@
 //! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection.
 
-use crate::store::{BoardError, Result};
+use crate::store::{BoardError, Result, Store, COLUMNS};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_BOARD: &str = "default";
@@ -133,6 +133,50 @@ pub fn list() -> Vec<String> {
         .unwrap_or_default();
     v.sort();
     v
+}
+
+/// One row of `tb boards`: the board, whether it is the default one, its card counts in
+/// column order (todo, doing, review, done) and the file it lives in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardRow {
+    pub name: String,
+    pub is_default: bool,
+    pub counts: [usize; 4],
+    pub path: PathBuf,
+}
+
+/// Is `TB_DB` pinning one file? Then there is no boards directory to list: every name would
+/// open the same file, which is why the CLI refuses board names in this mode.
+pub fn db_pinned() -> bool {
+    crate::env("DB").is_some()
+}
+
+/// The rows `tb boards` prints: every board on disk, counted. `TB_DB` pins one file, so it
+/// reports the one board it is.
+pub fn rows() -> Result<Vec<BoardRow>> {
+    let def = default_name();
+    let names = if db_pinned() { vec![def.clone()] } else { list() };
+    names
+        .iter()
+        .map(|n| {
+            let path = path_for(n);
+            let snap = Store::open(&path)?.named(n).snapshot()?;
+            let mut counts = [0usize; 4];
+            for (i, c) in COLUMNS.iter().enumerate() {
+                counts[i] = snap.in_column(c).len();
+            }
+            Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path })
+        })
+        .collect()
+}
+
+/// The board picker's rows, or the reason it cannot offer a choice. With `TB_DB` set there
+/// is exactly one file and board names are refused (`open_board`), so switching is off.
+pub fn picker_rows() -> std::result::Result<Vec<BoardRow>, String> {
+    if db_pinned() {
+        return Err("TB_DB pins one board file — unset TB_DB to switch boards".into());
+    }
+    rows().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
