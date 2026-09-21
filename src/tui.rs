@@ -91,6 +91,8 @@ pub enum Mode {
     AddCheck { id: i64, buf: String },
     /// Repo picker (`R`): typed filter and selected row (row 0 = "none").
     Picker { filter: String, sel: usize },
+    /// Board picker (`B`): the selected row in `App::boards`.
+    Boards { sel: usize },
     /// Popup for a GitHub PR (`pr`=true) or issue.
     GhItem { pr: bool, number: i64 },
     /// Popup for an agent (index into the agents list).
@@ -278,6 +280,8 @@ pub struct App {
     pub repos_rx: Option<RepoSlot>,
     /// Inline picker error (e.g. a typed repo that does not exist).
     pub picker_msg: Option<String>,
+    /// Board picker rows (`tb boards`), re-read from disk each time `B` opens the overlay.
+    pub boards: Vec<crate::boards::BoardRow>,
     /// Keyboard focus and the selected row inside each panel.
     pub focus: Focus,
     pub gh_sel: usize,
@@ -326,6 +330,7 @@ impl App {
             repos: RepoState::Idle,
             repos_rx: None,
             picker_msg: None,
+            boards: Vec::new(),
             focus: Focus::Columns,
             gh_sel: 0,
             ag_sel: 0,
@@ -569,6 +574,23 @@ impl App {
                         self.mode = Mode::Picker { filter, sel: first };
                     }
                     KeyCode::Enter => self.pick_repo(&filter, sel, store),
+                    _ => {}
+                }
+            }
+            Mode::Boards { sel } => {
+                let last = self.boards.len().saturating_sub(1);
+                match key.code {
+                    // esc leaves everything exactly as it was
+                    KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                    KeyCode::Up | KeyCode::Char('k') => self.mode = Mode::Boards { sel: sel.saturating_sub(1) },
+                    KeyCode::Down | KeyCode::Char('j') => self.mode = Mode::Boards { sel: (sel + 1).min(last) },
+                    KeyCode::Home => self.mode = Mode::Boards { sel: 0 },
+                    KeyCode::End => self.mode = Mode::Boards { sel: last },
+                    KeyCode::Enter => {
+                        if let Some(row) = self.boards.get(sel.min(last)).cloned() {
+                            self.switch_board(&row, store);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1014,6 +1036,53 @@ impl App {
         self.mode = Mode::Picker { filter: String::new(), sel: 0 };
     }
 
+    /// `B`: read the boards (and their counts) fresh, then open the overlay on the current
+    /// board. With `TB_DB` there is nothing to choose between, so it refuses on the footer
+    /// instead of opening an overlay that cannot do anything.
+    pub fn open_boards(&mut self) {
+        match crate::boards::picker_rows() {
+            Err(msg) => self.status = Some((msg, true)),
+            Ok(rows) => {
+                let sel = rows.iter().position(|b| b.name == self.snap.board).unwrap_or(0);
+                self.boards = rows;
+                self.mode = Mode::Boards { sel };
+            }
+        }
+    }
+
+    /// Enter in the board picker: open that board's file in place of the running one — no
+    /// restart. Everything the board owns (its cards, WIP limit, theme, layout, GitHub repo
+    /// and panel settings) comes back through `reload`, so the header and both panels follow.
+    pub fn switch_board(&mut self, row: &crate::boards::BoardRow, store: &mut Store) {
+        self.mode = Mode::Normal;
+        if row.name == self.snap.board {
+            return;
+        }
+        match Store::open(&row.path) {
+            Err(e) => self.status = Some((e.to_string(), true)),
+            Ok(s) => {
+                *store = s.named(&row.name);
+                self.popup = None;
+                self.col = 0;
+                self.row = [0; 4];
+                self.cursor = 0;
+                self.focus = Focus::Columns;
+                self.view = View::Board;
+                self.focus_nav = false;
+                self.gh_sel = 0;
+                self.ag_sel = 0;
+                // the old board's GitHub cache and repo list belong to the old board
+                self.gh = GhView::default();
+                self.repos = RepoState::Idle;
+                self.repos_rx = None;
+                self.picker_msg = None;
+                self.reload(store);
+                self.status = Some((format!("board: {}", row.name), false));
+                self.status_until = Some(Instant::now() + Duration::from_secs(3));
+            }
+        }
+    }
+
     /// Keys while a panel (GITHUB / AGENTS) has focus. Card keys do nothing here.
     fn panel_key(&mut self, key: KeyEvent, store: &mut Store) -> bool {
         let (g_shown, a_shown) = self.shown.get();
@@ -1100,11 +1169,11 @@ impl App {
                 }
             }
             // board-wide keys still work; card keys (a d > < n) do nothing in a panel
-            (_, KeyCode::Char(c @ ('T' | 'L' | 'A' | 'G' | 'R'))) => {
+            (_, KeyCode::Char(c @ ('T' | 'L' | 'A' | 'G' | 'R' | 'B'))) => {
                 let prev = self.focus;
                 self.focus = Focus::Columns;
                 let q = self.normal_key(KeyEvent::new(KeyCode::Char(c), key.modifiers), store);
-                if !matches!(self.mode, Mode::Picker { .. }) {
+                if !matches!(self.mode, Mode::Picker { .. } | Mode::Boards { .. }) {
                     self.focus = prev;
                 }
                 return q;
@@ -1392,6 +1461,7 @@ impl App {
                 let _ = store.set_panel(key, if now_shown { "shown" } else { "hidden" });
             }
             KeyCode::Char('R') => self.open_picker(true),
+            KeyCode::Char('B') => self.open_boards(),
             KeyCode::Char(c @ ('+' | '=' | '-')) if self.col == 1 => {
                 let wip = self.snap.wip;
                 let next = if c == '-' { wip - 1 } else { wip + 1 }.clamp(1, crate::store::MAX_WIP);
@@ -1939,6 +2009,7 @@ fn footer(app: &App, width: u16) -> Line<'static> {
             if app.col == 1 {
                 hints.push(("+/-", "limit"));
             }
+            hints.push(("B", "boards"));
             if app.gh.repo.is_none() && app.show_github {
                 hints.push(("R", "github: pick repo"));
             }
@@ -2371,6 +2442,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Picker { filter, sel } = &app.mode {
         draw_picker(f, app, filter, *sel);
     }
+    if let Mode::Boards { sel } = app.mode {
+        draw_boards(f, app, sel);
+    }
     if let Mode::GhItem { pr, number } = app.mode {
         draw_gh_item(f, app, pr, number);
     }
@@ -2467,6 +2541,7 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("T", "dark / light theme"),
         ("L", "view: auto, focus, third-h, third-v, half-h, half-v"),
         ("A / G", "show / hide AGENTS / GITHUB"),
+        ("B", "boards: switch to another board without quitting"),
         ("R", "pick the GitHub repo"),
         ("?", "this help"),
     ]),
@@ -2778,6 +2853,110 @@ fn draw_picker(f: &mut Frame, app: &App, filter: &str, sel: usize) {
     f.render_widget(Table::new(rows, widths).header(header).column_spacing(1), table_area);
 }
 
+/// The board picker's count columns (header, width), in `COLUMNS` order. A column that does
+/// not fit is dropped whole, right to left, so a header is never cut in half.
+const BOARD_COLS: [(&str, u16); 4] = [("TODO", 4), ("DOING", 5), ("REVIEW", 6), ("DONE", 4)];
+/// The name column is never narrower than its own header.
+const BOARD_NAME_HEAD: &str = "BOARD";
+/// The overlay's bottom hint, longest form first; the widest one that fits is used.
+const BOARD_HINTS: [&str; 3] =
+    [" up/down select · enter switch · esc cancel ", " enter switch · esc cancel ", " esc "];
+
+/// Which count columns fit in `w` cells, and how wide the name column is then. `longest` is
+/// the longest board name. Widths are the marker (2), the name, each kept count column, and
+/// one cell of spacing between them.
+fn boards_plan(w: u16, longest: u16) -> ([bool; 4], u16) {
+    let mut keep = [true; 4];
+    let want = longest.max(BOARD_NAME_HEAD.len() as u16);
+    let room = |keep: &[bool; 4]| {
+        let counts: u16 = BOARD_COLS.iter().zip(keep).filter(|(_, k)| **k).map(|(c, _)| c.1 + 1).sum();
+        w.saturating_sub(3 + counts)
+    };
+    for i in (0..4).rev() {
+        if room(&keep) >= want {
+            break;
+        }
+        keep[i] = false;
+    }
+    (keep, room(&keep).min(want).max(1))
+}
+
+/// Width the overlay wants: every count column, the longest name, and room for the hint.
+fn boards_width(longest: u16) -> u16 {
+    let counts: u16 = BOARD_COLS.iter().map(|c| c.1 + 1).sum();
+    let content = 3 + longest.max(BOARD_NAME_HEAD.len() as u16) + counts + 4; // + frame + padding
+    content.max(BOARD_HINTS[0].chars().count() as u16 + 2)
+}
+
+/// The `B` board picker: the rows of `tb boards` — name, todo/doing/review/done, `*` on the
+/// default board — with the current board bold. An overlay like the `?` help: it never moves
+/// the board underneath, and it scrolls (with the selection) when the pane is too short.
+fn draw_boards(f: &mut Frame, app: &App, sel: usize) {
+    use ratatui::widgets::{Cell, Row, Table};
+    let longest = app.boards.iter().map(|b| b.name.chars().count()).max().unwrap_or(0) as u16;
+    let area = centered(f.area(), boards_width(longest), app.boards.len() as u16 + 3);
+    if area.width < 10 || area.height < 4 {
+        return;
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(Block::default().style(base_style(app)), area);
+    // a hint that does not fit between the corners would be cut, so take the widest that does
+    let room = area.width.saturating_sub(2) as usize;
+    let hint = BOARD_HINTS.iter().find(|h| h.chars().count() <= room).copied().unwrap_or("");
+    let b = frame(true, None)
+        .title(Span::styled(" Boards ", bold()))
+        .title_bottom(Line::styled(hint, bold()));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    let pad = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    if app.boards.is_empty() {
+        let lines: Vec<Line> = wrap_words("no boards yet", pad.width as usize).into_iter().map(Line::raw).collect();
+        f.render_widget(Paragraph::new(lines), pad);
+        return;
+    }
+    let (keep, name_w) = boards_plan(pad.width, longest);
+    let sel = sel.min(app.boards.len() - 1);
+    let sel_st = bold().add_modifier(Modifier::REVERSED);
+    let rows: Vec<Row> = app
+        .boards
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let current = b.name == app.snap.board;
+            let marker = format!("{}{}", if i == sel { ">" } else { " " }, if b.is_default { "*" } else { " " });
+            let mut cells = vec![Cell::from(marker), Cell::from(fit(&b.name, name_w as usize))];
+            for (k, (_, w)) in BOARD_COLS.iter().enumerate() {
+                if keep[k] {
+                    cells.push(Cell::from(format!("{:>w$}", b.counts[k], w = *w as usize)));
+                }
+            }
+            let row = Row::new(cells);
+            // the board you are on stays bold; the cursor row is reversed on top of that
+            match (i == sel, current) {
+                (true, _) => row.style(sel_st),
+                (_, true) => row.style(bold()),
+                _ => row,
+            }
+        })
+        .collect();
+    // a header is shown whole or not at all — never half of one
+    let name_head = if name_w >= BOARD_NAME_HEAD.len() as u16 { BOARD_NAME_HEAD } else { "" };
+    let mut head = vec![Cell::from(""), Cell::from(name_head)];
+    let mut widths = vec![Constraint::Length(2), Constraint::Length(name_w)];
+    for (k, (name, w)) in BOARD_COLS.iter().enumerate() {
+        if keep[k] {
+            head.push(Cell::from(*name));
+            widths.push(Constraint::Length(*w));
+        }
+    }
+    // scroll with the selection: the header stays, the rows below it slide
+    let body_h = inner.height.saturating_sub(1) as usize;
+    let off = (sel + 1).saturating_sub(body_h.max(1));
+    let rows: Vec<Row> = rows.into_iter().skip(off).collect();
+    let table = Table::new(rows, widths).header(Row::new(head).style(bold())).column_spacing(1);
+    f.render_widget(table, pad);
+}
+
 /// Row budget for the FULL/MEDIUM board: (github, agents, detail, github bar, agents bar).
 /// Priority, highest first: boxed cards (columns >= 14 rows when the terminal is >= 30 rows,
 /// else >= 10); then GITHUB (full, fewer rows / one-line tiles, then a 1-line bar); then
@@ -2919,13 +3098,15 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
     app.reload(&store);
 
     // GitHub: a background thread fetches every 60s while a repo is configured; the UI never waits.
-    type GhResult = (std::result::Result<github::GhSnapshot, String>, std::collections::HashMap<i64, github::RefState>);
-    let db_path = store.path();
-    let gh_repo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(app.gh.repo.clone()));
+    // The result carries the repo it is for: `B` can switch boards mid-fetch, and a snapshot
+    // of the old board's repo must never be saved into the new board.
+    type GhResult = (String, std::result::Result<github::GhSnapshot, String>, std::collections::HashMap<i64, github::RefState>);
+    // repo + database file of the board the board that is running now (both change on `B`)
+    let gh_target: Arc<Mutex<(Option<String>, Option<std::path::PathBuf>)>> =
+        Arc::new(Mutex::new((app.gh.repo.clone(), store.path())));
     let gh_out: Arc<Mutex<Option<GhResult>>> = Arc::new(Mutex::new(None));
     {
-        let (gh_repo, gh_out) = (Arc::clone(&gh_repo), Arc::clone(&gh_out));
-        let db_path = db_path.clone();
+        let (gh_repo, gh_out) = (Arc::clone(&gh_target), Arc::clone(&gh_out));
         let cached_age = app
             .gh
             .snap
@@ -2936,7 +3117,7 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             let mut last: Option<(String, Instant)> = None;
             let mut first = true;
             loop {
-                let repo = gh_repo.lock().ok().and_then(|g| g.clone());
+                let (repo, db_path) = gh_repo.lock().ok().map(|g| g.clone()).unwrap_or_default();
                 if let Some(r) = repo {
                     if first {
                         // a fresh cache counts as the last fetch
@@ -2957,7 +3138,7 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
                             _ => Default::default(),
                         };
                         if let Ok(mut g) = gh_out.lock() {
-                            *g = Some((res, states));
+                            *g = Some((r.clone(), res, states));
                         }
                         last = Some((r, Instant::now()));
                     }
@@ -2995,12 +3176,17 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
                 }
             }
             app.poll_repos();
-            if let Ok(mut g) = gh_repo.lock() {
-                // a newly picked repo is fetched right away (the thread sees the change)
-                g.clone_from(&app.gh.repo);
+            if let Ok(mut g) = gh_target.lock() {
+                // a newly picked repo (or a board switched with B) is fetched right away
+                g.0.clone_from(&app.gh.repo);
+                g.1 = store.path();
             }
             let fetched = gh_out.lock().ok().and_then(|mut g| g.take());
-            if let Some((res, states)) = fetched {
+            // a result for a repo this board no longer wants (B switched under it) is dropped
+            if let Some((res, states)) = fetched
+                .filter(|(repo, ..)| app.gh.repo.as_deref() == Some(repo.as_str()))
+                .map(|(_, res, states)| (res, states))
+            {
                 let _ = store.save_github(&res);
                 if let (Ok(snap), Ok(cards), Ok(returned)) = (&res, store.list(), store.returned_at()) {
                     let moves = github::plan_moves(snap, &cards, &states, &returned);
@@ -3017,8 +3203,9 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             }
             if last.elapsed() >= REFRESH {
                 app.reload(&store);
-                if let Ok(mut g) = gh_repo.lock() {
-                    g.clone_from(&app.gh.repo);
+                if let Ok(mut g) = gh_target.lock() {
+                    g.0.clone_from(&app.gh.repo);
+                    g.1 = store.path();
                 }
                 last = Instant::now();
             }
