@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The board footer keeps every hint that fits
+
+The footer used to swap its whole hint line for a fixed four the moment the full set did not
+fit, so an 80-column terminal with DOING selected showed `a add  enter open  ? help  q quit`
+— four hints in 33 of its 80 columns. It now drops one hint at a time, least useful first
+(`x del`, `e edit`, `R github: pick repo`, `+/- limit`, `B boards`, `enter open`, `q quit`,
+`a add`), the way the focus view's footer already did. `shift+arrows move` — the only board
+action that is not discoverable anywhere else on screen — and `?`, where every dropped hint
+is documented, are never dropped. Widths that already showed the whole footer are unchanged.
+
 ## 2.0.0 — 2026-09-20
 
 Dogfooding — several agents and a person sharing one board — turned into 32 changes since
