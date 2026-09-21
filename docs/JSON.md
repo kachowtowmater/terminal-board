@@ -45,7 +45,8 @@ this card", not as an error.
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
 | `github.fails` | int | consecutive failed refreshes; the board UI goes red only after 3 |
 | `github.fetched_at` | int | unix seconds of the last good snapshot (0 = never fetched) |
-| `columns.*` | card[] | todo/doing/review in `position` order; **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
+| `sort` | `"position"`\|`"due"` | what orders the `columns` arrays — and what `tb next` takes, which is always the first card of `columns.todo` whose `blocked` is null. `position` (default): by `position`. `due`: todo and review by `due`, nearest first; cards without a `YYYY-MM-DD` date after every dated card; equal dates (or none) by `position`, then `id`. doing is always by `position`. The order never depends on today |
+| `columns.*` | card[] | todo/doing/review in the board's order (see `sort`; `position` order unless the board sets `sort due`); **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
 
 A bare `tb --json` (not a terminal) prints the same object.
 
@@ -138,7 +139,9 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 ```
 
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
-`config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
+`prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
+tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
+`config sort --json`, `config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
 default included: `"value": "local"` / `"value": 3`. `config --json` lists them once set.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
@@ -182,7 +185,7 @@ herdr agent panes merged with the board (empty array when herdr is not available
 
 ## Other read commands
 
-- `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`).
+- `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).

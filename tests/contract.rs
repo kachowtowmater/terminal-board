@@ -90,7 +90,9 @@ fn golden_board_shape() {
     tb(&db, &["add", "widgets: gh#7 fix it", "--check", "repro"]);
     tb(&db, &["config", "github", "o/r"]);
     let v = json(&tb(&db, &["board", "--json"]));
-    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "github", "columns"]));
+    // `sort` (position | due): what the `columns` arrays and `tb next` are ordered by — additive
+    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "sort", "github", "columns"]));
+    assert_eq!(v["sort"], "position", "the default");
     assert_eq!(v["v"], 1);
     assert_eq!((v["wip"].as_i64(), v["theme"].as_str(), v["layout"].as_str()), (Some(3), Some("dark"), Some("auto")));
     assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error", "fails", "fetched_at"]));

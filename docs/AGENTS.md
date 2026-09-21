@@ -56,7 +56,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | add a checklist item | `tb check ID --add "update the docs"` |
 | delete checklist item N (the rest renumber) | `tb check ID --rm N` |
 
-`tb next` skips blocked cards; when TODO is empty or DOING is full it fails with a hint.
+`tb next` skips blocked cards; when TODO is empty or DOING is full it fails with a hint. On a
+board set to `tb config sort due` it takes the nearest due date, not the top position (lists and
+`--json` show that same order); `tb prio` there only orders cards with the same date, and says so.
 
 ### Update and move a card
 
