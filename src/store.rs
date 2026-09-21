@@ -484,7 +484,8 @@ fn is_board(conn: &Connection) -> Result<bool> {
 ///      left it, and there is exactly one however many processes open the board at once;
 ///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
 ///      with nothing changed and refuses the command.
-///    The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
+///
+/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
 ///
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
