@@ -466,7 +466,9 @@ fn a_terminal_on_standard_input_is_refused_not_waited_on() {
         // to the terminal — a tb that reads it would wait forever (and be killed below)
         let child = match c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // a machine without `script` cannot make a terminal; CI has one, so there a
+            // missing `script` fails instead of silently skipping the check
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::env::var_os("CI").is_none() => {
                 eprintln!("skipped: no `script` command here to make a terminal");
                 return;
             }
