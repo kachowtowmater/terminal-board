@@ -1262,3 +1262,123 @@ fn full_page_labels_fit_at_small_sizes() {
     quiet.reload(&s);
     assert!(render(&quiet, 80, 60).contains("no open issues or PRs"));
 }
+
+// gh#75: the board footer degrades one hint at a time -------------------------------------
+
+/// Every board hint, in the order the footer drops them (first dropped first). The last two
+/// are the floor: `shift+arrows move` is the only board action that is not discoverable
+/// anywhere else on screen, and `?` is where every dropped hint is documented.
+const FOOTER_DROP_ORDER: [(&str, &str); 10] = [
+    ("x", "del"),
+    ("e", "edit"),
+    ("R", "github: pick repo"),
+    ("+/-", "limit"),
+    ("B", "boards"),
+    ("enter", "open"),
+    ("q", "quit"),
+    ("a", "add"),
+    ("shift+arrows", "move"),
+    ("?", "help"),
+];
+/// The floor: the tail of the drop order that is never dropped.
+const FOOTER_FLOOR: usize = 2;
+
+/// Columns one hint costs on the footer: ` {key} {desc} `.
+fn hint_cols(k: &str, d: &str) -> usize {
+    k.chars().count() + d.chars().count() + 3
+}
+
+fn footer_row(screen: &str) -> &str {
+    screen.lines().next_back().expect("a footer row")
+}
+
+/// The board hints actually rendered, in drop order. A hint counts only when it is whole.
+fn footer_hints(row: &str) -> Vec<(&'static str, &'static str)> {
+    FOOTER_DROP_ORDER.iter().copied().filter(|(k, d)| row.contains(&format!(" {k} {d} "))).collect()
+}
+
+/// Every board hint this state can show, in drop order.
+fn footer_full(doing: bool, repo: bool) -> Vec<(&'static str, &'static str)> {
+    FOOTER_DROP_ORDER.iter().copied().filter(|(k, _)| (*k != "+/-" || doing) && (*k != "R" || !repo)).collect()
+}
+
+/// The board in one of the four states of gh#75: DOING selected or not, repo configured or not.
+fn footer_board(doing: bool, repo: bool) -> (tempfile::TempDir, Store, App) {
+    let (dir, s, mut app) = setup();
+    if !repo {
+        s.set_github(None).unwrap();
+    }
+    app.reload(&s);
+    app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+    app.col = usize::from(doing);
+    (dir, s, app)
+}
+
+/// One rendered footer: as many whole hints as fit, dropped strictly in order, floor intact.
+fn assert_footer_degrades(ctx: &str, row: &str, w: u16, full: &[(&'static str, &'static str)]) {
+    // the focus view keeps its own arrow axis and its own (already progressive) footer
+    if row.contains(" arrows card/col ") {
+        assert!(row.contains(" shift+<> move ") && row.contains(" ? help "), "{ctx}: the focus floor is gone: {row:?}");
+        return;
+    }
+    let shown = footer_hints(row);
+    let floor = &full[full.len() - FOOTER_FLOOR..];
+    for f in floor {
+        assert!(shown.contains(f), "{ctx}: dropped `{} {}`, which is the floor: {row:?}", f.0, f.1);
+    }
+    // hints go in drop order, so what is left is always a tail of the full list
+    assert_eq!(shown, full[full.len() - shown.len()..], "{ctx}: dropped out of order: {row:?}");
+    let used: usize = shown.iter().map(|(k, d)| hint_cols(k, d)).sum();
+    if shown.len() > FOOTER_FLOOR {
+        assert!(used <= w as usize, "{ctx}: {used} columns of hints do not fit: {row:?}");
+    }
+    // and as many as fit: putting the last-dropped one back would overflow
+    if shown.len() < full.len() {
+        let (k, d) = full[full.len() - shown.len() - 1];
+        assert!(used + hint_cols(k, d) > w as usize, "{ctx}: `{k} {d}` fits and was dropped anyway: {row:?}");
+    }
+}
+
+#[test]
+fn footer_degrades_one_hint_at_a_time() {
+    common::pin_clock();
+    // the four states of gh#75, with the width the whole footer first fits in
+    const STATES: [(bool, bool, u16); 4] = [(false, true, 79), (true, true, 90), (false, false, 100), (true, false, 111)];
+    for pref in LAYOUTS {
+        for (doing, repo, full_at) in STATES {
+            let (_d, s, mut app) = footer_board(doing, repo);
+            s.set_layout(pref).unwrap();
+            app.reload(&s);
+            app.agents = AgentsState::Agents(parse_agents(AGENTS, None).unwrap());
+            app.col = usize::from(doing);
+            let full = footer_full(doing, repo);
+            let mut prev = 0;
+            for w in 40u16..=200 {
+                let screen = render(&app, w, 41);
+                let row = footer_row(&screen);
+                let ctx = format!("{pref} doing={doing} repo={repo} {w}x41");
+                assert_footer_degrades(&ctx, row, w, &full);
+                if row.contains(" arrows card/col ") {
+                    continue;
+                }
+                let n = footer_hints(row).len();
+                assert!(n >= prev, "{ctx}: {prev} hints at {} columns, {n} at {w}: a wider board shows fewer", w - 1);
+                prev = n;
+                // the thresholds measured on 2.0.0: whole footer here, one hint fewer a column back
+                if w == full_at {
+                    assert_eq!(n, full.len(), "{ctx}: the whole footer fits in {full_at} columns: {row:?}");
+                } else if w + 1 == full_at {
+                    assert_eq!(n, full.len() - 1, "{ctx}: exactly one hint goes: {row:?}");
+                }
+            }
+        }
+    }
+    // the everyday case: an 80-column terminal with DOING selected loses `x` and `e`, not six
+    let (_d, _s, app) = footer_board(true, true);
+    let screen = render(&app, 80, 41);
+    assert_eq!(
+        footer_row(&screen).trim_end(),
+        " a add  enter open  shift+arrows move  +/- limit  B boards  ? help  q quit",
+        "80x41 with DOING selected:\n{screen}"
+    );
+}

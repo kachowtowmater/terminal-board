@@ -2,17 +2,30 @@
 
 ## Unreleased
 
-### Added
-- **Retire a board.** `tb boards archive NAME` moves a board's file (and its `-wal`/`-shm`
-  sidecars) into `~/.local/state/terminal-board/archive/` and prints the one
-  `tb boards restore NAME` line that puts it back; `tb boards --archived` lists what is
-  archived, with card counts. Archived boards stop appearing in `tb boards` and in the `B`
-  picker. Nothing is deleted — there is deliberately no `tb boards rm` (`tb rm ID` deletes a
-  card), so the archived file is yours to remove when you are sure. Archiving is refused
-  while another process has the board's database open — decided by taking the board's
-  SQLite lock, not by looking for leftover sidecar files, so a crash never makes a board
-  un-archivable — and for the board a bare `tb` opens, and with `TB_DB` set. Restoring is
-  refused when a live board of that name exists. (#80)
+### Retiring a board no longer means moving files by hand
+
+`tb` created boards and listed them, but nothing removed one, so scratch, demo and per-task
+boards piled up in `tb boards` and in the `B` picker until someone moved `<name>.db` and its
+`-wal`/`-shm` sidecars out of the state directory by hand. `tb boards archive NAME` now moves
+the board into `~/.local/state/terminal-board/archive/` under a timestamped name and prints
+the one `tb boards restore NAME` line that puts it back; `tb boards --archived` lists what is
+archived, with card counts; archived boards stop appearing in `tb boards` and in the picker.
+Nothing is deleted: there is deliberately no `tb boards rm` — `tb rm ID` already deletes a
+card, and the archived file is yours to remove when you are sure. Archiving is refused while
+another process has the board's database open, decided by taking the board's SQLite lock
+rather than by looking for leftover sidecar files, so a crash never makes a board
+un-archivable; it is also refused for the board a bare `tb` opens and with `TB_DB` set.
+Restoring is refused when a live board of that name exists.
+
+### The board footer keeps every hint that fits
+
+The footer used to swap its whole hint line for a fixed four the moment the full set did not
+fit, so an 80-column terminal with DOING selected showed `a add  enter open  ? help  q quit`
+— four hints in 33 of its 80 columns. It now drops one hint at a time, least useful first
+(`x del`, `e edit`, `R github: pick repo`, `+/- limit`, `B boards`, `enter open`, `q quit`,
+`a add`), the way the focus view's footer already did. `shift+arrows move` — the only board
+action that is not discoverable anywhere else on screen — and `?`, where every dropped hint
+is documented, are never dropped. Widths that already showed the whole footer are unchanged.
 
 ## 2.0.0 — 2026-09-20
 
