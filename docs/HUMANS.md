@@ -53,7 +53,7 @@ days ahead a card counts as due soon (default 3). More in the README under *Due 
 From the command line: `tb move 3 doing`, `tb done 3`, `tb drop 3` (back to TODO),
 `tb prio 3 top`.
 
-Nobody approves their own work: `d` on a REVIEW card you moved there yourself asks
+Nobody approves their own work: `d` on a REVIEW card that is your own work asks
 `approve your own work? y/n` (the CLI refuses it and takes `--force`), and a card someone
 else holds in DOING is not yours to finish or drop — the board asks, the CLI needs
 `--force`. Both ways through are written into the card's history.
@@ -159,6 +159,7 @@ background, so it looks the same whatever your terminal theme is.
 - A long brief is easier as a file than as a quoted string: `tb add "tag: title" --desc-file
   brief.md`, `tb edit 3 --desc-file brief.md`, `tb note 3 --file notes.md` (`-` reads a pipe:
   `some-command | tb note 3 --file -`). The text arrives exactly as written — backticks, `$`,
-  quotes and blank lines included — up to 256 KiB of UTF-8. The README has the details.
+  quotes and blank lines included — up to 256 KiB of UTF-8; blank space around it is trimmed
+  and a leading byte-order mark is dropped. The README has the details.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.

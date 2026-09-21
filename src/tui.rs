@@ -165,7 +165,7 @@ pub enum Confirm {
     Delete(i64),
     /// Move a GitHub card to done although its issue/PR is still open.
     ForceDone(i64),
-    /// Approve a REVIEW card the actor moved to review themselves (the forced, logged path).
+    /// Approve a REVIEW card the actor authored (the forced, logged path).
     ApproveOwn(i64),
     /// Move someone else's DOING card to the column the key asked for (card, target): the
     /// forced, logged path.
@@ -806,7 +806,7 @@ impl App {
         github::still_open(snap, n).then_some(n)
     }
 
-    /// Is `id` a REVIEW card this actor authored (moved to review themselves)?
+    /// Is `id` a REVIEW card this actor authored (their own work)?
     fn is_own_review(&self, id: i64, store: &Store) -> bool {
         store.card(id).is_ok_and(|c| c.column == "review")
             && store.author(id).ok().flatten().is_some_and(|a| a.eq_ignore_ascii_case(&self.actor))
@@ -1743,7 +1743,7 @@ fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, i
 fn approve_own(id: i64) -> Mode {
     Mode::Confirm {
         action: Confirm::ApproveOwn(id),
-        prompt: "you moved this to review yourself — approve your own work? y/n".into(),
+        prompt: "this is your work — approve it yourself? y/n".into(),
     }
 }
 

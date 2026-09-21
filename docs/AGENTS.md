@@ -80,7 +80,7 @@ tb done ID                   # finished: DOING -> REVIEW
 `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move
 ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, skips the WIP limit.
 Text from a file arrives byte for byte (backticks, `$`, quotes, newlines — a quoted string cannot promise
-that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
+that) once blank space around it is trimmed; a leading byte-order mark is dropped. UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
 
 ### Create and delete cards, boards and settings
 
@@ -115,7 +115,7 @@ narrow the original with `tb edit ID --desc "…"`.
 **Review someone's card (verifier):** `tb list` shows REVIEW; `tb show ID`; check the done
 criteria; then `tb done ID` (→ DONE) with a note of what you checked, or send it back to its
 owner with `tb move ID doing "what is missing"` (it then shows its round `r2`, `r3`, …; `round`
-in JSON). You cannot approve a card you moved to REVIEW (its owner, if GitHub moved it): you
+in JSON). You cannot approve your own card (its owner, if GitHub moved it): you
 get `you did this work — …`; the full-screen board asks `approve your own work? y/n` instead.
 Claim before you check, so two verifiers never take the same card: `tb next --review --as NAME`
 takes the top REVIEW card you did not do (atomic; `tb move ID review` frees a stale claim).

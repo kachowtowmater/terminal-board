@@ -273,7 +273,7 @@ fn tui_asks_the_author_before_approving_own_work() {
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     let Mode::Confirm { action, prompt } = app.mode.clone() else { panic!("no confirm: {:?}", app.mode) };
     assert_eq!(action, Confirm::ApproveOwn(id));
-    assert_eq!(prompt, "you moved this to review yourself — approve your own work? y/n");
+    assert_eq!(prompt, "this is your work — approve it yourself? y/n");
     app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(id).unwrap().column, "review");
     assert!(!kinds(&s, id).contains(&"force".to_string()));

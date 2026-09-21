@@ -184,8 +184,8 @@ tb setup --dry-run --yes
 5. **Checklist.** In the open card, press `a` to add a checklist item ("kitchen"), Enter to
    save. Use ↑/↓ to pick an item and Enter to tick it. `esc` closes the card.
 6. **Done.** Press `d`: DOING goes to REVIEW (someone checks it), and `d` again moves it to
-   DONE. Because you moved it to review yourself, the board first asks `approve your own
-   work? y/n` — press `y` (on a shared board, someone else does this step). Press `q` to quit.
+   DONE. Because the card is your work, the board first asks `approve your own work? y/n`
+   — press `y` (on a shared board, someone else does this step). Press `q` to quit.
 
 Everything you did can also be done from the command line — this is how scripts and AI
 agents use the board:
