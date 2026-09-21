@@ -165,7 +165,7 @@ fn an_existing_wider_file_is_reported_and_tightened_only_on_request() {
     // --json: an additive `warnings` field on object output; array output keeps its shape
     let v = json(&ok(s.pinned(&["board", "--json"], &[])));
     assert_eq!(v["v"], 1);
-    let w = v["warnings"].as_array().expect("warnings").clone();
+    let w = v["warnings"].as_array().cloned().unwrap_or_default();
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].as_str().unwrap().contains("(mode 0644)"), "{w:?}");
     let o = ok(s.pinned(&["list", "--json"], &[]));
@@ -260,7 +260,7 @@ fn tb_db_wins_over_tb_board_with_one_warning() {
     let v = json(&ok(s.pinned(&["add", "plain: second", "--json"], &both)));
     assert_eq!(v["ok"], true);
     assert_eq!(v["card"]["id"], 2);
-    let w = v["warnings"].as_array().expect("warnings").clone();
+    let w = v["warnings"].as_array().cloned().unwrap_or_default();
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].as_str().unwrap().contains("TB_BOARD=work is ignored"), "{w:?}");
     let v = json(&ok(s.pinned(&["board", "--json"], &both)));
@@ -455,7 +455,7 @@ fn the_backup_is_reported_in_json_and_a_current_board_gets_none() {
     let s = Scratch::new();
     let _held = old_board(&s.db());
     let v = json(&ok(s.pinned(&["board", "--json"], &[])));
-    let w = v["warnings"].as_array().expect("warnings").clone();
+    let w = v["warnings"].as_array().cloned().unwrap_or_default();
     // (an old board is usually world-readable as well: that is a second, separate warning)
     assert_eq!(w.iter().filter(|x| x.as_str().unwrap().contains("backed up to")).count(), 1, "{w:?}");
     assert_eq!(v["columns"]["todo"][0]["title"], "written by 1.1");
