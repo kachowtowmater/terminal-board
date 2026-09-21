@@ -7,6 +7,8 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod due;
+
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
 pub const MAX_WIP: i64 = 99;
@@ -470,11 +472,19 @@ fn is_board(conn: &Connection) -> Result<bool> {
 /// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
 ///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
 ///    never taken, and that is the end of it.
-/// 2. Otherwise the real run, under the write lock so two processes cannot both upgrade. When
-///    it would change a board that already existed, it is rolled back, the file is backed up
-///    (`VACUUM INTO` cannot run inside a transaction), and only then applied — in one
-///    transaction, so an upgrade happens whole or not at all. A failed backup refuses the
-///    command and changes nothing.
+/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
+///    from the decision to the commit:
+///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
+///      this board? A process that waited for the lock while another one upgraded the board
+///      finds nothing to do, and does nothing — no backup, no warning;
+///    - an existing board that would change is backed up first, through a second connection.
+///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
+///      the board, it reads the last COMMITTED state, and nobody can commit while this
+///      connection holds the write lock. So the copy is always the board as the older tb
+///      left it, and there is exactly one however many processes open the board at once;
+///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
+///      with nothing changed and refuses the command.
+///    The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
 ///
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
@@ -493,32 +503,44 @@ fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let existed = is_board(&tx)?;
     let before = schema_fingerprint(&tx)?;
+    tx.execute_batch("SAVEPOINT tb_probe")?;
     migrate(&tx)?;
-    if !(on_disk && existed && schema_fingerprint(&tx)? != before) {
-        // a new board, an in-memory one, or another process upgraded it while we waited
-        tx.commit()?;
+    let changes = schema_fingerprint(&tx)? != before;
+    // undo the probe but keep the transaction — and with it the write lock
+    tx.execute_batch("ROLLBACK TO tb_probe; RELEASE tb_probe")?;
+    if !changes {
+        // another process upgraded the board while this one waited for the lock
+        tx.rollback()?;
         return Ok(());
     }
-    tx.rollback()?;
-    let backup = backup_aside(conn, path)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    migrate(&tx)?;
-    tx.commit()?;
-    crate::notice::push(format!(
-        "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
-        path.display(),
-        backup.display()
-    ));
+    let backup = if on_disk && existed { Some(backup_aside(path)?) } else { None };
+    if let Err(e) = migrate(&tx).and_then(|()| Ok(tx.commit()?)) {
+        // the board is unchanged, so a copy made for this upgrade has nothing to go back from
+        if let Some(b) = &backup {
+            let _ = std::fs::remove_file(b);
+        }
+        return Err(e);
+    }
+    if let Some(backup) = backup {
+        crate::notice::push(format!(
+            "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+            path.display(),
+            backup.display()
+        ));
+    }
     Ok(())
 }
 
 /// Copy the board aside, next to itself: `<file>.before-<tb version>.<UTC date-time>.bak`.
+/// The caller holds the board's write lock (see `upgrade`), so one process is here at a time.
 ///
-/// Written by SQLite (`VACUUM INTO`), not by copying the file: committed cards may still sit
-/// in a hot `-wal`, and a copy of the `.db` alone would lose them. The result is one complete
-/// database with no sidecars, created private, that never ends in `.db` (so it is never
-/// listed as a board).
-fn backup_aside(conn: &Connection, path: &Path) -> Result<std::path::PathBuf> {
+/// Written by SQLite (`VACUUM INTO`, on a connection of its own), not by copying the file:
+/// committed cards may still sit in a hot `-wal`, and a copy of the `.db` alone would lose
+/// them. The result is one complete database with no sidecars, created private, that never
+/// ends in `.db` (so it is never listed as a board). It is written as `….bak.partial` and
+/// renamed when complete, so a file named `….bak` is always a whole backup — a process killed
+/// half way leaves a `.partial`, which the next upgrade of that board clears.
+fn backup_aside(path: &Path) -> Result<std::path::PathBuf> {
     use chrono::TimeZone;
     let cannot = |why: String| {
         BoardError(format!(
@@ -532,24 +554,28 @@ fn backup_aside(conn: &Connection, path: &Path) -> Result<std::path::PathBuf> {
         .map(|t| t.format("%Y%m%d-%H%M%S").to_string())
         .unwrap_or_else(|| now().to_string());
     let base = format!("{}.before-{}.{stamp}", path.display(), env!("CARGO_PKG_VERSION"));
-    let mut n = 1;
-    let target = loop {
-        let name = if n == 1 { format!("{base}.bak") } else { format!("{base}-{n}.bak") };
-        let p = std::path::PathBuf::from(name);
-        match crate::fsperm::create_private(&p) {
-            Ok(true) => break p,
-            Ok(false) if n < 100 => n += 1,
-            Ok(false) => return Err(cannot("too many backups with this name".into())),
-            Err(e) => return Err(cannot(e.to_string())),
+    let target = (1..100)
+        .map(|n| std::path::PathBuf::from(if n == 1 { format!("{base}.bak") } else { format!("{base}-{n}.bak") }))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .ok_or_else(|| cannot("too many backups with this name".into()))?;
+    let partial = std::path::PathBuf::from(format!("{}.partial", target.display()));
+    // a leftover from a run that was killed mid-copy; O_EXCL below never follows a link
+    let _ = std::fs::remove_file(&partial);
+    let _ = std::fs::remove_file(format!("{}-journal", partial.display()));
+    let write = || -> std::result::Result<(), String> {
+        if !crate::fsperm::create_private(&partial).map_err(|e| e.to_string())? {
+            return Err(format!("{} is in the way", partial.display()));
         }
+        let to = partial.to_str().ok_or("its path is not valid UTF-8")?;
+        let reader = Connection::open(path).map_err(|e| e.to_string())?;
+        reader.busy_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+        reader.execute("VACUUM INTO ?1", [to]).map_err(|e| e.to_string())?;
+        drop(reader);
+        std::fs::rename(&partial, &target).map_err(|e| e.to_string())
     };
-    let Some(target_str) = target.to_str() else {
-        let _ = std::fs::remove_file(&target);
-        return Err(cannot("its path is not valid UTF-8".into()));
-    };
-    if let Err(e) = conn.execute("VACUUM INTO ?1", [target_str]) {
-        let _ = std::fs::remove_file(&target);
-        return Err(cannot(e.to_string()));
+    if let Err(why) = write() {
+        let _ = std::fs::remove_file(&partial);
+        return Err(cannot(why));
     }
     Ok(target)
 }
@@ -575,8 +601,8 @@ fn config_cmd(path: &Path, rest: &str) -> String {
 /// An existing board file that other users can open is REPORTED, never quietly re-moded: it
 /// may be shared with a group on purpose. `tb config file-mode private` tightens it (and says
 /// so); `tb config file-mode shared` records that it is meant to be, which ends the report.
-fn report_wide_file(conn: &Connection, path: &Path) {
-    let Some(mode) = crate::fsperm::mode_of(path).filter(|m| crate::fsperm::is_wide(*m)) else { return };
+fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
+    let Some(mode) = crate::fsperm::mode_of(real).filter(|m| crate::fsperm::is_wide(*m)) else { return };
     let shared = conn
         .query_row("SELECT value FROM config WHERE key='file-mode'", [], |r| r.get::<_, String>(0))
         .optional()
@@ -588,7 +614,7 @@ fn report_wide_file(conn: &Connection, path: &Path) {
     }
     crate::notice::push(format!(
         "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
-        path.display(),
+        real.display(),
         crate::fsperm::fmt_mode(mode),
         config_cmd(path, "file-mode private"),
         config_cmd(path, "file-mode shared"),
@@ -623,18 +649,21 @@ impl Store {
         }
         // A board file is born private (0600): SQLite then opens the empty file as a new
         // database and gives the -wal/-shm sidecars the same mode. An existing file is never
-        // re-moded here; `report_wide_file` says so instead.
-        let created = on_disk
-            && crate::fsperm::create_private(path).map_err(|e| {
-                BoardError(format!("cannot create {}: {e} — set TB_DB to a writable path", path.display()))
-            })?;
-        let mut conn = Connection::open(path)?;
+        // re-moded here; `report_wide_file` says so instead. `real` is where the board lives:
+        // `path` itself, or the end of its chain of symbolic links — tb creates THAT file
+        // (SQLite would create a link's missing target 0644) and opens the database there.
+        let (real, created) = if on_disk {
+            crate::fsperm::create_board(path).map_err(BoardError)?
+        } else {
+            (path.to_path_buf(), false)
+        };
+        let mut conn = Connection::open(&real)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
-        upgrade(&mut conn, path, on_disk)?;
+        upgrade(&mut conn, &real, on_disk)?;
         if on_disk && !created {
-            report_wide_file(&conn, path);
+            report_wide_file(&conn, path, &real);
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
     }
@@ -830,19 +859,21 @@ impl Store {
 
     /// Every setting, for `tb config` with no arguments.
     pub fn settings(&self) -> Result<Vec<(String, String)>> {
-        Ok(vec![
+        let mut all = vec![
             ("wip".into(), self.wip()?.to_string()),
             ("theme".into(), self.theme()?),
             ("layout".into(), self.layout()?),
             ("github".into(), self.github_repo()?.unwrap_or_else(|| "off".into())),
             ("github-panel".into(), if self.panel("github-panel")? { "shown" } else { "hidden" }.into()),
             ("agents-panel".into(), if self.panel("agents-panel")? { "shown" } else { "hidden" }.into()),
-        ]
-        .into_iter()
+        ];
+        // due dates (store/due.rs): listed once the board sets them, so a board that sets
+        // nothing lists exactly what it always did
+        all.extend(self.due_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
-        .chain(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)))
-        .collect())
+        all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
+        Ok(all)
     }
 
     /// (permission bits of the board file, kept shared on purpose?). The mode is None for an
@@ -894,20 +925,26 @@ impl Store {
                 if crate::fsperm::mode_of(&path).is_none() {
                     return err("this platform has no file modes — there is nothing to tighten; see 'tb config'");
                 }
-                let changed = crate::fsperm::make_private(&path).map_err(|e| {
+                let done = crate::fsperm::make_private(&path).map_err(|e| {
                     BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()))
                 })?;
+                let base = |f: &std::path::PathBuf| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                // a path that is not a regular file (a symbolic link someone planted) is never
+                // re-moded: tb says so and leaves it
+                let left = if done.skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · left alone, not a regular file: {}", done.skipped.iter().map(base).collect::<Vec<_>>().join(", "))
+                };
                 self.conn.execute("DELETE FROM config WHERE key='file-mode'", [])?;
-                if changed.is_empty() {
-                    return Ok(format!("{} is already private (mode {})", path.display(), crate::fsperm::fmt_mode(crate::fsperm::PRIVATE)));
+                if done.changed.is_empty() {
+                    return Ok(format!("{} is already private (mode {}){left}", path.display(), crate::fsperm::fmt_mode(crate::fsperm::PRIVATE)));
                 }
-                let was: Vec<String> = changed
-                    .iter()
-                    .map(|(f, m)| format!("{} was {}", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), crate::fsperm::fmt_mode(*m)))
-                    .collect();
+                let was: Vec<String> =
+                    done.changed.iter().map(|(f, m)| format!("{} was {}", base(f), crate::fsperm::fmt_mode(*m))).collect();
                 log(format!("private: {}", was.join(", ")))?;
                 Ok(format!(
-                    "{} is now private (mode {}): {}",
+                    "{} is now private (mode {}): {}{left}",
                     path.display(),
                     crate::fsperm::fmt_mode(crate::fsperm::PRIVATE),
                     was.join(", ")

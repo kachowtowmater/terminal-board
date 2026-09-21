@@ -34,6 +34,12 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | delete it | `x`, then `y` | `tb rm 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
+| give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
+
+A due date is a calendar date (`YYYY-MM-DD`), kept exactly as typed — it never moves a day
+because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
+"today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
+days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
 
 ### Moving cards
 
@@ -156,5 +162,9 @@ background, so it looks the same whatever your terminal theme is.
 - Put the next thing to do at the top of TODO (`Shift+↑` or `tb prio 3 top`): `tb next`
   always takes the top card.
 - A note per step keeps the history useful: "ordered parts", "waiting for the landlord".
+- A long brief is easier as a file than as a quoted string: `tb add "tag: title" --desc-file
+  brief.md`, `tb edit 3 --desc-file brief.md`, `tb note 3 --file notes.md` (`-` reads a pipe:
+  `some-command | tb note 3 --file -`). The text arrives exactly as written — backticks, `$`,
+  quotes and blank lines included — up to 256 KiB of UTF-8. The README has the details.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.

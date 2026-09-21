@@ -39,6 +39,11 @@ pub struct CardJ {
     /// Who claimed it with `tb next --review`; null when unclaimed.
     pub reviewer: Option<String>,
     pub due: Option<String>,
+    /// Whole calendar days from the board's today to `due` (0 = today, negative = past); null
+    /// without a `YYYY-MM-DD` due date and on a `done` card. See `store::due`.
+    pub days_left: Option<i64>,
+    /// `ok` | `soon` (within `due-warn` days) | `overdue`; null exactly when `days_left` is.
+    pub due_state: Option<&'static str>,
     pub gh_ref: Option<i64>,
     pub blocked: Option<String>,
     pub created_at: i64,
@@ -99,7 +104,13 @@ pub struct AgentJ {
 
 /// A card with its checklist and last events.
 pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
+    card_on(store, c, &store.due_ctx()?)
+}
+
+/// `card` with the board's today already worked out (once per board, not once per card).
+fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<CardJ> {
     let d = store.show(c.id)?;
+    let due = due.info(c);
     let skip = d.events.len().saturating_sub(CARD_EVENTS);
     Ok(CardJ {
         id: c.id,
@@ -111,6 +122,8 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
         owner: c.owner.clone(),
         reviewer: c.reviewer.clone(),
         due: c.due.clone(),
+        days_left: due.days_left,
+        due_state: due.due_state,
         gh_ref: c.gh_ref,
         blocked: c.blocked.clone(),
         created_at: c.created_at,
@@ -135,7 +148,8 @@ pub fn card_by_id(store: &Store, id: i64) -> Result<CardJ> {
 /// (all done cards; apps filter).
 pub fn board(store: &Store) -> Result<BoardJ> {
     let snap = store.snapshot()?;
-    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card(store, c)).collect() };
+    let due = store.due_ctx()?;
+    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_on(store, c, &due)).collect() };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json

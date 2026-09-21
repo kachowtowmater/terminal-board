@@ -21,6 +21,7 @@ pub mod plain;
 pub mod setup;
 pub mod store;
 pub mod text;
+pub mod textin;
 pub mod tui;
 
 /// Write `s` to stdout and flush. A closed stdout (the reader went away) exits 0: the reader

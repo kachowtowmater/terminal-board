@@ -62,7 +62,9 @@ A bare `tb --json` (not a terminal) prints the same object.
   "position": 0,
   "owner": "bot-2",
   "reviewer": null,
-  "due": null,
+  "due": "2026-10-09",
+  "days_left": 3,
+  "due_state": "soon",
   "gh_ref": 327,
   "blocked": null,
   "created_at": 1789763036,
@@ -86,14 +88,16 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `position` | int | order within the column, 0 = top |
 | `owner` | string\|null | who holds it |
 | `reviewer` | string\|null | who claimed it with `tb next --review`; kept when it reaches DONE, cleared by any other move |
-| `due` | string\|null | free text |
+| `due` | string\|null | the due date: a **calendar date** `YYYY-MM-DD`, exactly the text given to `--due`. It is never an instant and no time zone applies to it, so it reads the same everywhere. (A board file written by something other than tb may hold older free text here; it is reported as is.) |
+| `days_left` | int\|null | whole calendar days from the board's today to `due`: 0 = due today, negative = past. Today is the date in the board's `tz` setting (an IANA zone), or in the machine's local zone when unset — it turns over at local midnight there, not at UTC midnight. Null when `due` is null or not a `YYYY-MM-DD` date, and on a `done` card |
+| `due_state` | `ok`\|`soon`\|`overdue`\|null | `overdue` = `days_left` < 0 · `soon` = 0 to `due-warn` days (default 3) · `ok` above that. Null exactly when `days_left` is |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
 | `created_at`, `column_since` | int | unix seconds |
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -134,7 +138,17 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 { "ok": true, "card": { …card… } }
 ```
 
+Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
+(`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
+note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
+trimmed). A file that cannot be used is a runtime failure (exit 1) in the usual shape: no such
+file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or `-` with a
+terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
+`--desc-file`, note text with `--file`) is an argument error (exit 2).
+
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
+`config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
+default included: `"value": "local"` / `"value": 3`. `config --json` lists them once set.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
 Failure (non-zero exit), for any command run with `--json` — including **argument errors**
@@ -194,7 +208,7 @@ herdr agent panes merged with the board (empty array when herdr is not available
 
 ## Other read commands
 
-- `tb list --json` — array of cards (without checklist/events).
+- `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`).
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).

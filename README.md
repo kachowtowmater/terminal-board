@@ -316,9 +316,9 @@ move cards with no extra explanation. Everything an agent needs is a `tb` comman
 |---|---|
 | take the next card | `tb next --as its-name` |
 | read the brief | `tb show ID` |
-| log progress | `tb note ID "what changed"` |
+| log progress | `tb note ID "what changed"` · a long one: `tb note ID --file notes.md` |
 | tick a checklist step | `tb check ID N` |
-| update the card | `tb edit ID --desc "Done = …"` · `tb check ID --add "step"` |
+| update the card | `tb edit ID --desc "Done = …"` · `tb edit ID --desc-file brief.md` · `tb check ID --add "step"` |
 | say it is stuck | `tb block ID "#N"` |
 | finish / hand back | `tb done ID` / `tb drop ID` |
 | move it anywhere | `tb move ID review` |
@@ -383,12 +383,12 @@ tb --version
 
 | command | what it does |
 |---|---|
-| `tb add "tag: title" [-d DESC] [--check ITEM]...` | add a card to TODO |
+| `tb add "tag: title" [-d DESC \| --desc-file PATH] [--check ITEM]...` | add a card to TODO |
 | `tb list` / `tb show ID` | all cards / one card in full |
 | `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
 | `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
-| `tb note ID "text"` | add a note to the card's history |
+| `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
@@ -397,12 +397,14 @@ tb --version
 | `tb done ID --approve` | record your approval without moving the card |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
-| `tb edit ID [--title T] [--desc D]` | change title/description |
+| `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
+| `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
 | `tb rm ID` | delete a card |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | the herdr agents and the card each holds |
 | `tb guide` | the manual for AI agents |
@@ -410,6 +412,59 @@ tb --version
 
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
+
+**Long text from a file.** `-d "…"` and `tb note ID "…"` go through your shell, which eats
+backticks, `$` and quotes in a long string. `--desc-file PATH` (on `tb add` and `tb edit`) and
+`tb note ID --file PATH` read the text from a file instead, byte for byte; `-` reads standard
+input:
+
+<!-- no-test -->
+```sh
+tb add "docs: install guide" --desc-file brief.md
+tb edit 3 --desc-file brief.md
+tb note 3 --file findings.md
+some-command | tb note 3 --file -
+tb edit 3 --desc-file - < brief.md
+```
+
+The text must be UTF-8 and at most 256 KiB (262144 bytes). Blank space around it is trimmed;
+everything between is kept exactly — tabs, blank lines, Windows line ends (a leading
+byte-order mark is dropped). An empty file is refused, so a forgotten pipe can never blank a
+description; `--desc ""` still clears one on purpose. With `-`, standard input has to be a
+pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing. Give the
+text once — `--desc` with `--desc-file`, or note text with `--file`, is an argument error.
+Control characters are stored as they are and removed whenever the text is shown, like any
+other card text.
+
+### Due dates
+
+For a board that tracks deadlines — filing dates, renewals, anything with a day on it:
+
+```sh
+tb deadlines add "permits: renew the fire permit" --due 2026-10-09
+tb deadlines edit 1 --due 2026-10-16
+tb deadlines config tz America/Los_Angeles
+tb deadlines config due-warn 5
+tb deadlines show 1 --json
+tb deadlines edit 1 --due none
+```
+
+A due date is a **calendar date**: `YYYY-MM-DD`, stored exactly as you typed it. tb never
+turns it into a point in time, so it cannot slip to the day before or the day after — not when
+the board is read in another time zone, not at 23:59, not across a daylight-saving change.
+Anything that is not a real date (`2026-02-30`, `10/09/2026`, `tomorrow`) is refused with the
+command to run instead, and nothing is written. Every change is in the card's history
+(`due: 2026-10-09 -> 2026-10-16`).
+
+The one thing a time zone decides is what **today** is. `tb config tz America/Los_Angeles`
+pins that for the board: everyone who reads it, wherever they sit, counts days from the same
+local midnight. `tb config tz local` (the default) uses each machine's own zone. From today,
+`--json` output gives every card `days_left` (whole calendar days: 0 = due today, negative =
+past) and `due_state` — `overdue`, `soon` (due within `due-warn` days; 3 unless you change it)
+or `ok`. A finished card carries neither. `tb config tz` and `tb config due-warn` with no value
+print the one in force; `tb config` lists them once the board sets them.
+
+A board with no due dates and neither setting looks and behaves exactly as it did before.
 
 ## Layouts and themes
 
@@ -477,7 +532,10 @@ and `tb config theme dark|light`.
   line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
 - **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
   a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
-  alike. A board made by an earlier version is `0644`; tb never changes the mode of an
+  alike. A board path may be a symbolic link (`boards/work.db -> /vault/work.db`): the board
+  is the file the link leads to, and tb creates *that* file `0600`; a link into a folder that
+  does not exist, or a loop of links, is refused, and tb never changes the mode of anything
+  through a link. A board made by an earlier version is `0644`; tb never changes the mode of an
   existing file on its own (you may share a board with a group on purpose). It tells you —
   one warning line naming the file — until you choose:
 
@@ -489,7 +547,8 @@ and `tb config theme dark|light`.
 - **A backup is written before a board's schema is upgraded.** When a newer tb opens a board
   an older one wrote and has to add columns, it first copies the board next to itself as
   `<file>.before-<version>.<UTC date-time>.bak` and says where. The copy is one complete
-  file (it includes cards still in the `-wal`, and needs no sidecars). If the copy cannot be
+  file (it includes cards still in the `-wal`, and needs no sidecars), and there is exactly
+  one however many `tb` processes open the board at that moment. If the copy cannot be
   written, nothing is upgraded and the command fails. Going back to an older version:
   [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb).
 

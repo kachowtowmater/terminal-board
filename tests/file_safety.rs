@@ -511,3 +511,187 @@ fn a_backup_that_cannot_be_written_refuses_the_upgrade_and_changes_nothing() {
     assert!(has_column(&held, "cards", "reviewer"));
     assert_eq!(backups_of(&db).len(), 1);
 }
+
+/// A board exactly as tb 1.1.0 left it, with nothing holding it open.
+fn old_board_at_rest(db: &Path) {
+    drop(old_board(db));
+}
+
+#[test]
+fn processes_racing_to_upgrade_a_board_write_exactly_one_backup_of_the_old_schema() {
+    const RACERS: usize = 8;
+    const ROUNDS: usize = 6;
+    for round in 0..ROUNDS {
+        let s = Scratch::new();
+        let db = s.db();
+        old_board_at_rest(&db);
+        // every process opens the old board at the same moment
+        let children: Vec<_> = (0..RACERS)
+            .map(|_| {
+                s.cmd()
+                    .args(["list"])
+                    .env("TB_DB", &db)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let outs: Vec<Output> = children.into_iter().map(|c| c.wait_with_output().unwrap()).collect();
+        for o in &outs {
+            assert!(o.status.success(), "round {round}: every racer succeeds: {}", errs(o));
+            assert!(out(o).contains("written by 1.1"), "round {round}: and sees the card: {}", out(o));
+        }
+        let baks = backups_of(&db);
+        assert_eq!(baks.len(), 1, "round {round}: exactly one backup, however many racers: {baks:?}");
+        let said = outs.iter().filter(|o| errs(o).contains("backed up")).count();
+        assert_eq!(said, 1, "round {round}: and exactly one process says it wrote one");
+        // that backup is always the board as the OLD version wrote it
+        let b = rusqlite::Connection::open_with_flags(&baks[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert!(!has_column(&b, "cards", "reviewer") && !has_column(&b, "github_snapshot", "fails"), "round {round}: old schema");
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "round {round}");
+        assert_eq!(b.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+        // nothing half-written is left next to the board, and the board itself is upgraded
+        let stray: Vec<String> = std::fs::read_dir(db.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".partial") || n.ends_with("-journal"))
+            .collect();
+        assert!(stray.is_empty(), "round {round}: {stray:?}");
+        let live = rusqlite::Connection::open(&db).unwrap();
+        assert!(has_column(&live, "cards", "reviewer"), "round {round}: the live board is upgraded");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backup_killed_half_way_never_looks_like_a_backup() {
+    // what a killed upgrade leaves behind: a `.partial`, never a file named `….bak`
+    let s = Scratch::new();
+    let db = s.db();
+    old_board_at_rest(&db);
+    let stamp = format!("board.db.before-{}.20260921-141320.bak", env!("CARGO_PKG_VERSION"));
+    let partial = db.parent().unwrap().join(format!("{stamp}.partial"));
+    std::fs::write(&partial, b"half a database").unwrap();
+    ok(s.pinned(&["list"], &[("TB_NOW", "1790000000")]));
+    let baks = backups_of(&db);
+    assert_eq!(baks.len(), 1, "{baks:?}");
+    assert_eq!(baks[0].file_name().unwrap().to_str().unwrap(), stamp);
+    assert!(!partial.exists(), "the leftover was cleared, and the finished backup took its name");
+    assert_eq!(mode(&baks[0]), 0o600);
+    let b = rusqlite::Connection::open_with_flags(&baks[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(b.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+}
+
+#[cfg(unix)]
+fn symlink(to: impl AsRef<Path>, at: &Path) {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(to, at).unwrap();
+}
+
+#[cfg(unix)]
+fn is_link(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_board_created_through_a_symbolic_link_is_private_too() {
+    // TB_DB is a dangling link (absolute target): tb, not SQLite, creates the target
+    let s = Scratch::new();
+    let d = s.dir.path();
+    std::fs::create_dir_all(d.join("real")).unwrap();
+    let link = d.join("links/board.db");
+    symlink(d.join("real/target.db"), &link);
+    let mut c = s.cmd();
+    c.env("TB_DB", &link);
+    let o = ok(under_umask(c, "000", &["add", "plain: through a link"]).output().unwrap());
+    assert!(!errs(&o).contains("open to other users"), "born private, nothing to report: {}", errs(&o));
+    assert_eq!(mode(&d.join("real/target.db")), 0o600);
+    assert!(is_link(&link), "the link is still a link");
+    // the sidecars follow the real file, and they are private as well
+    let held = rusqlite::Connection::open(d.join("real/target.db")).unwrap();
+    let n: i64 = held.query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "the card is in the target");
+    let mut c = s.cmd();
+    c.env("TB_DB", &link);
+    ok(under_umask(c, "000", &["add", "plain: second"]).output().unwrap());
+    for f in sidecars(&d.join("real/target.db")) {
+        assert!(f.exists(), "{}", f.display());
+        assert_eq!(mode(&f), 0o600, "{}", f.display());
+    }
+    drop(held);
+
+    // the boards folder: default.db is a dangling RELATIVE link, through a CHAIN of two
+    let s = Scratch::new();
+    let boards = s.home().join(".local/state/terminal-board/boards");
+    std::fs::create_dir_all(s.home().join("vault")).unwrap();
+    symlink("hop.db", &boards.join("default.db"));
+    symlink("../../../../vault/default.db", &boards.join("hop.db"));
+    ok(under_umask(s.cmd(), "000", &["add", "plain: in the vault"]).output().unwrap());
+    assert_eq!(mode(&s.home().join("vault/default.db")), 0o600);
+    assert!(is_link(&boards.join("default.db")) && is_link(&boards.join("hop.db")));
+    assert!(out(&ok(s.cmd().args(["list"]).output().unwrap())).contains("in the vault"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_to_an_existing_board_is_followed_and_never_re_moded_on_the_quiet() {
+    let s = Scratch::new();
+    let d = s.dir.path();
+    // an existing private board behind a link: just works, nothing to say
+    ok(s.pinned(&["add", "plain: the real board"], &[]));
+    let link = d.join("links/board.db");
+    symlink(s.db(), &link);
+    let o = ok(s.cmd().args(["list"]).env("TB_DB", &link).output().unwrap());
+    assert!(out(&o).contains("the real board"));
+    assert!(errs(&o).is_empty(), "{}", errs(&o));
+    assert_eq!(mode(&s.db()), 0o600);
+
+    // an existing 0644 board behind a link: reported under its REAL name, mode untouched
+    chmod(&s.db(), 0o644);
+    let o = ok(s.cmd().args(["list"]).env("TB_DB", &link).output().unwrap());
+    let e = errs(&o);
+    assert!(e.contains(s.db().to_str().unwrap()) && e.contains("(mode 0644)"), "{e}");
+    assert_eq!(mode(&s.db()), 0o644);
+    // tightened on request: the real file, and the link stays a link
+    let said = out(&ok(s.cmd().args(["config", "file-mode", "private"]).env("TB_DB", &link).output().unwrap()));
+    assert!(said.contains(s.db().to_str().unwrap()) && said.contains("is now private"), "{said}");
+    assert_eq!(mode(&s.db()), 0o600);
+    assert!(is_link(&link));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_that_leads_nowhere_usable_is_refused_and_creates_nothing() {
+    let s = Scratch::new();
+    let d = s.dir.path();
+    // into a directory that does not exist: tb creates a file through a link, never directories
+    let link = d.join("links/board.db");
+    symlink(d.join("no-such-dir/target.db"), &link);
+    let o = s.cmd().args(["add", "plain: x"]).env("TB_DB", &link).output().unwrap();
+    assert!(!o.status.success());
+    let e = errs(&o);
+    assert!(e.contains("is a symbolic link into a directory that does not exist") && e.contains("no-such-dir"), "{e}");
+    assert!(e.contains("create that directory, or fix the link"), "{e}");
+    assert!(!d.join("no-such-dir").exists(), "nothing was created");
+    let o = s.cmd().args(["add", "plain: x", "--json"]).env("TB_DB", &link).output().unwrap();
+    let v = json(&o);
+    assert_eq!(v["ok"], false);
+    assert!(v["hint"].as_str().unwrap().contains("fix the link"), "{v}");
+    // once the directory exists the same link works, and the target is private
+    std::fs::create_dir_all(d.join("no-such-dir")).unwrap();
+    ok(s.cmd().args(["add", "plain: x"]).env("TB_DB", &link).output().unwrap());
+    assert_eq!(mode(&d.join("no-such-dir/target.db")), 0o600);
+
+    // a loop
+    symlink("b.db", &d.join("loop/a.db"));
+    symlink("a.db", &d.join("loop/b.db"));
+    let o = s.cmd().args(["add", "plain: x"]).env("TB_DB", d.join("loop/a.db")).output().unwrap();
+    assert!(!o.status.success());
+    assert!(errs(&o).contains("is a symbolic link that never ends") && errs(&o).contains("fix the link"), "{}", errs(&o));
+    let names: Vec<String> =
+        std::fs::read_dir(d.join("loop")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(names.len(), 2, "only the two links: {names:?}");
+}

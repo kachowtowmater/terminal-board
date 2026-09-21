@@ -183,6 +183,11 @@ output as `warnings`):
 
 `tb: /…/boards/work.db is open to other users (mode 0644) — make it private with 'tb work config file-mode private', or keep it that way with 'tb work config file-mode shared'`
 
+A board path that is a symbolic link is followed: the board is the file the link leads to,
+tb creates that file `0600` itself, and the warning names the real file. A link into a folder
+that does not exist, or a loop of links, is refused with a hint — tb creates a board file
+through a link, never folders — and no mode is ever changed through a link.
+
 Run one of the two, once per board, and the line is gone. `private` changes the file and
 its live sidecars and is logged on the board; `shared` records that the mode is deliberate.
 Commands, exit codes and stdout are otherwise unchanged.
@@ -206,8 +211,12 @@ writes a copy next to the board and says where (stderr, and `warnings` in `--jso
 
 The copy is made by SQLite, not by copying the file, so it is one complete database: it
 includes cards that were still in the `-wal`, and it has no sidecars of its own. It is mode
-`0600`, and it never ends in `.db`, so it is never listed as a board. The upgrade itself is
-one transaction. If the backup cannot be written (no room, a read-only folder) **nothing is
+`0600`, and it never ends in `.db`, so it is never listed as a board. Deciding, copying and
+upgrading happen under the board's write lock, so however many `tb` processes open an older
+board at the same moment there is **exactly one** backup, and it always holds the old
+schema; the others wait, find the board current, and do nothing. The copy is written as
+`….bak.partial` and renamed when complete, so a file named `….bak` is always a whole backup.
+The upgrade itself is one transaction. If the backup cannot be written (no room, a read-only folder) **nothing is
 upgraded** and the command fails with `cannot back up … — nothing was changed; …`. A board
 that is already current is never copied. tb does not delete backups; remove them when you
 no longer want the way back.

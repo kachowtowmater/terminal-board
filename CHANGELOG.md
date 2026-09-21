@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
+
+Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`
+and `tb edit ID --due DATE|none` do. A due date is a **local calendar date**: tb stores the
+`YYYY-MM-DD` text you typed and never converts it to a point in time, so it reads the same in
+every time zone, at 23:59 and across a daylight-saving change. Anything that is not a real
+date is refused before the board is touched, with the command to run instead.
+- `tb config tz America/Los_Angeles` sets the zone that decides what **today** is for the whole
+  board (`tz local`, the default, uses each machine's own zone); `tb config due-warn N` sets how
+  many days ahead a card counts as `soon` (default 3). Without a value, both print the setting.
+- JSON (additive, `"v"` stays 1): every card object gains `days_left` (whole calendar days; 0 =
+  today, negative = past) and `due_state` (`ok` | `soon` | `overdue`), null without a date and on
+  a `done` card. They turn over at local midnight in the board's zone, not at UTC midnight.
+- New event kind `due` (`2026-10-09 -> 2026-10-16`); `tb config` lists `tz` / `due-warn` only
+  once a board sets them, so a board that sets nothing prints exactly what it did.
+- New dependency: `chrono-tz` (the IANA zone data, compiled in — no network access, and no
+  reliance on the system's zone files, which a static binary in a small container does not have).
+
+### Added
+- **Text from a file or from standard input.** `tb add … --desc-file PATH`, `tb edit ID
+  --desc-file PATH` and `tb note ID --file PATH` read the description or the note from a file,
+  and `-` reads standard input (`some-command | tb note 3 --file -`). A long string on the
+  command line goes through the shell, which eats backticks, `$` and quotes; a file arrives
+  byte for byte — tabs, blank lines and Windows line ends included. Only the blank space
+  around the text is trimmed (as `edit --desc` and notes always were) and a leading
+  byte-order mark is dropped. The text must be UTF-8, at most 256 KiB (262144 bytes), and not
+  empty — an empty file or an empty pipe is refused, so a forgotten `<` can never blank a
+  description. With `-`, a terminal on standard input is refused at once: tb never waits for
+  typing. Text given twice (`--desc` with `--desc-file`, note text with `--file`) is an
+  argument error. Every refusal names the next command, and `--json` answers in the usual
+  `{ok, error, hint}` shape. Control characters are stored as given and still removed
+  wherever the text is shown. Nothing changes for commands that do not use the new flags.
+
 ### File safety: private board files, `TB_DB` over `TB_BOARD`, a backup before an upgrade
 
 - **Board files are created private.** A board file — and so its `-wal`/`-shm` sidecars —
@@ -12,7 +45,10 @@
   tightens the file and its live sidecars, says what it changed and logs it on the board;
   `tb config file-mode shared` records that the mode is deliberate and ends the report;
   `tb config file-mode` reads it. The `file-mode` row appears in `tb config` only when there
-  is something to say, so a private board's listing is unchanged.
+  is something to say, so a private board's listing is unchanged. A board path that is a
+  symbolic link is followed by tb itself, which creates the link's target `0600` (SQLite
+  would have created it `0644`); a link into a missing folder or a loop of links is refused,
+  and no mode is ever changed through a link.
 - **`TB_DB` wins over `TB_BOARD`.** With both set every command was refused, which broke any
   harness that pins `TB_DB` in an environment that also names a board. Now the pinned file
   opens, JSON reports the board as `default`, and tb prints one warning line. A board name
@@ -28,8 +64,10 @@
   `<file>.before-<version>.<UTC date-time>.bak` next to it first and says where. The copy is
   made by SQLite, so it includes cards still in a hot `-wal` (a plain copy of the `.db`
   loses them), is a single file with no sidecars, is `0600`, and is never listed as a board.
-  The upgrade is one transaction; if the backup cannot be written nothing is upgraded and
-  the command fails. It is detected from the schema itself, so every future migration is
+  Deciding, copying and upgrading happen under the board's write lock: many processes opening
+  an older board at once produce exactly one backup, always of the old schema. It is written
+  as `.partial` and renamed when complete. The upgrade is one transaction; if the backup
+  cannot be written nothing is upgraded and the command fails. It is detected from the schema itself, so every future migration is
   covered. The way back is in UPGRADING.md ("Going back to an older tb").
 
 ### The board footer keeps every hint that fits
