@@ -38,41 +38,50 @@ pub(super) fn gh_bar(app: &App, width: usize) -> Line<'static> {
     fit_line(spans, width)
 }
 
-/// `AGENTS 5 working · 1 idle (! bot-2 idle w/ card)   tab >`
+/// `AGENTS 3 here · 2 elsewhere (! bot-2 idle w/ card)   tab >`
 pub(super) fn ag_bar(app: &App, width: usize) -> Line<'static> {
     let focused = app.focus == Focus::Agents && app.view == View::Board;
     let base = if focused { bold().add_modifier(Modifier::REVERSED) } else { Style::default() };
     let mut spans = vec![Span::styled(" AGENTS ", bold().patch(base))];
+    let r = app.roster();
     match &app.agents {
-        AgentsState::Agents(list) => {
-            let working = list.iter().filter(|a| a.status == "working").count();
-            let idle = list.iter().filter(|a| a.is_idle()).count();
-            spans.push(Span::styled(format!("{working} working · {idle} idle"), base));
-            let held: Vec<&Agent> = list.iter().filter(|a| holds_card(app, a)).collect();
+        // nobody on this board and no agent pane anywhere: the bar reads as it always has
+        AgentsState::Agents(_) if r.total() == 0 => spans.push(Span::styled("0 working · 0 idle", base)),
+        AgentsState::Pending if r.total() == 0 => spans.push(Span::styled("checking herdr...", base)),
+        AgentsState::Unavailable(m) if r.total() == 0 => spans.push(Span::styled(m.clone(), base)),
+        _ => {
+            let (here, elsewhere) = crate::roster::counts(&r);
+            let held: Vec<&crate::roster::Row> = r.here.iter().filter(|row| row.idle_holder()).collect();
+            let holders: Vec<String> = held.iter().map(|row| row.name.clone()).collect();
+            let warning = format!("! {} idle w/ card", holders.join(", "));
+            // a narrow bar gives up whole parts in this order: the idle durations, then
+            // `· N elsewhere`, then (as ever) the `tab >` hint — who is here, and who is stuck,
+            // matter more than how many agents are somewhere else
+            let rest = if held.is_empty() { 0 } else { 3 + warning.chars().count() } + TAB_HINT.chars().count();
+            let both = format!("{here} · {elsewhere}");
+            let roomy = 8 + both.chars().count() + rest <= width;
+            spans.push(Span::styled(if roomy { both } else { here }, base));
             if !held.is_empty() {
-                let holders: Vec<String> = held.iter().map(|a| a.name.clone()).collect();
                 // the durations follow the warning, so a narrow bar drops them before the words
                 let ages: Vec<String> = held
                     .iter()
-                    .map(|a| crate::tui::idle_hold_age(app, a))
+                    .map(|row| crate::tui::idle_hold_age(app, row))
                     .filter(|s| !s.is_empty())
                     .map(|s| s.trim_matches(|c| c == ' ' || c == '(' || c == ')').to_string())
                     .collect();
                 let ages = if ages.is_empty() { String::new() } else { format!(" ({})", ages.join(", ")) };
                 spans.push(Span::styled(" (", base));
-                spans.push(Span::styled(format!("! {} idle w/ card", holders.join(", ")), red().patch(base)));
+                spans.push(Span::styled(warning, red().patch(base)));
                 // shown whole or not at all, and never at the cost of the `tab >` hint: a bar
                 // without room for all of it keeps the plain warning
                 let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
                 let rest = 1 + TAB_HINT.chars().count();
-                if !ages.is_empty() && used + ages.chars().count() + rest <= width {
+                if roomy && !ages.is_empty() && used + ages.chars().count() + rest <= width {
                     spans.push(Span::styled(ages, red().patch(base)));
                 }
                 spans.push(Span::styled(")", base));
             }
         }
-        AgentsState::Pending => spans.push(Span::styled("checking herdr...", base)),
-        AgentsState::Unavailable(m) => spans.push(Span::styled(m.clone(), base)),
     }
     spans.push(Span::styled(TAB_HINT, dim().patch(base)));
     fit_line(spans, width)
@@ -294,95 +303,144 @@ fn tidy_full_height(app: &App, width: u16) -> u16 {
     }
 }
 
-/// Lines for a compact AGENTS panel: `* name status #card title` / job.
+/// Lines for a compact AGENTS panel: `* name status #card "note" age title`, one per actor of
+/// this board, then `+N elsewhere`.
+///
+/// A row too narrow for all of it gives up whole fields, the least useful first: the live
+/// status word (the mark already says it), then the note, then the note's age, then the card
+/// title (the one field that is cut, never below 4 characters), and the card id last. An idle
+/// holder's warning is never the part that goes.
 fn agent_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let list = match &app.agents {
-        AgentsState::Agents(a) => a,
-        AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
-        AgentsState::Unavailable(m) => return vec![Line::styled(format!(" {m}"), dim())],
-    };
-    if list.is_empty() {
-        return vec![Line::styled(" no agent panes in herdr", dim())];
+    let r = app.roster();
+    if r.total() == 0 {
+        return vec![crate::tui::agents_empty(app)];
     }
-    list.iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let holds = holds_card(app, a);
-            let (mark, st) = match (holds, a.status.as_str()) {
-                (true, _) => ("!", red()),
-                (_, "working") => ("*", Style::default().fg(GREEN)),
-                (_, "blocked") => ("x", bold()),
+    let room = width.saturating_sub(3);
+    let mut lines: Vec<Line<'static>> = r
+        .here
+        .iter()
+        .map(|row| {
+            let holds = row.idle_holder();
+            let (mark, st) = match (holds, row.live.is_some(), row.status()) {
+                (true, _, _) => ("!", red()),
+                (_, false, _) => (" ", Style::default()),
+                (_, _, "working") => ("*", Style::default().fg(GREEN)),
+                (_, _, "blocked") => ("x", bold()),
                 _ => ("-", dim()),
             };
-            let what = match app.agent_card(i) {
+            let text = match row.card {
+                Some(c) if holds => holder_text(app, row, c, width),
                 Some(c) => {
-                    let age = app
-                        .snap
-                        .last_event_at
-                        .get(&c.id)
-                        .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
-                        .unwrap_or_default();
-                    // the note gets what the row has left after the name, status, id and a
-                    // short title; the age is shown even without a note
-                    let id = format!("#{} ", c.id);
-                    let title = format!(" {}", fit(&c.title, 12));
-                    // holders end in ` · idle w/ card` plus how long they have been idle
-                    let held_for = if holds { crate::tui::idle_hold_age(app, a).chars().count() } else { 0 };
-                    let tail = if holds { 15 + held_for } else { 9 };
-                    // a row that ends in a duration is budgeted to the column (` name ` is 12),
-                    // so the duration is never the part that gets cut
-                    let lead = if held_for > 0 { 12 } else { 11 };
-                    let fixed = 3 + lead + tail + id.chars().count() + title.chars().count();
-                    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
-                    // what a holder's title may take so that ` · idle w/ card (1h20m)` still fits
-                    let title_room = width.saturating_sub(3 + 12 + id.chars().count() + tail);
-                    if act.is_empty() && held_for > 0 && title_room >= 4 {
-                        // no room for the activity next to the duration: the duration says the
-                        // same age, so keep the warning whole and shorten the title instead
-                        format!("{id}{}", fit(&c.title, title_room))
-                    } else if act.is_empty() {
-                        format!("{id}{}", c.title)
+                    // the status word is the first to go: it stays only on a row that has room
+                    // for everything else too (the note when there is one, and its age)
+                    let with = card_text(app, row, c, room, true);
+                    let all = if app.snap.last_note.contains_key(&c.id) { 2 } else { 1 };
+                    if with.0 == all { with.1 } else { card_text(app, row, c, room, false).1 }
+                }
+                None => {
+                    // status word first, then the age, then the words (`last_seen`)
+                    let name = format!(" {:<10}", fit(&row.name, 10));
+                    let with = format!("{name} {:<8} {}", row.status(), crate::tui::last_seen(app, row, usize::MAX));
+                    if row.live.is_some() && with.chars().count() <= room {
+                        with
                     } else {
-                        format!("{id}{act}{title}")
+                        format!("{name} {}", crate::tui::last_seen(app, row, room.saturating_sub(12)))
                     }
                 }
-                None => a.job.clone().unwrap_or_else(|| "-".into()),
             };
-            let text = if holds {
-                format!(" {:<10} {} · idle w/ card{}", fit(&a.name, 10), what, crate::tui::idle_hold_age(app, a))
-            } else {
-                format!(" {:<10} {:<8} {}", fit(&a.name, 10), a.status, what)
-            };
-            let mut l = Line::from(vec![Span::raw(" "), Span::styled(mark, st), Span::raw(fit(&text, width.saturating_sub(3)))]);
-            if app.focus == Focus::Agents && app.ag_sel == i {
-                l = l.patch_style(bold().add_modifier(Modifier::REVERSED));
-            }
-            l
+            Line::from(vec![Span::raw(" "), Span::styled(mark, st), Span::raw(fit(text.trim_end(), room))])
         })
-        .collect()
+        .collect();
+    if !r.elsewhere.is_empty() {
+        lines.push(crate::tui::elsewhere_line(r.elsewhere.len(), width.saturating_sub(1)));
+    }
+    if app.focus == Focus::Agents {
+        if let Some(l) = lines.get_mut(app.ag_sel) {
+            *l = l.clone().patch_style(bold().add_modifier(Modifier::REVERSED));
+        }
+    }
+    lines
+}
+
+/// `#4 ` for the card an actor holds, `review #7 ` for the one it reviews: the word travels
+/// with the id, the last field a narrow row gives up.
+fn card_id_text(row: &crate::roster::Row, c: &Card) -> String {
+    if row.role == Some(crate::roster::CardRole::Reviewer) {
+        format!("review #{} ", c.id)
+    } else {
+        format!("#{} ", c.id)
+    }
+}
+
+/// One card row fitted to `room`, with or without the status word, as (what the activity
+/// shows: 2 = note and age, 1 = the age, 0 = nothing; the text).
+fn card_text(app: &App, row: &crate::roster::Row, c: &Card, room: usize, status: bool) -> (u8, String) {
+    // no herdr pane of this name: there is no status word, and the note gets its columns
+    let head = if status && row.live.is_some() { format!(" {:<10} {:<8} ", fit(&row.name, 10), row.status()) } else { format!(" {:<10} ", fit(&row.name, 10)) };
+    let id = card_id_text(row, c);
+    let age = app.snap.last_event_at.get(&c.id).map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0))).unwrap_or_default();
+    // the note gets what the row has left after the name, status, id and a short title; the
+    // age is shown even without a note
+    let title = format!(" {}", fit(&c.title, 12));
+    let left = room.saturating_sub(head.chars().count() + id.chars().count());
+    // (one column more than the row has, as ever: the closing cut lands in the title)
+    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, (left + 1).saturating_sub(title.chars().count()));
+    if !act.is_empty() {
+        let shows = if act.starts_with('"') { 2 } else { 1 };
+        return (shows, format!("{head}{id}{act}{title}"));
+    }
+    // no room for the activity: the title takes what is left (cut, but never below 4
+    // characters); after that only the card id is left
+    let whole = c.title.chars().count() <= left;
+    (0, if whole || left >= 4 { format!("{head}{id}{}", fit(&c.title, left)) } else { format!("{head}{id}") })
+}
+
+/// An idle holder's row: ` name #5 "note" 1h20m title · idle w/ card (1h20m)`. The warning and
+/// its duration stay whole; the activity goes first, then the title is shortened.
+fn holder_text(app: &App, row: &crate::roster::Row, c: &Card, width: usize) -> String {
+    let age = app.snap.last_event_at.get(&c.id).map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0))).unwrap_or_default();
+    let id = card_id_text(row, c);
+    let title = format!(" {}", fit(&c.title, 12));
+    let held = crate::tui::idle_hold_age(app, row);
+    let held_for = held.chars().count();
+    let tail = 15 + held_for;
+    // a row that ends in a duration is budgeted to the column (` name ` is 12), so the
+    // duration is never the part that gets cut
+    let lead = if held_for > 0 { 12 } else { 11 };
+    let fixed = 3 + lead + tail + id.chars().count() + title.chars().count();
+    let act = crate::tui::activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(fixed));
+    // what the title may take so that ` · idle w/ card (1h20m)` still fits
+    let title_room = width.saturating_sub(3 + 12 + id.chars().count() + tail);
+    let what = if act.is_empty() && held_for > 0 && title_room >= 4 {
+        // no room for the activity next to the duration: the duration says the same age, so
+        // keep the warning whole and shorten the title instead
+        format!("{id}{}", fit(&c.title, title_room))
+    } else if act.is_empty() {
+        format!("{id}{}", c.title)
+    } else {
+        format!("{id}{act}{title}")
+    };
+    format!(" {:<10} {} · idle w/ card{held}", fit(&row.name, 10), what)
 }
 
 pub(super) fn draw_agents_compact(f: &mut Frame, app: &App, area: Rect) {
     note_area(app, 1, area);
-    let list = agent_list(app);
-    let working = list.iter().filter(|a| a.status == "working").count();
-    let idle = list.iter().filter(|a| a.is_idle()).count();
+    let r = app.roster();
+    // nobody on this board and no agent pane anywhere: the title reads as it always has
+    let (a, b) = if r.total() == 0 { ("0 working".to_string(), "0 idle".to_string()) } else { crate::roster::counts(&r) };
     let fg = palette(&app.snap.theme).fg;
-    let b = frame(app.focus == Focus::Agents, None)
-        .title(Span::styled(fit_title(&["AGENTS", &format!("{working} working"), &format!("{idle} idle")], area.width), bold().fg(fg)));
+    let b = frame(app.focus == Focus::Agents, None).title(Span::styled(fit_title(&["AGENTS", &a, &b], area.width), bold().fg(fg)));
     let inner = b.inner(area);
     f.render_widget(b, area);
-    let lines = agent_lines(app, inner.width as usize);
+    let lines = crate::tui::close_clipped(agent_lines(app, inner.width as usize), app, inner.height as usize, inner.width as usize);
     let off = (app.ag_sel + 1).saturating_sub(inner.height as usize) as u16;
     let off = if app.focus == Focus::Agents { off } else { 0 };
     f.render_widget(Paragraph::new(lines).scroll((off, 0)), inner);
 }
 
+/// Rows the AGENTS panel wants: one per actor of this board plus the `+N elsewhere` line.
 fn agent_count(app: &App) -> u16 {
-    match &app.agents {
-        AgentsState::Agents(a) if !a.is_empty() => a.len() as u16,
-        _ => 1,
-    }
+    app.roster().panel_rows().max(1) as u16
 }
 
 /// RAIL (wide and short, e.g. 126x24 / 200x24): columns on the left, GITHUB above AGENTS

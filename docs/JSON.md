@@ -171,22 +171,31 @@ the same board. A board picked by `TB_BOARD` travels in the environment, so its 
 
 ## `tb agents --json`
 
-herdr agent panes merged with the board (empty array when herdr is not available).
+Who is on **this** board, then the herdr agents that are not — the list the AGENTS panel
+shows, in the same order. The board says who: the owner of every card that is not `done`, the
+reviewer of every `review` card, and every actor with a card event in the last hour (the
+`github` sync is not one). herdr only adds the live fields, and only from a pane whose agent
+name is exactly that name (ASCII case aside; never a pane label or a title). So the array is
+useful without herdr, and empty only when nobody is on the board and herdr shows no agents.
 
 ```json
-[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036 } ]
+[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036, "on_board": true, "card_role": "owner" },
+  { "name": "rev-1", "harness": "-", "status": "-", "pane_id": "", "job": null, "card_id": 4, "last_note": "reading the diff", "last_event_at": 1789763100, "on_board": true, "card_role": "reviewer" },
+  { "name": "bot-9", "harness": "codex", "status": "working", "pane_id": "w:p7", "job": null, "card_id": null, "last_note": null, "last_event_at": null, "on_board": false, "card_role": null } ]
 ```
 
 | field | type | notes |
 |---|---|---|
-| `name` | string | herdr agent name, else the pane label |
-| `harness` | string | `claude`, `aider`, … |
-| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown` |
-| `pane_id` | string | |
+| `name` | string | the name as the board has it; for an agent that is not on the board, the herdr agent name, else the pane label |
+| `harness` | string | `claude`, `aider`, …; `-` when no herdr pane has exactly this name |
+| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown`; `-` when no herdr pane has exactly this name |
+| `pane_id` | string | empty when no herdr pane has exactly this name |
 | `job` | string\|null | the last `·` segment of the pane label |
-| `card_id` | int\|null | the card it holds (DOING first) |
+| `card_id` | int\|null | the card it is on: its DOING card, else the card it reviews, else another open card it owns |
 | `last_note` | string\|null | that card's last note text (what the agent says it is doing) |
 | `last_event_at` | int\|null | unix seconds of the card's last event — compute the age yourself; an agent that never notes shows an old age |
+| `on_board` | bool | true for the board's own actors (listed first); false for a herdr agent that is none of them — tb does not read other boards, so it says nothing about what those are doing |
+| `card_role` | string\|null | what `card_id` is to it: `owner` or `reviewer`; null without a card |
 
 ## Other read commands
 

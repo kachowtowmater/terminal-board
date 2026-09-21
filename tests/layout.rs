@@ -149,7 +149,8 @@ fn half_screen_126x41_is_unchanged() {
     let r = row_of(&screen, "#1 write install guide");
     let above = screen.lines().nth(r - 1).unwrap();
     assert!(above.contains("┏━━") || above.contains("┌──"), "4-row box:\n{screen}");
-    for want in ["MAIN CI  ", "BRANCH / ISSUE", "LABELS", "┌ AGENTS", "bot-4", "lead", "o TODO (3)", "o DOING (3/5)"] {
+    // (`lead` holds nothing on this board: it is counted in `+1 elsewhere`, not named)
+    for want in ["MAIN CI  ", "BRANCH / ISSUE", "LABELS", "┌ AGENTS", "bot-4", "+1 elsewhere", "o TODO (3)", "o DOING (3/5)"] {
         assert!(screen.contains(want), "{want}:\n{screen}");
     }
 }
@@ -185,7 +186,8 @@ fn third_width_stack_42_60_85() {
         assert!(screen.contains("┌ #") || screen.contains("┏ #") || screen.contains("┃┌──"), "{w}x{h}: boxed cards:\n{screen}");
         let gh_rows = count(&screen, "PR    gh#3") + count(&screen, "ISSUE gh#3");
         assert!(gh_rows >= 3, "{w}x{h}: >= 3 github rows:\n{screen}");
-        for a in ["bot-1", "bot-2", "bot-3", "bot-4", "reviewer", "lead"] {
+        // everyone on this board, then the one pane that is not
+        for a in ["bot-1", "bot-2", "bot-3", "bot-4", "reviewer", "+1 elsewhere"] {
             assert!(screen.contains(a), "{w}x{h}: agent {a}:\n{screen}");
         }
     }
@@ -215,7 +217,7 @@ fn medium_bars_when_panels_do_not_fit() {
     let (_d, _s, app) = setup();
     let screen = render(&app, 95, 35);
     assert!(screen.contains(" GITHUB acme/widgets · 10 issues") && screen.contains("tab >"), "{screen}");
-    assert!(screen.contains(" AGENTS 4 working · 2 idle"), "{screen}");
+    assert!(screen.contains(" AGENTS 6 here · 1 elsewhere"), "{screen}");
 }
 
 /// An idle agent holding a card is a problem, so its warning is never the part that gets cut:
