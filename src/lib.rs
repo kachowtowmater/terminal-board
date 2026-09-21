@@ -15,6 +15,7 @@ pub mod boards;
 pub mod contract;
 pub mod github;
 pub mod herdr;
+pub mod machine;
 pub mod plain;
 pub mod setup;
 pub mod store;

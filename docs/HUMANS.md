@@ -90,7 +90,11 @@ tb -b work list
 tb boards                    # every board with its counts
 ```
 
-`TB_BOARD=work` in your shell makes `work` the default.
+`tb boards --default work` makes `work` the board plain `tb` opens from now on: `tb boards
+--default` shows it, `tb boards --default --clear` goes back to `default`, and `tb boards` and
+the picker mark it with `*`. It is saved for you on this machine, not inside any board.
+`TB_BOARD=work` in your shell does the same for that shell only, and beats the saved choice; a
+name on the command line (`tb home …`) beats both; with `TB_DB` set the saved choice is ignored.
 
 On the board, `B` opens the board picker: every board with its counts, `enter` switches to
 the one you choose without quitting, `esc` cancels. (`TB_DB` pins one file, so the picker

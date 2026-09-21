@@ -27,7 +27,7 @@ Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|lo
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
-Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
+Boards  boards [--default [NAME|--clear]] · board (print; --json = full state) · watch --json (NDJSON on every change)
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
 Agents  agents (herdr panes + the card each holds)
@@ -36,7 +36,7 @@ Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--age
 Options
   --json         machine-readable output; every write prints {\"ok\":…}   (docs/JSON.md)
   --as NAME      act as NAME (else $TB_AS, $HERDR_AGENT_NAME, $USER)
-  -b NAME        board (else a first-arg name, $TB_BOARD, default); $TB_DB = file
+  -b NAME        board (else a first-arg name, $TB_BOARD, 'boards --default', default); $TB_DB = file
   -h, -V         help, version
 agents: run 'tb guide' for the full agent manual
 ";
@@ -136,7 +136,14 @@ enum Cmd {
         #[arg(long)]
         off: bool,
     },
-    Boards,
+    /// List boards. `--default` alone shows the board plain `tb` opens; `--default NAME`
+    /// saves it; `--default --clear` goes back to the built-in `default`.
+    Boards {
+        #[arg(long = "default", value_name = "NAME", num_args = 0..=1)]
+        default: Option<Option<String>>,
+        #[arg(long, requires = "default")]
+        clear: bool,
+    },
     Board,
     /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
     Watch {
@@ -178,7 +185,7 @@ impl Cmd {
     fn writes(&self) -> bool {
         !matches!(
             self,
-            Cmd::List | Cmd::Show { .. } | Cmd::Boards | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
+            Cmd::List | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
         )
     }
 }
@@ -207,8 +214,8 @@ fn pretty<T: serde::Serialize>(v: &T) -> String {
 /// A board picked by `TB_BOARD` travels in the env, so the bare form is right there too.
 fn cmd_hint(explicit: Option<&str>, rest: &str) -> String {
     match explicit {
-        Some(name) if name != boards::DEFAULT_BOARD => format!("'tb {name} {rest}'"),
-        _ => format!("'tb {rest}'"),
+        Some(name) => format!("'tb {name} {rest}'"),
+        None => format!("'tb {rest}'"),
     }
 }
 
@@ -216,7 +223,13 @@ fn cmd_hint(explicit: Option<&str>, rest: &str) -> String {
 /// `default`. A board picked by `TB_BOARD` travels in the environment, so it is not
 /// "explicit": its hints stay bare on every path.
 fn explicit_board<'a>(positional: Option<&'a str>, flag: Option<&'a str>) -> Option<&'a str> {
-    positional.or(flag).filter(|n| *n != boards::DEFAULT_BOARD)
+    let typed = positional.or(flag)?;
+    // A hint may drop the typed name only when the bare command is CERTAIN to reach the same
+    // board: it is the board plain `tb` opens (the saved default board, else `default`) and
+    // no `TB_BOARD` is steering this shell somewhere else. `tb default take 1` on a machine
+    // whose saved default is `work` must hint 'tb default …', never a bare 'tb …'.
+    let bare_reaches_it = terminal_board::env("BOARD").is_none() && typed == boards::default_name();
+    (!bare_reaches_it).then_some(typed)
 }
 
 /// Put an explicitly named board into every command a text hints at
@@ -396,6 +409,10 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
     let def = boards::default_name();
+    // the `*` below cannot follow a saved default board that cannot be read: say why
+    if let Err(e) = boards::saved_default() {
+        warn!("tb: {e}");
+    }
     // the same rows the board picker (B) shows inside the TUI
     let rows = boards::rows()?;
     if json_out {
@@ -423,6 +440,67 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
     Ok(())
 }
 
+/// `tb boards --default` (show) · `--default NAME` (save) · `--default --clear` (back to the
+/// built-in `default`): which board plain `tb` opens. A per-user choice kept in the
+/// machine-local settings (`machine`), never in a board file. `TB_BOARD` still beats it for
+/// one shell, a name on the command line beats both, and `TB_DB` pins one file — there the
+/// saved default is ignored, and the answer says so.
+fn default_board_cmd(name: Option<&str>, clear: bool, json_out: bool) -> Result<(), BoardError> {
+    let changed = match (name, clear) {
+        (Some(_), true) => {
+            return Err(BoardError(
+                "give a board name or --clear, not both — 'tb boards --default NAME' or 'tb boards --default --clear'".into(),
+            ))
+        }
+        (Some(n), false) => {
+            boards::set_default(Some(n))?;
+            true
+        }
+        (None, true) => {
+            boards::set_default(None)?;
+            true
+        }
+        (None, false) => false,
+    };
+    let (opens, source) = boards::plain_board()?;
+    // what is saved, whatever beats it in this shell (never read under TB_DB)
+    let saved = if source == boards::DefaultSource::Pinned { None } else { boards::saved_default()? };
+    if json_out {
+        println!(
+            "{}",
+            pretty(&json!({"ok": true, "default": opens, "source": source.as_str(), "setting": saved}))
+        );
+        return Ok(());
+    }
+    let saved_text = match &saved {
+        Some(s) => format!("the saved default board is '{s}'"),
+        None => "no default board is saved".to_string(),
+    };
+    match source {
+        boards::DefaultSource::Pinned => {
+            say!("{opens} — TB_DB pins one board file, so a saved default board is not used; unset TB_DB to use boards")
+        }
+        boards::DefaultSource::Env if changed => {
+            say!("saved ({saved_text}) — but TB_BOARD={opens} is set in this shell and still wins here; unset TB_BOARD to use the saved one")
+        }
+        boards::DefaultSource::Env => {
+            say!("{opens} — from TB_BOARD in this shell, which beats the saved default ({saved_text}); unset TB_BOARD to use it")
+        }
+        boards::DefaultSource::Setting if changed => {
+            say!("default board is now '{opens}' — plain 'tb' opens it; go back with 'tb boards --default --clear'")
+        }
+        boards::DefaultSource::Setting => {
+            say!("{opens} — the saved default board: plain 'tb' opens it; go back with 'tb boards --default --clear'")
+        }
+        boards::DefaultSource::Builtin if changed => {
+            say!("default board is back to '{opens}' — choose another with 'tb boards --default NAME'")
+        }
+        boards::DefaultSource::Builtin => {
+            say!("{opens} — the built-in default; choose another with 'tb boards --default NAME'")
+        }
+    }
+    Ok(())
+}
 
 fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
@@ -443,11 +521,15 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
-    if matches!(cli.cmd, Some(Cmd::Boards)) {
-        return list_boards(cli.json);
+    if let Some(Cmd::Boards { default, clear }) = &cli.cmd {
+        return match default {
+            Some(name) => default_board_cmd(name.as_deref(), *clear, cli.json),
+            None => list_boards(cli.json),
+        };
     }
     let env = terminal_board::env("BOARD");
-    let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
+    // TB_DB > a name on the command line > TB_BOARD > the saved default board > `default`
+    let name = boards::resolve(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
     // TB_DB pins ONE file: a board NAME would silently alias it (every name opens the same
     // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
     if terminal_board::env("DB").is_some() && name != boards::DEFAULT_BOARD {
@@ -914,7 +996,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
             }
         }
-        Cmd::Boards | Cmd::Setup { .. } => unreachable!("handled above"),
+        Cmd::Boards { .. } | Cmd::Setup { .. } => unreachable!("handled above"),
     }
     Ok(())
 }

@@ -253,7 +253,28 @@ tb -b home list
 tb boards
 ```
 
-You can also set `TB_BOARD=work` in your shell to change the default.
+**Choose the board plain `tb` opens.** `tb boards --default home` saves it: from then on
+`tb`, `tb add …`, `tb next` and every other command without a board name act on `home`, and
+`tb boards` and the board picker mark it with `*`.
+
+```sh
+tb boards --default home     # plain tb now opens "home"
+tb boards --default          # show it, and where it comes from
+tb boards --default --clear  # back to the board called "default"
+```
+
+The board has to exist — an unknown or archived board is refused — and if it disappears
+later, plain `tb` says so instead of quietly making an empty one. It is your choice on this
+machine, so it is kept in `~/.config/terminal-board/config.json` (or the file `TB_CONFIG`
+names), never inside a board file that someone might copy.
+
+**Which board a command uses**, first match wins:
+`TB_DB` > a board named on the command line > `TB_BOARD` > the saved default board > `default`.
+So `TB_BOARD=work` still changes the default for one shell, `tb home …` or `-b home` beats
+both, and with `TB_DB` set there is one file: the saved default is ignored there (`tb boards
+--default` says so, and saving one is refused). The command in a hint names its board
+whenever a bare `tb` would reach a different one, so a copied hint always acts on the board
+you were looking at.
 
 On the board, `B` opens the board picker: the same rows as `tb boards` — name, card counts
 and the default board marked — and `enter` switches to the one you choose without quitting
@@ -403,6 +424,7 @@ tb --version
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
+| `tb boards --default [NAME]` / `--default --clear` | show, save or clear the board plain `tb` opens |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
@@ -502,6 +524,8 @@ and `tb config theme dark|light`.
 
 - Boards: `~/.local/state/terminal-board/boards/<name>.db` (one SQLite file per board).
 - **Back up** by copying that folder (ideally while `tb` is closed).
+- Your own settings on this machine (the saved default board): `~/.config/terminal-board/config.json`,
+  readable only by you. `TB_CONFIG=/path/to/file.json` uses another file.
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails
   with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
