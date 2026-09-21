@@ -179,5 +179,12 @@ herdr agent panes merged with the board (empty array when herdr is not available
 - `tb list --json` — array of cards (without checklist/events).
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
+- `tb boards --archived --json` — `[{name, archived_at, path, todo, doing, review, done}]`;
+  `archived_at` is `YYYYmmdd-HHMMSS` (when it was archived, and part of the file name), and
+  the four counts are `null` if that file cannot be read.
+- `tb boards archive NAME --json` — `{ "ok": true, "board": "NAME", "archived": "<path it was moved to>", "restore": "tb boards restore NAME" }`.
+- `tb boards restore NAME --json` — `{ "ok": true, "board": "NAME", "path": "<board file>", "from": "<archive it came from>" }`.
+  A refusal (the board is open elsewhere, a live board of that name exists, `TB_DB` is set)
+  is the usual `{ok:false,error,hint}` with exit 1.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

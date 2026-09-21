@@ -25,7 +25,8 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
-Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
+Boards  boards [--archived] · boards archive|restore NAME · board (print; --json = full state)
+        watch --json (NDJSON on every change)
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
 Agents  agents (herdr panes + the card each holds)
@@ -128,7 +129,17 @@ enum Cmd {
         #[arg(long)]
         off: bool,
     },
-    Boards,
+    /// List boards; `archive NAME` retires one (nothing is deleted), `restore NAME` brings
+    /// it back, `--archived` lists what is archived.
+    Boards {
+        /// `archive` or `restore` (omit to list boards)
+        what: Option<String>,
+        /// The board to archive or restore
+        name: Option<String>,
+        /// List archived boards instead of live ones
+        #[arg(long, conflicts_with_all = ["what", "name"])]
+        archived: bool,
+    },
     Board,
     /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
     Watch {
@@ -170,7 +181,7 @@ impl Cmd {
     fn writes(&self) -> bool {
         !matches!(
             self,
-            Cmd::List | Cmd::Show { .. } | Cmd::Boards | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
+            Cmd::List | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
         )
     }
 }
@@ -404,6 +415,76 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
     Ok(())
 }
 
+/// `tb boards` and its two verbs. Retiring a board is a MOVE the user can undo: `archive`
+/// puts the file in `archive/` and prints the one line that puts it back; nothing deletes a
+/// board (`tb rm ID` deletes a card, so `tb boards rm` would be a dangerous near-miss).
+fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, json_out: bool) -> Result<(), BoardError> {
+    let verbs = "'tb boards', 'tb boards --archived', 'tb boards archive NAME' or 'tb boards restore NAME'";
+    match (what, name) {
+        (None, _) if archived => list_archived(json_out),
+        (None, _) => list_boards(json_out),
+        (Some(v @ ("archive" | "restore")), None) => Err(BoardError(format!(
+            "'tb boards {v}' needs a board name — e.g. 'tb boards {v} scratch' · 'tb boards' lists them"
+        ))),
+        (Some("archive"), Some(n)) => {
+            let to = boards::archive(n)?;
+            if json_out {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "board": n, "archived": to.display().to_string(), "restore": format!("tb boards restore {n}")}))
+                );
+            } else {
+                say!("archived '{n}' → {}", to.display());
+                say!("restore it with 'tb boards restore {n}'");
+            }
+            Ok(())
+        }
+        (Some("restore"), Some(n)) => {
+            let (from, to) = boards::restore(n)?;
+            if json_out {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "board": n, "path": to.display().to_string(), "from": from.display().to_string()}))
+                );
+            } else {
+                say!("restored '{n}' from {} → {}", from.display(), to.display());
+                say!("open it with 'tb {n}'");
+            }
+            Ok(())
+        }
+        (Some(v), _) => Err(BoardError(format!("unknown 'tb boards' command '{v}' — use {verbs}"))),
+    }
+}
+
+/// `tb boards --archived`: what `tb boards archive` retired, with card counts (read without
+/// touching the files, so a restore returns the board exactly as it was).
+fn list_archived(json_out: bool) -> Result<(), BoardError> {
+    let rows = boards::archived();
+    if json_out {
+        let v: Vec<_> = rows
+            .iter()
+            .map(|a| {
+                let n = |i: usize| a.counts.map_or(serde_json::Value::Null, |c| json!(c[i]));
+                json!({"name": a.name, "archived_at": a.stamp, "path": a.path.display().to_string(),
+                       "todo": n(0), "doing": n(1), "review": n(2), "done": n(3)})
+            })
+            .collect();
+        println!("{}", pretty(&v));
+    } else if rows.is_empty() {
+        say!("no archived boards — 'tb boards archive NAME' retires one (it is moved, never deleted)");
+    } else {
+        for a in &rows {
+            let counts = match a.counts {
+                Some(c) => format!("todo {:<3} doing {:<3} review {:<3} done {}", c[0], c[1], c[2], c[3]),
+                None => "counts unavailable".to_string(),
+            };
+            say!("  {:<16} archived {}  {counts}", a.name, a.archived_at());
+        }
+        say!("in {} · bring one back with 'tb boards restore NAME'", boards::archive_dir().display());
+    }
+    Ok(())
+}
+
 
 fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
@@ -424,8 +505,8 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
-    if matches!(cli.cmd, Some(Cmd::Boards)) {
-        return list_boards(cli.json);
+    if let Some(Cmd::Boards { what, name, archived }) = &cli.cmd {
+        return boards_cmd(what.as_deref(), name.as_deref(), *archived, cli.json);
     }
     let env = terminal_board::env("BOARD");
     let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
@@ -847,7 +928,7 @@ fn run(cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
             }
         }
-        Cmd::Boards | Cmd::Setup { .. } => unreachable!("handled above"),
+        Cmd::Boards { .. } | Cmd::Setup { .. } => unreachable!("handled above"),
     }
     Ok(())
 }

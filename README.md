@@ -259,6 +259,21 @@ On the board, `B` opens the board picker: the same rows as `tb boards` — name,
 and the default board marked — and `enter` switches to the one you choose without quitting
 `tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
+**Retiring a board.** A finished board is archived, not deleted: its file moves into
+`~/.local/state/terminal-board/archive/` and stops appearing in `tb boards` and in the
+picker. `tb` never deletes a board — when you are sure, delete the archived file yourself.
+
+```sh
+tb scratch add "try something"
+tb boards archive scratch     # prints the line that puts it back
+tb boards --archived          # what is archived, with card counts
+tb boards restore scratch
+```
+
+Archiving is refused while another `tb` has that board open (it is checked by taking the
+board's database lock, not by looking for leftover files), for the board a bare `tb` opens,
+and under `TB_DB`. Restoring is refused if a live board of that name already exists.
+
 ## GitHub
 
 Terminal Board can show one GitHub repository per board: open pull requests with their CI
@@ -402,6 +417,7 @@ tb --version
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
+| `tb boards archive NAME` / `tb boards restore NAME` / `tb boards --archived` | retire a board (moved, never deleted), bring it back, list what is archived |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | the herdr agents and the card each holds |
@@ -469,6 +485,8 @@ and `tb config theme dark|light`.
 ## Where your data lives
 
 - Boards: `~/.local/state/terminal-board/boards/<name>.db` (one SQLite file per board).
+- Archived boards: `~/.local/state/terminal-board/archive/<name>@<when>.db`, put there by
+  `tb boards archive NAME`. Nothing else in `tb` moves or deletes a board file.
 - **Back up** by copying that folder (ideally while `tb` is closed).
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails

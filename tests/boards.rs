@@ -184,3 +184,219 @@ fn boards_listing() {
     assert_eq!(v[0]["doing"], 1);
 }
 
+
+// --- archiving a board (gh#80) -------------------------------------------------------
+// A board is a SQLite file; nothing in tb removed one, so retiring a board meant moving
+// files by hand. `tb boards archive NAME` moves it into `archive/`; `restore` moves it
+// back. Nothing is ever deleted.
+
+impl Home {
+    fn archive_dir(&self) -> PathBuf {
+        self.state().join("archive")
+    }
+    /// The one archived file for `name` (the test archives a name at most once).
+    fn archived(&self, name: &str) -> PathBuf {
+        let mut hits: Vec<PathBuf> = std::fs::read_dir(self.archive_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}@")))
+            .collect();
+        hits.sort();
+        assert_eq!(hits.len(), 1, "one archive of '{name}': {hits:?}");
+        hits.pop().unwrap()
+    }
+}
+
+#[test]
+fn archive_moves_a_board_out_and_restore_brings_it_back() {
+    let h = Home::new();
+    h.ok(&["add", "keep me"]);
+    h.ok(&["scratch", "add", "one"]);
+    h.ok(&["scratch", "add", "two"]);
+    h.ok(&["scratch", "take", "1"]);
+    let before = std::fs::read(h.db("scratch")).unwrap();
+
+    let out = h.ok(&["boards", "archive", "scratch"]);
+    assert!(out.contains("tb boards restore scratch"), "no restore line:\n{out}");
+    assert!(!h.db("scratch").exists(), "the board file is still in boards/");
+    for ext in ["-wal", "-shm"] {
+        let p = PathBuf::from(format!("{}{ext}", h.db("scratch").display()));
+        assert!(!p.exists(), "sidecar left behind: {}", p.display());
+    }
+    let arc = h.archived("scratch");
+    assert!(arc.is_file(), "nothing in archive/");
+    let stored = std::fs::read(&arc).unwrap();
+    assert_eq!(stored, before, "archiving rewrote the board instead of moving it");
+
+    // it is gone from `tb boards`, and `tb scratch list` says so instead of showing a phantom
+    let listed = h.ok(&["boards"]);
+    assert!(!listed.contains("scratch"), "archived board still listed:\n{listed}");
+    let v: serde_json::Value = serde_json::from_str(&h.ok(&["boards", "--json"])).unwrap();
+    assert!(v.as_array().unwrap().iter().all(|b| b["name"] != "scratch"), "{v}");
+    assert!(!h.run(&["scratch", "list"]).status.success(), "an archived board still opens");
+
+    // --archived lists it, with the counts it had
+    let a = h.ok(&["boards", "--archived"]);
+    assert!(a.contains("scratch") && a.contains("todo 1") && a.contains("doing 1"), "{a}");
+    let v: serde_json::Value = serde_json::from_str(&h.ok(&["boards", "--archived", "--json"])).unwrap();
+    assert_eq!(v[0]["name"], "scratch");
+    assert_eq!(v[0]["todo"], 1);
+    assert_eq!(v[0]["doing"], 1);
+    assert_eq!(v[0]["path"], arc.display().to_string());
+    assert!(v[0]["archived_at"].as_str().unwrap().len() == 15, "{v}");
+
+    // the restore line it printed is the one that works
+    let out = h.ok(&["boards", "restore", "scratch"]);
+    assert!(out.contains("scratch"), "{out}");
+    assert!(!arc.exists(), "restore moved it, the archive copy is gone");
+    assert_eq!(std::fs::read(h.db("scratch")).unwrap(), stored, "restored byte-for-byte");
+    assert!(h.ok(&["scratch", "list"]).contains("two"));
+    assert!(h.ok(&["boards"]).contains("scratch"));
+    assert!(h.ok(&["boards", "--archived"]).contains("no archived boards"));
+}
+
+/// The busy refusal must come from an acquired lock, NOT from the presence of `-wal`/`-shm`:
+/// those survive a crash, so a sidecar check refuses forever after one.
+#[test]
+fn archive_ignores_sidecar_files_nobody_holds() {
+    let h = Home::new();
+    h.ok(&["scratch", "add", "one"]);
+    for ext in ["-wal", "-shm"] {
+        std::fs::write(format!("{}{ext}", h.db("scratch").display()), b"").unwrap();
+    }
+    let o = h.run(&["boards", "archive", "scratch"]);
+    assert!(o.status.success(), "stale sidecars caused a false refusal: {}", err(&o));
+    assert!(h.archived("scratch").is_file());
+}
+
+/// The real thing: a second PROCESS holding the board's SQLite file open. `tb NAME watch`
+/// keeps one connection for as long as it runs, exactly as a `tb` window does.
+#[test]
+fn archive_refuses_while_another_process_holds_the_board() {
+    use std::process::Stdio;
+    let h = Home::new();
+    h.ok(&["scratch", "add", "one"]);
+
+    let mut child = {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(["scratch", "watch", "--json", "--events"])
+            .env("HOME", h.dir.path())
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .env_remove("TB_DB")
+            .env_remove("TB_BOARD")
+            .env_remove("TTYBOARD_DB")
+            .env_remove("TTYBOARD_BOARD")
+            .env_remove("HERDR_AGENT_NAME")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        c.spawn().unwrap()
+    };
+    // wait until it has actually opened the database (the -shm appears on connect). This is
+    // only a start signal for the test — the refusal below must not depend on it.
+    let shm = PathBuf::from(format!("{}-shm", h.db("scratch").display()));
+    let start = std::time::Instant::now();
+    while !shm.exists() && start.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(shm.exists(), "the second process never opened the board");
+
+    let o = h.run(&["boards", "archive", "scratch"]);
+    let e = err(&o);
+    assert!(!o.status.success(), "archived a board another process holds open");
+    assert!(e.contains("scratch") && e.contains("open in another process"), "which board, and what to do: {e}");
+    assert!(h.db("scratch").is_file(), "the board moved anyway");
+    assert!(!h.archive_dir().exists() || std::fs::read_dir(h.archive_dir()).unwrap().count() == 0);
+    // --json says the same thing in the documented error shape
+    let o = h.run(&["boards", "archive", "scratch", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert!(v["error"].as_str().unwrap().contains("open in another process"), "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("archive again"), "{v}");
+
+    // once it lets go, the same command works
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        let o = h.run(&["boards", "archive", "scratch"]);
+        if o.status.success() {
+            break;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "still refused after the holder died: {}", err(&o));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(h.archived("scratch").is_file());
+}
+
+#[test]
+fn archive_and_restore_refuse_the_default_board_tb_db_and_unknown_names() {
+    let h = Home::new();
+    h.ok(&["add", "a"]);
+    h.ok(&["scratch", "add", "b"]);
+
+    let e = err(&h.run(&["boards", "archive", "default"]));
+    assert!(e.contains("bare 'tb' opens"), "{e}");
+    assert!(h.db("default").is_file());
+    // TB_BOARD moves which board that is
+    let e = err(&h.run_env(&["boards", "archive", "scratch"], &[("TB_BOARD", "scratch")]));
+    assert!(e.contains("bare 'tb' opens"), "{e}");
+    assert!(h.run_env(&["boards", "archive", "default"], &[("TB_BOARD", "scratch")]).status.success());
+    h.ok(&["boards", "restore", "default"]);
+
+    let pinned = h.dir.path().join("pinned.db");
+    let e = err(&h.run_env(&["boards", "archive", "scratch"], &[("TB_DB", pinned.to_str().unwrap())]));
+    assert!(e.contains("TB_DB"), "{e}");
+
+    let e = err(&h.run(&["boards", "archive", "nope"]));
+    assert!(e.contains("no board 'nope'") && e.contains("scratch"), "{e}");
+    let e = err(&h.run(&["boards", "archive"]));
+    assert!(e.contains("needs a board name"), "{e}");
+    let e = err(&h.run(&["boards", "wipe", "scratch"]));
+    assert!(e.contains("unknown") && e.contains("tb boards archive NAME"), "{e}");
+    // `rm` is a card verb, deliberately not a board one
+    let e = err(&h.run(&["boards", "rm", "scratch"]));
+    assert!(e.contains("unknown"), "{e}");
+    assert!(h.db("scratch").is_file(), "nothing was removed");
+}
+
+#[test]
+fn restore_refuses_when_a_live_board_of_that_name_exists() {
+    let h = Home::new();
+    h.ok(&["scratch", "add", "archived one"]);
+    h.ok(&["boards", "archive", "scratch"]);
+    let arc = h.archived("scratch");
+    h.ok(&["scratch", "add", "new one"]);
+
+    let o = h.run(&["boards", "restore", "scratch"]);
+    assert!(!o.status.success());
+    assert!(err(&o).contains("already exists"), "{}", err(&o));
+    assert!(arc.is_file(), "the archive was consumed by a refused restore");
+    assert!(h.ok(&["scratch", "list"]).contains("new one"), "the live board was overwritten");
+
+    let e = err(&h.run(&["boards", "restore", "nothing"]));
+    assert!(e.contains("no archived board 'nothing'") && e.contains("scratch"), "{e}");
+}
+
+/// The `B` picker offers exactly `boards::picker_rows()`; an archived board leaves the
+/// boards directory, so it stops being offered there too.
+#[test]
+fn the_board_picker_stops_offering_an_archived_board() {
+    let h = Home::new();
+    h.ok(&["add", "a"]);
+    h.ok(&["scratch", "add", "b"]);
+    // this test (alone in this file) reads the process HOME, as the picker does
+    std::env::set_var("HOME", h.dir.path());
+    for k in ["TB_DB", "TTYBOARD_DB", "TB_BOARD", "TTYBOARD_BOARD"] {
+        std::env::remove_var(k);
+    }
+    let names = || {
+        terminal_board::boards::picker_rows().unwrap().iter().map(|b| b.name.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(), ["default", "scratch"]);
+    h.ok(&["boards", "archive", "scratch"]);
+    assert_eq!(names(), ["default"], "the picker still offers an archived board");
+    h.ok(&["boards", "restore", "scratch"]);
+    assert_eq!(names(), ["default", "scratch"]);
+}

@@ -86,6 +86,20 @@ tb boards                    # every board with its counts
 
 `TB_BOARD=work` in your shell makes `work` the default.
 
+When a board is finished with, archive it — it is moved, never deleted:
+
+```sh
+tb boards archive scratch    # prints the one line that puts it back
+tb boards --archived         # what is archived, with card counts
+tb boards restore scratch
+```
+
+The file goes to `~/.local/state/terminal-board/archive/`, and the board stops appearing in
+`tb boards` and in the picker. Delete the file yourself when you are sure. Archiving is
+refused while another `tb` has that board open (tb takes the board's database lock to find
+out, so a crash does not leave it un-archivable), for the board a bare `tb` opens, and with
+`TB_DB` set; restoring is refused if a live board of that name exists.
+
 On the board, `B` opens the board picker: every board with its counts, `enter` switches to
 the one you choose without quitting, `esc` cancels. (`TB_DB` pins one file, so the picker
 says so instead of offering a choice.)
@@ -151,4 +165,6 @@ background, so it looks the same whatever your terminal theme is.
   always takes the top card.
 - A note per step keeps the history useful: "ordered parts", "waiting for the landlord".
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
+- Retire one with `tb boards archive NAME`; archived boards live in the `archive/` folder
+  beside it.
 - `tb list` prints the board without opening it; handy in scripts.

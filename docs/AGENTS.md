@@ -86,6 +86,7 @@ ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, 
 | delete a card you created by mistake | `tb rm ID` |
 | list boards with counts | `tb boards` |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
+| retire a board you made (moved to `archive/`, never deleted) | `tb boards archive NAME` · undo with `tb boards restore NAME` · `tb boards --archived` lists them |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
@@ -176,6 +177,7 @@ herdr agents + the card each holds. Field names are stable (schema `"v":1`); see
 |---|---|
 | `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb X add "…"` |
 | `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
+| `board 'X' is open in another process` (archiving) | someone is using it: close that `tb`, then `tb boards archive X` again — nothing was moved |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |

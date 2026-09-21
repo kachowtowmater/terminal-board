@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- **Retire a board.** `tb boards archive NAME` moves a board's file (and its `-wal`/`-shm`
+  sidecars) into `~/.local/state/terminal-board/archive/` and prints the one
+  `tb boards restore NAME` line that puts it back; `tb boards --archived` lists what is
+  archived, with card counts. Archived boards stop appearing in `tb boards` and in the `B`
+  picker. Nothing is deleted — there is deliberately no `tb boards rm` (`tb rm ID` deletes a
+  card), so the archived file is yours to remove when you are sure. Archiving is refused
+  while another process has the board's database open — decided by taking the board's
+  SQLite lock, not by looking for leftover sidecar files, so a crash never makes a board
+  un-archivable — and for the board a bare `tb` opens, and with `TB_DB` set. Restoring is
+  refused when a live board of that name exists. (#80)
+
 ## 2.0.0 — 2026-09-20
 
 Dogfooding — several agents and a person sharing one board — turned into 32 changes since
