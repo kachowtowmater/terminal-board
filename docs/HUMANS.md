@@ -75,7 +75,13 @@ Keep separate boards for separate things. `tb` opens `default`; any other name o
 board. A board is created by its first `tb <name> add …` (or `tb <name> config …`) — any
 other command on a name that does not exist says so and lists the boards you have, so a typo
 never leaves a phantom board behind. (With `TB_DB` set there is one file only — board names
-are refused; unset `TB_DB` to use boards.)
+are refused; unset `TB_DB` to use boards. A `TB_BOARD` left in the environment is ignored
+there, with a one-line warning.)
+
+Board files are private (mode `0600`). A board from an earlier version is readable by other
+users of the machine, and tb says so until you run `tb config file-mode private` (or
+`tb config file-mode shared`, if that is what you want). Before a newer tb upgrades an older
+board it writes a backup next to it and tells you where — see the README, "Where your data lives".
 
 ```sh
 tb home                      # open the board called "home"

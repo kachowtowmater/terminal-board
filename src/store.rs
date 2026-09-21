@@ -382,6 +382,219 @@ fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     })
 }
 
+/// Bring a board's schema up to date: the tables, then every column added since the first
+/// release. Idempotent, and the ONLY place a schema change may live — `upgrade` runs it inside
+/// a transaction and backs the board file up first whenever it would change an existing board.
+fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    // migration: `blocked` arrived after the first release
+    let has_blocked: bool = conn
+        .query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='blocked'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|n| n > 0)?;
+    if !has_blocked {
+        if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN blocked TEXT") {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
+    // migration: `position` (order within a column) — existing cards ordered by created_at
+    let has_pos: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='position'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_pos == 0 {
+        match conn.execute_batch("ALTER TABLE cards ADD COLUMN position INTEGER NOT NULL DEFAULT 0") {
+            Ok(()) => {
+                conn.execute_batch(
+                    r#"UPDATE cards SET position = (SELECT COUNT(*) FROM cards c2 WHERE c2."column" = cards."column"
+                       AND (c2.created_at < cards.created_at OR (c2.created_at = cards.created_at AND c2.id < cards.id)))"#,
+                )?;
+            }
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // migration: github fail counter (red only after 3 consecutive failed refreshes)
+    let has_fails: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_fails == 0 {
+        match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(e.into()),
+            _ => {}
+        }
+    }
+    // migration: `reviewer` (v2, `tb next --review`)
+    let has_reviewer: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='reviewer'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_reviewer == 0 {
+        if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN reviewer TEXT") {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Everything `sqlite_master` says about the schema, as one string: any table, index or
+/// column a migration adds changes it.
+fn schema_fingerprint(conn: &Connection) -> Result<String> {
+    let mut st = conn.prepare("SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")?;
+    let rows = st
+        .query_map([], |r| {
+            Ok(format!("{}|{}|{}|{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.join("\n"))
+}
+
+fn is_board(conn: &Connection) -> Result<bool> {
+    let n: i64 =
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cards'", [], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
+/// Run `migrate`, and keep a copy of an existing board before its schema changes.
+///
+/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
+///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
+///    never taken, and that is the end of it.
+/// 2. Otherwise the real run, under the write lock so two processes cannot both upgrade. When
+///    it would change a board that already existed, it is rolled back, the file is backed up
+///    (`VACUUM INTO` cannot run inside a transaction), and only then applied — in one
+///    transaction, so an upgrade happens whole or not at all. A failed backup refuses the
+///    command and changes nothing.
+///
+/// It compares the schema before and after instead of keeping a list of migrations, so a
+/// migration written later, by anyone, in any style, is backed up without registering anything.
+fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
+    let pending = {
+        let tx = conn.unchecked_transaction()?;
+        let before = schema_fingerprint(&tx)?;
+        // an error here (e.g. the lock was busy mid-run) just means "find out for real below"
+        let changed = migrate(&tx).and_then(|()| schema_fingerprint(&tx)).map_or(true, |after| after != before);
+        tx.rollback()?;
+        changed
+    };
+    if !pending {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let existed = is_board(&tx)?;
+    let before = schema_fingerprint(&tx)?;
+    migrate(&tx)?;
+    if !(on_disk && existed && schema_fingerprint(&tx)? != before) {
+        // a new board, an in-memory one, or another process upgraded it while we waited
+        tx.commit()?;
+        return Ok(());
+    }
+    tx.rollback()?;
+    let backup = backup_aside(conn, path)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    migrate(&tx)?;
+    tx.commit()?;
+    crate::notice::push(format!(
+        "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+        path.display(),
+        backup.display()
+    ));
+    Ok(())
+}
+
+/// Copy the board aside, next to itself: `<file>.before-<tb version>.<UTC date-time>.bak`.
+///
+/// Written by SQLite (`VACUUM INTO`), not by copying the file: committed cards may still sit
+/// in a hot `-wal`, and a copy of the `.db` alone would lose them. The result is one complete
+/// database with no sidecars, created private, that never ends in `.db` (so it is never
+/// listed as a board).
+fn backup_aside(conn: &Connection, path: &Path) -> Result<std::path::PathBuf> {
+    use chrono::TimeZone;
+    let cannot = |why: String| {
+        BoardError(format!(
+            "cannot back up {} before upgrading it: {why} — nothing was changed; make room next to it (or fix the directory's permissions) and run the command again",
+            path.display()
+        ))
+    };
+    let stamp = chrono::Utc
+        .timestamp_opt(now(), 0)
+        .single()
+        .map(|t| t.format("%Y%m%d-%H%M%S").to_string())
+        .unwrap_or_else(|| now().to_string());
+    let base = format!("{}.before-{}.{stamp}", path.display(), env!("CARGO_PKG_VERSION"));
+    let mut n = 1;
+    let target = loop {
+        let name = if n == 1 { format!("{base}.bak") } else { format!("{base}-{n}.bak") };
+        let p = std::path::PathBuf::from(name);
+        match crate::fsperm::create_private(&p) {
+            Ok(true) => break p,
+            Ok(false) if n < 100 => n += 1,
+            Ok(false) => return Err(cannot("too many backups with this name".into())),
+            Err(e) => return Err(cannot(e.to_string())),
+        }
+    };
+    let Some(target_str) = target.to_str() else {
+        let _ = std::fs::remove_file(&target);
+        return Err(cannot("its path is not valid UTF-8".into()));
+    };
+    if let Err(e) = conn.execute("VACUUM INTO ?1", [target_str]) {
+        let _ = std::fs::remove_file(&target);
+        return Err(cannot(e.to_string()));
+    }
+    Ok(target)
+}
+
+/// The board a hint should name for the file at `path`: None when a bare `tb` reaches it
+/// (`TB_DB` pins it, or it is the default board), else its name in the boards directory.
+fn board_of(path: &Path) -> Option<String> {
+    if crate::boards::db_pinned() || path.parent() != Some(crate::boards::boards_dir().as_path()) {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?.strip_suffix(".db")?;
+    (crate::boards::validate(name).is_ok() && name != crate::boards::default_name()).then(|| name.to_string())
+}
+
+/// `tb config …` / `tb NAME config …` for the board in `path`.
+fn config_cmd(path: &Path, rest: &str) -> String {
+    match board_of(path) {
+        Some(name) => format!("'tb {name} config {rest}'"),
+        None => format!("'tb config {rest}'"),
+    }
+}
+
+/// An existing board file that other users can open is REPORTED, never quietly re-moded: it
+/// may be shared with a group on purpose. `tb config file-mode private` tightens it (and says
+/// so); `tb config file-mode shared` records that it is meant to be, which ends the report.
+fn report_wide_file(conn: &Connection, path: &Path) {
+    let Some(mode) = crate::fsperm::mode_of(path).filter(|m| crate::fsperm::is_wide(*m)) else { return };
+    let shared = conn
+        .query_row("SELECT value FROM config WHERE key='file-mode'", [], |r| r.get::<_, String>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some_and(|v| v == "shared");
+    if shared {
+        return;
+    }
+    crate::notice::push(format!(
+        "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
+        path.display(),
+        crate::fsperm::fmt_mode(mode),
+        config_cmd(path, "file-mode private"),
+        config_cmd(path, "file-mode shared"),
+    ));
+}
+
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).
 pub struct Seed<'a> {
     pub title: &'a str,
@@ -396,6 +609,8 @@ pub struct Seed<'a> {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
+        // `:memory:` (and SQLite's unnamed temporary database) have no file to look after
+        let on_disk = !path.as_os_str().is_empty() && path.as_os_str() != ":memory:";
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
                 std::fs::create_dir_all(dir).map_err(|e| {
@@ -406,67 +621,20 @@ impl Store {
                 })?;
             }
         }
-        let conn = Connection::open(path)?;
+        // A board file is born private (0600): SQLite then opens the empty file as a new
+        // database and gives the -wal/-shm sidecars the same mode. An existing file is never
+        // re-moded here; `report_wide_file` says so instead.
+        let created = on_disk
+            && crate::fsperm::create_private(path).map_err(|e| {
+                BoardError(format!("cannot create {}: {e} — set TB_DB to a writable path", path.display()))
+            })?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
-        conn.execute_batch(SCHEMA)?;
-        // migration: `blocked` arrived after the first release
-        let has_blocked: bool = conn
-            .query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='blocked'", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map(|n| n > 0)?;
-        if !has_blocked {
-            if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN blocked TEXT") {
-                if !e.to_string().contains("duplicate column") {
-                    return Err(e.into());
-                }
-            }
-        }
-        // migration: `position` (order within a column) — existing cards ordered by created_at
-        let has_pos: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='position'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_pos == 0 {
-            match conn.execute_batch("ALTER TABLE cards ADD COLUMN position INTEGER NOT NULL DEFAULT 0") {
-                Ok(()) => {
-                    conn.execute_batch(
-                        r#"UPDATE cards SET position = (SELECT COUNT(*) FROM cards c2 WHERE c2."column" = cards."column"
-                           AND (c2.created_at < cards.created_at OR (c2.created_at = cards.created_at AND c2.id < cards.id)))"#,
-                    )?;
-                }
-                Err(e) if e.to_string().contains("duplicate column") => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        // migration: github fail counter (red only after 3 consecutive failed refreshes)
-        let has_fails: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_fails == 0 {
-            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
-                Err(e) if e.to_string().contains("duplicate column") => {}
-                Err(e) => return Err(e.into()),
-                _ => {}
-            }
-        }
-        // migration: `reviewer` (v2, `tb next --review`)
-        let has_reviewer: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='reviewer'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_reviewer == 0 {
-            if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN reviewer TEXT") {
-                if !e.to_string().contains("duplicate column") {
-                    return Err(e.into());
-                }
-            }
+        upgrade(&mut conn, path, on_disk)?;
+        if on_disk && !created {
+            report_wide_file(&conn, path);
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
     }
@@ -669,7 +837,90 @@ impl Store {
             ("github".into(), self.github_repo()?.unwrap_or_else(|| "off".into())),
             ("github-panel".into(), if self.panel("github-panel")? { "shown" } else { "hidden" }.into()),
             ("agents-panel".into(), if self.panel("agents-panel")? { "shown" } else { "hidden" }.into()),
-        ])
+        ]
+        .into_iter()
+        // `file-mode` is listed only when there is something to say (a file other users can
+        // open, or one kept shared on purpose): a private board's listing is unchanged
+        .chain(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)))
+        .collect())
+    }
+
+    /// (permission bits of the board file, kept shared on purpose?). The mode is None for an
+    /// in-memory board and on a platform without unix permissions.
+    pub fn file_mode(&self) -> Result<(Option<u32>, bool)> {
+        let shared: Option<String> =
+            self.conn.query_row("SELECT value FROM config WHERE key='file-mode'", [], |r| r.get(0)).optional()?;
+        Ok((self.path().and_then(|p| crate::fsperm::mode_of(&p)), shared.as_deref() == Some("shared")))
+    }
+
+    /// The `file-mode` row of `tb config`: None while the file is private and nothing was set.
+    fn file_mode_setting(&self) -> Result<Option<String>> {
+        let (mode, shared) = self.file_mode()?;
+        Ok(match (mode, shared) {
+            (Some(m), true) => Some(format!("shared ({})", crate::fsperm::fmt_mode(m))),
+            (None, true) => Some("shared".into()),
+            (Some(m), false) if crate::fsperm::is_wide(m) => Some(format!("{} (open to other users)", crate::fsperm::fmt_mode(m))),
+            _ => None,
+        })
+    }
+
+    /// What `tb config file-mode` answers: `private (0600)`, `0644 (open to other users)`,
+    /// `shared (0664)`, or `not applicable` where there is no file mode to speak of.
+    pub fn file_mode_text(&self) -> Result<String> {
+        Ok(match (self.file_mode_setting()?, self.file_mode()?.0) {
+            (Some(s), _) => s,
+            (None, Some(m)) => format!("private ({})", crate::fsperm::fmt_mode(m)),
+            (None, None) => "not applicable".into(),
+        })
+    }
+
+    /// `tb config file-mode private|shared`. `private` makes the board file and its live
+    /// sidecars 0600 — the one place tb changes the mode of an existing file, because it was
+    /// asked to, and it says what it did. `shared` records that other users are meant to reach
+    /// this file, which ends the report. Both are logged on the board. Returns the line to print.
+    pub fn set_file_mode(&self, value: &str, actor: &str) -> Result<String> {
+        let log = |text: String| -> Result<()> {
+            self.conn.execute(
+                "INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,'file-mode',?)",
+                params![now(), actor, text],
+            )?;
+            Ok(())
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "private" => {
+                let Some(path) = self.path() else {
+                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'");
+                };
+                if crate::fsperm::mode_of(&path).is_none() {
+                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'");
+                }
+                let changed = crate::fsperm::make_private(&path).map_err(|e| {
+                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()))
+                })?;
+                self.conn.execute("DELETE FROM config WHERE key='file-mode'", [])?;
+                if changed.is_empty() {
+                    return Ok(format!("{} is already private (mode {})", path.display(), crate::fsperm::fmt_mode(crate::fsperm::PRIVATE)));
+                }
+                let was: Vec<String> = changed
+                    .iter()
+                    .map(|(f, m)| format!("{} was {}", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), crate::fsperm::fmt_mode(*m)))
+                    .collect();
+                log(format!("private: {}", was.join(", ")))?;
+                Ok(format!(
+                    "{} is now private (mode {}): {}",
+                    path.display(),
+                    crate::fsperm::fmt_mode(crate::fsperm::PRIVATE),
+                    was.join(", ")
+                ))
+            }
+            "shared" => {
+                self.set_config("file-mode", "shared")?;
+                let mode = self.file_mode()?.0.map(crate::fsperm::fmt_mode).unwrap_or_else(|| "unknown".into());
+                log(format!("shared: mode {mode} kept"))?;
+                Ok(format!("file-mode is now shared — tb leaves the mode ({mode}) alone and stops reporting it"))
+            }
+            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'")),
+        }
     }
 
     pub fn layout(&self) -> Result<String> {
