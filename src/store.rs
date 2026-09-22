@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 pub mod due;
+pub mod order;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
@@ -216,6 +217,8 @@ pub struct Snapshot {
     pub github_panel_hidden: bool,
     pub agents_panel_hidden: bool,
     pub now: i64,
+    /// The board's `sort` (`store::order`): what `in_column` orders by. Default = position.
+    pub sort: order::Sort,
 }
 
 /// The board's DONE column only shows cards finished in the last 24h.
@@ -233,11 +236,8 @@ impl Snapshot {
 
     pub fn in_column(&self, col: &str) -> Vec<&Card> {
         let mut v: Vec<&Card> = self.cards.iter().filter(|c| c.column == col).collect();
-        if col == "done" {
-            v.sort_by_key(|c| (std::cmp::Reverse(c.column_since), c.id));
-        } else {
-            v.sort_by_key(|c| (c.position, c.id));
-        }
+        // the one ordering (store/order.rs) — the same function `tb next` picks with
+        v.sort_by(|a, b| order::cmp(self.sort, a, b));
         v
     }
 }
@@ -675,6 +675,7 @@ impl Store {
         // due dates (store/due.rs): listed once the board sets them, so a board that sets
         // nothing lists exactly what it always did
         all.extend(self.due_settings()?);
+        all.extend(self.sort_settings()?);
         Ok(all)
     }
 
@@ -895,6 +896,7 @@ impl Store {
             github_panel_hidden,
             agents_panel_hidden,
             now: now(),
+            sort: self.sort()?,
         })
     }
 
@@ -910,9 +912,12 @@ impl Store {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let cards: Vec<Card> = {
             let mut st = tx.prepare(&format!(
-                r#"SELECT {CARD_COLS} FROM cards WHERE "column"='review' AND blocked IS NULL AND reviewer IS NULL ORDER BY position, id"#
+                r#"SELECT {CARD_COLS} FROM cards WHERE "column"='review' AND blocked IS NULL AND reviewer IS NULL"#
             ))?;
-            let v = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut v = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            // the one ordering (store/order.rs): the REVIEW column exactly as everyone sees it
+            let sort = order::sort_of(&tx)?;
+            v.sort_by(|a, b| order::cmp(sort, a, b));
             v
         };
         let mut own = 0;
@@ -971,13 +976,17 @@ impl Store {
                 id
             }
             None => {
-                let found: Option<i64> = tx
-                    .query_row(
-                        r#"SELECT id FROM cards WHERE "column"='todo' AND blocked IS NULL ORDER BY position, id LIMIT 1"#,
-                        [],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
+                // the first unblocked card of the TODO column in the one ordering
+                // (store/order.rs), read inside this transaction: what `tb next` hands out is
+                // what `tb list` and the board show on top — nearest due date under `sort due`
+                let found: Option<i64> = {
+                    let mut st = tx.prepare(&format!(
+                        r#"SELECT {CARD_COLS} FROM cards WHERE "column"='todo' AND blocked IS NULL"#
+                    ))?;
+                    let open = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<Card>>>()?;
+                    let sort = order::sort_of(&tx)?;
+                    open.iter().min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
+                };
                 match found {
                     Some(i) => i,
                     None => {
@@ -1252,10 +1261,13 @@ impl Store {
     pub fn reorder(&mut self, id: i64, how: &str, actor: &str) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
+        // `prio` edits POSITION, so it walks the column in position order whatever the board
+        // sorts by (under `sort due` position is the tie-break between equal dates)
         let mut ids: Vec<i64> = {
-            let mut st = tx.prepare(r#"SELECT id FROM cards WHERE "column"=? ORDER BY position, id"#)?;
-            let v = st.query_map([&c.column], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
-            v
+            let mut st = tx.prepare(&format!(r#"SELECT {CARD_COLS} FROM cards WHERE "column"=?"#))?;
+            let mut v = st.query_map([&c.column], row_card)?.collect::<rusqlite::Result<Vec<Card>>>()?;
+            v.sort_by(order::by_position);
+            v.iter().map(|c| c.id).collect()
         };
         let i = ids.iter().position(|x| *x == id).unwrap_or(0);
         let j = match how {
