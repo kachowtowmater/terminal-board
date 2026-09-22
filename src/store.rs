@@ -274,9 +274,28 @@ impl Snapshot {
     }
 }
 
-/// The clock. `TB_NOW` (unix seconds) pins it; that is for the test suite only, so that
-/// fixtures such as `now - 3h` do not depend on the time of day. Unset or unparsable =
-/// the real clock.
+/// The unparsed `TB_NOW` / `TTYBOARD_NOW` (unix seconds): `None` when unset or empty. Any
+/// other value — text that is not an integer, or one outside `TB_NOW_MIN..TB_NOW_MAX` (the
+/// upper bound is EXCLUSIVE, so 4102444799 is the last second accepted) — is refused by
+/// `pinned_now()` (exit 1, nothing written): it would be written into a real board as fact.
+/// No cfg gate: the suite pins the clock on the release binary, and `now()` is a library
+/// read, not a validated `--json` argument, so the refusal is raised by `pinned_now()` at
+/// the top of `main`'s `run()`, before any command is dispatched.
+pub const TB_NOW_MIN: i64 = 946_684_800; // 2000-01-01T00:00:00Z
+pub const TB_NOW_MAX: i64 = 4_102_444_800; // the first refused second (one past the window)
+
+/// The clock to use: the pinned `TB_NOW` when it is set and in range, else the real clock.
+pub fn pinned_now() -> Result<Option<i64>> {
+    let Some(raw) = crate::env("NOW") else { return Ok(None) };
+    let v = raw.trim();
+    match v.parse::<i64>() {
+        Ok(t) if (TB_NOW_MIN..TB_NOW_MAX).contains(&t) => Ok(Some(t)),
+        _ => Err(BoardError(format!(
+            "TB_NOW is not a plausible unix second: '{v}' — unset it, or pass seconds between {TB_NOW_MIN} and {TB_NOW_MAX} (2000, last accepted 4102444799)"
+        ))),
+    }
+}
+
 pub fn now() -> i64 {
     match crate::env("NOW") {
         Some(v) => v.trim().parse::<i64>().unwrap_or_else(|_| chrono::Utc::now().timestamp()),

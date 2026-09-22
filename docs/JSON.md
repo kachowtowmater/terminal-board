@@ -430,3 +430,14 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
   names another file), never in a board file.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.
+
+## Environment variables
+
+`TB_NOW` (legacy `TTYBOARD_NOW`) pins the clock to a unix second so a test or a replay sees
+stable timestamps. It changes what tb **writes**, so it validates: unset or empty = the real
+clock; anything else must be an integer from `946684800` (2000) up to `4102444800` (one past
+the last accepted, `4102444799`) —
+a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
+`{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
+The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
+`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.

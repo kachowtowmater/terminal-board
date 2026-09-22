@@ -125,7 +125,7 @@ would miss it — copy it as printed. Leave settings alone unless a person asks 
   are refused (`--force` overrides, and is logged; the full-screen board asks y/n); `note`,
   `check` and `prio` stay open to everyone. `github` is tb's own sync: never act under it.
 
-## Identity
+## Environment variables and identity
 
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr
 pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`.
@@ -134,6 +134,22 @@ Inside a named herdr agent you can leave out `--as`; anywhere else pass it on ev
 same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work). Names are
 self-asserted — never pass another agent's name to get past a rule. The AGENTS panel matches
 your name to your herdr pane; an idle agent holding a DOING card is a warning.
+
+| variable | what it does | knob or test hook |
+|---|---|---|
+| `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
+| `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
+| `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
+| `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
+| `TB_TTY` / `TTYBOARD_TTY` | the tty `setup` prompts read from | test hook |
+| `TB_NO_HERDR` | set to anything: tb does not ask herdr for agents | test hook |
+| `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
+| `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
+
+A variable that changes what tb **writes** must validate its value and refuse; one that only
+changes what tb reads or executes may stay lenient — today that binds `TB_NOW` only: a value
+that is not an integer in that range exits non-zero before any command runs and nothing is
+written, whether you asked for the full-screen board, `setup`, `import` or a plain command.
 
 ## GitHub
 

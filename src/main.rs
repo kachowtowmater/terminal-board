@@ -917,6 +917,12 @@ fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> 
 }
 
 fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+    // `TB_NOW` changes what tb WRITES to the durable store, so it is validated HERE: the
+    // first statement of `run()`, before any command is dispatched and before anything can
+    // open a board. Every other placement leaks — the full-screen board, `tb setup` and the
+    // bulk `import` / `edit --from` path all return before the command match below, and each
+    // of them writes. One gate, at the top; `store::now()` stays a plain library read.
+    let pinned = terminal_board::store::pinned_now()?;
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
     // silently lose to the fallback chain — refuse before anything is written
     if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
@@ -1055,7 +1061,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if let Some(request) = bulk {
         return import::run(&mut store, request, &actor, j, &|text| with_board(text, explicit));
     }
-    let now = terminal_board::store::now();
+    // the pin was validated at the top of `run()`, before any of the early returns above
+    let now = pinned.unwrap_or_else(terminal_board::store::now);
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
             let id = store.add_tagged(&title, &desc, &checks, &actor, tag_arg.as_ref().map(|t| t.as_deref()))?;
