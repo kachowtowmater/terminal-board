@@ -426,7 +426,9 @@ tb --version
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
-| `tb done ID --approve` | record your approval without moving the card |
+| `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
+| `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
+| `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
@@ -480,7 +482,12 @@ The card gets a **new number** on the board it arrives at — ids belong to a bo
 one may already be taken there. It lands in TODO and unowned, because the other board has its
 own work-in-progress limit and its own people; the event log on the card says where it came
 from, and both boards record the move. The destination has to exist already, and a card
-somebody else is holding is not moved out from under them.
+somebody else is holding is not moved out from under them without `--force`, which is logged
+on the card and on both boards.
+
+A move holds the source board for the whole operation, so a `tb note` or `tb edit` that arrives
+while it runs waits and then finds the card gone, rather than being told "noted" and thrown
+away; two `tb mv` of the same card at the same moment cannot both succeed.
 
 **Which agent, model and session did the work.** The name on a card stays short. Behind it, tb
 records who that name was — harness, model, role, session, machine — so a bad batch of work
@@ -554,6 +561,31 @@ tb edit --from board.json          # only what differs changes; [{"id": 7, "due"
   It never moves a card or changes its owner.
 - Anything else in a row — `column`, `owner`, `position`, timestamps, `events`, fields tb does
   not know — is **ignored with one warning** that lists the fields. History is never imported.
+
+**Getting the board out again.** `tb export` writes the whole board, with its history, for
+someone who will never open a terminal:
+
+<!-- no-test -->
+```sh
+tb export --json > board.json        # every card with its whole history; tb import reads it back
+tb export --csv  > board.csv         # one row per card, for a spreadsheet
+tb export --csv --history > log.csv  # one row per event instead
+tb log --since 2026-10-09            # what happened since a date (--json for a parser)
+tb list --done --since 2026-10-01    # finished work older than today
+```
+
+- The JSON is the same card object `tb board --json` prints, but with **every** event instead
+  of the last ten, wrapped as `{"v":1, "board", "exported_at", "tz", "cards":[…]}`. That
+  `cards` array is exactly what `tb import` and `tb edit --from` read, so export → edit →
+  import is a round trip.
+- The CSV is meant for Excel or Numbers: a byte-order mark so UTF-8 names and dashes are not
+  mangled, RFC 4180 quoting (a description keeps its commas, quotes and line breaks in one
+  cell), CRLF row ends, and dates written as local `YYYY-MM-DD HH:MM` in the board's zone.
+  A cell that would start `=`, `+`, `-` or `@` gets a leading apostrophe, so a card titled
+  `=cmd|…` is text in the sheet and never a formula. It is one-way; `--json` is what comes back.
+- `--since` takes a calendar date and means **local midnight in the board's zone** (`tb config
+  tz`), not a UTC instant, so "since Tuesday" is your Tuesday. A unix second works too.
+- All of these only read: they never change the board file.
 - Accepted documents: a JSON array of cards, `{"cards": […]}`, the whole `tb board --json`
   object (its columns in board order), or one card object. At most 4 MiB of UTF-8.
 
@@ -641,6 +673,53 @@ the column is review: 'tb move 5 review'`. In a narrow header a label gives way 
 and the count is never pushed off; when not even its first word fits, the plain name is shown.
 `tb config label review` prints it; `--off` clears it. A column that the board orders by due
 date says `by due` in its header.
+
+### Who closes a card
+
+```sh
+tb office add "filing: proof of service"
+tb office config done-by anna,ben
+tb office config done-by
+tb office take 1 --as anna
+tb office done 1 --as anna
+tb office done 1 --approve --as ben
+tb office config done-by --off
+```
+
+`tb config done-by anna,ben` says who may close a card: tb then refuses to move a card into
+DONE as anybody else, and names the people to ask. It guards **every** way into DONE, so
+moving a card out of review first is not a way round it.
+
+**It is an honest-mistake stop, not security.** Names in tb are **self-asserted** — `--as` is
+whatever the caller types — so this catches the slip of the wrong person closing a card, and
+nothing more. `--force` gets past it and is open to everyone; it is recorded as its own event
+with the name that used it, and answering `y` to the full-screen board's `approve your own
+work?` is the same `--force` by another route. A board that needs real authority needs it outside tb: file
+permissions, a repository, a person. (`tb`'s older never-approve-your-own-work rule works the
+same way, and still applies: a name on the `done-by` list cannot close its own work either.)
+The GitHub sync is exempt — a merged PR closing its card is evidence, not a person.
+
+`tb done ID --approve` records that somebody **checked** a card and leaves it in REVIEW. It
+works on every card, not only one linked to an issue, and `done-by` does not gate it: noting
+"I looked at this" is not closing it. Each checker is listed once in JSON as `approved_by`.
+
+### Tags you choose
+
+```sh
+tb office add "due 10/9 (file by 10/6): prepare the brief" --tag "00-key 2"
+tb office edit 2 --tag "client-a matter 7"
+tb office edit 2 --tag none
+```
+
+tb guesses a tag from a `tag: title` prefix, and that guess is deliberately narrow: letters,
+digits, hyphens and underscores, no spaces, up to 20 characters — so `00-key 2: x`, and a
+title whose colon comes later, get no tag at all. `--tag KEY` sets it **explicitly** and
+allows digits, spaces and hyphens, so a title like `due 10/9 (file by 10/6): …` can carry a
+real tag. `--tag none` clears it.
+
+When you give `--tag`, tb guesses nothing about the title: it is kept exactly as typed,
+colon and all (a leading `gh#N` is still pulled out, as always). A tag that no title could
+have produced also survives a later title edit, instead of being quietly dropped.
 
 ### Waiting on something
 

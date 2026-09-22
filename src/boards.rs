@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_BOARD: &str = "default";
 
 /// Subcommand names: never valid board names.
-pub const COMMANDS: [&str; 27] = [
+pub const COMMANDS: [&str; 29] = [
     "add", "list", "show", "next", "take", "note", "check", "move", "done", "block", "drop",
     "config", "boards", "github", "help", "rm", "prio", "edit", "sync", "board", "watch",
-    "agents", "guide", "setup", "restore", "import", "mv",
+    "agents", "guide", "setup", "restore", "import", "export", "log", "mv",
 ];
 
 /// `[a-z0-9_-]{1,32}` and not a subcommand.

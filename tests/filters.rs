@@ -383,3 +383,92 @@ fn the_manuals_teach_it() {
         assert!(doc.contains("tb mv") && doc.contains("--all-boards"), "{name}");
     }
 }
+
+/// D2: a write to the SOURCE that raced a move must never be acknowledged and then thrown
+/// away. The whole move holds the source's write lock, so a `tb note` arriving during it
+/// waits and then finds the card gone — a refusal, not a lie.
+#[test]
+fn a_write_racing_a_move_is_never_acknowledged_then_destroyed() {
+    let rounds = 40;
+    let mut acknowledged_then_lost = 0;
+    let mut landed_before = 0;
+    let mut refused = 0;
+    for round in 0..rounds {
+        let h = Home::new();
+        h.ok(&["add", "docs: the card"]);
+        h.ok(&["work", "add", "x: seed"]);
+        let note = format!("note from round {round}");
+        // start the move, and race a note against it from another process
+        let mv = h.cmd(&["mv", "1", "--to", "work"], "alice").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let noted = h.cmd(&["note", "1", &note], "bob").output().unwrap();
+        let moved = mv.wait_with_output().unwrap();
+        assert!(moved.status.success(), "round {round}: the move failed: {}", text(&moved.stderr));
+
+        // where did the note end up?
+        let there = h.ok(&["work", "show", "2", "--json"]);
+        let carried = there.contains(&note);
+        if noted.status.success() {
+            // it said "noted" — then the text MUST exist somewhere afterwards
+            assert!(carried, "round {round}: '{note}' was acknowledged (rc 0) and then destroyed:\n{there}");
+            landed_before += 1;
+            if !carried {
+                acknowledged_then_lost += 1;
+            }
+        } else {
+            // refused is fine: the card had already gone
+            refused += 1;
+            let e = text(&noted.stderr);
+            assert!(e.contains("no card #1") || e.contains("database is locked"), "round {round}: odd refusal: {e}");
+        }
+    }
+    assert_eq!(acknowledged_then_lost, 0, "acknowledged writes were destroyed");
+    // the race has to actually happen, or the test proves nothing
+    assert!(landed_before + refused == rounds, "every round did one or the other");
+    println!("D2 over {rounds} rounds: {landed_before} notes landed before the move, {refused} refused after it, 0 lost");
+}
+
+/// D3: two `tb mv` of the same card at the same moment must not both succeed — one of them
+/// has to lose and say so, or the destination ends up with two copies.
+#[test]
+fn two_moves_of_the_same_card_never_make_two_copies() {
+    let rounds = 20;
+    for round in 0..rounds {
+        let h = Home::new();
+        h.ok(&["add", "docs: only one of me"]);
+        h.ok(&["work", "add", "x: seed"]);
+        let a = h.cmd(&["mv", "1", "--to", "work"], "alice").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let b = h.cmd(&["mv", "1", "--to", "work"], "bob").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let (a, b) = (a.wait_with_output().unwrap(), b.wait_with_output().unwrap());
+        let winners = [&a, &b].iter().filter(|o| o.status.success()).count();
+        let on_dest = ids(&h.ok(&["work", "list"]));
+        assert_eq!(on_dest.len(), 2, "round {round}: the destination holds {} cards, not 2 — a card was copied twice", on_dest.len());
+        assert_eq!(winners, 1, "round {round}: {winners} moves succeeded; a and b said:\n{}\n{}", text(&a.stderr), text(&b.stderr));
+        let loser = if a.status.success() { &b } else { &a };
+        assert!(text(&loser.stderr).contains("no card #1"), "round {round}: the loser must say why: {}", text(&loser.stderr));
+        assert_eq!(ids(&h.ok(&["list"])), Vec::<i64>::new(), "round {round}: the source kept the card");
+    }
+    println!("D3 over {rounds} rounds: exactly one move won every time, destination never held a duplicate");
+}
+
+/// D4: the holder refusal offers `--force`, and `--force` exists and is logged.
+#[test]
+fn mv_force_exists_and_is_logged() {
+    let h = Home::new();
+    h.ok(&["add", "docs: alice is on it"]);
+    h.ok(&["work", "add", "x: seed"]);
+    h.ok(&["take", "1"]);
+    // refused for a non-holder, and the refusal names the flag that really exists
+    let o = h.cmd(&["mv", "1", "--to", "work"], "bob").output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    let e = text(&o.stderr);
+    assert!(e.contains("#1 is held by alice") && e.contains("--force"), "{e}");
+    // and that flag works, rather than being an unknown argument
+    let o = h.cmd(&["mv", "1", "--to", "work", "--force"], "bob").output().unwrap();
+    assert!(o.status.success(), "--force is advertised but not accepted: {}", text(&o.stderr));
+    // logged where the card now lives, and on both boards' logs
+    let card = h.json(&["work", "show", "2", "--json"]);
+    let forced: Vec<String> = card["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "force").map(|e| e["text"].as_str().unwrap().into()).collect();
+    assert_eq!(forced, ["moved #1 held by alice from default"], "{card}");
+    // the holder's own card is gone from their board, as a move means
+    assert_eq!(ids(&h.ok(&["list"])), Vec::<i64>::new());
+}

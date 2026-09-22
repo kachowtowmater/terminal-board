@@ -11,6 +11,15 @@
 //! lost card is not recoverable. When the second step does fail, the refusal says exactly
 //! that: the card is on the destination, still on the source, and which command removes it.
 //!
+//! **The source is held for the WHOLE move.** Reading the card, writing the far end and
+//! removing the near one all happen inside ONE `BEGIN IMMEDIATE` on the source, so the source
+//! holds its write lock from the first read to the last delete. That is not tidiness — without
+//! it there is a window as wide as the destination's whole transaction in which `tb note` and
+//! `tb edit` on the source succeed, tell the person "noted #1", and are then thrown away by the
+//! delete. Any write that arrives during a move now waits for it and then finds the card gone
+//! (`no card #1`, non-zero) instead of being acknowledged and destroyed, and a second `tb mv`
+//! of the same card waits, then refuses the same way rather than making a second copy.
+//!
 //! **The id changes.** Ids are per board (`AUTOINCREMENT`), so the card cannot keep its
 //! number — another card may already hold it. The new id is printed and returned, the
 //! destination's first event records where the card came from (`moved-in #OLD from BOARD`),
@@ -65,28 +74,28 @@ struct Past {
     actor_id: Option<i64>,
 }
 
-impl Store {
-    /// Everything about card `id` that travels to another board.
-    fn packed(&self, id: i64) -> Result<Packed> {
-        let card = get_card(&self.conn, id)?;
-        let mut st = self.conn.prepare("SELECT idx, text, done FROM checklist WHERE card_id=? ORDER BY idx")?;
-        let checklist = st
-            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut st = self
-            .conn
-            .prepare("SELECT ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id")?;
-        let events = st
-            .query_map([id], |r| {
-                Ok(Past { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok((card, checklist, events))
-    }
+/// Everything about card `id` that travels to another board, read through the transaction
+/// that holds the source — never through the bare connection, or the read would not be
+/// covered by the lock that makes the move safe.
+fn pack(tx: &rusqlite::Transaction, id: i64) -> Result<Packed> {
+    let card = get_card(tx, id)?;
+    let mut st = tx.prepare("SELECT idx, text, done FROM checklist WHERE card_id=? ORDER BY idx")?;
+    let checklist = st
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut st = tx.prepare("SELECT ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id")?;
+    let events = st
+        .query_map([id], |r| {
+            Ok(Past { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((card, checklist, events))
+}
 
+impl Store {
     /// Write a card that came from another board into this one, in TODO at the bottom,
     /// unowned, with its checklist and its whole history. Returns the id it has here.
-    fn receive(&mut self, from: &str, card: &Card, checklist: &[Item], events: &[Past], actor: &str) -> Result<i64> {
+    fn receive(&mut self, from: &str, card: &Card, checklist: &[Item], events: &[Past], actor: &str, forced: Option<&str>) -> Result<i64> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pos: i64 =
             tx.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"='todo'"#, [], |r| r.get(0))?;
@@ -129,37 +138,50 @@ impl Store {
             "INSERT INTO events(card_id, ts, actor, kind, text, actor_id) VALUES (?,?,?,'moved-in',?,NULL)",
             params![new_id, t, actor, format!("#{} from {from}", card.id)],
         )?;
+        // a move over its holder's head is logged where the card now lives, because the row
+        // it used to be is about to be deleted
+        if let Some(owner) = forced {
+            tx.execute(
+                "INSERT INTO events(card_id, ts, actor, kind, text, actor_id) VALUES (?,?,?,'force',?,NULL)",
+                params![new_id, t, actor, format!("moved #{} held by {owner} from {from}", card.id)],
+            )?;
+        }
         board_log(&tx, actor, "moved-in", &format!("#{} from {from} is #{new_id} here", card.id))?;
         tx.commit()?;
         Ok(new_id)
     }
 
-    /// Remove a card that has been written to another board, leaving a board-level note of
-    /// where it went. The card's own events go with it — the record lives at the far end and
-    /// on this board's log.
-    fn released(&mut self, id: i64, to: &str, new_id: i64, actor: &str) -> Result<()> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
-        tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
-        tx.execute("DELETE FROM cards WHERE id=?", [id])?;
-        board_log(&tx, actor, "moved-out", &format!("#{id} to {to} is #{new_id} there"))?;
-        tx.commit()?;
-        Ok(())
-    }
-
     /// `tb mv ID --to BOARD`. `dest` is already open, and the caller has checked it is a
     /// different board that really exists.
     ///
-    /// The destination is written and committed FIRST; the source is cleared only after that
-    /// succeeded. If the clearing fails the card is on both boards and the error says so.
-    pub fn move_to_board(&mut self, id: i64, dest: &mut Store, actor: &str) -> Result<Moved> {
-        let (card, checklist, events) = self.packed(id)?;
+    /// ONE transaction holds the SOURCE for the whole move — read, far-end write, delete — so
+    /// no other write to the source can slip in, be acknowledged, and then be deleted (see the
+    /// module notes). Inside it the destination is written and committed FIRST; the source row
+    /// goes only after that succeeded. If the source commit then fails, the card is on both
+    /// boards and the error says which command removes the old one.
+    pub fn move_to_board(&mut self, id: i64, dest: &mut Store, actor: &str, forced: Option<&str>) -> Result<Moved> {
         let from = self.name.clone();
         let to = dest.name.clone();
-        let new_id = dest.receive(&from, &card, &checklist, &events, actor)?;
+        // BEGIN IMMEDIATE: the source's write lock, taken before the card is even read and
+        // held until the delete commits. A concurrent `tb note` waits here and then finds the
+        // card gone; a second `tb mv` of the same card does the same, instead of copying twice.
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (card, checklist, events) = pack(&tx, id)?;
+        let new_id = dest.receive(&from, &card, &checklist, &events, actor, forced)?;
         // from here the card exists on the destination: a failure below leaves a duplicate,
         // never a hole
-        self.released(id, &to, new_id, actor).map_err(|e| {
+        let cleared = (|| -> Result<()> {
+            tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
+            tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
+            tx.execute("DELETE FROM cards WHERE id=?", [id])?;
+            board_log(&tx, actor, "moved-out", &format!("#{id} to {to} is #{new_id} there"))?;
+            if let Some(owner) = forced {
+                board_log(&tx, actor, "force", &format!("moved #{id} held by {owner} to {to}"))?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        cleared.map_err(|e| {
             super::BoardError(format!(
                 "#{id} was copied to '{to}' as #{new_id} but could not be removed from '{from}' ({e}) — the card is on BOTH boards; delete the old one with 'tb {from} rm {id}'"
             ))

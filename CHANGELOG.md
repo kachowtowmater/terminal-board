@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Who closes a card, who checked it, and tags you choose
+
+- **`tb config done-by anna,ben`** — only those names may move a card into DONE; anybody else
+  is refused and told who to ask. It guards every way into DONE, so moving a card out of
+  review first is not a way round it. **It is an honest-mistake stop, not security**, and the
+  docs say so: names in tb are self-asserted, and `--force` gets past it and is open to
+  everyone (recorded as its own event). The older never-approve-your-own-work rule still
+  applies to a name on the list, and answers first. The GitHub sync is exempt, as it is from
+  the holder rule.
+- **`tb done ID --approve` works on every card**, not only one linked to a GitHub issue. It
+  records `checked by NAME` and leaves the card in REVIEW; `done-by` does not gate it, because
+  noting "I looked at this" is not closing it. JSON gains `approved_by` (additive, `"v"` stays
+  1): each checker once, oldest first.
+- **`--tag KEY` on `add` and `edit`** (`--tag none` clears). The tag tb guesses from a `tag:`
+  prefix is deliberately narrow — no spaces, no leading digits — so `00-key 2: x` gets no tag.
+  An explicit tag allows digits, spaces and hyphens, wins over any prefix, and makes tb guess
+  nothing about the title, which is kept exactly as typed (a leading `gh#N` is still pulled
+  out). A tag no title could have produced now survives a later title edit instead of being
+  dropped.
+- A board that sets nothing and passes no flag is unchanged: the same tags are guessed, the
+  same people may close, and `approved_by` is an empty list.
+
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 
 `tb block ID "text"` is unchanged. It now also takes **`--on NAME|#ID`** (who you are waiting

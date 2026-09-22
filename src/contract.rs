@@ -30,6 +30,13 @@ pub struct EventJ {
     pub actor_id: Option<i64>,
 }
 
+impl EventJ {
+    /// The JSON form of a stored event.
+    pub fn of(e: crate::store::Event) -> EventJ {
+        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CardJ {
     pub id: i64,
@@ -67,6 +74,9 @@ pub struct CardJ {
     pub checklist: Vec<CheckJ>,
     /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
     pub round: i64,
+    /// Everyone who recorded `tb done ID --approve` on this card, oldest first, no repeats.
+    /// A record of who checked it — not a permission (see `done-by` in the docs).
+    pub approved_by: Vec<String>,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
 }
@@ -138,11 +148,15 @@ fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<C
     card_shown(store, c, due, &store.display()?)
 }
 
-fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
-    card_all(store, c, due, look, &store.block_ctx()?)
+pub fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
+    card_with(store, c, due, look, &store.block_ctx()?)
 }
 
-fn card_all(
+/// A card with everything already worked out ONCE for the whole board: the due context, the
+/// display labels and the block context. `card_shown` rebuilds the block context on every
+/// call, and that scans the cards table — fine for one card, quadratic for an export, so a
+/// loop over many cards builds these three itself and calls this.
+pub fn card_with(
     store: &Store,
     c: &Card,
     due: &crate::store::due::DueCtx,
@@ -177,6 +191,7 @@ fn card_all(
         last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
         round: crate::store::round_of(&d.events),
+        approved_by: crate::store::closing::approved_by(&d.events),
         events: d
             .events
             .iter()
@@ -204,7 +219,7 @@ pub fn board_where(store: &Store, f: &crate::filter::Filter) -> Result<BoardJ> {
     let look = &snap.display;
     let blocks = store.block_ctx()?;
     let col = |name: &str| -> Result<Vec<CardJ>> {
-        f.apply(snap.in_column(name), &blocks).into_iter().map(|c| card_all(store, c, &due, look, &blocks)).collect()
+        f.apply(snap.in_column(name), &blocks).into_iter().map(|c| card_with(store, c, &due, look, &blocks)).collect()
     };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
