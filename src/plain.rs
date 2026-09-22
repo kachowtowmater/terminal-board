@@ -473,6 +473,13 @@ pub fn detail_all(d: &CardDetail, now: i64, look: &crate::store::display::Displa
             line(&mut out, format!("[{}] {} {}", if i.done { "x" } else { " " }, i.idx, i.text));
         }
     }
+    if !d.links.is_empty() {
+        out.push('\n');
+        line(&mut out, "links:");
+        for l in &d.links {
+            line(&mut out, format!("  {} {}: {}", l.idx, l.label, l.value));
+        }
+    }
     if !d.events.is_empty() {
         out.push('\n');
         for e in &d.events {
