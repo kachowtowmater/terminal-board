@@ -74,6 +74,10 @@ pub struct CardJ {
     pub checklist: Vec<CheckJ>,
     /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
     pub round: i64,
+    /// Sent back more times than `config max-rounds` allows — derived, never stored, and
+    /// always false on a `done` card. Skipped by `tb next` / `tb next --review`'s automatic
+    /// pick; never hidden from `tb list`, `tb board` or `tb show`. See `store::rounds`.
+    pub escalate: bool,
     /// Everyone who recorded `tb done ID --approve` on this card, oldest first, no repeats.
     /// A record of who checked it — not a permission (see `done-by` in the docs).
     pub approved_by: Vec<String>,
@@ -167,6 +171,7 @@ pub fn card_with(
     let d = store.show(c.id)?;
     let due = due.info(c);
     let skip = d.events.len().saturating_sub(CARD_EVENTS);
+    let round = crate::store::round_of(&d.events);
     Ok(CardJ {
         id: c.id,
         title: c.title.clone(),
@@ -190,7 +195,8 @@ pub fn card_with(
         column_since: c.column_since,
         last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
-        round: crate::store::round_of(&d.events),
+        round,
+        escalate: d.escalate,
         approved_by: crate::store::closing::approved_by(&d.events),
         events: d
             .events

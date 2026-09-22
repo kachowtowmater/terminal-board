@@ -434,6 +434,8 @@ tb --version
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
+| `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
+| `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column (`--force` on someone else's held card, logged; `note` is always open to everyone) |
@@ -753,6 +755,33 @@ The GitHub sync is exempt — a merged PR closing its card is evidence, not a pe
 `tb done ID --approve` records that somebody **checked** a card and leaves it in REVIEW. It
 works on every card, not only one linked to an issue, and `done-by` does not gate it: noting
 "I looked at this" is not closing it. Each checker is listed once in JSON as `approved_by`.
+
+### Rework rounds and a closing note
+
+```sh
+tb office config done-needs-note on
+tb office config max-rounds 5
+tb office move 1 doing "add the rollback step"        # round 2 — shows r2
+tb office done 1 --as anna                             # doing -> review; column_since resets
+tb office note 1 "checked the rollback step, looks right"
+tb office done 1                                       # closes: a note was written this stay
+```
+
+**`tb config done-needs-note on`** refuses to move a card into DONE until somebody has written
+a note (`tb note`) **during the stay it is leaving** — a note kept from an earlier round does
+not count, so a note from round 1 cannot silently stand in for round 3's close (running `tb
+done 1` again right after the send-back above, before the `tb note`, is refused with exactly
+that reason and what to run next). Off is the default: a board that sets nothing checks
+nothing. `--force` gets past it, logged, the same bargain `done-by` makes; the GitHub sync is
+exempt — a merged PR is its own trace.
+
+**`tb config max-rounds 5`** marks a card **`escalate`** (JSON) once it has been sent back more
+than 5 times, so a loop between a worker and a reviewer cannot run forever unnoticed.
+`escalate` is **derived**, like `recheck` and `due_state` — nothing is stored, and it is
+`false` again the moment the card reaches DONE. `tb next` and `tb next --review` skip an
+escalated card in their automatic pick; it is never hidden from `tb list`, `tb board` or
+`tb show`, and `tb take ID` / `tb move` / `tb done` still work on it directly — only being
+handed it by accident is what stops.
 
 ### Tags you choose
 

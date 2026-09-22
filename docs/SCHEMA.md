@@ -131,7 +131,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-note`, `max-rounds`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards

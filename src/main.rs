@@ -1624,8 +1624,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     (format!("label.{column}"), json!(shown))
                 }
-                (k @ ("wip-counts-blocked" | "waiting-lane"), _) if off => {
-                    let instead = if k == "waiting-lane" { "'tb config waiting-lane hidden' is the default" } else { "'tb config wip-counts-blocked yes' is the default" };
+                (k @ ("wip-counts-blocked" | "waiting-lane" | "done-needs-note"), _) if off => {
+                    let instead = match k {
+                        "waiting-lane" => "'tb config waiting-lane hidden' is the default",
+                        "done-needs-note" => "'tb config done-needs-note off' is the default",
+                        _ => "'tb config wip-counts-blocked yes' is the default",
+                    };
                     return Err(BoardError(format!("--off does not go with {key} — {instead}")));
                 }
                 // blocks (store/blocks.rs): a blocked card's work slot, and the waiting lane
@@ -1652,6 +1656,43 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         return Ok(());
                     }
                     ("waiting-lane".into(), json!(text))
+                }
+                // a closing note (store/closing.rs) — off by default, so a board that sets
+                // nothing checks nothing on the way into DONE
+                ("done-needs-note", value) => {
+                    let on = match &value {
+                        Some(v) => store.set_done_needs_note(v)?,
+                        None => store.done_needs_note()?,
+                    };
+                    let text = if on { "on" } else { "off" };
+                    if value.is_none() && !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("done-needs-note".into(), json!(text))
+                }
+                ("max-rounds", _) if off => {
+                    store.set_max_rounds(None)?;
+                    ("max-rounds".into(), serde_json::Value::Null)
+                }
+                // rework rounds (store/rounds.rs) — uncapped by default: no card ever escalates
+                ("max-rounds", Some(value)) => {
+                    let n: i64 = value.parse().map_err(|_| {
+                        BoardError(format!("max-rounds must be a number, got '{value}' — try 'tb config max-rounds 5'"))
+                    })?;
+                    store.set_max_rounds(Some(n))?;
+                    ("max-rounds".into(), json!(n))
+                }
+                ("max-rounds", None) => {
+                    let n = store.max_rounds()?;
+                    if !j {
+                        match n {
+                            Some(n) => say!("{n}"),
+                            None => say!("off — no card is ever marked escalate"),
+                        }
+                        return Ok(());
+                    }
+                    ("max-rounds".into(), n.map_or(serde_json::Value::Null, |n| json!(n)))
                 }
                 ("done-by", _) if off => {
                     store.set_done_by(None)?;
@@ -1843,6 +1884,15 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("done-by", n) => say!(
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
                         n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
+                    ("done-needs-note", v) if v.as_str() == Some("on") => say!(
+                        "done-needs-note is now on — a card needs a note written during the stay it is leaving before it can reach DONE"
+                    ),
+                    ("done-needs-note", _) => say!("done-needs-note is now off — DONE needs no note (the default)"),
+                    ("max-rounds", serde_json::Value::Null) => say!("max-rounds is off — no card is ever marked escalate"),
+                    ("max-rounds", n) => say!(
+                        "max-rounds is now {} — a card sent back more times than that is marked escalate and skipped by 'tb next' / 'tb next --review' (still visible, still workable directly)",
+                        n.as_i64().unwrap_or_default()
                     ),
                     ("kind", k) => say!(
                         "kind is now {} — its settings are written; change any of them whenever you like, the settings always decide",
