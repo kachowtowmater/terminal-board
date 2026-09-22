@@ -107,7 +107,9 @@ fn a_plain_terminal_records_no_identity_and_reads_as_it_always_did() {
     b.ok(&[], &["config", "wip", "5"]);
     assert_eq!(b.actors(), Vec::<String>::new(), "nothing is known beyond the name: no row, and no machine name in the file");
     assert!(b.actor_ids("events").iter().all(Option::is_none));
-    let show = b.ok(&[("TB_NOW", "4102444800")], &["show", "1"]);
+    // a far-future clock, so the ages in `show` are stable: 4102444799 is the last second
+    // `TB_NOW` accepts (store::TB_NOW_MAX is exclusive), 4102444800 the first it refuses
+    let show = b.ok(&[("TB_NOW", "4102444799")], &["show", "1"]);
     assert!(!show.contains("actors:"), "{show}");
     assert!(show.contains("added by login-user") && show.contains("login-user: half way"), "the short name is what it was: {show}");
     // the new JSON fields are there, and empty

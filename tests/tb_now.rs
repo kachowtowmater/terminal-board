@@ -228,7 +228,7 @@ fn the_full_screen_board_is_refused_too() {
     let _ = m.flush();
     let reader = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 8192];
         while let Ok(n) = m.read(&mut buf) {
             if n == 0 {
                 break;
