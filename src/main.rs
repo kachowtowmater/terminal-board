@@ -29,7 +29,7 @@ In/out  import FILE.json|- · edit --from FILE.json|- [--dry-run] (all or nothin
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] · board (print; --json = full state) · watch --json (NDJSON on every change)
+Boards  boards [--default [NAME|--clear]] · new NAME [--kind default|deadline | --from BOARD] · board (print) · watch --json
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
         config file-mode [private|shared] (who may open the board file; tb creates it 0600)
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
@@ -207,6 +207,18 @@ enum Cmd {
         #[arg(long, requires = "default")]
         clear: bool,
     },
+    /// Make a board with a kind's settings, or with another board's.
+    New {
+        /// Left out on purpose: `tb new` alone is answered by hand, so a board that is
+        /// actually called `new` can be pointed at instead of a bare usage error.
+        name: Option<String>,
+        /// The kind of board: `default` (as always) or `deadline`.
+        #[arg(long, value_name = "KIND", conflicts_with = "from")]
+        kind: Option<String>,
+        /// Copy the settings — not the cards — of another board.
+        #[arg(long, value_name = "BOARD")]
+        from: Option<String>,
+    },
     Board,
     /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
     Watch {
@@ -274,7 +286,7 @@ impl Cmd {
     fn writes(&self) -> bool {
         !matches!(
             self,
-            Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
+            Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide | Cmd::New { .. }
                 | Cmd::Export { .. } | Cmd::Log { .. }
         )
     }
@@ -517,6 +529,76 @@ fn tag_flag(cmd: Option<&Cmd>) -> Result<Option<Option<String>>, BoardError> {
     terminal_board::store::closing::clean_tag(raw, &example).map(Some)
 }
 
+/// `tb new NAME [--kind KIND | --from BOARD]`: make a board and give it a kind's settings,
+/// or another board's. A board of the default kind is exactly the board tb always made.
+fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, jsonout: bool) -> Result<(), BoardError> {
+    use terminal_board::store::kinds;
+    // TB_DB pins ONE file, so there is no board to make and no board to copy: every name
+    // would open the pinned file and rewrite the settings of a board that holds real work.
+    // Refused exactly like every other command that names a board.
+    if terminal_board::env("DB").is_some() {
+        return Err(BoardError("TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string()));
+    }
+    boards::validate(name)?;
+    // the kind and the source board are checked before anything is created
+    let kind = match kind {
+        Some(k) => kinds::known(k)?,
+        None => "default",
+    };
+    let source = match from {
+        Some(other) => {
+            if other == name {
+                return Err(BoardError(format!("'{name}' cannot copy itself — name another board: 'tb boards'")));
+            }
+            boards::validate(other)?;
+            let path = boards::path_for(other);
+            if !path.exists() {
+                let all = boards::list();
+                let all = if all.is_empty() { "none yet".to_string() } else { all.join(", ") };
+                return Err(BoardError(format!("no board '{other}' to copy — boards: {all}")));
+            }
+            Some(Store::open(&path)?.named(other))
+        }
+        None => None,
+    };
+    let path = boards::path_for(name);
+    if path.exists() {
+        return Err(BoardError(format!(
+            "board '{name}' already exists — open it with 'tb {name}', or give its settings to a new one with 'tb new other-name --from {name}'"
+        )));
+    }
+    let store = Store::open(&path)?.named(name);
+    let what = match &source {
+        Some(other) => {
+            let (_, skipped) = store.copy_settings_from(other, actor)?;
+            let left = if skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" (not {}: each belongs to one board)", skipped.join(", "))
+            };
+            format!("with the settings of '{}'{left}", other.name)
+        }
+        None => {
+            store.apply_kind(kind, actor)?;
+            format!("of kind {}", store.kind()?)
+        }
+    };
+    if jsonout {
+        let config: serde_json::Map<String, serde_json::Value> =
+            store.settings()?.into_iter().map(|(k, v)| (k, json!(v))).collect();
+        println!(
+            "{}",
+            pretty(&json!({
+                "ok": true,
+                "board": {"name": name, "kind": store.kind()?, "from": source.as_ref().map(|s| s.name.clone()), "config": config}
+            }))
+        );
+    } else {
+        say!("created board '{name}' {what} — open it with 'tb {name}', add work with 'tb {name} add \"tag: title\"'");
+    }
+    Ok(())
+}
+
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
     if !path.exists() {
@@ -716,6 +798,20 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         terminal_board::notice::push(format!(
             "TB_DB is set, so TB_BOARD={n} is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"
         ));
+    }
+    if let Some(Cmd::New { name, kind, from }) = &cli.cmd {
+        let Some(name) = name else {
+            // a board really called `new` is reachable, and this is where to say so
+            let hint = if boards::path_for("new").exists() && terminal_board::env("DB").is_none() {
+                " — the board called 'new' opens with 'tb -b new' (or TB_BOARD=new)"
+            } else {
+                ""
+            };
+            return Err(BoardError(format!(
+                "say what to call the board — 'tb new filings --kind deadline'{hint}"
+            )));
+        };
+        return new_board(name, kind.as_deref(), from.as_deref(), &actor, cli.json);
     }
     if let Some(Cmd::Boards { default, clear }) = &cli.cmd {
         return match default {
@@ -1209,7 +1305,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Config { key: None, .. } => {
             let all = store.settings()?;
             if j {
-                let m: serde_json::Map<String, serde_json::Value> = all.into_iter().map(|(k, v)| (k, json!(v))).collect();
+                // `kind` is two facts, so JSON gets two fields instead of one string a
+                // reader has to parse; the plain listing keeps its `deadline (changed)`
+                let mut m: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+                for (k, v) in all {
+                    if k == "kind" {
+                        m.insert("kind_changed".into(), json!(v.ends_with(" (changed)")));
+                        m.insert("kind".into(), json!(v.trim_end_matches(" (changed)")));
+                    } else {
+                        m.insert(k, json!(v));
+                    }
+                }
                 println!("{}", pretty(&json!({"ok": true, "config": m})));
             } else {
                 for (k, v) in all {
@@ -1297,6 +1403,24 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         return Ok(());
                     }
                     ("done-by".into(), json!(names))
+                }
+                ("kind", _) if off => {
+                    return Err(BoardError(
+                        "--off does not go with kind — 'tb config kind default' makes it an ordinary board".to_string(),
+                    ))
+                }
+                // the board's kind (store/kinds.rs): a NAME for a bundle of settings, and a
+                // label only — declaring one writes its settings, and never undoes any
+                ("kind", value) => {
+                    let kind = match &value {
+                        Some(v) => store.apply_kind(v, &actor)?.to_string(),
+                        None => store.kind_settings()?.first().map(|(_, v)| v.clone()).unwrap_or_else(|| store.kind().unwrap_or("default").to_string()),
+                    };
+                    if value.is_none() && !j {
+                        say!("{kind}");
+                        return Ok(());
+                    }
+                    ("kind".into(), json!(kind))
                 }
                 ("card-line", _) if off => {
                     return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string()))
@@ -1455,6 +1579,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
                         n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                     ),
+                    ("kind", k) => say!(
+                        "kind is now {} — its settings are written; change any of them whenever you like, the settings always decide",
+                        k.as_str().unwrap_or("")
+                    ),
                     ("wip-counts-blocked", v) if v.as_str() == Some("no") => say!(
                         "wip-counts-blocked is now no — a blocked card frees a work slot (up to the WIP limit of them; past that they count again)"
                     ),
@@ -1530,7 +1658,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
             }
         }
-        Cmd::Boards { .. } | Cmd::Setup { .. } => unreachable!("handled above"),
+        Cmd::Boards { .. } | Cmd::Setup { .. } | Cmd::New { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
@@ -1539,7 +1667,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
 fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec<std::ffi::OsString>), BoardError> {
     let first = args.get(1).and_then(|a| a.to_str()).map(str::to_string);
     match first {
-        Some(a) if !a.starts_with('-') && !boards::COMMANDS.contains(&a.as_str()) => {
+        Some(a) if !a.starts_with('-') && !boards::is_command_word(&a) => {
             boards::validate(&a)?;
             // a bare first word is a board name (`tb work`); a first word followed by a
             // non-command word is a typo'd command — say so instead of silently opening a
@@ -1548,7 +1676,7 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
                 && args
                     .get(2)
                     .and_then(|x| x.to_str())
-                    .is_some_and(|x| !x.starts_with('-') && !boards::COMMANDS.contains(&x))
+                    .is_some_and(|x| !x.starts_with('-') && !boards::is_command_word(x))
             {
                 return Err(BoardError(format!(
                     "unknown command '{a}' — run 'tb --help' for every command or 'tb guide' for the manual"

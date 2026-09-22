@@ -14,6 +14,7 @@ pub mod closing;
 pub mod bulk;
 pub mod display;
 pub mod due;
+pub mod kinds;
 pub mod order;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -769,7 +770,7 @@ impl Store {
     }
 
     /// Every board-level event is written here (the `log` of `board_events`).
-    fn log_board(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
+    pub(crate) fn log_board(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
         let ts = now();
         let actor_id = actors::stamp(conn, actor, ts)?;
         conn.execute(
@@ -940,6 +941,7 @@ impl Store {
         all.extend(self.display_settings()?);
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
+        all.extend(self.kind_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));

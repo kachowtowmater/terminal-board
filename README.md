@@ -438,6 +438,7 @@ tb --version
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
+| `tb new NAME [--kind default\|deadline]` / `[--from BOARD]` | make a board with a kind's settings, or another board's (settings, not cards) — see [A deadline board in one command](#a-deadline-board-in-one-command) |
 | `tb boards --default [NAME]` / `--default --clear` | show, save or clear the board plain `tb` opens |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
@@ -551,6 +552,47 @@ tb list --done --since 2026-10-01    # finished work older than today
 - All of these only read: they never change the board file.
 - Accepted documents: a JSON array of cards, `{"cards": […]}`, the whole `tb board --json`
   object (its columns in board order), or one card object. At most 4 MiB of UTF-8.
+
+### A deadline board in one command
+
+```sh
+tb new filings --kind deadline
+tb filings add "permits: renew the fire permit" --due 2026-10-09
+tb filings add "tax: file the quarterly return" --due 2026-10-15
+tb filings next --as anna
+tb filings block 2 "waiting for the signed copy" --on "the other side" --until 2026-10-06
+tb filings config
+tb new matters --from filings
+```
+
+Everything below this section is a setting you can change one at a time. A **kind** is a name
+for a combination that works together, so you do not have to know all of them on day one:
+
+| kind | what it writes | what it is for |
+|---|---|---|
+| `default` | nothing at all | the board tb has always made: a priority queue, `tb next` takes the top card |
+| `deadline` | `sort due`, `card-line due`, `due-warn 7`, `waiting-lane shown`, `wip-counts-blocked no`, and the column labels TO PREPARE / IN HAND / WITH REVIEWER / FILED | a board of filing dates: the nearest date first, the date on every card line, a week of warning, and whatever you are waiting on in its own section |
+
+`tb new NAME` with no kind makes exactly the board it always did. `tb new NAME --from BOARD`
+copies another board's **settings and not its cards**, which is how you give a second matter
+the same shape as the first. Three settings belong to one board and never travel — the
+command says which it left behind:
+
+| not copied | why |
+|---|---|
+| `github` | a new board must not start syncing to another board's issues |
+| `done-by` | who may close a card is a decision about that board's people |
+| `file-mode` | the file's own permissions decide it, and they are set when it is created |
+
+`new` is a command word, so `tb new …` always means the command. A board **called** `new`
+(one an older version let you make) is still yours: it is listed by `tb boards` and opens with
+`tb -b new` or `TB_BOARD=new`.
+
+**A kind is a label, not a lock.** The settings are yours: change any of them whenever you
+like and the board follows the setting, not the name. `tb config` then shows
+`kind deadline (changed)` so the name never claims more than it should; putting the setting
+back, or `tb config kind default`, clears the mark. Declaring a kind writes its settings and
+never undoes one, so it is safe on a board that already holds work.
 
 ### Due dates
 

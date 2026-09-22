@@ -12,6 +12,26 @@ refreshed automatically when anyone (you, a teammate, an agent) changes it. `q` 
 The very first time, `tb` asks a few setup questions first (GitHub, agents); press `s` to
 skip them. `tb setup` runs them again later.
 
+## A board for deadlines
+
+```sh
+tb new filings --kind deadline
+tb filings add "permits: renew the fire permit" --due 2026-10-09
+```
+
+A board is a priority queue by default: the top card is the next one. `tb new NAME --kind
+deadline` makes a board of **filing dates** instead — the nearest date first, the date on each
+card line, a week of warning before one is due, blocked cards gathered in their own WAITING
+section and not using up a work slot, and the columns named TO PREPARE, IN HAND, WITH REVIEWER
+and FILED.
+
+Every part of that is an ordinary setting you can change afterwards (`tb config`), and the
+board follows the setting, not the name. `tb new NAME --from BOARD` gives a new board the same
+settings as one you already like — its settings, not its cards, and not the three that belong
+to one board (its GitHub repository, who may close its cards, its file permissions). If you
+already have a board called `new`, it is still there: `tb boards` lists it and `tb -b new`
+opens it.
+
 ## The columns
 
 ```text

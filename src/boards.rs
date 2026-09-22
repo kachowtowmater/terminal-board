@@ -13,6 +13,16 @@ pub const COMMANDS: [&str; 28] = [
     "export", "log",
 ];
 
+/// The words that are COMMANDS when they come first — `COMMANDS`, plus `new`.
+///
+/// `new` is deliberately NOT in `COMMANDS`: that list also decides which names a board may
+/// have, and a board called `new` (one an older tb happily made) must not become unreachable
+/// because a command was added later. So `tb new …` is the command, and the board keeps its
+/// file, its place in `tb boards`, and `-b new` / `TB_BOARD=new` to open it.
+pub fn is_command_word(word: &str) -> bool {
+    COMMANDS.contains(&word) || word == "new"
+}
+
 /// `[a-z0-9_-]{1,32}` and not a subcommand.
 pub fn validate(name: &str) -> Result<()> {
     if COMMANDS.contains(&name) {
