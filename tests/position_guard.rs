@@ -179,7 +179,7 @@ fn nullable_board() -> Board {
             title TEXT NOT NULL, tag TEXT, description TEXT NOT NULL DEFAULT '',
             "column" TEXT NOT NULL DEFAULT 'todo' CHECK ("column" IN ('todo','doing','review','done')),
             owner TEXT, due TEXT, gh_ref INTEGER, created_at INTEGER NOT NULL, column_since INTEGER NOT NULL,
-            blocked TEXT, position INTEGER DEFAULT 0, reviewer TEXT
+            blocked TEXT, position INTEGER DEFAULT 0, reviewer TEXT, blocked_on TEXT, blocked_until TEXT
         );
         INSERT INTO cards SELECT * FROM cards_null;
         DROP TABLE cards_null;
