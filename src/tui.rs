@@ -722,7 +722,9 @@ impl App {
                     // only the fields the person changed are written; a field they left at
                     // its open-time value but that moved on since is refused, not overwritten
                     let text_changed = form.title != form.open_title || form.desc != form.open_desc;
-                    let r = if text_changed {
+                    // a form nobody changed answers exactly as it did before this field
+                    // existed: `nothing to change`, from the same call the CLI makes
+                    let r = if text_changed || !due_changed {
                         store.edit(
                             form.id,
                             (form.title != form.open_title).then_some(form.title.as_str()),
@@ -2687,11 +2689,33 @@ fn cursor_line(text: &str, cursor: usize, active: bool) -> Line<'static> {
 }
 
 /// The `e` edit form: Title (one line) and Description (one logical line that wraps).
+/// The form's three fields, in tab order. Each wants a label row and a three-row box.
+const FORM_ROWS_PER_FIELD: u16 = 4;
+
+/// Which fields fit in `rows` of interior, given which one is being typed into.
+///
+/// Fields are dropped from the END — the description first — because the ones above it are
+/// short and the description is the one that can be read on the card instead. The field
+/// being typed into is ALWAYS drawn, whatever else goes: typing into something invisible is
+/// worse than a missing box. Returns the field indexes to draw, in order.
+pub fn form_fields_for(rows: u16, active: u8) -> Vec<u8> {
+    let fits = (rows / FORM_ROWS_PER_FIELD).min(FORM_FIELDS as u16) as usize;
+    let mut shown: Vec<u8> = (0..fits as u8).collect();
+    if fits > 0 && !shown.contains(&active) {
+        // the last one makes way for the field the cursor is in
+        let last = shown.len() - 1;
+        shown[last] = active;
+    }
+    shown
+}
+
 fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
-    // three fields now (title, due, description); one row taller when the screen allows it
+    // three fields (title, due, description) want 12 rows of interior plus the border
     let want = if f.area().height >= 18 { 18 } else { 14 };
     let area = centered(f.area(), 80, want);
-    if area.width < 10 || area.height < 8 {
+    // below this even one field cannot be drawn whole; the form stays open, and `esc` and
+    // `enter` still work, so nothing is lost by drawing nothing here
+    if area.width < 10 || area.height < FORM_ROWS_PER_FIELD + 2 {
         return;
     }
     f.render_widget(Clear, area);
@@ -2703,8 +2727,12 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
     f.render_widget(b, area);
     let pad = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let label = |active: bool, t: &str| Line::styled(t.to_string(), if active { bold() } else { dim() });
-    // one field: a label row, then a boxed line of text with the cursor in it
+    // one field: a label row, then a boxed line of text with the cursor in it. Every row is
+    // worked out from the height the form actually got, never from a fixed offset.
     let mut field = |y: u16, height: u16, active: bool, name: &str, text: &str, wrap: bool| {
+        if y + 1 + height > pad.height {
+            return; // never draw past the box: a short pane drops a field, it does not panic
+        }
         f.render_widget(Paragraph::new(label(active, name)), Rect { y: pad.y + y, height: 1, ..pad });
         let block = frame(active, None).padding(Padding::horizontal(1));
         let rect = Rect { y: pad.y + y + 1, height, ..pad };
@@ -2716,9 +2744,29 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
         let p = Paragraph::new(line).block(block);
         f.render_widget(if wrap { p.wrap(Wrap { trim: false }) } else { p }, rect);
     };
-    field(0, 3, form.field == 0, "Title  (tag: prefix sets the tag)", &form.title, false);
-    field(4, 3, form.field == 1, "Due  (YYYY-MM-DD, empty for none)", &form.due, false);
-    field(8, pad.height.saturating_sub(9), form.field == 2, "Description", &form.desc, true);
+    let shown = form_fields_for(pad.height, form.field);
+    let last = shown.len().saturating_sub(1);
+    for (row, which) in shown.iter().enumerate() {
+        let y = row as u16 * FORM_ROWS_PER_FIELD;
+        // the last field drawn takes the rest of the box (the description wraps into it)
+        let height = if row == last { pad.height.saturating_sub(y + 1) } else { 3 };
+        match which {
+            0 => field(y, height.min(3), form.field == 0, "Title  (tag: prefix sets the tag)", &form.title, false),
+            1 => field(y, height.min(3), form.field == 1, "Due  (YYYY-MM-DD, empty for none)", &form.due, false),
+            _ => field(y, height, form.field == 2, "Description", &form.desc, true),
+        }
+    }
+    // a pane too short for every field says which are not on screen, rather than hiding them
+    let hidden: Vec<&str> = [(0u8, "title"), (1, "due"), (2, "description")]
+        .iter()
+        .filter(|(i, _)| !shown.contains(i))
+        .map(|(_, n)| *n)
+        .collect();
+    let used = shown.len() as u16 * FORM_ROWS_PER_FIELD;
+    if !hidden.is_empty() && used < pad.height {
+        let text = format!("{} not shown — make the pane taller (tab still reaches it)", hidden.join(" and "));
+        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + used, height: 1, ..pad });
+    }
 }
 
 /// Every key, grouped, plus the CLI verbs.

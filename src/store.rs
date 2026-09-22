@@ -10,6 +10,7 @@ use std::time::Duration;
 pub mod actors;
 pub mod archive;
 pub mod blocks;
+pub mod closing;
 pub mod bulk;
 pub mod display;
 pub mod due;
@@ -204,6 +205,8 @@ pub struct CardDetail {
     pub events: Vec<Event>,
     /// Rework round: 1, plus one per send-back (`returned` event).
     pub round: i64,
+    /// Everyone who recorded `tb done ID --approve`, oldest first (`store::closing`).
+    pub approved_by: Vec<String>,
     /// The identities behind this card's events (`Event::actor_id`), in id order.
     pub actors: Vec<actors::Actor>,
 }
@@ -277,6 +280,22 @@ pub fn now() -> i64 {
         Some(v) => v.trim().parse::<i64>().unwrap_or_else(|_| chrono::Utc::now().timestamp()),
         None => chrono::Utc::now().timestamp(),
     }
+}
+
+/// `parse_title` without the tag guess: the whole string stays the title (minus a leading
+/// `gh#N`). What an explicit `--tag` uses, so a title like `due 10/9 (file by 10/6): …` is
+/// kept exactly as it was typed.
+pub fn parse_title_keeping_prefix(raw: &str) -> (Option<String>, Option<i64>, String) {
+    let (_, gh, _) = parse_title(raw);
+    let mut words: Vec<&str> = raw.split_whitespace().collect();
+    if let Some(first) = words.first() {
+        let lower = first.to_ascii_lowercase();
+        if lower.strip_prefix("gh#").and_then(|n| n.parse::<i64>().ok()).is_some() {
+            words.remove(0);
+        }
+    }
+    let title = if words.is_empty() { raw.trim().to_string() } else { words.join(" ") };
+    (None, gh, title)
 }
 
 /// Split `tag: rest` and `gh#N` out of a title.
@@ -920,6 +939,7 @@ impl Store {
         all.extend(self.sort_settings()?);
         all.extend(self.display_settings()?);
         all.extend(self.block_settings()?);
+        all.extend(self.closing_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1040,10 +1060,23 @@ impl Store {
     }
 
     pub fn add(&self, raw_title: &str, desc: &str, checks: &[String], actor: &str) -> Result<i64> {
+        self.add_tagged(raw_title, desc, checks, actor, None)
+    }
+
+    /// `add` with an explicit `--tag` (`store::closing`): the tag the user chose, and then
+    /// the title is kept whole — tb guesses nothing from a `tag:` prefix it was not asked
+    /// about, which is the point of the flag.
+    pub fn add_tagged(&self, raw_title: &str, desc: &str, checks: &[String], actor: &str, tag: Option<Option<&str>>) -> Result<i64> {
         if raw_title.trim().is_empty() {
             return err("title is empty — try 'tb add \"tag: what to do\"'");
         }
-        let (tag, gh, title) = parse_title(raw_title);
+        let (tag, gh, title) = match tag {
+            None => parse_title(raw_title),
+            Some(explicit) => {
+                let (_, gh, title) = parse_title_keeping_prefix(raw_title);
+                (explicit.map(str::to_string), gh, title)
+            }
+        };
         let tx = self.conn.unchecked_transaction()?;
         let t = now();
         let pos = bottom_of(&tx, "todo")?;
@@ -1139,7 +1172,8 @@ impl Store {
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
         let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
-        Ok(CardDetail { card, checklist, events, round, actors })
+        let approved_by = closing::approved_by(&events);
+        Ok(CardDetail { card, checklist, events, round, approved_by, actors })
     }
 
     /// Every card's title, for an export that names a card without loading it again.
@@ -1610,6 +1644,18 @@ impl Store {
                 }
             }
         }
+        // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
+        // never security: names are self-asserted, and `--force` is open to everyone (logged).
+        // It guards EVERY way into DONE, so moving a card out of review first is not a way
+        // round it. `github` is exempt, as it is for the holder rule.
+        if column == "done" && c.column != "done" {
+            if let Some(names) = closing::may_close(&tx, actor)? {
+                if !force {
+                    return Err(closing::not_allowed(id, actor, &names));
+                }
+                Self::log(&tx, id, actor, "force", &format!("closed #{id}, not on the done-by list"))?;
+            }
+        }
         // a returned card is its owner's existing work, not new work: WIP does not block it
         if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
@@ -1730,6 +1776,20 @@ impl Store {
         actor: &str,
         baseline: Option<(&str, &str)>,
     ) -> Result<Card> {
+        self.edit_tagged(id, raw_title, desc, actor, baseline, None)
+    }
+
+    /// `edit` with an explicit `--tag` (`store::closing`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_tagged(
+        &mut self,
+        id: i64,
+        raw_title: Option<&str>,
+        desc: Option<&str>,
+        actor: &str,
+        baseline: Option<(&str, &str)>,
+        tag: Option<Option<&str>>,
+    ) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         let (mut skip_title, mut skip_desc) = (false, false);
@@ -1765,12 +1825,26 @@ impl Store {
             if t.trim().is_empty() {
                 return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
             }
-            let (tag, gh, title) = parse_title(t);
+            let (guessed, gh, title) = match tag {
+                Some(_) => parse_title_keeping_prefix(t),
+                None => parse_title(t),
+            };
+            // A tag no title could carry (`00-key 2`) was set on purpose with `--tag`: a
+            // later title edit must not quietly drop it. Every tag tb could have guessed
+            // behaves exactly as before.
+            let keep = c.tag.clone().filter(|t| !closing::from_a_title_prefix(t));
+            let new_tag = match tag {
+                Some(explicit) => explicit.map(str::to_string),
+                None => guessed.or(keep),
+            };
             tx.execute(
                 "UPDATE cards SET title=?, tag=?, gh_ref=? WHERE id=?",
-                params![title, tag, gh.or(c.gh_ref), id],
+                params![title, new_tag, gh.or(c.gh_ref), id],
             )?;
             what.push("title");
+        } else if let Some(explicit) = tag {
+            tx.execute("UPDATE cards SET tag=? WHERE id=?", params![explicit, id])?;
+            what.push("tag");
         }
         if let (Some(d), false) = (desc, skip_desc) {
             tx.execute("UPDATE cards SET description=? WHERE id=?", params![d.trim(), id])?;
@@ -1863,7 +1937,9 @@ pub fn shown_ref(c: &Card) -> Option<i64> {
 /// The raw title as typed: `tag: gh#N title` (what `edit` pre-fills).
 pub fn raw_title(c: &Card) -> String {
     let mut s = String::new();
-    if let Some(t) = &c.tag {
+    // only a tag a `tag:` prefix could produce is rebuilt into the raw title; an explicit
+    // one (`--tag "00-key 2"`) stays on the card and out of the text being edited
+    if let Some(t) = c.tag.as_deref().filter(|t| closing::from_a_title_prefix(t)) {
         s.push_str(&format!("{t}: "));
     }
     if let Some(n) = shown_ref(c) {
