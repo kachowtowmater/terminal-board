@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### A closing note requirement, and a rounds cap that marks a looping card `escalate`
+
+- `tb config done-needs-note on` refuses to move a card into DONE until a `tb note` was
+  written during the stay being left — not just anywhere in the card's history, so a note kept
+  from round 1 cannot silently stand in for round 3's close. Off (the default) is unchanged
+  behaviour. `--force` gets past it, logged; the GitHub sync is exempt, same reasoning as
+  `done-by`. Sits in `Store::transition` right after `done-by`: who may close answers before
+  whether they left a trace.
+- `tb config max-rounds N` marks a card `escalate` (JSON, derived — never stored, and always
+  `false` once DONE) once it has been sent back more than N times, built on the existing round
+  counter (`returned` events), not a second one. `tb next` and `tb next --review` skip an
+  escalated card in their automatic pick; it is never hidden from `tb list`, `tb board` or
+  `tb show`, and `tb take ID` / `tb move` / `tb done` still act on it directly.
+- Both settings are unset by default, so a board that sets nothing renders and behaves exactly
+  as before.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a
