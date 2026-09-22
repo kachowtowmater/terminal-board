@@ -23,7 +23,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
         list · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
-Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS
+Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -562,7 +562,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let snap = store.snapshot()?;
             if j {
                 let ctx = store.due_ctx()?;
-                println!("{}", pretty(&snap.cards.iter().map(|c| ctx.with(c, c)).collect::<Vec<_>>()));
+                println!("{}", pretty(&snap.listed().into_iter().map(|c| ctx.with(c, c)).collect::<Vec<_>>()));
             } else {
                 print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
@@ -731,8 +731,30 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Prio { id, how } => {
+            let before = store.place(id).ok();
             let c = store.reorder(id, &how.to_ascii_lowercase(), &actor)?;
-            done_card(&store, j, id, format!("#{id} is now at position {} in {}", c.position + 1, c.column))?;
+            let human = format!("#{id} is now at position {} in {}", c.position + 1, c.column);
+            if store.sort()?.by_date(&c.column) {
+                // on a due-sorted column `position` is only the tie-break: say where the card
+                // really is, and what would move it, instead of seeming to do nothing
+                let (at, of) = store.place(id)?;
+                let was = match before {
+                    Some((b, _)) if b != at => format!(" (was {b})"),
+                    _ => " (unchanged)".to_string(),
+                };
+                let note = format!(
+                    "this board sorts by due date, so position only orders cards with the same date (or none): #{id} is {at} of {of} in {}{was}; its date decides the rest — {}",
+                    c.column,
+                    cmd_hint(explicit, &format!("edit {id} --due DATE"))
+                );
+                if j {
+                    println!("{}", pretty(&json!({"ok": true, "card": contract::card_by_id(&store, id)?, "note": note})));
+                } else {
+                    say_lines!("{human} — {note}");
+                }
+            } else {
+                done_card(&store, j, id, human)?;
+            }
         }
         Cmd::Edit { id, title, desc, .. } => {
             // `--due` alone is a whole edit; with --title/--desc the date (already checked)
@@ -862,10 +884,25 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 // due dates: `tz` decides what today is, `due-warn` how early a date is `soon`.
                 // Without a value each one is READ (its default when the board sets none).
-                ("tz" | "due-warn", _) if off => {
-                    return Err(BoardError(format!(
-                        "--off does not go with {key} — 'tb config tz local' clears the zone, 'tb config due-warn 3' is the default"
-                    )))
+                (k @ ("tz" | "due-warn" | "sort"), _) if off => {
+                    let instead = match k {
+                        "tz" => "'tb config tz local' clears the zone",
+                        "due-warn" => "'tb config due-warn 3' is the default",
+                        _ => "'tb config sort position' is the default",
+                    };
+                    return Err(BoardError(format!("--off does not go with {key} — {instead}")));
+                }
+                // `sort`: position (the default) or due — the one order of `tb next`, lists and boards
+                ("sort", value) => {
+                    let sort = match &value {
+                        Some(v) => store.set_sort(v)?,
+                        None => store.sort()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", sort.as_str());
+                        return Ok(());
+                    }
+                    ("sort".into(), json!(sort.as_str()))
                 }
                 ("tz", value) => {
                     let zone = match &value {
@@ -925,6 +962,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("wip", n) => say!("wip limit is now {n}"),
                     ("tz", z) => say!("tz is now {} — it decides what 'today' is for due dates", z.as_str().unwrap_or("")),
                     ("due-warn", n) => say!("due-warn is now {n} — a card is 'soon' from {n} day(s) before its due date"),
+                    ("sort", s) if s.as_str() == Some("due") => say!(
+                        "sort is now due — TODO and REVIEW show the nearest due date first and 'tb next' takes it; cards without a date follow; equal dates keep their position"
+                    ),
+                    ("sort", _) => say!("sort is now position — every column is in position order and 'tb next' takes the top card"),
                     (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }

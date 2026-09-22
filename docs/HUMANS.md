@@ -41,6 +41,11 @@ because of a time zone. `tb config tz America/Los_Angeles` sets the zone that de
 "today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
 days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
 
+`tb config sort due` turns the board into a deadline queue: TODO and REVIEW show the nearest due
+date first (overdue on top, cards without a date last, equal dates in the order you gave them),
+and `tb next` hands out that card. Reordering by hand (shift+arrows, `tb prio`) then only orders
+cards that share a date — the status line says so. `tb config sort position` is the default.
+
 ### Moving cards
 
 | to | keys |

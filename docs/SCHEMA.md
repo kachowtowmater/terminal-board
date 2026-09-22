@@ -104,7 +104,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `file-mode`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `file-mode`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ## Reading safely
