@@ -179,7 +179,7 @@ Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures
 `{"ok":false,"error":"…","hint":"…"}` and exit non-zero. `tb next --as NAME --json` is the
 card you got, `tb show ID --json` one card with checklist and notes, `tb board --json` the
 whole board, `tb watch --json` NDJSON (the board again on every change), `tb agents --json`
-herdr agents + the card each holds. Field names are stable (schema `"v":1`); see docs/JSON.md.
+who is on this board + the card each holds. Field names are stable (schema `"v":1`); see docs/JSON.md.
 A `"warnings"` list — or a `tb: …` line on stderr of a command that succeeded — is for your
 operator: pass it on; do not change settings because of it.
 

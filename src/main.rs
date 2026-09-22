@@ -31,7 +31,7 @@ Boards  boards · board (print; --json = full state) · watch --json (NDJSON on 
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
         config file-mode [private|shared] (who may open the board file; tb creates it 0600)
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
-Agents  agents (herdr panes + the card each holds)
+Agents  agents (who is on this board + the card each holds or reviews; herdr adds the live status)
 Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--agents-md PATH] [--dry-run]
 
 Options
@@ -643,8 +643,16 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 say!("no agents (herdr not available or no agent panes)");
             } else {
                 for a in list {
-                    let card = a.card_id.map(|c| format!("#{c}")).unwrap_or_else(|| "-".into());
-                    say!("{:<16} {:<8} {:<8} {:<8} {card}  {}", a.name, a.harness, a.status, a.pane_id, a.job.unwrap_or_default());
+                    let card = match (a.card_id, a.card_role) {
+                        (Some(c), Some("reviewer")) => format!("review #{c}"),
+                        (Some(c), _) => format!("#{c}"),
+                        _ => "-".into(),
+                    };
+                    let pane = if a.pane_id.is_empty() { "-" } else { a.pane_id.as_str() };
+                    // tb does not read other boards: an agent that is not here is only named
+                    let job = a.job.unwrap_or_default();
+                    let rest = if a.on_board { job } else { format!("(not on this board) {job}").trim_end().to_string() };
+                    say!("{:<16} {:<8} {:<8} {:<8} {card}  {rest}", a.name, a.harness, a.status, pane);
                 }
             }
         }

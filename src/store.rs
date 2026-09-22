@@ -219,6 +219,9 @@ pub struct Snapshot {
     pub github_panel_hidden: bool,
     pub agents_panel_hidden: bool,
     pub now: i64,
+    /// Each actor's latest card event, keyed by the lowercased name (`roster`: who is on
+    /// this board even while holding no card).
+    pub actor_last: HashMap<String, Event>,
     /// The board's `sort` (`store::order`): what `in_column` orders by. Default = position.
     pub sort: order::Sort,
 }
@@ -1138,6 +1141,7 @@ impl Store {
         let mut last_event_at: HashMap<i64, i64> = HashMap::new();
         let mut recent: HashMap<i64, Vec<Event>> = HashMap::new();
         let mut rounds: HashMap<i64, i64> = HashMap::new();
+        let mut actor_last: HashMap<String, Event> = HashMap::new();
         let mut st = self.conn.prepare(
             "SELECT card_id, ts, actor, kind, text FROM events ORDER BY card_id, ts, id",
         )?;
@@ -1149,6 +1153,10 @@ impl Store {
             last_event_at.insert(e.card_id, e.ts);
             if e.kind == "returned" {
                 *rounds.entry(e.card_id).or_insert(1) += 1;
+            }
+            let who = e.actor.trim().to_lowercase();
+            if !actor_last.get(&who).is_some_and(|p: &Event| p.ts > e.ts) {
+                actor_last.insert(who, e.clone());
             }
             let v = recent.entry(e.card_id).or_default();
             v.push(e);
@@ -1182,6 +1190,7 @@ impl Store {
             github_panel_hidden,
             agents_panel_hidden,
             now: now(),
+            actor_last,
             sort: self.sort()?,
         })
     }

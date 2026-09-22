@@ -343,11 +343,16 @@ tb guide
 > `tb note`, tick `tb check`, and `tb done` when finished (`tb drop` if you stop,
 > `tb block` if stuck). Full manual: `tb guide`.
 
-**The AGENTS panel.** If you run agents in herdr panes (a terminal multiplexer for coding
-agents), the AGENTS panel shows each one, whether it is working or idle, and which card it
-holds. An agent that went idle while still holding a card is shown in red — it probably
-stopped halfway. Show or hide it with `A` or `tb config agents-panel shown|hidden`; list
-them with `tb agents`.
+**The AGENTS panel.** It shows who is working on *this* board and on what: everyone who holds
+a card that is not done, reviews one, or wrote to a card in the last hour, each with the card
+they are on (`review` when they are reviewing it), its last note and the note's age. The board
+itself knows all of that, so the panel works with no extra tool. If you run agents in herdr
+panes (a terminal multiplexer for coding agents), a pane whose agent name is exactly a name on
+the board adds whether it is working or idle; an agent that went idle while still holding a
+card is shown in red — it probably stopped halfway. Agents in other panes are counted, not
+listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the panel with `A` or
+`tb config agents-panel shown|hidden`; print the same list with `tb agents`
+([more](docs/HUMANS.md#watching-agents)).
 
 ## Command-line reference
 
@@ -408,7 +413,7 @@ tb --version
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
-| `tb agents` | the herdr agents and the card each holds |
+| `tb agents` | who is on this board and the card each holds or reviews, then the other herdr agents |
 | `tb guide` | the manual for AI agents |
 | `tb setup` | the setup wizard (GitHub, panels, agent instructions) |
 

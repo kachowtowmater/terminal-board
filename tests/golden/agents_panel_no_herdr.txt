@@ -1,0 +1,59 @@
+===== 126x41 =====
+ TERMINAL BOARD · default · 7 cards · 7 agents (7 here, 0 elsewhere)
+┌ AGENTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   dev-1          -       -        #2    gh#305 login form rejects emails       0m "plus-addresses parse now; writing t…" 0m│
+│   dev-2          -       -        #3    fix flaky upload test           0m 0m                                              │
+│   dev            -       -        #5    screenshots for README          0m 0m                                              │
+│   builder        -       -        #6    rotate API tokens               0m 0m                                              │
+│   lead           -       -        #7    renew domain                    0m 0m                                              │
+│   rev-1          -       -        #4    review: backup restore drill    0m "reading the diff" 0m                           │
+│   filer          -       -        -     last created #7 0m                                                                 │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+===== 126x24 =====
+ TERMINAL BOARD · default · 7 cards · 7 agents (7 here, 0 elsewhere)
+┌ AGENTS · 7 here · 0 elsewhere ─────────┐
+│   dev-1      #2 "plus…" 0m login form… │
+│   dev-2      #3 0m fix flaky u…        │
+│   dev        #5 0m screenshots…        │
+│   builder    #6 0m rotate API …        │
+│   lead       #7 0m renew domain        │
+│   rev-1      review #4 0m backup rest… │
+│   filer      last created #7 0m        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+│                                        │
+└────────────────────────────────────────┘
+===== 50x70 =====
+ TERMINAL BOARD · default · 7 cards
+┌ AGENTS · 7 here · 0 elsewhere ─────────────────┐
+│   dev-1      #2 "plus-address…" 0m login form… │
+│   dev-2      #3 0m fix flaky u…                │
+│   dev        #5 0m screenshots…                │
+│   builder    #6 0m rotate API …                │
+│   lead       #7 0m renew domain                │
+│   rev-1      review #4 "readi…" 0m backup res… │
+│   filer      last created #7 0m                │
+└────────────────────────────────────────────────┘
+===== 70x70 =====
+ TERMINAL BOARD · default · 7 cards · 7 agents (7 here, 0 elsewhere)
+┌ AGENTS · 7 here · 0 elsewhere ─────────────────────────────────────┐
+│   dev-1      #2 "plus-addresses parse now; writin…" 0m login form… │
+│   dev-2      #3 0m fix flaky u…                                    │
+│   dev        #5 0m screenshots…                                    │
+│   builder    #6 0m rotate API …                                    │
+│   lead       #7 0m renew domain                                    │
+│   rev-1      review #4 "reading the diff" 0m backup rest…          │
+│   filer      last created #7 0m                                    │
+└────────────────────────────────────────────────────────────────────┘
+===== 95x35 =====
+ TERMINAL BOARD · default · 7 cards · 7 agents (7 here, 0 elsewhere)
+ AGENTS 7 here · 0 elsewhere   tab >
+===== 50x14 =====
+ AGENTS 7 here · 0 elsewhere   tab >

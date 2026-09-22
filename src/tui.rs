@@ -1044,15 +1044,15 @@ impl App {
         f.issues.get(i - 1 - s.prs.len()).map(|r| (false, r.number))
     }
 
+    /// Who is on this board, then the herdr agents that are not (`roster`). The AGENTS panel,
+    /// its bar, the header count and the row keys all read this one list.
+    pub fn roster(&self) -> crate::roster::Roster<'_> {
+        crate::roster::roster(&self.snap, agent_list(self))
+    }
+
+    /// The card of AGENTS row `i` (the one it holds or reviews).
     fn agent_card(&self, i: usize) -> Option<&Card> {
-        let agents = match &self.agents {
-            AgentsState::Agents(a) => a,
-            _ => return None,
-        };
-        let a = agents.get(i)?;
-        let mine = |c: &&Card| herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id);
-        let owned: Vec<&Card> = self.snap.cards.iter().filter(|c| c.column != "done").filter(mine).collect();
-        owned.iter().find(|c| c.column == "doing").or(owned.first()).copied()
+        self.roster().here.get(i).and_then(|r| r.card)
     }
 
     fn open_picker(&mut self, preselect: bool) {
@@ -1139,10 +1139,7 @@ impl App {
         }
         let a_shown = a_shown || self.bars.get().1;
         let _ = g_shown;
-        let n_agents = match &self.agents {
-            AgentsState::Agents(a) => a.len(),
-            _ => 0,
-        };
+        let n_agents = self.roster().panel_rows();
         match (self.focus, key.code) {
             (_, KeyCode::Char('q')) => return true,
             (_, KeyCode::Esc) => {
@@ -1560,18 +1557,26 @@ fn agent_list(app: &App) -> &[Agent] {
 }
 
 fn header(app: &App, width: u16) -> Line<'static> {
-    let agents = agent_list(app);
-    let working = agents.iter().filter(|a| a.status == "working").count();
-    let idle = agents.iter().filter(|a| a.is_idle()).count();
-    let left = format!(
-        " TERMINAL BOARD · {} · {} cards · {} agents ({working} working, {idle} idle)",
+    let r = app.roster();
+    let base = format!(
+        " TERMINAL BOARD · {} · {} cards · {} agents",
         if app.snap.board.is_empty() { "default" } else { &app.snap.board },
         app.snap.cards.len(),
-        agents.len()
+        r.total()
     );
+    // nobody on this board and no agent pane anywhere: the line reads as it always has
+    let count = if r.total() == 0 {
+        " (0 working, 0 idle)".to_string()
+    } else {
+        format!(" ({} here, {} elsewhere)", r.here.len(), r.elsewhere.len())
+    };
+    let mut left = format!("{base}{count}");
     let mut right = format!("refreshed {} ", clock_secs(app.snap.now));
     if left.chars().count() + right.chars().count() > width as usize {
         right.clear(); // no room: drop the clock rather than cut it
+    }
+    if r.total() > 0 && left.chars().count() > width as usize {
+        left = base; // still no room: the count goes whole, never `(3 here, 2 els…`
     }
     let left = fit(&left, width as usize);
     let pad = (width as usize).saturating_sub(left.chars().count() + right.chars().count());
@@ -1865,90 +1870,135 @@ pub fn activity(note: Option<&String>, age: &str, room: usize) -> String {
     }
 }
 
-fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
-    let agents = match &app.agents {
-        AgentsState::Agents(a) => a,
-        AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
-        AgentsState::Unavailable(msg) => return vec![Line::styled(format!(" {msg}"), dim())],
+/// What the AGENTS panel says when nobody is on this board and herdr shows no agent pane.
+pub(crate) fn agents_empty(app: &App) -> Line<'static> {
+    let text = match &app.agents {
+        AgentsState::Agents(_) => " no agent panes in herdr".to_string(),
+        AgentsState::Pending => " checking herdr...".to_string(),
+        AgentsState::Unavailable(msg) => format!(" {msg}"),
     };
-    if agents.is_empty() {
-        return vec![Line::styled(" no agent panes in herdr", dim())];
+    Line::styled(text, dim())
+}
+
+/// The line that closes the AGENTS panel: herdr agents that are nobody on this board. They
+/// are counted, never described — tb does not read other boards. The words in brackets go
+/// whole when the panel is too narrow for them.
+pub(crate) fn elsewhere_line(n: usize, width: usize) -> Line<'static> {
+    let short = format!(" +{n} elsewhere");
+    let long = format!("{short} (not on this board)");
+    Line::styled(if long.chars().count() <= width { long } else { short }, dim())
+}
+
+/// A panel with fewer rows than it has lines still ends in the count: its last row says how
+/// many actors of this board are below it and how many agents are elsewhere. A focused panel
+/// scrolls instead (every row can be reached), so it is left alone; so is a panel of one or
+/// two rows, where the count would cost half of what it shows (its title or the header
+/// already carries the numbers).
+pub(crate) fn close_clipped(mut lines: Vec<Line<'static>>, app: &App, height: usize, width: usize) -> Vec<Line<'static>> {
+    let r = app.roster();
+    if app.focus == Focus::Agents || height < 3 || lines.len() <= height || r.total() == 0 {
+        return lines;
     }
-    agents
-        .iter()
-        .map(|a| {
-            let owned: Vec<&Card> = app
-                .snap
-                .cards
-                .iter()
-                .filter(|c| {
-                    c.column != "done"
-                        && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id)
-                })
-                .collect();
-            let doing = owned.iter().find(|c| c.column == "doing");
-            let holds = a.is_idle() && doing.is_some();
-            let (mark, st) = if holds {
-                ("!", red())
-            } else {
-                match a.status.as_str() {
-                    "working" => ("*", Style::default().fg(GREEN)),
-                    // a blocked agent is shown by its mark only; red is reserved for cards
-                    "blocked" => ("x", bold()),
-                    "idle" | "done" => ("-", dim()),
-                    _ => ("?", dim()),
-                }
-            };
-            // colour only the warning marks; the rest of the row stays monochrome
-            let text_st = match (holds, a.status.as_str()) {
-                (true, _) => bold(),
-                (_, "working") => Style::default(),
-                _ => st,
-            };
-            let mut spans = vec![
-                Span::raw(" "),
-                Span::styled(mark, st),
-                Span::raw(" "),
-                Span::styled(format!("{:<14} ", fit(&a.name, 14)), text_st.add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{:<7.7} ", a.harness)),
-                Span::styled(format!("{:<8.8} ", a.status), text_st),
-            ];
-            match doing.or(owned.first()) {
-                Some(c) => {
-                    spans.push(Span::raw(format!("#{:<4} ", c.id)));
-                    if let Some(n) = crate::store::shown_ref(c) {
-                        spans.push(Span::raw(format!("gh#{n} ")));
-                    }
-                    spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
-                    spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
-                    if holds {
-                        // the duration is shown whole or not at all: a panel too narrow for it
-                        // keeps the plain warning
-                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                        let flag = "! idle, holds card";
-                        let age = idle_hold_age(app, a);
-                        let fits = used + flag.chars().count() + age.chars().count() <= width;
-                        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
-                    } else {
-                        let age = app
-                            .snap
-                            .last_event_at
-                            .get(&c.id)
-                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
-                            .unwrap_or_default();
-                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used));
-                        spans.push(Span::styled(text, dim()));
-                    }
-                }
-                None => spans.push(Span::styled(
-                    a.job.clone().unwrap_or_else(|| "-".into()),
-                    dim(),
-                )),
-            }
-            Line::from(spans)
-        })
-        .collect()
+    let hidden = r.here.len().saturating_sub(height - 1);
+    let n = r.elsewhere.len();
+    // (at least one actor is hidden: the lines only outnumber the rows when the actors do)
+    let texts = if n == 0 {
+        vec![format!(" +{hidden} more here"), format!(" +{hidden} more")]
+    } else {
+        vec![format!(" +{hidden} more here · +{n} elsewhere"), format!(" +{hidden} more · +{n} elsewhere"), format!(" +{} more", hidden + n)]
+    };
+    let last = texts.last().cloned().unwrap_or_default();
+    let text = texts.into_iter().find(|t| t.chars().count() <= width).unwrap_or(last);
+    lines.truncate(height - 1);
+    lines.push(Line::styled(text, dim()));
+    lines
+}
+
+/// `last note #13 5m`: what an actor holding no card last did here (the age goes first
+/// when there is no room for both).
+pub(crate) fn last_seen(app: &App, row: &crate::roster::Row, room: usize) -> String {
+    let Some(e) = row.last else { return String::new() };
+    let what = format!("last {} #{}", e.kind, e.card_id);
+    let full = format!("{what} {}", crate::store::fmt_age((app.snap.now - e.ts).max(0)));
+    [full, what].into_iter().find(|t| t.chars().count() <= room).unwrap_or_default()
+}
+
+fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
+    let r = app.roster();
+    if r.total() == 0 {
+        return vec![agents_empty(app)];
+    }
+    let mut lines: Vec<Line<'static>> = r.here.iter().map(|row| agent_row(app, row, width)).collect();
+    if !r.elsewhere.is_empty() {
+        lines.push(elsewhere_line(r.elsewhere.len(), width));
+    }
+    lines
+}
+
+/// One actor of this board: mark, name, harness and status (`-` without a herdr pane of
+/// exactly that name), then the card it holds or reviews and what it last said about it.
+/// A later "harness · model" per actor goes in the harness cell, from `Row`.
+fn agent_row(app: &App, row: &crate::roster::Row, width: usize) -> Line<'static> {
+    let holds = row.idle_holder();
+    let (mark, st) = match (holds, row.live.is_some(), row.status()) {
+        (true, _, _) => ("!", red()),
+        // no live status: no mark, and nothing dimmed — the board says it holds the card
+        (_, false, _) => (" ", Style::default()),
+        (_, _, "working") => ("*", Style::default().fg(GREEN)),
+        // a blocked agent is shown by its mark only; red is reserved for cards
+        (_, _, "blocked") => ("x", bold()),
+        (_, _, "idle" | "done") => ("-", dim()),
+        _ => ("?", dim()),
+    };
+    // colour only the warning marks; the rest of the row stays monochrome
+    let text_st = match (holds, row.status()) {
+        (true, _) => bold(),
+        (_, "working") => Style::default(),
+        _ => st,
+    };
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(mark, st),
+        Span::raw(" "),
+        Span::styled(format!("{:<14} ", fit(&row.name, 14)), text_st.add_modifier(Modifier::BOLD)),
+        Span::raw(format!("{:<7.7} ", row.harness())),
+        Span::styled(format!("{:<8.8} ", row.status()), text_st),
+    ];
+    let used = |spans: &[Span]| spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let Some(c) = row.card else {
+        spans.push(Span::raw(format!("{:<5} ", "-")));
+        let room = width.saturating_sub(used(&spans));
+        // the pane's own job line is live data: it gives way to what the board knows
+        let seen = last_seen(app, row, room);
+        let job = row.live.and_then(|a| a.job.clone()).map(|j| format!("{j} · {seen}")).filter(|t| t.chars().count() <= room);
+        spans.push(Span::styled(job.unwrap_or(seen), dim()));
+        return Line::from(spans);
+    };
+    spans.push(Span::raw(format!("#{:<4} ", c.id)));
+    if let Some(n) = crate::store::shown_ref(c) {
+        spans.push(Span::raw(format!("gh#{n} ")));
+    }
+    let title = if row.role == Some(crate::roster::CardRole::Reviewer) { format!("review: {}", c.title) } else { c.title.clone() };
+    spans.push(Span::raw(format!("{:<28} ", fit(&title, 28))));
+    spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
+    if holds {
+        // the duration is shown whole or not at all: a panel too narrow for it
+        // keeps the plain warning
+        let flag = "! idle, holds card";
+        let age = idle_hold_age(app, row);
+        let fits = used(&spans) + flag.chars().count() + age.chars().count() <= width;
+        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
+    } else {
+        let age = app
+            .snap
+            .last_event_at
+            .get(&c.id)
+            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+            .unwrap_or_default();
+        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used(&spans)));
+        spans.push(Span::styled(text, dim()));
+    }
+    Line::from(spans)
 }
 
 fn detail_strip(app: &App) -> Vec<Line<'static>> {
@@ -2436,28 +2486,14 @@ fn base_style(app: &App) -> Style {
 }
 
 
-fn holds_card(app: &App, a: &Agent) -> bool {
-    a.is_idle()
-        && app.snap.cards.iter().any(|c| {
-            c.column == "doing" && herdr::find_owner(agent_list(app), c).is_some_and(|o| o.pane_id == a.pane_id)
-        })
-}
-
 /// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
-pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
-    let agents = agent_list(app);
-    let held = app
-        .snap
-        .cards
-        .iter()
-        .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
-    held.and_then(|c| app.snap.last_event_at.get(&c.id))
+pub(crate) fn idle_hold_age(app: &App, row: &crate::roster::Row) -> String {
+    row.card
+        .filter(|_| row.idle_holder())
+        .and_then(|c| app.snap.last_event_at.get(&c.id))
         .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
         .unwrap_or_default()
 }
-
-
-
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -2744,25 +2780,37 @@ fn draw_gh_item(f: &mut Frame, app: &App, pr: bool, number: i64) {
     info_popup(f, app, format!(" {what} #{number} "), lines, " a add to board  o open in browser  esc close ");
 }
 
-/// Enter on an agent row in the AGENTS panel.
+/// Enter on a row of the AGENTS panel: one actor of this board, or the `+N elsewhere` line.
 fn draw_agent_info(f: &mut Frame, app: &App, i: usize) {
-    let AgentsState::Agents(agents) = &app.agents else { return };
-    let Some(a) = agents.get(i) else { return };
-    let mut lines = vec![
-        Line::raw(format!("harness {} · status {} · pane {}", a.harness, a.status, a.pane_id)),
-        Line::raw(format!("job {}", a.job.clone().unwrap_or_else(|| "-".into()))),
-    ];
-    let hint = match app.agent_card(i) {
-        Some(c) => {
-            lines.push(Line::raw(format!("holds #{} {} ({})", c.id, c.title, c.column)));
+    let r = app.roster();
+    let Some(row) = r.here.get(i) else {
+        if i == r.here.len() && !r.elsewhere.is_empty() {
+            // named, never described: tb does not read the boards they work on
+            let mut lines = vec![Line::styled("herdr agents that hold or review nothing on this board", dim())];
+            lines.extend(r.elsewhere.iter().map(|a| Line::raw(format!("{:<16} {:<8} {}", fit(&a.name, 16), a.harness, a.status))));
+            info_popup(f, app, format!(" {} elsewhere ", r.elsewhere.len()), lines, " esc close ");
+        }
+        return;
+    };
+    let mut lines = match row.live {
+        Some(a) => vec![
+            Line::raw(format!("harness {} · status {} · pane {}", a.harness, a.status, a.pane_id)),
+            Line::raw(format!("job {}", a.job.clone().unwrap_or_else(|| "-".into()))),
+        ],
+        None => vec![Line::styled("no live status: no herdr agent has exactly this name", dim())],
+    };
+    let hint = match (row.card, row.role) {
+        (Some(c), role) => {
+            let verb = if role == Some(crate::roster::CardRole::Reviewer) { "reviews" } else { "holds" };
+            lines.push(Line::raw(format!("{verb} #{} {} ({})", c.id, c.title, c.column)));
             " enter jump to card  esc close "
         }
-        None => {
-            lines.push(Line::styled("holds no card", dim()));
+        _ => {
+            lines.push(Line::styled(format!("holds no card · {}", last_seen(app, row, usize::MAX)), dim()));
             " esc close "
         }
     };
-    info_popup(f, app, format!(" {} ", a.name), lines, hint);
+    info_popup(f, app, format!(" {} ", row.name), lines, hint);
 }
 
 /// The `R` repo picker popup: search box, `off` row, owner-grouped repo table.
@@ -3039,10 +3087,8 @@ pub fn board_budget(h: u16, gh_full: u16, want_ag: bool, want_detail: bool, agen
 
 fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
     let wide = area.width >= NARROW;
-    let agent_rows = match &app.agents {
-        AgentsState::Agents(a) if !a.is_empty() => a.len().min(8) as u16,
-        _ => 1,
-    };
+    // one row per actor of this board plus the `+N elsewhere` line, as many as before (<= 8)
+    let agent_rows = app.roster().panel_rows().clamp(1, 8) as u16;
     // the GITHUB panel shows even without a repo (a 1-line "pick one" panel), unless G hid it
     let want_gh = wide && app.show_github;
     let gh_full = match (want_gh, app.gh.repo.is_some()) {
@@ -3103,7 +3149,8 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         note_area(app, 1, rows[i]);
         let focused = app.focus == Focus::Agents;
         let b = frame(focused, None).title(Span::styled(" AGENTS ", bold()));
-        let mut lines = agents_panel(app, rows[i].width.saturating_sub(2) as usize);
+        let inner_w = rows[i].width.saturating_sub(2) as usize;
+        let mut lines = close_clipped(agents_panel(app, inner_w), app, rows[i].height.saturating_sub(2) as usize, inner_w);
         if focused {
             let sel = app.ag_sel.min(lines.len().saturating_sub(1));
             if let Some(l) = lines.get_mut(sel) {

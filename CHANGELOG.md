@@ -70,6 +70,35 @@ date is refused before the board is touched, with the command to run instead.
 - New dependency: `chrono-tz` (the IANA zone data, compiled in — no network access, and no
   reliance on the system's zone files, which a static binary in a small container does not have).
 
+### The AGENTS panel says who is on this board, and on what (a change you will see)
+
+The panel used to list every agent pane herdr knew about, whatever board it worked for, and
+said little more than `working`. It now answers "who is on this board, and on which card".
+- **The board says who.** Rows are the board's own actors: the owner of every card that is not
+  done, the reviewer of every REVIEW card, and anyone who wrote to a card in the last hour. So
+  the panel is useful with no herdr at all (it used to say only `herdr not available`). Each
+  row shows the card (`#4`, `gh#`, title — `review` when it is a card being reviewed), the
+  card's last note and its age; someone holding nothing shows what they last did
+  (`last created #7 5m`). Rows follow the board: DOING top to bottom, then reviewers.
+- **herdr only adds the live status — on an exact name.** A pane lends its harness and
+  `working`/`idle` to a row only when its herdr agent name is exactly the board name (ASCII
+  case aside). A pane label, a first word or a terminal title never match any more: `dev` is
+  not `dev-2`, and a row with no exact match reads `-` rather than show somebody else's status.
+- **Everyone else is counted, not listed.** The header reads `7 agents (4 here, 3 elsewhere)`
+  in place of `(N working, N idle)`, the compact title and the 1-line bar read `4 here · 3
+  elsewhere`, and the panel ends in `+3 elsewhere (not on this board)` — tb does not read other
+  boards, so it does not say what those agents do (enter on the line names them).
+- **Narrow panes give up whole fields**, the least useful first: the status word, the note,
+  its age, the card title (the one part that is cut), the card id last; the header drops
+  `(4 here, 3 elsewhere)` whole, as it drops the clock; the bar drops the idle duration, then
+  `· 3 elsewhere`. A panel with more rows than room ends in `+2 more here · +3 elsewhere`.
+- `tb agents` prints the same list in the same order. JSON (additive, `"v"` stays 1):
+  `tb agents --json` gains `on_board` (bool) and `card_role` (`owner` | `reviewer` | null); a
+  board actor with no pane of its name has `harness` and `status` `-` and an empty `pane_id`.
+- No layout change: the panel is where it was and asks for rows by the same rule (one per
+  line, at most 8), and it hides with `A` as before. A board nobody is on (no open card held
+  or reviewed, no card event in the last hour) with no agent panes reads exactly as it did.
+
 ### Added
 - **Text from a file or from standard input.** `tb add … --desc-file PATH`, `tb edit ID
   --desc-file PATH` and `tb note ID --file PATH` read the description or the note from a file,
