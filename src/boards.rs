@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_BOARD: &str = "default";
 
 /// Subcommand names: never valid board names.
-pub const COMMANDS: [&str; 24] = [
+pub const COMMANDS: [&str; 25] = [
     "add", "list", "show", "next", "take", "note", "check", "move", "done", "block", "drop",
     "config", "boards", "github", "help", "rm", "prio", "edit", "sync", "board", "watch",
-    "agents", "guide", "setup",
+    "agents", "guide", "setup", "restore",
 ];
 
 /// `[a-z0-9_-]{1,32}` and not a subcommand.
@@ -67,9 +67,22 @@ pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) 
 /// (A settings file that cannot be read counts as "nothing saved" HERE — this only marks a row;
 /// the command that actually opens a board refuses instead, see `saved_default`.)
 pub fn default_name() -> String {
-    crate::env("BOARD")
+    env_board()
+        .0
         .or_else(|| saved_default_for_read().ok().flatten())
         .unwrap_or_else(|| DEFAULT_BOARD.into())
+}
+
+/// `TB_BOARD` — unless `TB_DB` pins one file. A pinned file has no boards to choose from, so
+/// `TB_DB` wins and the name is dropped: `(None, Some(name))`, for the caller to say so once.
+/// (`TB_BOARD=default` names the board a pinned file already is: nothing dropped, nothing to
+/// say.) A name TYPED on the command line is a different matter and is still refused.
+pub fn env_board() -> (Option<String>, Option<String>) {
+    let name = crate::env("BOARD");
+    if !db_pinned() {
+        return (name, None);
+    }
+    (None, name.filter(|n| n.trim() != DEFAULT_BOARD))
 }
 
 /// The key of the saved default board in the machine-local settings (`crate::machine`).
@@ -142,7 +155,8 @@ pub fn plain_board() -> Result<(String, DefaultSource)> {
     if db_pinned() {
         return Ok((DEFAULT_BOARD.into(), DefaultSource::Pinned));
     }
-    if let Some(name) = crate::env("BOARD") {
+    // through env_board(), so the TB_DB rule lives in exactly one place
+    if let Some(name) = env_board().0 {
         return Ok((name, DefaultSource::Env));
     }
     Ok(match saved_default()? {

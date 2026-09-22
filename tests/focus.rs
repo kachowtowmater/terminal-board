@@ -210,8 +210,10 @@ fn agent_popup_jumps_to_the_held_card() {
     render(&app);
     press(&mut app, &mut s, KeyCode::BackTab, 1);
     assert_eq!(app.focus, Focus::Agents);
+    // rows follow the board: DOING top to bottom, so bot-2 (#5) is the second row
+    press(&mut app, &mut s, KeyCode::Down, 1);
     press(&mut app, &mut s, KeyCode::Enter, 1);
-    assert_eq!(app.mode, Mode::AgentInfo(0));
+    assert_eq!(app.mode, Mode::AgentInfo(1));
     let (screen, _) = render(&app);
     assert!(screen.contains("bot-2") && screen.contains("holds #5") && screen.contains("enter jump to card"), "{screen}");
     press(&mut app, &mut s, KeyCode::Enter, 1);
