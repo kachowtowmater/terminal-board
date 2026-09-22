@@ -193,11 +193,19 @@ pub fn card_by_id(store: &Store, id: i64) -> Result<CardJ> {
 /// The whole board in one object. TODO/DOING/REVIEW in position order; DONE newest first
 /// (all done cards; apps filter).
 pub fn board(store: &Store) -> Result<BoardJ> {
+    board_where(store, &crate::filter::Filter::default())
+}
+
+/// `board`, with only the cards a filter keeps. The columns stay in the board's order — a
+/// filter removes rows from each column and changes nothing else.
+pub fn board_where(store: &Store, f: &crate::filter::Filter) -> Result<BoardJ> {
     let snap = store.snapshot()?;
     let due = store.due_ctx()?;
     let look = &snap.display;
     let blocks = store.block_ctx()?;
-    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_all(store, c, &due, look, &blocks)).collect() };
+    let col = |name: &str| -> Result<Vec<CardJ>> {
+        f.apply(snap.in_column(name), &blocks).into_iter().map(|c| card_all(store, c, &due, look, &blocks)).collect()
+    };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json

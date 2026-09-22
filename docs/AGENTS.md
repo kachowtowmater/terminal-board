@@ -70,6 +70,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | many cards from one JSON file, all or nothing (try it with `--dry-run` first) | `tb import cards.json` · `tb edit --from changes.json` (rows keyed by `id`; only the fields present change; a card someone else holds refuses the whole file) |
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
+| narrow a list (they combine) | `tb list --tag docs --owner alice --blocked --blocked-on #7 --due-before 2026-10-09 --column todo` · `--group tag` |
+| your work on every board | `tb list --all-boards --owner <your-name>` |
+| send a card to another board (it gets a NEW id there) | `tb mv ID --to BOARD` |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |

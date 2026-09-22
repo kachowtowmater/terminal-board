@@ -450,6 +450,38 @@ tb --version
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
 
+**Showing less of the board.** `tb list` and `tb board --json` take filters, and they combine:
+
+<!-- no-test -->
+```sh
+tb list --tag docs                   # one tag (--tag none = the cards without one)
+tb list --owner alice --blocked      # what alice holds that is stuck
+tb list --blocked-on '#7'            # everything waiting on card 7 (a name works too)
+tb list --due-before 2026-10-09      # dated before that day
+tb list --column todo --group tag    # one column, gathered under each tag
+tb board --json --tag docs           # the same on the JSON board
+```
+
+A filter **removes rows and nothing else** — the list stays in the order the board defines,
+including under `tb config sort due`. `--column` takes the internal name (`todo`, `doing`,
+`review`, `done`), never a display label; a label is refused and the message names the column
+to use. Filters that find nothing say what was asked for and exit 0 — that is an answer.
+
+**A card on the wrong board.** `tb mv ID --to BOARD` sends it with its checklist and its whole
+history:
+
+<!-- no-test -->
+```sh
+tb mv 3 --to work
+tb list --all-boards --owner alice   # one person's work, wherever it is
+```
+
+The card gets a **new number** on the board it arrives at — ids belong to a board, and the old
+one may already be taken there. It lands in TODO and unowned, because the other board has its
+own work-in-progress limit and its own people; the event log on the card says where it came
+from, and both boards record the move. The destination has to exist already, and a card
+somebody else is holding is not moved out from under them.
+
 **Which agent, model and session did the work.** The name on a card stays short. Behind it, tb
 records who that name was — harness, model, role, session, machine — so a bad batch of work
 can be traced back to the session that wrote it. The harness and the session are picked up by

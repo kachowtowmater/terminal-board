@@ -148,7 +148,7 @@ fn to_json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "null".into())
 }
 
-fn board_log(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
+pub(crate) fn board_log(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
     Store::log_board(conn, actor, kind, text)
 }
 

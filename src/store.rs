@@ -14,6 +14,7 @@ pub mod bulk;
 pub mod display;
 pub mod due;
 pub mod order;
+pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
@@ -123,11 +124,11 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
-fn err<T>(msg: impl Into<String>) -> Result<T> {
+pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(BoardError(msg.into()))
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct Card {
     pub id: i64,
     pub title: String,
