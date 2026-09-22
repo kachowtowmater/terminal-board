@@ -73,7 +73,7 @@ fn held_by_other<'a>(c: &'a Card, actor: &str) -> Option<&'a str> {
 
 /// Refuse a change to a card someone else holds, unless forced. `Ok(Some(owner))`: forced
 /// past that holder — the caller logs it. `what` finishes "to … anyway" (`delete it`).
-fn holder_guard(tx: &Connection, c: &Card, actor: &str, force: bool, what: &str) -> Result<Option<String>> {
+pub(crate) fn holder_guard(tx: &Connection, c: &Card, actor: &str, force: bool, what: &str) -> Result<Option<String>> {
     match held_by_other(c, actor) {
         None => Ok(None),
         Some(owner) if force => Ok(Some(owner.to_string())),

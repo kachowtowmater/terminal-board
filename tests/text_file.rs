@@ -190,9 +190,9 @@ fn outer_blank_space_is_trimmed_the_same_way_everywhere() {
     let bom = b.file("bom.md", "\u{feff}héllo\n".as_bytes());
     b.ok(&["edit", "1", "--desc-file", &bom]);
     assert_eq!(b.description(1), "héllo");
-    // today's `add -d` is untouched: it still stores exactly what it was given
-    b.ok(&["add", "a: three", "-d", "  kept as typed  "]);
-    assert_eq!(b.description(3), "  kept as typed  ");
+    // and `add -d` agrees with them: every way to write a description trims it the same way
+    b.ok(&["add", "a: three", "-d", "  typed with blank space around it \n"]);
+    assert_eq!(b.description(3), "typed with blank space around it");
 }
 
 /// The store keeps text raw (JSON shows it); every screen path still goes through the

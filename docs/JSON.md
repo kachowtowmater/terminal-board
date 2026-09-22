@@ -215,6 +215,57 @@ the same board. A board picked by `TB_BOARD` travels in the environment, so its 
 
 ## Warnings — `"warnings": ["…"]`
 
+## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
+
+A **row is the card object above**, so `tb board --json` or `tb show ID --json` output can be
+edited and fed back. Documents: an array of cards, `{"cards": […]}`, a whole board object
+(`columns.todo`, `doing`, `review`, `done`, in that order) or one card. UTF-8, at most 4 MiB.
+
+| field | `tb import` (new cards, always in TODO) | `tb edit --from` (keyed by `id`) |
+|---|---|---|
+| `id` | ignored (the board assigns ids) | **required** — the card to change; one row per card |
+| `title` | **required**; may carry `tag:` and `gh#N` as `tb add` accepts | optional; without its own `tag:` the card keeps its tag |
+| `tag`, `gh_ref` | optional; must agree with what the title carries | optional; `null` clears |
+| `description` | optional (trimmed, like every description) | optional |
+| `due` | `YYYY-MM-DD` or `null` — the strict date rule | the same; `null` clears |
+| `blocked` | text or `null` (`by #7` = `#7`, as `tb block`) | the same; `null` unblocks |
+| `checklist` | texts, or `{text, done}` (`n`/`idx` ignored) | ignored |
+| everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `days_left`, `due_state`, `events`, unknown fields | the same |
+
+In `edit --from` an absent field is left alone and a value the card already has is no change
+(no event), so a file can be run twice. It follows **the holder rule**, exactly as a single
+`tb edit` does: a row naming a DOING card somebody else holds is refused — and because a bulk
+edit is all or nothing, that refuses the WHOLE file, with the row named. `--force` overrides
+it and writes the same `force` event per card (`edited #ID held by OWNER`). A REVIEW card is
+not held, so it needs no override. Events are the single commands' own — `created` +
+`imported` (text `row N of FILE`), `edit`, `due`, `blocked` / `unblocked` — by whoever ran it.
+
+Success (exit 0; `--dry-run` answers the same object with `"dry_run": true` and writes nothing):
+
+```json
+{ "ok": true, "command": "edit", "source": "dates.json", "dry_run": false,
+  "rows": [ { "row": 1, "id": 7, "action": "changed", "title": "docs: write the guide",
+              "changes": [ { "field": "due", "from": null, "to": "2026-10-09" } ], "ignored": [] } ],
+  "changed": [7], "unchanged": [], "warnings": [] }
+```
+
+`action` is `created`, `changed` or `unchanged`; `import` answers `"created": [ids]` instead of
+`changed` / `unchanged`. Refused (exit 1) — **nothing was written**; every problem names its row
+(from 1), its card when the row names one, and its field:
+
+```json
+{ "ok": false, "error": "2 problems in dates.json", "hint": "nothing was written; fix them and check again with 'tb edit --from dates.json --dry-run'",
+  "command": "edit", "source": "dates.json", "dry_run": false,
+  "problems": [ { "row": 250, "id": 41, "field": "due", "problem": "'2026-02-30' is not a real calendar date", "hint": "use YYYY-MM-DD, …" },
+                { "row": 251, "id": 97, "field": "id", "problem": "no card #97", "hint": "see 'tb list' for ids" } ] }
+```
+
+A file that cannot be read at all (missing, not JSON, not cards, empty, too big, a terminal
+on `-`) is the usual `{ok:false,error,hint}`. One write transaction: a second import at the
+same moment waits, then runs whole.
+
+## `tb agents --json`
+
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
 `TB_DB` pins a file; the board file can be opened by other users; the board was backed up
 before its schema was upgraded. Each is one line on **stderr** (`tb: …`), and with `--json`

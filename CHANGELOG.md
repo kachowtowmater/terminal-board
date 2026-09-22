@@ -110,6 +110,37 @@ dates — keep their position order, so the order is always deterministic. `tb n
   every card state). A card that carries a due date and is soon or overdue shows the mark even
   when the board sets nothing: `--due` is the opt-in.
 
+### Many cards from one file: `tb import` and `tb edit --from`
+
+Cards could only be created and edited one command at a time — sixty due dates meant sixty
+commands and sixty chances to get one wrong halfway.
+- `tb import FILE.json` creates cards; `tb edit --from FILE.json` changes existing cards, keyed
+  by `id`, and only the fields present in a row change. `-` reads standard input. A row is the
+  card object `tb show --json` / `tb board --json` already print, so a board can be exported,
+  edited and fed back. Documents: an array, `{"cards": […]}`, a whole board object, or one card.
+- **All or nothing**, in one write transaction. Every row is checked before anything is
+  written, and every problem is reported in one pass, naming its row, its card and its field
+  (plain and `--json`). `--dry-run` reports exactly what the real run would do and writes
+  nothing — not even a board file that does not exist yet. Imports at the same moment wait for
+  each other and never interleave.
+- **History is never forged.** Imported cards land at the bottom of TODO with new ids; an
+  `imported` event (a new event kind) says which row of which file, by whom. `column`, `owner`,
+  `position`, timestamps, `events` and unknown fields in the file are ignored with one warning.
+  `edit --from` writes each field, and its event, exactly as `tb edit` and `tb block` do; a
+  value a card already has is no change, so a file can be run twice. It never moves a card.
+- **The holder rule applies to a file too.** `tb edit --from` goes through the same guard a
+  single `tb edit` uses, so a DOING card somebody else holds is not rewritten from a file
+  either. Because a bulk edit is all or nothing, one guarded row refuses the whole file with
+  that row named — never a partial "3 rows skipped". `tb edit --from FILE --force` overrides
+  it and logs the same `force` event per card (`edited #ID held by OWNER`); the card still
+  belongs to its holder. A REVIEW card is not held and needs no override.
+- `due` follows the strict `YYYY-MM-DD` rule; files are UTF-8, at most 4 MiB, read through the
+  same bounded reader as `--desc-file` (a terminal on `-` is refused, never waited on).
+- `tb add -d "  text  "` now trims the blank space around a description, as `tb edit --desc`,
+  `--desc-file`, notes and `tb import` always did: every way to write a description agrees.
+- `import` is now a command, so it can no longer be a board name. A board already called
+  `import` has to be renamed: move `boards/import.db` (and its `-wal`/`-shm`) to another name.
+
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
 
 Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`

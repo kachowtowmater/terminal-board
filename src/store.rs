@@ -9,6 +9,7 @@ use std::time::Duration;
 
 pub mod actors;
 pub mod archive;
+pub mod bulk;
 pub mod display;
 pub mod due;
 pub mod order;
@@ -1033,7 +1034,7 @@ impl Store {
         tx.execute(
             r#"INSERT INTO cards(title, tag, description, "column", gh_ref, created_at, column_since, position)
                VALUES (?,?,?,'todo',?,?,?,?)"#,
-            params![title, tag, desc, gh, t, t, pos],
+            params![title, tag, desc.trim(), gh, t, t, pos],
         )?;
         let id = tx.last_insert_rowid();
         for (i, c) in checks.iter().enumerate() {
