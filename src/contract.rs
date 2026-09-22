@@ -84,6 +84,8 @@ pub struct BoardJ {
     pub wip: i64,
     pub theme: String,
     pub layout: String,
+    /// `position` | `due`: what the `columns` arrays (and `tb next`) are ordered by.
+    pub sort: &'static str,
     pub github: GithubJ,
     pub columns: ColumnsJ,
 }
@@ -164,6 +166,7 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         wip: snap.wip,
         theme: snap.theme.clone(),
         layout: snap.layout.clone(),
+        sort: snap.sort.as_str(),
         github: GithubJ { repo, snapshot, error, fails, fetched_at },
         columns: ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? },
     })

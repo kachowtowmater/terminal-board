@@ -106,7 +106,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `rm`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `rm`, `sort`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards
