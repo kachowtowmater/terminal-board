@@ -33,6 +33,25 @@ telling you to check a file that was never the problem.
   wait a moment and try again`. TB_DB is still named for a real path problem (cannot open,
   read-only, …), but only when it is actually set.
 
+### Evidence links: `tb link` and `tb config done-needs-link`
+
+A card is a unit of work; what proves it was done lives somewhere else — a file on disk, a
+commit, a URL — and until now that only ever went in prose in a note.
+- `tb link ID VALUE --label LABEL` attaches a path, a git sha or a URL as evidence, under a
+  label you choose (`brief`, `verdict`, `commit`, or any other word); `tb link ID --rm N`
+  removes one and the rest renumber. A card may carry any number of links, including several
+  under the same label. `tb show ID` / `--json` list them (new table `links`, docs/SCHEMA.md).
+- **tb only stores and displays the text.** It is never parsed as one of the three forms, and
+  there is no code path from a link to the filesystem or the network: no read, no fetch.
+- `tb config done-needs-link LABEL` refuses to move a card into DONE while it carries no link
+  with that label — the same honest-mistake shape `done-by` already has, checked right beside
+  it in `Store::transition`: names and labels are self-asserted, `--force` gets past it and is
+  logged, and the GitHub sync is exempt (a merged PR is already evidence). `--off` clears it.
+- Links travel with a card on `tb mv ID --to BOARD` and through `tb config rm archive` /
+  `tb restore ID`, exactly like the checklist and the history.
+- A board that sets nothing behaves exactly as before: `done-needs-link` is off by default,
+  and a card with no links renders and reads exactly as it always did.
+
 ### Ownership: `check` and `prio` follow the holder rule; `note` stays open
 
 A DOING card someone else holds is theirs — and so are its checklist and its place in the

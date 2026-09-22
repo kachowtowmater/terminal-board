@@ -250,6 +250,18 @@ enum Cmd {
         /// The display text of `config label COLUMN "TEXT"`.
         text: Option<String>,
     },
+    /// Attach evidence to a card: a path, a sha or a URL, under a label (`tb show ID` lists
+    /// them). tb only stores the text — it never reads, follows or fetches a link.
+    Link {
+        id: i64,
+        value: Option<String>,
+        /// What kind of evidence it is — free text, e.g. brief, verdict, commit.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
+        /// Remove link N instead of adding one.
+        #[arg(long, value_name = "N", conflicts_with_all = ["value", "label"])]
+        rm: Option<i64>,
+    },
     /// List boards. `--default` alone shows the board plain `tb` opens; `--default NAME`
     /// saves it; `--default --clear` goes back to the built-in `default`.
     Boards {
@@ -1290,6 +1302,32 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, human)?;
         }
+        Cmd::Link { id, value, label, rm } => {
+            let human = match (value, label, rm) {
+                (_, _, Some(n)) => {
+                    store.remove_link(id, n, &actor)?;
+                    format!("#{id} link {n} deleted, the rest renumbered — see {}", cmd_hint(explicit, &format!("show {id}")))
+                }
+                (Some(v), Some(label), None) => {
+                    let item = store.add_link(id, &v, &label, &actor)?;
+                    format!("#{id} link {} added ({label}) — see {}", item.idx, cmd_hint(explicit, &format!("show {id}")))
+                }
+                (None, _, None) => {
+                    return Err(BoardError(format!(
+                        "give a value and --label, or --rm N — {}, {}",
+                        cmd_hint(explicit, &format!("link {id} PATH|SHA|URL --label brief")),
+                        cmd_hint(explicit, &format!("link {id} --rm 1"))
+                    )))
+                }
+                (Some(_), None, None) => {
+                    return Err(BoardError(format!(
+                        "say what it is — {}",
+                        cmd_hint(explicit, &format!("link {id} PATH|SHA|URL --label brief"))
+                    )))
+                }
+            };
+            done_card(&store, j, id, human)?;
+        }
         Cmd::Move { id, column, reason, force } => {
             // An internal column name is resolved FIRST and always wins: a board that labels
             // one column with another's name (an older tb allowed it; `config label` now
@@ -1548,12 +1586,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     "{}",
                     pretty(&json!({"ok": true, "from_board": moved.from_board, "to_board": moved.to_board,
                                    "old_id": moved.old_id, "id": moved.new_id, "title": moved.title,
-                                   "checklist": moved.checklist, "events": moved.events}))
+                                   "checklist": moved.checklist, "events": moved.events, "links": moved.links}))
                 );
             } else {
                 say!(
-                    "#{} \"{}\" moved to '{}' as #{} (its checklist and {} events went with it) — it is in TODO, unowned: 'tb {} take {}'",
-                    moved.old_id, moved.title, moved.to_board, moved.new_id, moved.events, moved.to_board, moved.new_id
+                    "#{} \"{}\" moved to '{}' as #{} (its checklist, {} link(s) and {} events went with it) — it is in TODO, unowned: 'tb {} take {}'",
+                    moved.old_id, moved.title, moved.to_board, moved.new_id, moved.links, moved.events, moved.to_board, moved.new_id
                 );
             }
         }
@@ -1700,6 +1738,24 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         return Ok(());
                     }
                     ("done-by".into(), json!(names))
+                }
+                ("done-needs-link", _) if off => {
+                    store.set_done_needs_link(None)?;
+                    ("done-needs-link".into(), serde_json::Value::Null)
+                }
+                // a card may not reach done without a link carrying this label (store/links.rs,
+                // `Store::transition`) — the same honest-mistake shape as `done-by`, and it sits
+                // right beside it in the transition's guard order
+                ("done-needs-link", value) => {
+                    let label = match &value {
+                        Some(v) => store.set_done_needs_link(Some(v))?,
+                        None => store.done_needs_link()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", label.as_deref().unwrap_or("off"));
+                        return Ok(());
+                    }
+                    ("done-needs-link".into(), json!(label))
                 }
                 ("kind", _) if off => {
                     return Err(BoardError(
@@ -1875,6 +1931,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("done-by", n) => say!(
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
                         n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
+                    ("done-needs-link", serde_json::Value::Null) => say!("done-needs-link is off — a card may reach done without a link"),
+                    ("done-needs-link", label) => say!(
+                        "done-needs-link is now {} — a card needs a link with that label ('tb link ID VALUE --label {}') before it may reach done",
+                        label.as_str().unwrap_or(""), label.as_str().unwrap_or("")
                     ),
                     ("done-needs-note", v) if v.as_str() == Some("on") => say!(
                         "done-needs-note is now on — a card needs a note written during the stay it is leaving before it can reach DONE"
