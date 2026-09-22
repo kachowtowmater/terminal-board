@@ -4,6 +4,7 @@ use crate::store::Card;
 use serde_json::Value;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,7 +166,12 @@ pub fn herdr_enabled() -> bool {
 /// Run `herdr <args>` with a 1s timeout; None on any failure.
 fn run_herdr(args: &[&str]) -> Option<String> {
     let bin = std::env::var("HERDR_BIN_PATH").ok().filter(|p| !p.is_empty());
-    let mut child = Command::new(bin.as_deref().unwrap_or("herdr"))
+    run_quick(bin.as_deref().unwrap_or("herdr"), args)
+}
+
+/// Run `bin <args>` with a 1s timeout and no stdin; its stdout, or None on any failure.
+pub(crate) fn run_quick(bin: &str, args: &[&str]) -> Option<String> {
+    let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -204,12 +210,46 @@ pub fn name_for_pane(agents_json: &str, pane_id: &str) -> Option<String> {
         .and_then(|a| a.agent_name)
 }
 
+/// `herdr agent list` for this process, asked at most once: the actor's name and its identity
+/// record (`store::actors`) are read from the same answer.
+fn agent_list() -> Option<&'static str> {
+    static LIST: OnceLock<Option<String>> = OnceLock::new();
+    LIST.get_or_init(|| run_herdr(&["agent", "list"])).as_deref()
+}
+
 /// Ask herdr which agent runs in `pane_id` (best effort: None when herdr is off or silent).
 pub fn agent_name_for_pane(pane_id: &str) -> Option<String> {
     if pane_id.is_empty() || !herdr_enabled() {
         return None;
     }
-    name_for_pane(&run_herdr(&["agent", "list"])?, pane_id)
+    name_for_pane(agent_list()?, pane_id)
+}
+
+/// What herdr records about the agent in one pane, beyond its name: the identity record
+/// (`store::actors`) reads the harness and the session from here when the harness itself
+/// exports neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneRecord {
+    /// Harness kind (`claude`, `aider`, ...).
+    pub harness: Option<String>,
+    /// The harness's session as herdr reports it: an id, or the PATH of a session file.
+    /// `store::actors` reduces a path to a token before anything is stored.
+    pub session: Option<String>,
+}
+
+/// The record of `pane_id` in `herdr agent list` output (None when the pane runs no agent).
+pub fn record_for_pane(agents_json: &str, pane_id: &str) -> Option<PaneRecord> {
+    let v: Value = serde_json::from_str(agents_json).ok()?;
+    let a = array(&v, "/result/agents").ok()?.iter().find(|a| sget(a, "pane_id").as_deref() == Some(pane_id))?;
+    Some(PaneRecord { harness: sget(a, "agent"), session: a.get("agent_session").and_then(|s| sget(s, "value")) })
+}
+
+/// Ask herdr for the record of `pane_id` (best effort, like `agent_name_for_pane`).
+pub fn pane_record(pane_id: &str) -> Option<PaneRecord> {
+    if pane_id.is_empty() || !herdr_enabled() {
+        return None;
+    }
+    record_for_pane(agent_list()?, pane_id)
 }
 
 /// `herdr agent list` joined to `herdr pane list`; falls back to pane list alone.
@@ -260,6 +300,8 @@ mod tests {
             created_at: 0,
             column_since: 0,
             blocked: None,
+            blocked_on: None,
+            blocked_until: None,
             position: 0,
             reviewer: None,
         }
@@ -312,6 +354,22 @@ mod tests {
         assert_eq!(name_for_pane(AGENTS, "w:p1"), None, "unnamed agent: no guess from titles");
         assert_eq!(name_for_pane(AGENTS, "w:p7"), None);
         assert_eq!(name_for_pane("not json", "w:p2"), None);
+    }
+
+    #[test]
+    fn record_for_pane_reads_the_harness_and_the_session() {
+        let json = r#"{"result":{"agents":[
+          {"name":"bot","agent":"aider","pane_id":"w:p2","agent_session":{"agent":"aider","kind":"id","source":"hook","value":"0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70"}},
+          {"agent":"claude","pane_id":"w:p3","agent_session":{"kind":"path","value":"/srv/agent/sessions/x.jsonl"}},
+          {"agent":"claude","pane_id":"w:p4"}
+        ]}}"#;
+        let r = record_for_pane(json, "w:p2").unwrap();
+        assert_eq!((r.harness.as_deref(), r.session.as_deref()), (Some("aider"), Some("0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70")));
+        // a path comes through as herdr gave it: reducing it is the identity record's job
+        assert_eq!(record_for_pane(json, "w:p3").unwrap().session.as_deref(), Some("/srv/agent/sessions/x.jsonl"));
+        assert_eq!(record_for_pane(json, "w:p4").unwrap(), PaneRecord { harness: Some("claude".into()), session: None });
+        assert_eq!(record_for_pane(json, "w:p9"), None, "a pane that runs no agent");
+        assert_eq!(record_for_pane("not json", "w:p2"), None);
     }
 
     #[test]

@@ -94,6 +94,12 @@ pub fn today(now: i64, tz: Option<chrono_tz::Tz>) -> NaiveDate {
     date.or_else(|| chrono::DateTime::from_timestamp(now, 0).map(|t| t.date_naive())).unwrap_or_default()
 }
 
+/// Has the board's day turned since `prev`? (`tb watch` sends the board again when it has:
+/// every `days_left` moved by one and a `due_state` may have flipped, without any write.)
+pub fn day_turned(prev: Option<NaiveDate>, today: NaiveDate) -> bool {
+    prev.is_some_and(|p| p != today)
+}
+
 /// What a card's due date means today. Both fields are None when the card has no due date,
 /// when its `due` text is not a `YYYY-MM-DD` date (older free text), and when the card is in
 /// `done` — a finished card carries no warning.
@@ -182,6 +188,12 @@ impl Store {
             return err(format!("due-warn must be 0-{MAX_DUE_WARN} days — try 'tb config due-warn 3'"));
         }
         self.set_config("due-warn", &n.to_string())
+    }
+
+    /// Is there a card that is not done and carries a real due date? (Only such a board has
+    /// anything that changes at midnight.)
+    pub fn has_open_due_dates(&self) -> Result<bool> {
+        Ok(self.list()?.iter().any(|c| c.column != "done" && c.due.as_deref().and_then(parse_date).is_some()))
     }
 
     /// The board's today and `due-warn`, read once per command.
@@ -296,6 +308,14 @@ mod tests {
         assert_eq!(ctx.today, d("2026-11-01"));
         assert_eq!(ctx.of(Some("2026-10-31"), "todo").days_left, Some(-1));
         assert_eq!(ctx.of(Some("2026-11-02"), "todo").days_left, Some(1));
+    }
+
+    #[test]
+    fn the_day_turns_only_when_the_date_changes() {
+        assert!(!day_turned(None, d("2026-10-09")), "the first look is not a turn");
+        assert!(!day_turned(Some(d("2026-10-09")), d("2026-10-09")));
+        assert!(day_turned(Some(d("2026-10-09")), d("2026-10-10")));
+        assert!(day_turned(Some(d("2026-10-10")), d("2026-10-09")), "a clock set back is a change too");
     }
 
     #[test]

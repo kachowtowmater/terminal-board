@@ -211,7 +211,10 @@ fn agents_rows_are_clean() {
         .unwrap();
     let out = text(&o.stdout);
     assert!(out.contains("agentname"), "{out}");
-    assert_eq!(out.lines().count(), 1, "{out}");
+    // the board's own actors come first (the card's owner, then the two who wrote card events),
+    // then the herdr agent, which holds nothing here — every name is noisy, every line clean
+    assert_eq!(out.lines().count(), 4, "{out}");
+    assert!(out.lines().next().unwrap().contains("owner") && out.lines().last().unwrap().contains("agentname"), "{out}");
     assert_clean("agents", &out);
 }
 
