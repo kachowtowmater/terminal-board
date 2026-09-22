@@ -37,7 +37,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
 
-A due date is a calendar date (`YYYY-MM-DD`), kept exactly as typed — it never moves a day
+A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
 "today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
 days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
@@ -46,6 +46,12 @@ days ahead a card counts as due soon (default 3). More in the README under *Due 
 date first (overdue on top, cards without a date last, equal dates in the order you gave them),
 and `tb next` hands out that card. Reordering by hand (shift+arrows, `tb prio`) then only orders
 cards that share a date — the status line says so. `tb config sort position` is the default.
+
+A card that is due soon or overdue carries a loud mark on its line — `! due in 2d`, `! due today`,
+`! overdue 3d` (red once overdue) — and keeps it however narrow the pane gets. `tb config card-line
+due` shows the date and the days left where the age is. `tb config label review "WITH REVIEWER"`
+gives a column your own name (`--off` clears it): that changes what you read, never what you type —
+commands still take `todo`, `doing`, `review`, `done`.
 
 ### Moving cards
 
@@ -236,5 +242,10 @@ background, so it looks the same whatever your terminal theme is.
   brief.md`, `tb edit 3 --desc-file brief.md`, `tb note 3 --file notes.md` (`-` reads a pipe:
   `some-command | tb note 3 --file -`). The text arrives exactly as written — backticks, `$`,
   quotes and blank lines included — up to 256 KiB of UTF-8. The README has the details.
+- Many cards at once: `tb import cards.json` creates them and `tb edit --from changes.json`
+  changes existing ones (rows keyed by `id`; only the fields in a row change) — for example a
+  due date for sixty cards in one command. Add `--dry-run` first: it reports every row and
+  writes nothing. One bad row and nothing is written; the report names the row and the field.
+  The README has the file format.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.

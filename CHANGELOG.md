@@ -85,6 +85,61 @@ dates — keep their position order, so the order is always deterministic. `tb n
   set to `sort due`, `tb list --json` is in the board's order; otherwise it stays in id order.
 - `tb config sort position` (the default) is exactly the order tb always had; `tb config sort`
   prints the setting, and `tb config` lists it only once a board sets it.
+### The due date on the card line, a loud mark when it is close, and your own column names
+
+- **A loud due mark.** A card that is due within `due-warn` days, or overdue, shows `! due in 2d`,
+  `! due today` or `! overdue 3d` on its card line — in the full-screen board, the focus view and
+  `tb list` — bold, and red once overdue; never on a DONE card. In a narrow pane it outlives the
+  tag, the checklist count and the age, and shrinks in whole words (`! late 3d`, `! late`, `!`).
+- **`tb config card-line age|due`.** With `due`, a dated card shows `due Oct 27 - 18d` where its
+  age was. `age` is the default.
+- **`tb config label COLUMN "TEXT"`** (`--off` clears, no text reads): a display name for a
+  column, up to 24 characters, sanitised like all displayed text. **Display only:** every command
+  still takes `todo`, `doing`, `review`, `done`; JSON `column` never changes and gains the
+  additive `column_label` (plus `labels` on the board object, `"v"` stays 1). A message that
+  names a column names the one to type — `review (shown as WITH REVIEWER)` — and typing a label
+  is refused with the command to run. A label gives way in whole words in a narrow header and
+  never pushes the count off.
+- A column that the board orders by due date says `by due` in its header.
+- Due-date follow-ups: `tb watch` sends the board again when the board's day turns (local
+  midnight in its `tz`), so a watcher's `days_left` / `due_state` do not go stale; a stored `tz`
+  this version does not know is reported on every command instead of silently falling back to
+  the machine's zone; the docs now say that spaces around a `--due` value are dropped.
+- A board with **no dated cards** and none of these settings renders byte for byte as before
+  (proved against the previous version over every width from 30 to 200, all six layouts and
+  every card state). A card that carries a due date and is soon or overdue shows the mark even
+  when the board sets nothing: `--due` is the opt-in.
+
+### Many cards from one file: `tb import` and `tb edit --from`
+
+Cards could only be created and edited one command at a time — sixty due dates meant sixty
+commands and sixty chances to get one wrong halfway.
+- `tb import FILE.json` creates cards; `tb edit --from FILE.json` changes existing cards, keyed
+  by `id`, and only the fields present in a row change. `-` reads standard input. A row is the
+  card object `tb show --json` / `tb board --json` already print, so a board can be exported,
+  edited and fed back. Documents: an array, `{"cards": […]}`, a whole board object, or one card.
+- **All or nothing**, in one write transaction. Every row is checked before anything is
+  written, and every problem is reported in one pass, naming its row, its card and its field
+  (plain and `--json`). `--dry-run` reports exactly what the real run would do and writes
+  nothing — not even a board file that does not exist yet. Imports at the same moment wait for
+  each other and never interleave.
+- **History is never forged.** Imported cards land at the bottom of TODO with new ids; an
+  `imported` event (a new event kind) says which row of which file, by whom. `column`, `owner`,
+  `position`, timestamps, `events` and unknown fields in the file are ignored with one warning.
+  `edit --from` writes each field, and its event, exactly as `tb edit` and `tb block` do; a
+  value a card already has is no change, so a file can be run twice. It never moves a card.
+- **The holder rule applies to a file too.** `tb edit --from` goes through the same guard a
+  single `tb edit` uses, so a DOING card somebody else holds is not rewritten from a file
+  either. Because a bulk edit is all or nothing, one guarded row refuses the whole file with
+  that row named — never a partial "3 rows skipped". `tb edit --from FILE --force` overrides
+  it and logs the same `force` event per card (`edited #ID held by OWNER`); the card still
+  belongs to its holder. A REVIEW card is not held and needs no override.
+- `due` follows the strict `YYYY-MM-DD` rule; files are UTF-8, at most 4 MiB, read through the
+  same bounded reader as `--desc-file` (a terminal on `-` is refused, never waited on).
+- `tb add -d "  text  "` now trims the blank space around a description, as `tb edit --desc`,
+  `--desc-file`, notes and `tb import` always did: every way to write a description agrees.
+- `import` is now a command, so it can no longer be a board name. A board already called
+  `import` has to be renamed: move `boards/import.db` (and its `-wal`/`-shm`) to another name.
 
 ### A command to choose the board plain `tb` opens (`tb boards --default`)
 

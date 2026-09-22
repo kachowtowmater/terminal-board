@@ -270,3 +270,37 @@ name, it was let past the holder rule.
 **Now.** A write (or the full-screen board) under the name `github` is refused:
 `'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1`.
 `tb sync` itself is unchanged, and reads under that name still work.
+
+## `tb add -d` trims the blank space around a description
+
+**Before.** `tb add "x: title" -d "  Done = …  "` stored the spaces and the newlines around
+the text exactly as given, while `tb edit --desc`, `tb note` and (since 2.0) `--desc-file`
+all trimmed theirs. The same brief added and then edited came out as two different strings.
+
+**Now.** Every way to write a description trims the blank space AROUND it and keeps
+everything inside — `tb add -d`, `tb edit --desc`, `--desc-file`, and the new `tb import` /
+`tb edit --from`. Nothing else about the text changes: tabs, blank lines, Windows line ends
+and indentation inside the description are kept byte for byte, as they always were.
+
+```sh
+tb add "x: title" -d "  Done = …  " --json   # before: "  Done = …  "   now: "Done = …"
+```
+
+**The way through:** a script that depended on the leading or trailing space has to add it
+back inside the text (for example as a blank line, which is kept). A description that had no
+blank space around it is unaffected, and so is every stored card.
+
+## Many cards from one file: a board named `import`
+
+**Before.** `import` was not a command, so `tb import list` opened a board called `import`.
+
+**Now.** `tb import FILE.json` creates cards from a file, so `import` is a command name and
+can no longer name a board. A board already called `import` still has its file, but tb will
+not open it by that name.
+
+**The way through:** rename it — move `~/.local/state/terminal-board/boards/import.db`, and
+its `-wal`/`-shm` files if they are there, to another name in the same folder:
+
+```sh
+cd ~/.local/state/terminal-board/boards && for f in import.db*; do mv "$f" "intake${f#import}"; done
+```
