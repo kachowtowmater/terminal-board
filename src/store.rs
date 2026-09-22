@@ -47,9 +47,35 @@ impl fmt::Display for BoardError {
 
 impl std::error::Error for BoardError {}
 
+/// SQLITE_BUSY (the whole file is locked) or SQLITE_LOCKED (a table is, inside a shared
+/// connection): both mean another connection holds the lock right now — nothing to do with
+/// whether the file itself is writable.
+fn is_contended(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// The hint for a real path problem (cannot open, read-only, no such file/directory, …):
+/// TB_DB is worth naming, but only when `tb_db` says it is actually set — otherwise it was
+/// never the pin, and naming it points at the wrong thing (#105).
+fn db_error_hint(tb_db: Option<&str>) -> String {
+    match tb_db {
+        Some(path) => format!("check TB_DB ({path}) points at a writable file"),
+        None => "check the board file is writable".to_string(),
+    }
+}
+
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
-        BoardError(format!("database error: {e} — check TB_DB points at a writable file"))
+        if is_contended(&e) {
+            // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
+            // the problem here, so it is not named (#105)
+            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string());
+        }
+        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())))
     }
 }
 
@@ -2120,6 +2146,37 @@ pub fn fmt_clock(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #105: SQLITE_BUSY/SQLITE_LOCKED (another `tb` holds the write lock) reads nothing like
+    /// a real path problem (cannot open, read-only, …), and only the latter names TB_DB.
+    #[test]
+    fn a_locked_database_and_a_path_problem_get_different_messages() {
+        let locked = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::DatabaseBusy, extended_code: 5 },
+            Some("database is locked".to_string()),
+        );
+        let path_problem = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::CannotOpen, extended_code: 14 },
+            Some("unable to open database file".to_string()),
+        );
+        let locked_msg = BoardError::from(locked).0;
+        let path_msg = BoardError::from(path_problem).0;
+        assert_ne!(locked_msg, path_msg, "a lock and a path problem must not read the same");
+        assert!(locked_msg.contains("another tb is writing this board"), "{locked_msg}");
+        assert!(!locked_msg.contains("TB_DB"), "a lock is not a TB_DB problem: {locked_msg}");
+        // whether the path message names TB_DB depends on whether it is actually set — that
+        // exact rule is `the_tb_db_hint_names_it_only_when_set` below, via the pure function,
+        // so this does not assert on ambient process environment here
+        assert!(path_msg.starts_with("database error: unable to open database file"), "{path_msg}");
+    }
+
+    /// #105: TB_DB is named only when it is actually set — otherwise it was never the pin.
+    #[test]
+    fn the_tb_db_hint_names_it_only_when_set() {
+        assert_eq!(db_error_hint(None), "check the board file is writable");
+        assert!(!db_error_hint(None).contains("TB_DB"));
+        assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
 
     #[test]
     fn title_parsing() {
