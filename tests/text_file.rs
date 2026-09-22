@@ -509,7 +509,15 @@ fn the_manuals_teach_it() {
     assert!(agents.lines().count() <= 250, "the agent manual is over its line cap");
     let json = include_str!("../docs/JSON.md");
     assert!(json.contains("--desc-file") && json.contains("note ID --file"), "docs/JSON.md");
-    for doc in [include_str!("../README.md"), include_str!("../docs/HUMANS.md")] {
+    let humans = include_str!("../docs/HUMANS.md");
+    for doc in [include_str!("../README.md"), humans] {
         assert!(doc.contains("--desc-file") && doc.contains("--file"), "README / docs/HUMANS.md");
+    }
+    // card #88: both manuals state that the text is trimmed and a leading byte-order mark is
+    // dropped, not just "byte for byte" (which is what #95's reviewer flagged as missing). Short
+    // distinctive phrases, not the exact sentence, so a reword survives but a deletion fails.
+    for (name, doc) in [("docs/AGENTS.md", agents), ("docs/HUMANS.md", humans)] {
+        assert!(doc.contains("trimmed"), "{name} does not say the text is trimmed");
+        assert!(doc.contains("byte-order mark"), "{name} does not mention the byte-order mark");
     }
 }
