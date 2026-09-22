@@ -874,7 +874,15 @@ impl App {
         }
         let actor = self.actor.clone();
         let r = store.reorder(id, how, &actor);
-        if self.report(r, |_| format!("#{id} moved {how}")).is_some() {
+        // on a due-sorted column position is only the tie-break: say so instead of seeming
+        // to do nothing (a board that does not set `sort due` reports exactly as before)
+        let by_date = self.snap.sort.by_date(COLUMNS[self.col.min(COLUMNS.len() - 1)]);
+        let said = if by_date {
+            format!("#{id} moved {how} — sorted by due date: position only orders cards with the same date (or none)")
+        } else {
+            format!("#{id} moved {how}")
+        };
+        if self.report(r, |_| said).is_some() {
             self.reload(store);
             self.focus_card(id);
         }
