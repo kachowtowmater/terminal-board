@@ -29,6 +29,22 @@ names a combination that works together, so what tb documents and tests is one b
   string to parse; the plain listing keeps `deadline (changed)`.
 - The deadline kind has its own golden render (`tests/golden/deadline_kind_126x41.txt`); the
   goldens for a default board are untouched, down to the board event log.
+### The due date is in the board's edit form
+
+`e` on the full-screen board now opens three fields, not two: **Title, Due, Description**.
+Tab walks them (shift+tab walks back), the date is prefilled from the card, and an empty
+field clears it — the same thing `--due none` does.
+- The form uses the **same parser and the same refusal text** as `tb edit --due`: a date it
+  will not take is shown in the status line, the form stays open, and **nothing is written** —
+  not the date, and not a title typed beside it.
+- The **stale-form rule** covers the date: a date you changed that somebody else changed while
+  your form was open is refused rather than overwritten, and a date you did not touch is left
+  alone. That is what the title and description already did.
+- A pane too short for every field **drops fields from the end**, always keeps the one being
+  typed into, and says which are not on screen — instead of drawing past its own box.
+- Enter on a form nobody changed still answers `nothing to change`, exactly as before: this
+  adds a field, it does not change what Enter means.
+- A board with no due dates renders exactly as before; the field exists only inside the form.
 ### Who closes a card, who checked it, and tags you choose
 
 - **`tb config done-by anna,ben`** — only those names may move a card into DONE; anybody else
