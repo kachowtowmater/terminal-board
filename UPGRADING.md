@@ -42,7 +42,9 @@ tb done 3 --as bot-2 --force  # same effect as before, and logged
 `TB_DB is set — board names are ignored; unset TB_DB to use boards`. Bare `tb` and the name
 `default` still work, and JSON reports the board actually opened.
 
-**Escape hatch.** Drop the name, or stop pinning the file.
+**Escape hatch.** Drop the name, or stop pinning the file. (2.0.0 refused a `TB_BOARD` left
+in the environment the same way; later versions let `TB_DB` win with a warning — see
+[After 2.0.0](#after-200).)
 
 ```sh
 TB_DB=/srv/tb/team.db tb work list   # before: opened team.db, called it "work". now: refused
@@ -160,3 +162,81 @@ tb note 3 --json          # before: text on stderr, empty stdout, exit 2
 - The database gains nullable columns only, added when the board is opened; boards written by
   1.x open unchanged. See [docs/SCHEMA.md](docs/SCHEMA.md).
 - Every command, flag and key that existed in 1.1.0 still exists.
+
+---
+
+# After 2.0.0
+
+Not released yet. Nothing here needs a change to your scripts; two things are worth knowing
+before you upgrade, and one is the way back.
+
+## Board files are private; yours are reported, not changed
+
+**Before.** tb created board files (and so their `-wal`/`-shm` sidecars) mode `0644`: any
+user of the machine could read every card.
+
+**Now.** Every file tb creates is `0600`, whatever the umask, in the boards folder and under
+`TB_DB`. The boards you already have stay as they are — tb never changes the mode of an
+existing file on its own, because a board may be shared with a group on purpose. Instead,
+each command that opens such a board prints one warning line (and adds it to `--json` object
+output as `warnings`):
+
+`tb: /…/boards/work.db is open to other users (mode 0644) — make it private with 'tb work config file-mode private', or keep it that way with 'tb work config file-mode shared'`
+
+A board path that is a symbolic link is followed: the board is the file the link leads to,
+tb creates that file `0600` itself, and the warning names the real file. A link into a folder
+that does not exist, or a loop of links, is refused with a hint — tb creates a board file
+through a link, never folders — and no mode is ever changed through a link.
+
+Run one of the two, once per board, and the line is gone. `private` changes the file and
+its live sidecars and is logged on the board; `shared` records that the mode is deliberate.
+Commands, exit codes and stdout are otherwise unchanged.
+
+## `TB_DB` together with `TB_BOARD`
+
+**Before (2.0.0).** With both set, every command was refused — a test harness that pinned
+`TB_DB` broke as soon as the environment also named a board.
+
+**Now.** `TB_DB` wins. The pinned file opens, `--json` reports the board as `default`, and tb
+prints one warning line (`TB_DB is set, so TB_BOARD=work is ignored …`; `warnings` in
+`--json`). A board name **typed on the command line** (`tb work …`, `-b work`) under `TB_DB`
+is still refused, exactly as in section 2 above: that is the mistake the refusal exists for.
+
+## A backup before every schema upgrade
+
+When tb opens a board written by an older version and has to change its schema, it first
+writes a copy next to the board and says where (stderr, and `warnings` in `--json`):
+
+`<board file>.before-<tb version>.<UTC yyyymmdd-hhmmss>.bak`
+
+The copy is made by SQLite, not by copying the file, so it is one complete database: it
+includes cards that were still in the `-wal`, and it has no sidecars of its own. It is mode
+`0600`, and it never ends in `.db`, so it is never listed as a board. Deciding, copying and
+upgrading happen under the board's write lock, so however many `tb` processes open an older
+board at the same moment there is **exactly one** backup, and it always holds the old
+schema; the others wait, find the board current, and do nothing. The copy is written as
+`….bak.partial` and renamed when complete, so a file named `….bak` is always a whole backup.
+The upgrade itself is one transaction. If the backup cannot be written (no room, a read-only folder) **nothing is
+upgraded** and the command fails with `cannot back up … — nothing was changed; …`. A board
+that is already current is never copied. tb does not delete backups; remove them when you
+no longer want the way back.
+
+## Going back to an older tb
+
+1. Stop everything that has the board open (agents, `tb watch`, the full-screen board).
+2. Install the version you want — the installer pins one: `install.sh --version v2.0.0`.
+3. Often that is all. Schema changes only add nullable columns, and an older tb ignores
+   columns it does not know, so it opens an upgraded board as it is. What it cannot do is
+   honour data and settings it has never heard of.
+4. To get the board **exactly as the older version left it**, put the backup back. Move the
+   current files aside first (anything written after the upgrade exists only there):
+
+```sh
+cd ~/.local/state/terminal-board/boards          # or the folder of your TB_DB file
+mkdir after-upgrade
+mv work.db after-upgrade/                        # and work.db-wal / work.db-shm, if present
+cp work.db.before-*.bak work.db                  # pick the one you want if there are several
+chmod 600 work.db
+```
+
+   The backup is a single complete file: there is no `-wal` or `-shm` to bring along.

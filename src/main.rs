@@ -29,6 +29,7 @@ Flow    next (take the top todo) · next --review (claim a card to review) · ta
         prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
+        config file-mode [private|shared] (who may open the board file; tb creates it 0600)
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
 Agents  agents (herdr panes + the card each holds)
 Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--agents-md PATH] [--dry-run]
@@ -211,8 +212,18 @@ macro_rules! warn {
     ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
 }
 
+/// Pretty JSON for stdout. Warnings raised so far ride along as `"warnings": […]` on
+/// object-shaped output (additive; absent when there are none — see `notice`).
 fn pretty<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
+    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into());
+    terminal_board::notice::splice(&text, &terminal_board::notice::all())
+}
+
+/// Print each warning nobody has printed yet, once, on stderr: `tb: …`.
+fn print_warnings() {
+    for w in terminal_board::notice::take_unprinted() {
+        warn!("tb: {w}");
+    }
 }
 
 /// The command a hint names: `tb take 1` on the default board, `tb work take 1` on an
@@ -477,10 +488,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
+    // TB_DB and TB_BOARD both set: the pinned file wins and the name is dropped, with one
+    // warning — an environment that names a board must not break a harness that pins a file.
+    let (env, ignored) = boards::env_board();
+    if let Some(n) = ignored {
+        terminal_board::notice::push(format!(
+            "TB_DB is set, so TB_BOARD={n} is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"
+        ));
+    }
     if matches!(cli.cmd, Some(Cmd::Boards)) {
         return list_boards(cli.json);
     }
-    let env = terminal_board::env("BOARD");
     let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
     // TB_DB pins ONE file: a board NAME would silently alias it (every name opens the same
     // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
@@ -512,6 +530,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             || (c.writes() && name == boards::DEFAULT_BOARD)
     });
     let mut store = open_board(&name, creates)?;
+    // before the full-screen board or `watch` takes over the terminal
+    print_warnings();
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
@@ -910,6 +930,23 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("due-warn".into(), json!(n))
                 }
+                // file-mode: who may open the board file (see fsperm)
+                ("file-mode", None) => {
+                    let text = store.file_mode_text()?;
+                    if !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("file-mode".into(), json!(text))
+                }
+                ("file-mode", Some(value)) => {
+                    let said = store.set_file_mode(&value, &actor)?;
+                    if !j {
+                        say!("{said}");
+                        return Ok(());
+                    }
+                    ("file-mode".into(), json!(store.file_mode_text()?))
+                }
                 _ => {
                     return Err(BoardError(format!(
                         "unknown or incomplete setting '{key}' — use 'tb config wip 3', 'config github owner/repo', 'config theme dark|light'"
@@ -1079,6 +1116,8 @@ fn main() -> ExitCode {
         },
         Err(e) => Err(e),
     };
+    // warnings raised after the board was opened (a board the picker opened, a late backup)
+    print_warnings();
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

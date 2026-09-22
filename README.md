@@ -554,7 +554,30 @@ and `tb config theme dark|light`.
 - **Back up** by copying that folder (ideally while `tb` is closed).
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails
-  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
+  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`. A `TB_BOARD`
+  left in the environment is not a typed name: `TB_DB` wins, and tb says so in one warning
+  line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
+- **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
+  a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
+  alike. A board path may be a symbolic link (`boards/work.db -> /mnt/secure/work.db`): the board
+  is the file the link leads to, and tb creates *that* file `0600`; a link into a folder that
+  does not exist, or a loop of links, is refused, and tb never changes the mode of anything
+  through a link. A board made by an earlier version is `0644`; tb never changes the mode of an
+  existing file on its own (you may share a board with a group on purpose). It tells you —
+  one warning line naming the file — until you choose:
+
+  ```sh
+  tb config file-mode            # private (0600), or what is wrong with it
+  tb config file-mode private    # the board file and its sidecars become 0600; logged on the board
+  tb config file-mode shared     # it is shared on purpose: tb leaves the mode alone and stops saying so
+  ```
+- **A backup is written before a board's schema is upgraded.** When a newer tb opens a board
+  an older one wrote and has to add columns, it first copies the board next to itself as
+  `<file>.before-<version>.<UTC date-time>.bak` and says where. The copy is one complete
+  file (it includes cards still in the `-wal`, and needs no sidecars), and there is exactly
+  one however many `tb` processes open the board at that moment. If the copy cannot be
+  written, nothing is upgraded and the command fails. Going back to an older version:
+  [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb).
 
 ## Troubleshooting
 
