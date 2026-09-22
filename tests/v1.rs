@@ -147,7 +147,18 @@ fn position_migration_orders_existing_cards_by_created_at() {
 #[test]
 fn edit_form_cursor_ops() {
     common::pin_clock();
-    let mut f = EditForm { id: 1, title: "abc".into(), open_title: "abc".into(), desc: String::new(), open_desc: String::new(), field: 0, cursor: 3, from_popup: false };
+    let mut f = EditForm {
+        id: 1,
+        title: "abc".into(),
+        open_title: "abc".into(),
+        due: String::new(),
+        open_due: String::new(),
+        desc: String::new(),
+        open_desc: String::new(),
+        field: 0,
+        cursor: 3,
+        from_popup: false,
+    };
     f.key(KeyCode::Home);
     f.key(KeyCode::Right);
     f.key(KeyCode::Delete); // removes 'b'
@@ -162,8 +173,15 @@ fn edit_form_cursor_ops() {
     f.key(KeyCode::Left);
     f.key(KeyCode::Backspace);
     assert_eq!((f.title.as_str(), f.cursor), ("aX", 0), "nothing before the start");
+    // tab now walks three fields: title -> due -> description -> title
     f.key(KeyCode::Tab);
-    assert_eq!((f.field, f.cursor), (1, 0));
+    assert_eq!((f.field, f.cursor), (1, 0), "the due field comes after the title");
+    for c in "2026-10-09".chars() {
+        f.key(KeyCode::Char(c));
+    }
+    assert_eq!((f.due.as_str(), f.cursor), ("2026-10-09", 10));
+    f.key(KeyCode::Tab);
+    assert_eq!((f.field, f.cursor), (2, 0));
     for c in "héllo".chars() {
         f.key(KeyCode::Char(c));
     }
@@ -172,6 +190,11 @@ fn edit_form_cursor_ops() {
     assert_eq!(f.desc, "hélo", "multi-byte safe");
     f.key(KeyCode::Tab);
     assert_eq!((f.field, f.cursor), (0, 2));
+    // and shift+tab walks back the other way
+    f.key(KeyCode::BackTab);
+    assert_eq!(f.field, 2, "back from the title is the description");
+    f.key(KeyCode::BackTab);
+    assert_eq!((f.field, f.cursor), (1, 10), "and back again is the due field, cursor at its end");
 }
 
 #[test]
@@ -190,6 +213,8 @@ fn edit_key_saves_and_reparses_the_tag() {
     for c in "admin".chars() {
         app.handle_key(key(KeyCode::Char(c)), &mut s);
     }
+    // tab twice: the due field sits between the title and the description
+    app.handle_key(key(KeyCode::Tab), &mut s);
     app.handle_key(key(KeyCode::Tab), &mut s);
     for c in "a long description that wraps".chars() {
         app.handle_key(key(KeyCode::Char(c)), &mut s);

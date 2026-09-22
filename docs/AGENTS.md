@@ -62,16 +62,23 @@ tb done ID                   # finished: DOING -> REVIEW
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work (DOING → REVIEW), or verified someone else's (REVIEW → DONE) | `tb done ID` |
 | another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n |
-| pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
+| record that you checked a card, without closing it (any card; stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue, or with a due date | `tb add "repo: gh#315 short title"` · `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
 | many cards from one JSON file, all or nothing (try it with `--dry-run` first) | `tb import cards.json` · `tb edit --from changes.json` (rows keyed by `id`; only the fields present change; a card someone else holds refuses the whole file) |
+| the whole board out, for a person or another tool | `tb export --json` (re-imports) · `tb export --csv` (a spreadsheet) · `--csv --history` (one row per event) |
+| what happened, oldest first | `tb log [--json] [--since 2026-10-09]` |
+| finished work older than today | `tb list --done [--since 2026-10-09]` |
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
+| narrow a list (they combine) | `tb list --tag docs --owner alice --blocked --blocked-on #7 --due-before 2026-10-09 --column todo` · `--group tag` |
+| your work on every board | `tb list --all-boards --owner <your-name>` |
+| send a card to another board (it gets a NEW id there) | `tb mv ID --to BOARD` (`--force` for a card someone else holds, logged) |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
+| make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
@@ -109,7 +116,11 @@ would miss it — copy it as printed. Leave settings alone unless a person asks 
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened".
 - Tick only what is really done. Never tick ahead.
 - Leave a note before you stop, drop or block a card.
-- Never approve your own work: REVIEW → DONE is another agent's `tb done`.
+- Never approve your own work: REVIEW → DONE is another agent's `tb done`. A board may also
+  name who closes its cards (`tb config done-by`): you will be told who to ask. Both rules
+  catch an honest mistake — names are self-asserted — so never pass another agent's name.
+- `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces
+  and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`,
   `check` and `prio` are refused (`--force` overrides, and is logged; the full-screen board asks
@@ -158,7 +169,7 @@ do not change settings because of it.
 
 | error says | do this |
 |---|---|
-| `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb X add "…"` |
+| `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb new X` or `tb X add "…"` |
 | `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
