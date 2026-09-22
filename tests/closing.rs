@@ -299,6 +299,117 @@ fn a_board_that_sets_nothing_is_unchanged() {
     assert_eq!(b.json(&["board", "--json"])["v"], 1);
 }
 
+// -------------------------------------------------------------- A12: closing note required
+
+#[test]
+fn done_needs_note_off_by_default_on_refuses_without_a_fresh_note() {
+    let b = Board::new();
+    assert_eq!(b.ok(&["config", "done-needs-note"]).trim(), "off", "off by default: nothing changes");
+    let one = b.in_review("permits: renewal", "bob");
+    b.ok_as("carol", &["done", &one.to_string()]);
+    assert_eq!(b.column(one), "done", "off: closes with no note at all, exactly as before");
+
+    assert_eq!(b.ok(&["config", "done-needs-note", "on"]).trim(), "done-needs-note is now on — a card needs a note written during the stay it is leaving before it can reach DONE");
+    assert!(b.ok(&["config"]).contains(&format!("{:<13} {}", "done-needs-note", "on")), "listed once set");
+    let two = b.in_review("tax: return", "bob");
+    let e = b.refused("carol", &["done", &two.to_string()]);
+    assert_eq!(
+        e,
+        format!("tb: this board needs a closing note before DONE (config done-needs-note) — 'tb note {two} \"what you checked\"', then 'tb done {two}' again, or 'tb done {two} --force' to skip it (logged)")
+    );
+    assert_eq!(b.column(two), "review", "nothing moved");
+    b.ok(&["note", &two.to_string(), "looks right, tests pass"]);
+    b.ok_as("carol", &["done", &two.to_string()]);
+    assert_eq!(b.column(two), "done");
+}
+
+/// The stricter reading: a note kept from an earlier round (or column) does not carry over —
+/// a fresh note is needed for the stay actually being closed.
+#[test]
+fn a_note_from_before_this_review_stay_does_not_satisfy_the_close() {
+    let b = Board::new();
+    b.ok(&["config", "done-needs-note", "on"]);
+    b.ok(&["add", "widgets: fix it"]);
+    b.ok_as("bob", &["take", "1"]);
+    b.ok(&["note", "1", "starting work"]); // written while in doing
+    b.ok_as("bob", &["done", "1"]); // -> review; nothing noted during THIS stay yet
+    assert!(b.refused("carol", &["done", "1"]).starts_with("tb: this board needs a closing note"));
+    b.ok_as("carol", &["move", "1", "doing", "needs another pass"]); // round 2
+    b.ok(&["note", "1", "fixed the edge case"]); // again written in doing, not the new review stay
+    b.ok_as("bob", &["done", "1"]); // -> review again; column_since resets
+    assert!(b.refused("carol", &["done", "1"]).starts_with("tb: this board needs a closing note"), "an older note must not carry over");
+    b.ok(&["note", "1", "re-checked, good"]);
+    b.ok_as("carol", &["done", "1"]);
+    assert_eq!(b.column(1), "done");
+}
+
+#[test]
+fn done_needs_note_force_bypasses_and_is_logged() {
+    let b = Board::new();
+    b.ok(&["config", "done-needs-note", "on"]);
+    let one = b.in_review("permits: renewal", "bob");
+    b.ok_as("carol", &["done", &one.to_string(), "--force"]);
+    assert_eq!(b.column(one), "done");
+    let forced: Vec<String> = b.json(&["show", &one.to_string(), "--json"])["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "force")
+        .map(|e| e["text"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(forced, [format!("closed #{one} with no note since it entered review")]);
+}
+
+/// The CLI refuses the name `github` outright (the identity rule), same as for `done-by` — so
+/// the exemption is reachable only from tb's own sync code, and is pinned in
+/// `store::closing`'s unit tests, not here.
+#[test]
+fn nobody_can_close_by_claiming_to_be_the_github_sync_done_needs_note_too() {
+    let b = Board::new();
+    b.ok(&["config", "done-needs-note", "on"]);
+    let one = b.in_review("widgets: gh#7 fix it", "bob");
+    let e = b.refused("github", &["done", &one.to_string()]);
+    assert!(e.contains("is the name tb's own GitHub sync acts under"), "{e}");
+    assert_eq!(b.column(one), "review");
+}
+
+#[test]
+fn done_needs_note_validates_its_value_and_refuses_off() {
+    let b = Board::new();
+    let e = b.refused("alice", &["config", "done-needs-note", "maybe"]);
+    assert!(e.contains("is not on|off"), "{e}");
+    let e = b.refused("alice", &["config", "done-needs-note", "--off"]);
+    assert!(e.contains("--off does not go with done-needs-note") && e.contains("'tb config done-needs-note off' is the default"), "{e}");
+    assert_eq!(b.ok(&["config", "done-needs-note", "off"]).trim(), "done-needs-note is now off — DONE needs no note (the default)");
+    assert!(b.ok(&["config"]).contains(&format!("{:<13} {}", "done-needs-note", "off")), "an explicit off is still listed");
+}
+
+/// The guard order is a real decision: `done-by` answers before `done-needs-note` — a person
+/// not on the closer list never gets to hear about the note requirement.
+#[test]
+fn done_by_answers_before_done_needs_note() {
+    let b = Board::new();
+    b.ok(&["config", "done-by", "anna"]);
+    b.ok(&["config", "done-needs-note", "on"]);
+    let one = b.in_review("permits: renewal", "bob");
+    let e = b.refused("carol", &["done", &one.to_string()]);
+    assert!(e.starts_with("tb: only anna may close a card"), "done-by must answer first: {e}");
+    let e = b.refused("anna", &["done", &one.to_string()]);
+    assert!(e.starts_with("tb: this board needs a closing note before DONE"), "{e}");
+    b.ok_as("anna", &["note", &one.to_string(), "verified"]);
+    b.ok_as("anna", &["done", &one.to_string()]);
+    assert_eq!(b.column(one), "done");
+}
+
+/// The docs must say what `done-needs-note` is, same evidence bar as `done-by`.
+#[test]
+fn done_needs_note_is_documented() {
+    for doc in ["README.md", "docs/AGENTS.md"] {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(doc)).unwrap();
+        assert!(text.contains("done-needs-note"), "{doc} never mentions done-needs-note");
+    }
+}
+
 /// The docs must say what `done-by` is — and what it is not.
 #[test]
 fn done_by_is_documented_as_an_honest_mistake_stop_not_security() {
