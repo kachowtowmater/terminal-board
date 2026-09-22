@@ -20,27 +20,18 @@ const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
-Cards   add \"tag: title\" [-d DESC] [--check ITEM]... [--tag KEY]   edit ID [--title T] [--desc D] [--tag KEY]   rm ID [--force]
-        list [--archived] [--done [--since DATE]] [filters] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
-        check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
-Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
-Look    config card-line age|due · label COLUMN \"TEXT\"|--off · waiting-lane shown|hidden · wip-counts-blocked yes|no · done-by NAMES|--off
-In/out  import FILE.json|- · edit --from FILE.json|- [--dry-run] (all or nothing) · export --json|--csv [--history] · log [--since DATE]
-Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
-        move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
-        prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] · new NAME [--kind default|deadline | --from BOARD] · mv ID --to BOARD · board · watch --json
-Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
-        config file-mode [private|shared] (who may open the board file; tb creates it 0600)
-GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
-Agents  agents (who is on this board + the card each holds or reviews; herdr adds the live status)
-Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--agents-md PATH] [--dry-run]
+Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
+Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
+Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by
+In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
+Flow    next [--review] | take ID | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
+Boards  boards [--default [NAME|--clear]] | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
+Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
+GitHub  github [--refresh] | github repos | sync
+Agents  agents
+Setup   setup [--yes] [--github R|--no-github] [--agents-md PATH] [--dry-run]
 
-Options
-  --json         machine-readable output; every write prints {\"ok\":…}   (docs/JSON.md)
-  --as NAME      act as NAME (else $TB_AS, $HERDR_AGENT_NAME, $USER); $TB_MODEL, $TB_ROLE: recorded with it
-  -b NAME        board (else a first-arg name, $TB_BOARD, 'boards --default', default); $TB_DB = file
-  -h, -V         help, version
+Options --json (docs/JSON.md) | --as NAME ($TB_AS) | -b NAME ($TB_BOARD; $TB_DB = file) | -h, -V | full reference: README.md
 agents: run 'tb guide' for the full agent manual
 ";
 

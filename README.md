@@ -383,7 +383,8 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 ## Command-line reference
 
 Every command prints a short answer and, when something is wrong, says what to run next.
-Add `--json` to any command for machine-readable output.
+Add `--json` to any command for machine-readable output. `tb --help` prints a one-screen
+summary, one line per group, pointing here for the full flag reference.
 
 ```sh
 tb add "docs: fix typo in README"
