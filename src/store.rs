@@ -1,5 +1,6 @@
 //! SQLite store: cards, checklist, events, config. WAL mode, atomic claims.
 
+use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -424,6 +425,24 @@ const CARD_COLS: &str =
     r#"id, title, tag, description, "column", owner, due, gh_ref, created_at, column_since, blocked, position, reviewer, blocked_on, blocked_until"#;
 
 fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
+    // `position` is tb's business (`docs/SCHEMA.md`), but a file written by something else can
+    // hold anything there. Read it as its stored type first: a value that is not a whole
+    // number is not tolerated into an i64 (that surfaces as a raw "database error" that names
+    // neither card nor file) — it is refused with the board file and the one fix. A foreign
+    // real value inside the integer range still enters: the card orders, by_position is total.
+    // A NULL reads as the schema default 0 (a foreign tool may have relaxed NOT NULL; a card
+    // with no position orders last under `by_position`, ties broken by id, and the next write
+    // by tb gives the row a real number).
+    let pos_type = r.get_ref(11)?.data_type();
+    let pos = match pos_type {
+        Type::Integer => r.get::<_, i64>(11),
+        Type::Null => Ok(0),
+        Type::Real => Ok(r.get_ref(11)?.as_f64().unwrap_or_default() as i64),
+        Type::Text => return bad_position(r.get::<_, i64>(0), r.get_ref(11)?.as_str().unwrap_or_default()),
+        Type::Blob => {
+            return bad_position(r.get::<_, i64>(0), format!("<{} bytes>", r.get_ref(11)?.as_blob().map(|b| b.len()).unwrap_or(0)))
+        }
+    };
     Ok(Card {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -436,11 +455,63 @@ fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
         created_at: r.get(8)?,
         column_since: r.get(9)?,
         blocked: r.get(10)?,
-        position: r.get(11)?,
+        position: pos?,
         reviewer: r.get(12)?,
         blocked_on: r.get(13)?,
         blocked_until: r.get(14)?,
     })
+}
+
+/// The refusal for a position that is not a number: the card, the value as stored, and the
+/// ONE fix. Every read path (`next`, `list`, `board`, `show`, the full-screen board, the
+/// board picker) reads cards through `row_card`, so they all fail the same way — a house
+/// message that names the file, never a raw database error.
+fn bad_position<T>(id: rusqlite::Result<i64>, value: impl std::fmt::Display) -> rusqlite::Result<T> {
+    let id = id?; // the id of the very row being read: nothing between it and here can fail
+    // index usize::MAX renders the message ALONE, without a "Conversion error from type …"
+    // prefix (rusqlite treats that index as "unknown column") — the message is the whole error
+    Err(rusqlite::Error::FromSqlConversionFailure(
+        usize::MAX,
+        Type::Integer,
+        Box::new(crate::store::BoardError(position_error(id, value))),
+    ))
+}
+
+/// The board file the last `Store::open` opened. `row_card` is a row mapper — SQLite hands it
+/// a row, never the store that is loading it — so the one message that has to name the file
+/// (`position_error`) reads the path from here. It is remembered when the file is OPENED
+/// because a board file is chosen four ways (`TB_DB`, a board named on the command line,
+/// `TB_BOARD`, the saved default) and only one of them is an environment variable to read
+/// back: on a named board `TB_DB` is unset, and a repair command that says "the board file"
+/// is a command nobody can run.
+static OPEN_BOARD_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Remember the file a board was just opened from (`None` for an in-memory board, which has
+/// no file to name).
+fn remember_board_file(path: Option<&Path>) {
+    if let Ok(mut open) = OPEN_BOARD_FILE.lock() {
+        *open = path.map(|p| p.display().to_string()).filter(|p| !p.is_empty());
+    }
+}
+
+/// The board file a refusal names: the one actually open, else `TB_DB` for a message raised
+/// before any board was opened, else a phrase that at least reads as English.
+fn board_file() -> String {
+    OPEN_BOARD_FILE
+        .lock()
+        .ok()
+        .and_then(|open| open.clone())
+        .or_else(|| crate::env("DB").filter(|f| !f.is_empty()))
+        .unwrap_or_else(|| "the board file".into())
+}
+
+/// The message itself, so the tests can hold it in one place: what is wrong, which FILE, and
+/// the one command that fixes it.
+fn position_error(id: i64, value: impl std::fmt::Display) -> String {
+    let file = board_file();
+    format!(
+        "card #{id} has a position that is not a number ({value}) — {file} was written by something other than tb; give card #{id} a whole-number position again with: sqlite3 \"{file}\" \"UPDATE cards SET position=0 WHERE id={id}\""
+    )
 }
 
 fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
@@ -730,6 +801,9 @@ impl Store {
         } else {
             (path.to_path_buf(), false)
         };
+        // the file every later refusal names (`position_error`): where the board really is,
+        // whether it was named by `TB_DB`, by `-b NAME`, by `TB_BOARD` or by the saved default
+        remember_board_file(on_disk.then_some(real.as_path()));
         let mut conn = Connection::open(&real)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
@@ -1414,14 +1488,18 @@ impl Store {
             None => {
                 // the first unblocked card of the TODO column in the one ordering
                 // (store/order.rs), read inside this transaction: what `tb next` hands out is
-                // what `tb list` and the board show on top — nearest due date under `sort due`
+                // what `tb list` and the board show on top — nearest due date under `sort due`.
+                // The queue is read WHOLE, blocks included: a row the order cannot read must
+                // refuse the claim, never be silently skipped for a card that parses (an
+                // agent runs `tb next` blind — what it hands out must be what the board shows
+                // on top, or nothing).
                 let found: Option<i64> = {
                     let mut st = tx.prepare(&format!(
-                        r#"SELECT {CARD_COLS} FROM cards WHERE "column"='todo' AND blocked IS NULL"#
+                        r#"SELECT {CARD_COLS} FROM cards WHERE "column"='todo'"#
                     ))?;
                     let open = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<Card>>>()?;
                     let sort = order::sort_of(&tx)?;
-                    open.iter().min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
+                    open.into_iter().filter(|c| c.blocked.is_none()).min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
                 };
                 match found {
                     Some(i) => i,
