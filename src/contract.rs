@@ -30,6 +30,13 @@ pub struct EventJ {
     pub actor_id: Option<i64>,
 }
 
+impl EventJ {
+    /// The JSON form of a stored event.
+    pub fn of(e: crate::store::Event) -> EventJ {
+        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CardJ {
     pub id: i64,
@@ -141,11 +148,15 @@ fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<C
     card_shown(store, c, due, &store.display()?)
 }
 
-fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
-    card_all(store, c, due, look, &store.block_ctx()?)
+pub fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
+    card_with(store, c, due, look, &store.block_ctx()?)
 }
 
-fn card_all(
+/// A card with everything already worked out ONCE for the whole board: the due context, the
+/// display labels and the block context. `card_shown` rebuilds the block context on every
+/// call, and that scans the cards table — fine for one card, quadratic for an export, so a
+/// loop over many cards builds these three itself and calls this.
+pub fn card_with(
     store: &Store,
     c: &Card,
     due: &crate::store::due::DueCtx,
@@ -201,7 +212,7 @@ pub fn board(store: &Store) -> Result<BoardJ> {
     let due = store.due_ctx()?;
     let look = &snap.display;
     let blocks = store.block_ctx()?;
-    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_all(store, c, &due, look, &blocks)).collect() };
+    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_with(store, c, &due, look, &blocks)).collect() };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json

@@ -524,6 +524,31 @@ tb edit --from board.json          # only what differs changes; [{"id": 7, "due"
   It never moves a card or changes its owner.
 - Anything else in a row — `column`, `owner`, `position`, timestamps, `events`, fields tb does
   not know — is **ignored with one warning** that lists the fields. History is never imported.
+
+**Getting the board out again.** `tb export` writes the whole board, with its history, for
+someone who will never open a terminal:
+
+<!-- no-test -->
+```sh
+tb export --json > board.json        # every card with its whole history; tb import reads it back
+tb export --csv  > board.csv         # one row per card, for a spreadsheet
+tb export --csv --history > log.csv  # one row per event instead
+tb log --since 2026-10-09            # what happened since a date (--json for a parser)
+tb list --done --since 2026-10-01    # finished work older than today
+```
+
+- The JSON is the same card object `tb board --json` prints, but with **every** event instead
+  of the last ten, wrapped as `{"v":1, "board", "exported_at", "tz", "cards":[…]}`. That
+  `cards` array is exactly what `tb import` and `tb edit --from` read, so export → edit →
+  import is a round trip.
+- The CSV is meant for Excel or Numbers: a byte-order mark so UTF-8 names and dashes are not
+  mangled, RFC 4180 quoting (a description keeps its commas, quotes and line breaks in one
+  cell), CRLF row ends, and dates written as local `YYYY-MM-DD HH:MM` in the board's zone.
+  A cell that would start `=`, `+`, `-` or `@` gets a leading apostrophe, so a card titled
+  `=cmd|…` is text in the sheet and never a formula. It is one-way; `--json` is what comes back.
+- `--since` takes a calendar date and means **local midnight in the board's zone** (`tb config
+  tz`), not a UTC instant, so "since Tuesday" is your Tuesday. A unix second works too.
+- All of these only read: they never change the board file.
 - Accepted documents: a JSON array of cards, `{"cards": […]}`, the whole `tb board --json`
   object (its columns in board order), or one card object. At most 4 MiB of UTF-8.
 

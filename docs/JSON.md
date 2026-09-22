@@ -278,6 +278,53 @@ A file that cannot be read at all (missing, not JSON, not cards, empty, too big,
 on `-`) is the usual `{ok:false,error,hint}`. One write transaction: a second import at the
 same moment waits, then runs whole.
 
+## `tb export` — the whole board, with its history
+
+```sh
+tb export --json              # one document, re-importable
+tb export --csv               # one row per card, for a spreadsheet
+tb export --csv --history     # one row per event instead
+```
+
+```json
+{ "v": 1, "board": "default", "exported_at": 1790069406, "tz": "America/Los_Angeles",
+  "cards": [ { "…card…": null }, "…" ] }
+```
+
+Each element of `cards` is **the card object above** — the same fields `tb board --json`
+prints — except that `events` holds **every** event, oldest first, not the last ten. `tz` is
+the board's zone (`tb config tz`) or null. `cards` is exactly the array `tb import` and
+`tb edit --from` accept, so export → edit → import is a round trip (the fields those commands
+ignore are listed in their own section above, and are reported as warnings, not errors).
+
+The output is **streamed**: a board with 10,000 cards and 110,000 events exports in 0.74 s in
+about 15 MB of memory, because one card is held at a time rather than the whole document.
+
+**CSV** is for a person opening the file in a spreadsheet, and is one-way — `--json` is what
+comes back. It carries a UTF-8 **byte-order mark** (without one Excel reads the file as the
+local code page and mangles every accent and dash), RFC 4180 quoting with `"` doubled and any
+cell holding a comma, a quote or a line break wrapped, and CRLF row ends. Times are local
+`YYYY-MM-DD HH:MM` in the board's zone. **A cell that would begin `=`, `+`, `-`, `@`, a tab or
+a carriage return is written with a leading apostrophe**, so a card title is text in the sheet
+and never a *formula* — card text is written by other people, and a spreadsheet would
+otherwise run it. The stored card is unchanged; this is a property of the file.
+
+## `tb log [--json] [--since DATE]` — the board's history
+
+`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text}` — the
+same event fields `tb watch --events` streams, without the live stream's `from`/`to`.
+`--since` takes `YYYY-MM-DD`, meaning **local midnight in the board's zone**, or a unix
+second; events are selected by their timestamp, so a history written out of order still
+answers "everything since Tuesday" correctly.
+
+## `tb list --done [--since DATE]`
+
+The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —
+every card finished at or after local midnight of that date, newest first. `--json` is an
+array of card objects, the same shape as `tb list --json`.
+
+`tb export`, `tb log` and `tb list` never write to the board file.
+
 ## `tb agents --json`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because

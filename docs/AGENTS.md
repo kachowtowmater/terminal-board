@@ -68,6 +68,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue, or with a due date | `tb add "repo: gh#315 short title"` · `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
 | many cards from one JSON file, all or nothing (try it with `--dry-run` first) | `tb import cards.json` · `tb edit --from changes.json` (rows keyed by `id`; only the fields present change; a card someone else holds refuses the whole file) |
+| the whole board out, for a person or another tool | `tb export --json` (re-imports) · `tb export --csv` (a spreadsheet) · `--csv --history` (one row per event) |
+| what happened, oldest first | `tb log [--json] [--since 2026-10-09]` |
+| finished work older than today | `tb list --done [--since 2026-10-09]` |
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |

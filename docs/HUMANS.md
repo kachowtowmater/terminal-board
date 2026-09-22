@@ -266,5 +266,11 @@ background, so it looks the same whatever your terminal theme is.
   due date for sixty cards in one command. Add `--dry-run` first: it reports every row and
   writes nothing. One bad row and nothing is written; the report names the row and the field.
   The README has the file format.
+- To hand work to someone who does not use a terminal: `tb export --csv > board.csv` opens in
+  Excel or Numbers (accents and dashes intact, one row per card; `--csv --history` gives one
+  row per event instead). `tb export --json` is the version tb itself can read back in.
+  `tb log --since 2026-10-09` is what happened since a date, and `tb list --done --since
+  2026-10-01` shows finished work older than today, which the board itself stops showing after
+  a day. None of them change the board.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.
