@@ -1436,14 +1436,20 @@ fn assert_no_silent_cut(ctx: &str, screen: &str, sources: &[String]) {
     }
 }
 
-/// Issue #79: the sweep. Widths 40-200 x every layout, on a quiet repo and a busy one: a
-/// tile line is whole or visibly shortened at every size. At exactly 102 columns the wide
-/// tile row left 20 columns for the 21-character `no open issues or PRs`, and the last
-/// letter went missing with nothing to show for it.
+/// Issue #79: the sweep. Widths 40-200 x every layout, on a quiet repo, a part page and a
+/// busy one: a tile line is whole or visibly shortened at every size. At exactly 102
+/// columns the wide tile row left 20 columns for the 21-character `no open issues or PRs`,
+/// and the last letter went missing with nothing to show for it. The part page (12 PRs /
+/// 7 issues, one draft, red MAIN CI) makes the WIDE tile's first line overflow at narrow
+/// sizes (`PRS  12 open (1 draft)` is 23 characters, as long as the empty state) — the
+/// other fixtures' line 1 always fits, so without it a revert of only the line-1 half of
+/// the fix stayed green.
 #[test]
 fn tile_lines_are_never_silently_cut() {
     common::pin_clock();
-    for (np, ni, busy, what) in [(0i64, 0i64, false, "quiet repo"), (20, 20, true, "busy repo")] {
+    for (np, ni, busy, what) in
+        [(0i64, 0i64, false, "quiet repo"), (12, 7, true, "part page"), (20, 20, true, "busy repo")]
+    {
         let (_d, s, mut app, _) = setup_page(np, ni, busy);
         let sources = tile_texts(&app);
         for layout in LAYOUTS {

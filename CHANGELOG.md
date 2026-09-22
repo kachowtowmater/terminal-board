@@ -36,6 +36,27 @@ be traced back to the session that wrote it.
   events keep their plain name and a NULL `actor_id`, nothing is filled in afterwards, and an
   older tb keeps reading and writing an upgraded board.
 
+### A deadline queue: `tb config sort due`, and `tb next` takes the nearest due date
+
+A board is a priority queue by default — `tb next` takes the top card. `tb config sort due`
+makes it a deadline queue: TODO and REVIEW are ordered by due date, nearest first (an overdue
+card is on top), cards without a date come after every dated card, and equal dates — or no
+dates — keep their position order, so the order is always deterministic. `tb next` and
+`tb next --review` take the first unblocked card of that order.
+- **One ordering function** now sorts everything: `tb next`, `tb next --review`, `tb list`,
+  `tb board`, `tb board --json` / `tb watch --json` and the full-screen board. No query decides
+  a queue on its own any more, so they cannot disagree. Agents racing `tb next` still each get
+  a different card, and the cards go out strictly in due order.
+- The order never depends on what today is (dates compare as dates); DOING stays in position
+  order and DONE newest first — a finished card's date orders nothing.
+- `tb prio` (and shift+arrows on the board) still edits position, which is the tie-break on a
+  due-sorted column — and now says so, with the card's real place: `… #4 is 2 of 7 in todo
+  (was 4); its date decides the rest — 'tb edit 4 --due DATE'`. `--json` carries it as `note`.
+- JSON (additive, `"v"` stays 1): the board object gains `sort` (`position` | `due`). On a board
+  set to `sort due`, `tb list --json` is in the board's order; otherwise it stays in id order.
+- `tb config sort position` (the default) is exactly the order tb always had; `tb config sort`
+  prints the setting, and `tb config` lists it only once a board sets it.
+
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
 
 Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`

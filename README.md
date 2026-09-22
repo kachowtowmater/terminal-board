@@ -405,6 +405,7 @@ tb --version
 | `tb boards` | list your boards |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
+| `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | the herdr agents and the card each holds |
 | `tb guide` | the manual for AI agents |
@@ -481,7 +482,33 @@ past) and `due_state` — `overdue`, `soon` (due within `due-warn` days; 3 unles
 or `ok`. A finished card carries neither. `tb config tz` and `tb config due-warn` with no value
 print the one in force; `tb config` lists them once the board sets them.
 
-A board with no due dates and neither setting looks and behaves exactly as it did before.
+#### A deadline queue: `tb config sort due`
+
+```sh
+tb deadlines add "tax: file the quarterly return" --due 2026-10-15
+tb deadlines config sort due
+tb deadlines list
+tb deadlines prio 1 top
+tb deadlines next --as alice
+```
+
+A board is a priority queue by default: `tb next` takes the top card, and you order cards by
+hand (`tb prio`, shift+arrows). `tb config sort due` makes it a deadline queue instead. TODO and
+REVIEW show the **nearest due date first** — so an overdue card is on top — and `tb next` (and
+`tb next --review`) takes that card, skipping blocked ones as always. Cards without a date come
+after every dated card. Cards with the same date, or with none, keep their position order, so
+the order is always the same for everyone: `tb next`, `tb list`, `tb board`, every `--json`
+board and the full-screen board all sort with one function and cannot disagree. The order
+never depends on what today is — dates are compared as dates. DOING stays in position order and
+DONE newest first.
+
+Position still matters as the tie-break, so `tb prio` still works — and on a due-sorted column
+it tells you where the card really is: `#1 is now at position 1 in todo — this board sorts by
+due date, so position only orders cards with the same date (or none): #1 is 2 of 2 in todo
+(unchanged); its date decides the rest — 'tb deadlines edit 1 --due DATE'`.
+`tb config sort position` goes back; `tb config sort` prints the one in force.
+
+A board with no due dates and none of these settings looks and behaves exactly as it did before.
 
 ## Layouts and themes
 
