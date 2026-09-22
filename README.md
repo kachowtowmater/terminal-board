@@ -420,6 +420,23 @@ tb --version
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
 
+**Which agent, model and session did the work.** The name on a card stays short. Behind it, tb
+records who that name was — harness, model, role, session, machine — so a bad batch of work
+can be traced back to the session that wrote it. The harness and the session are picked up by
+themselves (from what the harness exports, or from herdr inside a herdr pane); the model and
+the role are yours to set, because no harness exports them and tb never guesses:
+
+<!-- no-test -->
+```sh
+export TB_AS=coder-2 TB_MODEL=model-x TB_ROLE=coder   # in the agent's launch script
+tb show 3      # … ends with:  actors:
+               #   coder-2 — claude-code model-x coder session 0b9f6a52-… on buildbox
+```
+
+It is in `--json` too (`actor_id` on every event, `actors[]` next to them). A person in a
+plain terminal sets none of this and nothing is recorded beyond the name; a path is never
+stored; the record is self-reported. More in [docs/HUMANS.md](docs/HUMANS.md#which-agent-which-model-which-session).
+
 **Long text from a file.** `-d "…"` and `tb note ID "…"` go through your shell, which eats
 backticks, `$` and quotes in a long string. `--desc-file PATH` (on `tb add` and `tb edit`) and
 `tb note ID --file PATH` read the text from a file instead, byte for byte; `-` reads standard

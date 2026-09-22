@@ -25,6 +25,9 @@ pub struct EventJ {
     pub actor: String,
     pub kind: String,
     pub text: String,
+    /// The identity behind `actor`: an `id` in the top-level `actors[]`; null when nothing but
+    /// the name is known.
+    pub actor_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +91,8 @@ pub struct BoardJ {
     pub sort: &'static str,
     pub github: GithubJ,
     pub columns: ColumnsJ,
+    /// Every identity an event in `columns` points at (`actor_id`), in id order.
+    pub actors: Vec<crate::store::actors::Actor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,7 +147,7 @@ fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<C
             .events
             .iter()
             .skip(skip)
-            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone() })
+            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
             .collect(),
     })
 }
@@ -165,6 +170,12 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         .unwrap_or(serde_json::Value::Null);
     let fetched_at = snapshot.get("fetched_at").and_then(|f| f.as_i64()).unwrap_or(0);
     debug_assert_eq!(COLUMNS.len(), 4);
+    let columns = ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? };
+    let seen: Vec<i64> = [&columns.todo, &columns.doing, &columns.review, &columns.done]
+        .into_iter()
+        .flatten()
+        .flat_map(|c| c.events.iter().filter_map(|e| e.actor_id))
+        .collect();
     Ok(BoardJ {
         v: SCHEMA_VERSION,
         board: store.name.clone(),
@@ -173,7 +184,8 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         layout: snap.layout.clone(),
         sort: snap.sort.as_str(),
         github: GithubJ { repo, snapshot, error, fails, fetched_at },
-        columns: ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? },
+        columns,
+        actors: store.actors_by_id(&seen)?,
     })
 }
 

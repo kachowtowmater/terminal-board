@@ -149,8 +149,7 @@ fn to_json<T: Serialize>(v: &T) -> String {
 }
 
 fn board_log(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
-    conn.execute("INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,?,?)", params![now(), actor, kind, text])?;
-    Ok(())
+    Store::log_board(conn, actor, kind, text)
 }
 
 impl Store {

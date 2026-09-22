@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Which harness, model and session did the work
+
+A card says `added by lead`: a short name, reused across runs, machines and harnesses. It
+still does — but behind the name tb now records **who that was**, so a bad batch of work can
+be traced back to the session that wrote it.
+- A new `actors` table (`actor`, `harness`, `model`, `role`, `session`, `host`, `first_seen`,
+  `last_seen`) and a nullable `actor_id` on `events` and `board_events`. One row per distinct
+  identity: the key is the whole tuple, so a session writes one row however many commands it
+  runs (tested with 1000 commands, eight at a time).
+- The harness and the session are picked up by themselves — from what the harness exports
+  (`AI_AGENT` / `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`), else, inside a herdr pane, from
+  herdr's record of the pane (the same single `herdr agent list` that finds the name).
+  `TB_HARNESS` / `TB_SESSION` set them by hand. The **model and the role are explicit only**:
+  `TB_MODEL`, `TB_ROLE`. No harness exports them, and a guessed model written down as fact is
+  worse than none. The machine is the first label of the host name, or `TB_HOST`.
+- Reading it back: `tb show ID` ends with an `actors:` block (`lead — claude-code model-x
+  orchestrator session … on buildbox`) when the card has one. JSON (additive, `"v"` stays 1):
+  every event gains `actor_id`, `tb board --json` and `tb show --json` gain a top-level
+  `actors[]`, and each `tb watch --events --json` line carries `actor_id` plus the whole
+  `identity` object.
+- Nothing on the board changes: card rows, the AGENTS panel and `actor` everywhere keep the
+  short name, and name resolution is what it was.
+- **No identity, no record.** A person in a plain terminal exports none of this: their events
+  keep a NULL `actor_id`, `tb show` prints what it always printed, and their machine's name is
+  not written into a file that gets shared.
+- **A path is never stored.** Some harnesses report their session as the path of a file under
+  the home directory; tb keeps the identifier inside the file's name, or else `path-` and 12
+  hex digits of a hash of the path. Every value is cleaned of control characters and escape
+  sequences and cut to 64 characters, and is shown through the usual sanitizer.
+- The record is self-reported, like the name: a claim, not proof.
+- The migration only adds (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN`): existing
+  events keep their plain name and a NULL `actor_id`, nothing is filled in afterwards, and an
+  older tb keeps reading and writing an upgraded board.
+
 ### Cards: the holder rule covers `rm`, `edit` and `block`; `rm` can archive instead of delete
 
 - **`rm`, `edit` and `block` follow the holder rule** that `done`/`drop`/`move` already

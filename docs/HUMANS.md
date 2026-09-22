@@ -155,6 +155,50 @@ To hand work to an agent, add a card with a clear description ("Done = …") and
 and tell the agent: "Your work is on Terminal Board: run `tb next --as <your-name>`… Full
 manual: `tb guide`." Its notes appear in the card's history as it works.
 
+### Which agent, which model, which session
+
+A card says `added by lead` — a short name, so cards stay readable. Behind the name tb keeps a
+fuller record of **who that was**: the harness, the model, the role, the session and the
+machine. When a run produces a bad batch of work, that is how you trace it back to the session
+that wrote it. `tb show ID` lists it under the card's history:
+
+```
+actors:
+  lead — claude-code model-x orchestrator session 0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70 on buildbox
+```
+
+Where each part comes from:
+
+| part | from |
+|---|---|
+| harness, session | picked up by itself: from what the harness exports (Claude Code does), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
+| model, role | **only** from `TB_MODEL` and `TB_ROLE`. No harness tells its child processes which model it runs, and tb does not guess: a wrong model written down as fact is worse than none |
+| machine | the first part of the host name, or `TB_HOST` |
+
+So put the two explicit ones in whatever starts the agent — its launch script, or the
+environment of its pane — next to its name:
+
+```sh
+export TB_AS=coder-2 TB_MODEL=model-x TB_ROLE=coder
+```
+
+Good to know:
+
+- Nothing changes on the board: the name on a card, in the AGENTS panel and in `actor` in the
+  JSON is the short one, as before. The record is in `tb show`, in `--json` (`actor_id`,
+  `actors[]` — docs/JSON.md) and in the `actors` table (docs/SCHEMA.md).
+- One session is one record, however many commands it runs. A new session, another name or
+  another model is a new one.
+- You, typing in a plain terminal, export none of this — so nothing is recorded about you
+  beyond your name, exactly as before, and your machine's name is not written into the board.
+- A board is a file people share, so a **path is never stored**: a harness that reports its
+  session as the path of a file gets the identifier inside the file's name or, when there is
+  none, `path-` and 12 hex digits (a hash of the path — enough to tell two sessions apart,
+  useless for reading the path back). Values are cleaned of control characters and cut to 64
+  characters.
+- It is **self-reported**, like the name: good for tracing honest work, not proof of anything.
+- Events written before this existed keep their plain name. Nothing is filled in afterwards.
+
 ## Pane sizes and views
 
 The board adapts to the size of its window. Put it in a small pane next to your editor and
