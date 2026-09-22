@@ -203,7 +203,9 @@ fn worked_board() -> Board {
     b.ok(&["add", "ops: waits on the guide"]);
     b.ok(&["check", "1", "1"]);
     b.ok(&["block", "4", "#1"]);
-    assert!(b.run_as(&["take", "1"], "alice").status.success());
+    // the DOING card is held by the actor that runs `edit --from` below: the holder rule has
+    // its own test, and this one is about which FIELDS travel
+    b.ok(&["take", "1"]);
     assert!(b.run_as(&["take", "2"], "bob").status.success());
     assert!(b.run_as(&["done", "2"], "bob").status.success());
     b
@@ -396,8 +398,21 @@ fn sixty_cards_are_re_dated_in_one_command() {
 
     let dates: Vec<Value> = (1..=60).map(|id| json!({"id": id, "due": format!("2026-{:02}-{:02}", 10 + id % 3, 1 + id % 28)})).collect();
     let f = b.file("dates.json", &json!(dates));
-    assert!(b.ok(&["edit", "--from", &f, "--dry-run"]).contains("60 of 60 cards would be changed"));
-    let out = b.ok(&["edit", "--from", &f]);
+    // two of the sixty are held by somebody else in DOING: the whole re-date is refused,
+    // naming each one, and nothing is written — all or nothing, never "58 of 60".
+    // (#5 is carol's but in REVIEW, and a REVIEW card is not held: the same rule a single
+    // `tb edit` follows.)
+    let snapshot = dump(&b.db);
+    let e = b.refused(&["edit", "--from", &f]);
+    for (row, who) in [(3, "alice"), (4, "bob")] {
+        assert!(e.contains(&format!("row {row} (#{row}) id: is held by {who}")), "{e}");
+    }
+    assert!(!e.contains("#5"), "a REVIEW card is not held: {e}");
+    assert!(e.contains("2 problems in dates.json") && e.contains("nothing was written"), "{e}");
+    assert_eq!(dump(&b.db), snapshot, "a refused re-date wrote something");
+    // with --force it goes through, and every override is logged per card
+    assert!(b.ok(&["edit", "--from", &f, "--dry-run", "--force"]).contains("60 of 60 cards would be changed"));
+    let out = b.ok(&["edit", "--from", &f, "--force"]);
     assert!(out.ends_with("60 of 60 cards changed (0 unchanged) from dates.json\n"), "{out}");
     let after = b.cards();
     for (old, new) in before.iter().zip(&after) {
@@ -408,14 +423,24 @@ fn sixty_cards_are_re_dated_in_one_command() {
         }
         assert!(new["days_left"].is_i64() || new["column"] == "done", "#{id} has a due state now");
     }
-    assert_eq!(b.events(3).last().unwrap(), &s("due", "importer", &format!("none -> 2026-{:02}-{:02}", 10, 4)));
+    // the due event, then the force event — the order a single `tb edit --force` writes them
+    assert_eq!(
+        b.events(3).into_iter().rev().take(2).collect::<Vec<_>>(),
+        [s("force", "importer", "edited #3 held by alice"), s("due", "importer", "none -> 2026-10-04")]
+    );
+    for (id, who) in [(3, "alice"), (4, "bob")] {
+        let forced: Vec<String> = b.events(id).into_iter().filter(|e| e.0 == "force").map(|e| e.2).collect();
+        assert_eq!(forced, [format!("edited #{id} held by {who}")], "#{id}");
+        assert_eq!(b.card(id)["owner"], json!(who), "#{id} still belongs to its holder");
+    }
+    assert!(b.events(5).iter().all(|e| e.0 != "force"), "a REVIEW card needed no override");
     // a second pass moves ten, clears one, and leaves the rest alone
     let mut second = dates.clone();
     for row in second.iter_mut().take(10) {
         row["due"] = json!("2027-01-15");
     }
     second[59]["due"] = Value::Null;
-    let out = b.ok(&["edit", "--from", &b.file("dates2.json", &json!(second))]);
+    let out = b.ok(&["edit", "--from", &b.file("dates2.json", &json!(second)), "--force"]);
     assert!(out.ends_with("11 of 60 cards changed (49 unchanged) from dates2.json\n"), "{out}");
     assert_eq!(b.card(60)["due"], Value::Null);
     assert_eq!(b.events(60).last().unwrap().0, "due");
@@ -609,4 +634,77 @@ fn the_manuals_teach_it() {
         assert!(doc.contains("tb import") && doc.contains("edit --from"), "{name}");
     }
     assert!(include_str!("../docs/JSON.md").contains("\"problems\""), "docs/JSON.md shows the refusal shape");
+}
+
+/// THE HOLDER RULE. `edit --from` has its own write path, so it must take the same guard a
+/// single `tb edit` takes: a DOING card somebody else holds is not rewritten from a file
+/// either. Because a bulk edit is all or nothing, one guarded row refuses the WHOLE file.
+#[test]
+fn edit_from_will_not_rewrite_a_card_someone_else_holds() {
+    let b = Board::new();
+    b.ok(&["add", "x: alice's card"]);
+    b.ok(&["add", "x: nobody's card"]);
+    assert!(b.run_as(&["take", "1"], "alice").status.success());
+    let before = dump(&b.db);
+    let f = b.file(
+        "e.json",
+        &json!([{"id": 2, "description": "this row is fine"}, {"id": 1, "title": "x: bob rewrote it", "description": "bob was here", "due": "2026-12-01", "blocked": "#9"}]),
+    );
+
+    // bob, no --force: refused, and NOTHING is written — not even the row that was fine
+    let o = b.cmd(&["edit", "--from", &f], "bob").output().unwrap();
+    assert_eq!(o.status.code(), Some(1), "bob rewrote a card alice holds: {}", text(&o.stdout));
+    let e = text(&o.stderr);
+    assert!(e.contains("row 2 (#1) id: is held by alice"), "the refusal names the row and the card: {e}");
+    assert!(e.contains("'tb edit --from FILE --force'"), "and how to override it: {e}");
+    assert!(e.contains("nothing was written"), "{e}");
+    assert_eq!(dump(&b.db), before, "a refused edit --from wrote something");
+    assert_eq!(b.card(1)["title"], "alice's card");
+    assert_eq!(b.card(2)["description"], "");
+    // the same under --json, in the documented shape
+    let o = b.cmd(&["edit", "--from", &f, "--json"], "bob").output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!((&v["ok"], &v["problems"][0]["row"], &v["problems"][0]["id"]), (&json!(false), &json!(2), &json!(1)));
+    assert!(v["problems"][0]["problem"].as_str().unwrap().contains("held by alice"), "{v}");
+    assert_eq!(dump(&b.db), before);
+    // a dry run is refused the same way, and says nothing would be written
+    let o = b.cmd(&["edit", "--from", &f, "--dry-run"], "bob").output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(dump(&b.db), before);
+
+    // alice editing HER OWN card from a file is not guarded
+    b.run_as(&["edit", "--from", &b.file("a.json", &json!([{"id": 1, "description": "alice's own words"}]))], "alice");
+    assert_eq!(b.card(1)["description"], "alice's own words");
+    // and an unheld card is never guarded, whoever asks
+    let o = b.cmd(&["edit", "--from", &b.file("n.json", &json!([{"id": 2, "description": "anyone may"}]))], "bob").output().unwrap();
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert_eq!(b.card(2)["description"], "anyone may");
+}
+
+/// `--force` overrides the holder rule and is logged per card, exactly as a single
+/// `tb edit --force` logs it.
+#[test]
+fn edit_from_force_is_allowed_and_logged_like_a_single_edit() {
+    let (bulk, single) = (Board::new(), Board::new());
+    for b in [&bulk, &single] {
+        b.ok(&["add", "x: alice's card"]);
+        assert!(b.run_as(&["take", "1"], "alice").status.success());
+    }
+    single.run_as(&["edit", "1", "--desc", "bob was here", "--force"], "bob");
+    let f = bulk.file("e.json", &json!([{"id": 1, "description": "bob was here"}]));
+    let o = bulk.cmd(&["edit", "--from", &f, "--force"], "bob").output().unwrap();
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("#1 changed"), "{}", text(&o.stdout));
+    assert_eq!(bulk.card(1)["description"], "bob was here");
+    // the same `force` event, by the same actor, with the same text
+    let forced: Vec<(String, String, String)> = bulk.events(1).into_iter().filter(|e| e.0 == "force").collect();
+    assert_eq!(forced, [s("force", "bob", "edited #1 held by alice")]);
+    assert_eq!(forced, single.events(1).into_iter().filter(|e| e.0 == "force").collect::<Vec<_>>());
+    // the card still belongs to alice: a forced edit is not a takeover
+    assert_eq!((&bulk.card(1)["owner"], &bulk.card(1)["column"]), (&json!("alice"), &json!("doing")));
+    // a row that changes nothing logs no force event
+    let before = bulk.events(1).len();
+    assert!(bulk.cmd(&["edit", "--from", &f, "--force"], "bob").output().unwrap().status.success());
+    assert_eq!(bulk.events(1).len(), before, "an unchanged row logged a force event");
 }

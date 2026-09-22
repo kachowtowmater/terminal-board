@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+### Which harness, model and session did the work
+
+A card says `added by lead`: a short name, reused across runs, machines and harnesses. It
+still does — but behind the name tb now records **who that was**, so a bad batch of work can
+be traced back to the session that wrote it.
+- A new `actors` table (`actor`, `harness`, `model`, `role`, `session`, `host`, `first_seen`,
+  `last_seen`) and a nullable `actor_id` on `events` and `board_events`. One row per distinct
+  identity: the key is the whole tuple, so a session writes one row however many commands it
+  runs (tested with 1000 commands, eight at a time).
+- The harness and the session are picked up by themselves — from what the harness exports
+  (`AI_AGENT` / `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`), else, inside a herdr pane, from
+  herdr's record of the pane (the same single `herdr agent list` that finds the name).
+  `TB_HARNESS` / `TB_SESSION` set them by hand. The **model and the role are explicit only**:
+  `TB_MODEL`, `TB_ROLE`. No harness exports them, and a guessed model written down as fact is
+  worse than none. The machine is the first label of the host name, or `TB_HOST`.
+- Reading it back: `tb show ID` ends with an `actors:` block (`lead — claude-code model-x
+  orchestrator session … on buildbox`) when the card has one. JSON (additive, `"v"` stays 1):
+  every event gains `actor_id`, `tb board --json` and `tb show --json` gain a top-level
+  `actors[]`, and each `tb watch --events --json` line carries `actor_id` plus the whole
+  `identity` object.
+- Nothing on the board changes: card rows, the AGENTS panel and `actor` everywhere keep the
+  short name, and name resolution is what it was.
+- **No identity, no record.** A person in a plain terminal exports none of this: their events
+  keep a NULL `actor_id`, `tb show` prints what it always printed, and their machine's name is
+  not written into a file that gets shared.
+- **A path is never stored.** Some harnesses report their session as the path of a file under
+  the home directory; tb keeps the identifier inside the file's name, or else `path-` and 12
+  hex digits of a hash of the path. Every value is cleaned of control characters and escape
+  sequences and cut to 64 characters, and is shown through the usual sanitizer.
+- The record is self-reported, like the name: a claim, not proof.
+- The migration only adds (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN`): existing
+  events keep their plain name and a NULL `actor_id`, nothing is filled in afterwards, and an
+  older tb keeps reading and writing an upgraded board.
+
+### Cards: the holder rule covers `rm`, `edit` and `block`; `rm` can archive instead of delete
+
+- **`rm`, `edit` and `block` follow the holder rule** that `done`/`drop`/`move` already
+  follow: a DOING card someone else holds is refused —
+  `#1 is held by bot-1 — your cards: none · to delete it anyway use --force (logged)` — and
+  `--force` (new on all three) goes through and is recorded as its own `force` event. Before,
+  `tb rm 7` with a stale id silently destroyed another agent's card and its whole history,
+  and `edit`/`block` rewrote or blocked it. The full-screen board's `x` names the holder
+  (`#1 is held by bot-1 — delete it anyway? y/n (logged)`), and `e` does not open a form on
+  someone else's held card. `note`, `check` and `prio` stay open by design: they add to a
+  card, they do not take it over. Cards nobody holds are unaffected.
+- **Soft delete: `tb config rm archive`.** On such a board `tb rm` (and `x`) archive the card
+  — with its checklist and every event — instead of destroying it. `tb list --archived`
+  shows them; `tb restore ID` brings one back under the same id, in the column it was in,
+  with its owner and its history event for event, plus an `archived` and a `restored` event.
+  `rm --json` adds `"archived": true`. The default stays the hard delete, and a board that
+  never asks for the archive keeps exactly the schema it had: the `archived_cards` table is
+  created on first use, and archived cards live outside `cards`, so no list, count, WIP
+  limit, `tb next`, sync or render can see them. `restore` is a command now, so it can no
+  longer be a board name.
+- **The name `github` is reserved** for tb's own GitHub sync. The store lets that name move a
+  card someone holds (sync moves follow evidence), so `--as github` was a way past the holder
+  rule. A write — or the full-screen board — under that name is now refused before anything
+  opens; reads are not.
+- Inside: `next`/`take`, `move`/`done`/send-back and `drop` each had their own transaction
+  and guards. They are one function now, with one fixed order — what is asked → the holder →
+  self-approval → the WIP limit → the change and its events — so a new guard has one place
+  to go. No message, event or ordering changed.
+
+### A deadline queue: `tb config sort due`, and `tb next` takes the nearest due date
+
+A board is a priority queue by default — `tb next` takes the top card. `tb config sort due`
+makes it a deadline queue: TODO and REVIEW are ordered by due date, nearest first (an overdue
+card is on top), cards without a date come after every dated card, and equal dates — or no
+dates — keep their position order, so the order is always deterministic. `tb next` and
+`tb next --review` take the first unblocked card of that order.
+- **One ordering function** now sorts everything: `tb next`, `tb next --review`, `tb list`,
+  `tb board`, `tb board --json` / `tb watch --json` and the full-screen board. No query decides
+  a queue on its own any more, so they cannot disagree. Agents racing `tb next` still each get
+  a different card, and the cards go out strictly in due order.
+- The order never depends on what today is (dates compare as dates); DOING stays in position
+  order and DONE newest first — a finished card's date orders nothing.
+- `tb prio` (and shift+arrows on the board) still edits position, which is the tie-break on a
+  due-sorted column — and now says so, with the card's real place: `… #4 is 2 of 7 in todo
+  (was 4); its date decides the rest — 'tb edit 4 --due DATE'`. `--json` carries it as `note`.
+- JSON (additive, `"v"` stays 1): the board object gains `sort` (`position` | `due`). On a board
+  set to `sort due`, `tb list --json` is in the board's order; otherwise it stays in id order.
+- `tb config sort position` (the default) is exactly the order tb always had; `tb config sort`
+  prints the setting, and `tb config` lists it only once a board sets it.
+
 ### Many cards from one file: `tb import` and `tb edit --from`
 
 Cards could only be created and edited one command at a time — sixty due dates meant sixty
@@ -20,6 +104,12 @@ commands and sixty chances to get one wrong halfway.
   `position`, timestamps, `events` and unknown fields in the file are ignored with one warning.
   `edit --from` writes each field, and its event, exactly as `tb edit` and `tb block` do; a
   value a card already has is no change, so a file can be run twice. It never moves a card.
+- **The holder rule applies to a file too.** `tb edit --from` goes through the same guard a
+  single `tb edit` uses, so a DOING card somebody else holds is not rewritten from a file
+  either. Because a bulk edit is all or nothing, one guarded row refuses the whole file with
+  that row named — never a partial "3 rows skipped". `tb edit --from FILE --force` overrides
+  it and logs the same `force` event per card (`edited #ID held by OWNER`); the card still
+  belongs to its holder. A REVIEW card is not held and needs no override.
 - `due` follows the strict `YYYY-MM-DD` rule; files are UTF-8, at most 4 MiB, read through the
   same bounded reader as `--desc-file` (a terminal on `-` is refused, never waited on).
 - `tb add -d "  text  "` now trims the blank space around a description, as `tb edit --desc`,
@@ -45,6 +135,35 @@ date is refused before the board is touched, with the command to run instead.
 - New dependency: `chrono-tz` (the IANA zone data, compiled in — no network access, and no
   reliance on the system's zone files, which a static binary in a small container does not have).
 
+### The AGENTS panel says who is on this board, and on what (a change you will see)
+
+The panel used to list every agent pane herdr knew about, whatever board it worked for, and
+said little more than `working`. It now answers "who is on this board, and on which card".
+- **The board says who.** Rows are the board's own actors: the owner of every card that is not
+  done, the reviewer of every REVIEW card, and anyone who wrote to a card in the last hour. So
+  the panel is useful with no herdr at all (it used to say only `herdr not available`). Each
+  row shows the card (`#4`, `gh#`, title — `review` when it is a card being reviewed), the
+  card's last note and its age; someone holding nothing shows what they last did
+  (`last created #7 5m`). Rows follow the board: DOING top to bottom, then reviewers.
+- **herdr only adds the live status — on an exact name.** A pane lends its harness and
+  `working`/`idle` to a row only when its herdr agent name is exactly the board name (ASCII
+  case aside). A pane label, a first word or a terminal title never match any more: `dev` is
+  not `dev-2`, and a row with no exact match reads `-` rather than show somebody else's status.
+- **Everyone else is counted, not listed.** The header reads `7 agents (4 here, 3 elsewhere)`
+  in place of `(N working, N idle)`, the compact title and the 1-line bar read `4 here · 3
+  elsewhere`, and the panel ends in `+3 elsewhere (not on this board)` — tb does not read other
+  boards, so it does not say what those agents do (enter on the line names them).
+- **Narrow panes give up whole fields**, the least useful first: the status word, the note,
+  its age, the card title (the one part that is cut), the card id last; the header drops
+  `(4 here, 3 elsewhere)` whole, as it drops the clock; the bar drops the idle duration, then
+  `· 3 elsewhere`. A panel with more rows than room ends in `+2 more here · +3 elsewhere`.
+- `tb agents` prints the same list in the same order. JSON (additive, `"v"` stays 1):
+  `tb agents --json` gains `on_board` (bool) and `card_role` (`owner` | `reviewer` | null); a
+  board actor with no pane of its name has `harness` and `status` `-` and an empty `pane_id`.
+- No layout change: the panel is where it was and asks for rows by the same rule (one per
+  line, at most 8), and it hides with `A` as before. A board nobody is on (no open card held
+  or reviewed, no card event in the last hour) with no agent panes reads exactly as it did.
+
 ### Added
 - **Text from a file or from standard input.** `tb add … --desc-file PATH`, `tb edit ID
   --desc-file PATH` and `tb note ID --file PATH` read the description or the note from a file,
@@ -59,6 +178,41 @@ date is refused before the board is touched, with the command to run instead.
   argument error. Every refusal names the next command, and `--json` answers in the usual
   `{ok, error, hint}` shape. Control characters are stored as given and still removed
   wherever the text is shown. Nothing changes for commands that do not use the new flags.
+
+### File safety: private board files, `TB_DB` over `TB_BOARD`, a backup before an upgrade
+
+- **Board files are created private.** A board file — and so its `-wal`/`-shm` sidecars —
+  was created mode `0644`, readable by every user of the machine. Every file tb creates is
+  now `0600`, whatever the umask, in the boards folder and under `TB_DB`. An **existing**
+  wider file is never re-moded on the quiet (it may be shared with a group on purpose): tb
+  reports it in one warning line naming the file and the fix. `tb config file-mode private`
+  tightens the file and its live sidecars, says what it changed and logs it on the board;
+  `tb config file-mode shared` records that the mode is deliberate and ends the report;
+  `tb config file-mode` reads it. The `file-mode` row appears in `tb config` only when there
+  is something to say, so a private board's listing is unchanged. A board path that is a
+  symbolic link is followed by tb itself, which creates the link's target `0600` (SQLite
+  would have created it `0644`); a link into a missing folder or a loop of links is refused,
+  and no mode is ever changed through a link.
+- **`TB_DB` wins over `TB_BOARD`.** With both set every command was refused, which broke any
+  harness that pins `TB_DB` in an environment that also names a board. Now the pinned file
+  opens, JSON reports the board as `default`, and tb prints one warning line. A board name
+  *typed on the command line* under `TB_DB` is still refused — that is the mistake the
+  refusal guards. `tb boards` under `TB_DB` reports the file under its real name, `default`.
+- **Warnings have one home.** One line on stderr (`tb: …`), and with `--json` an additive
+  `"warnings": ["…"]` as the last key of every object-shaped result, failures included. The
+  field is absent when there are none, so output without warnings is byte-for-byte what it
+  was; array results (`list`, `boards`, `agents`) and `watch` lines carry them on stderr
+  only. See docs/JSON.md.
+- **A board is backed up before its schema is upgraded.** Opening a board written by an older
+  tb used to alter it in place with no way back. tb now writes
+  `<file>.before-<version>.<UTC date-time>.bak` next to it first and says where. The copy is
+  made by SQLite, so it includes cards still in a hot `-wal` (a plain copy of the `.db`
+  loses them), is a single file with no sidecars, is `0600`, and is never listed as a board.
+  Deciding, copying and upgrading happen under the board's write lock: many processes opening
+  an older board at once produce exactly one backup, always of the old schema. It is written
+  as `.partial` and renamed when complete. The upgrade is one transaction; if the backup
+  cannot be written nothing is upgraded and the command fails. It is detected from the schema itself, so every future migration is
+  covered. The way back is in UPGRADING.md ("Going back to an older tb").
 
 ### The board footer keeps every hint that fits
 

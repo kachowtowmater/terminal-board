@@ -12,6 +12,7 @@
 //! `unblocked`. Nothing else is ever written: never a column, an owner, a position other than
 //! the bottom of TODO, a timestamp or an event taken from the file.
 
+use super::archive::holder_guard;
 use super::{bottom_of, get_card, now, parse_title, raw_title, Result, Store};
 use crate::import::{Change, Mode, Problem, RowPlan, RowResult};
 use rusqlite::{params, TransactionBehavior};
@@ -47,6 +48,7 @@ impl Store {
         actor: &str,
         source: &str,
         dry_run: bool,
+        force: bool,
     ) -> Result<std::result::Result<Vec<RowResult>, Vec<Problem>>> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut results = Vec::new();
@@ -54,7 +56,7 @@ impl Store {
         for p in plans {
             match mode {
                 Mode::Import => results.push(import_row(&tx, p, actor, source)?),
-                Mode::Edit => match edit_row(&tx, p, actor)? {
+                Mode::Edit => match edit_row(&tx, p, actor, force)? {
                     Ok(r) => results.push(r),
                     Err(problem) => problems.push(problem),
                 },
@@ -126,7 +128,12 @@ fn import_row(tx: &rusqlite::Transaction, p: &RowPlan, actor: &str, source: &str
     Ok(RowResult { row: p.row, id, action: "created", title, changes, ignored: p.ignored.clone() })
 }
 
-fn edit_row(tx: &rusqlite::Transaction, p: &RowPlan, actor: &str) -> Result<std::result::Result<RowResult, Problem>> {
+fn edit_row(
+    tx: &rusqlite::Transaction,
+    p: &RowPlan,
+    actor: &str,
+    force: bool,
+) -> Result<std::result::Result<RowResult, Problem>> {
     let id = p.id.unwrap_or_default();
     let c = match get_card(tx, id) {
         Ok(c) => c,
@@ -138,6 +145,23 @@ fn edit_row(tx: &rusqlite::Transaction, p: &RowPlan, actor: &str) -> Result<std:
                 problem: format!("no card #{id}"),
                 hint: "see 'tb list' for ids".into(),
             }))
+        }
+    };
+    // THE holder rule, the one a single `tb edit` uses: a DOING card somebody else holds is
+    // not edited from a file either. A refusal is a row problem, so the WHOLE file is refused
+    // and nothing is written — a bulk edit is all or nothing, and "3 rows skipped" is not.
+    let forced = match holder_guard(tx, &c, actor, force, "edit it") {
+        Ok(forced) => forced,
+        Err(e) => {
+            // "#3 is held by alice — your cards: … · to edit it anyway use --force (logged)"
+            let (what, hint) = e.0.split_once(" — ").unwrap_or((e.0.as_str(), "use --force (logged)"));
+            return Ok(Err(Problem {
+                row: p.row,
+                id: Some(id),
+                field: "id".into(),
+                problem: what.trim().trim_start_matches(&format!("#{id} ")).to_string(),
+                hint: hint.trim().replace("--force", "'tb edit --from FILE --force'"),
+            }));
         }
     };
     let mut changes = Vec::new();
@@ -195,6 +219,10 @@ fn edit_row(tx: &rusqlite::Transaction, p: &RowPlan, actor: &str) -> Result<std:
             }
             changes.push(Change { field: "blocked".into(), from: opt(&c.blocked), to: opt(by) });
         }
+    }
+    if let (Some(owner), false) = (&forced, changes.is_empty()) {
+        // the same `force` event a single `tb edit --force` writes
+        Store::log(tx, id, actor, "force", &format!("edited #{id} held by {owner}"))?;
     }
     let action = if changes.is_empty() { "unchanged" } else { "changed" };
     let title = raw_title(&get_card(tx, id)?);

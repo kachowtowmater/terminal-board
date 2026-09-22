@@ -442,6 +442,8 @@ pub struct Request {
     pub shown: String,
     pub name: String,
     pub dry_run: bool,
+    /// Edit cards other people hold (`tb edit --from … --force`), logged per card.
+    pub force: bool,
     pub plans: Vec<RowPlan>,
     pub problems: Vec<Problem>,
 }
@@ -449,7 +451,7 @@ pub struct Request {
 impl Request {
     /// Read `file` (`-` = standard input) through the bounded reader — UTF-8, at most
     /// `textin::MAX_DOC_BYTES`, never a terminal — and plan every row.
-    pub fn read(mode: Mode, file: &std::path::Path, dry_run: bool) -> Result<Request, BoardError> {
+    pub fn read(mode: Mode, file: &std::path::Path, dry_run: bool, force: bool) -> Result<Request, BoardError> {
         let text = crate::textin::read_up_to(file, mode.usage(), crate::textin::MAX_DOC_BYTES)?;
         let stdin = file.as_os_str() == "-";
         let shown = if stdin { "-".to_string() } else { file.display().to_string() };
@@ -460,7 +462,7 @@ impl Request {
         };
         let rows = rows_of(&text, mode, &shown)?;
         let (plans, problems) = plan(&rows, mode);
-        Ok(Request { mode, shown, name, dry_run, plans, problems })
+        Ok(Request { mode, shown, name, dry_run, force, plans, problems })
     }
 
     /// Will this run change the board? (A dry run, or a file with problems, never creates one.)
@@ -478,11 +480,11 @@ pub fn run(
     json_out: bool,
     hinted: &dyn Fn(&str) -> String,
 ) -> Result<(), BoardError> {
-    let Request { mode, shown, name, dry_run, plans, mut problems } = req;
+    let Request { mode, shown, name, dry_run, force, plans, mut problems } = req;
     // rows that are fine on their own are still checked against the board, so ONE pass names
     // every problem in the file; with any problem at all, this is a dry run
     let refused = !problems.is_empty();
-    let results = match store.bulk_apply(mode, &plans, actor, &name, dry_run || refused)? {
+    let results = match store.bulk_apply(mode, &plans, actor, &name, dry_run || refused, force)? {
         Ok(results) => results,
         Err(found) => {
             problems.extend(found);

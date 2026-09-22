@@ -54,6 +54,7 @@ Every card change, oldest first per card (`ORDER BY ts, id`).
 | `actor` | TEXT | who did it (agent name, `github`, a human) |
 | `kind` | TEXT | see the vocabulary below |
 | `text` | TEXT | detail (empty when the kind carries none) |
+| `actor_id` | INTEGER NULL FK → actors.id | the identity behind `actor` (harness, model, role, session, machine); NULL when nothing but the name is known, and on every event written before identities were recorded — nothing is back-filled |
 
 Event `kind` vocabulary — **open set; new kinds may appear; ignore what you don't know**:
 
@@ -75,7 +76,9 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `unclaimed` | the reviewer whose claim was released |
 | `returned` | why a REVIEW card was sent back to its owner |
 | `approved` | — (a reviewer's `tb done ID --approve`; the card does not move) |
-| `force` | what `--force` got past (moving a held card, approving your own work) |
+| `force` | what `--force` got past (moving, editing, blocking, deleting or archiving a held card; approving your own work) |
+| `archived` | — (`tb rm` on a board set to `rm archive`; the card leaves `cards` with this as its last event) |
+| `restored` | — (`tb restore ID` brought the card back) |
 
 ### board_events
 Board-level events (no card):
@@ -85,8 +88,30 @@ Board-level events (no card):
 | `id` | INTEGER PK | monotonically increasing |
 | `ts` | INTEGER | unix seconds |
 | `actor` | TEXT | who did it |
-| `kind` | TEXT | `delete`, … (same open-set rule as `events`) |
+| `kind` | TEXT | `delete`, `wip`, `file-mode`, `archive`, `restore`, `rm` (the setting changed), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
 | `text` | TEXT | detail |
+| `actor_id` | INTEGER NULL FK → actors.id | as `events.actor_id` |
+
+### actors
+Who a name was: one row per **distinct identity**, shared by every event that identity wrote.
+`events.actor` stays the short display name; this is the record behind it, so work can be
+traced back to the session that did it. The key is the whole tuple `(actor, harness, model,
+role, session, host)`, NULLs included (unique index `actors_identity`): a session writes one
+row however many commands it runs. A writer about which nothing but a name is known — a person
+in a plain terminal — gets **no row** and a NULL `actor_id`. Every value is self-reported (a
+claim, not proof), cleaned of control characters, and at most 64 characters.
+
+| column | type | meaning |
+|---|---|---|
+| `id` | INTEGER PK | what `actor_id` points at; never reused |
+| `actor` | TEXT | the display name, exactly as in `events.actor` |
+| `harness` | TEXT NULL | the agent harness, without its version (`claude-code`, …): `$TB_HARNESS`, else what the harness exports (`$AI_AGENT`, `$CLAUDECODE`), else herdr's record of the pane |
+| `model` | TEXT NULL | `$TB_MODEL` — only ever what was set explicitly; no harness exports it and tb never guesses it |
+| `role` | TEXT NULL | `$TB_ROLE` (orchestrator, coder, reviewer, …) — explicit only, like `model` |
+| `session` | TEXT NULL | the harness's session id: `$TB_SESSION`, else what the harness exports (`$CLAUDE_CODE_SESSION_ID`), else herdr's record of the pane. **Never a path:** a session reported as the path of a file is stored as the identifier inside the file's name, or else as `path-` + 12 hex digits (a hash of the path) |
+| `host` | TEXT NULL | the machine (`$TB_HOST`, else the first label of its host name) |
+| `first_seen` | INTEGER | unix seconds of the first event this identity wrote |
+| `last_seen` | INTEGER | unix seconds of its latest event |
 
 ### github_snapshot
 The last GitHub sync.
@@ -104,8 +129,26 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
+
+### archived_cards
+Exists only on a board that was ever set to `tb config rm archive` (tb creates it then, not
+before). One row per card `tb rm` archived; `tb restore ID` moves the card back and deletes
+the row. An archived card is in NO other table, so nothing that reads `cards` can count it.
+
+| column | type | meaning |
+|---|---|---|
+| `card_id` | INTEGER PK | the card's id — restored under the same id (ids are never reused) |
+| `archived_at` | INTEGER | unix seconds |
+| `archived_by` | TEXT | who ran `tb rm` |
+| `title` | TEXT | the card's title, for listing |
+| `tag` | TEXT NULL | its tag |
+| `column` | TEXT | the column it was in, and returns to |
+| `owner` | TEXT NULL | who held it |
+| `card` | TEXT | its `cards` row as a JSON object, column name → value |
+| `checklist` | TEXT | its `checklist` rows, a JSON array of such objects |
+| `events` | TEXT | its `events` rows (ids included), a JSON array — the whole history |
 
 ## Reading safely
 
@@ -113,6 +156,13 @@ Key/value settings.
 DB=~/.local/state/terminal-board/boards/default.db   # or "$TB_DB"
 sqlite3 "$DB" "SELECT id, title FROM cards WHERE \"column\"='doing' ORDER BY position"
 sqlite3 "$DB" "SELECT ts, actor, kind, text FROM events WHERE card_id=3 ORDER BY ts, id"
+# everything one session wrote (a session id from `tb show ID`)
+sqlite3 "$DB" "SELECT e.card_id, e.ts, e.kind, e.text FROM events e JOIN actors a ON a.id = e.actor_id WHERE a.session = 'SESSION-ID' ORDER BY e.id"
 ```
 
 Open the file read-only (`sqlite3 "file:…?mode=ro"`) to be certain you cannot corrupt it.
+
+The file is mode `0600` (tb creates it private; `tb config file-mode` reports and changes
+that), so a reader runs as the user who owns the board. When a newer tb upgrades the schema
+it first writes `<file>.before-<version>.<UTC date-time>.bak` next to the board: a complete
+copy in the OLD schema, which is what an older tb — or a reader pinned to it — can open.

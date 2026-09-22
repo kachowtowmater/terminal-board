@@ -6,7 +6,8 @@ fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking chan
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
 With `TB_DB` set there is a single file — an explicit non-default board name is refused
 (`TB_DB is set — board names are ignored; unset TB_DB to use boards`), so `board` never
-reports a name that was not opened.
+reports a name that was not opened. A `TB_BOARD` in the environment is not a typed name: with
+both set, `TB_DB` wins, `board` is `default`, and the command carries a warning (below).
 
 **Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
 fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
@@ -29,7 +30,8 @@ this card", not as an error.
     "doing":  [ card, … ],
     "review": [ card, … ],
     "done":   [ card, … ]
-  }
+  },
+  "actors": [ identity, … ]
 }
 ```
 
@@ -45,7 +47,9 @@ this card", not as an error.
 | `github.error` | string\|null | the last fetch error, shown next to the last good snapshot |
 | `github.fails` | int | consecutive failed refreshes; the board UI goes red only after 3 |
 | `github.fetched_at` | int | unix seconds of the last good snapshot (0 = never fetched) |
-| `columns.*` | card[] | todo/doing/review in `position` order; **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
+| `sort` | `"position"`\|`"due"` | what orders the `columns` arrays — and what `tb next` takes, which is always the first card of `columns.todo` whose `blocked` is null. `position` (default): by `position`. `due`: todo and review by `due`, nearest first; cards without a `YYYY-MM-DD` date after every dated card; equal dates (or none) by `position`, then `id`. doing is always by `position`. The order never depends on today |
+| `columns.*` | card[] | todo/doing/review in the board's order (see `sort`; `position` order unless the board sets `sort due`); **done = every done card, newest first** (the TUI only shows the last 24h — filter on `column_since`) |
+| `actors[]` | identity[] | every identity an event in `columns` points at with its `actor_id` (see **identity** below), in `id` order; `[]` when no event has one |
 
 A bare `tb --json` (not a terminal) prints the same object.
 
@@ -71,8 +75,8 @@ A bare `tb --json` (not a terminal) prints the same object.
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
   "round": 1,
   "events": [
-    { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "" },
-    { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "" }
+    { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
+    { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "", "actor_id": 4 }
   ]
 }
 ```
@@ -96,7 +100,31 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text}` | the last 10, oldest first. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+
+### identity
+
+Who a name was when it wrote an event — the record behind the short `actor`, so work can be
+traced back to the session that did it (docs/SCHEMA.md, table `actors`).
+
+```json
+{ "id": 4, "actor": "bot-2", "harness": "claude-code", "model": "model-x", "role": "coder",
+  "session": "0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70", "host": "buildbox",
+  "first_seen": 1789763036, "last_seen": 1789766636 }
+```
+
+| field | type | notes |
+|---|---|---|
+| `id` | int | what an event's `actor_id` points at; one id per distinct `(actor, harness, model, role, session, host)`, so every command of one session shares it |
+| `actor` | string | the display name, the same string as the event's `actor` |
+| `harness` | string\|null | the agent harness, without its version: `$TB_HARNESS`, else what the harness exports, else herdr's record of the pane |
+| `model`, `role` | string\|null | `$TB_MODEL`, `$TB_ROLE` — explicit only; no harness exports them and tb never guesses |
+| `session` | string\|null | the harness's session id (`$TB_SESSION`, else exported by the harness, else from herdr). Never a path: a session file's path becomes the identifier in its name, or `path-` + 12 hex digits |
+| `host` | string\|null | the machine: `$TB_HOST`, else the first label of its host name |
+| `first_seen`, `last_seen` | int | unix seconds of this identity's first and latest event |
+
+Every value is **self-reported** — a claim, like the name itself, not proof — and arrives
+cleaned of control characters and cut to 64 characters.
 
 ## `tb watch --json` — live stream (NDJSON)
 
@@ -117,14 +145,16 @@ tb watch --events --json                # one NDJSON line per event
 tb watch --events --json --since 1789777000   # resume: only events at/after that unix second
 ```
 
-Each line is `{v, ts, card_id, actor, kind, from, to, text}`: `kind` is the event kind
+Each line is `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity}`: `kind` is the event kind
 (`created`, `taken`, `moved`, `note`, `check`, …); `from`/`to` are the column transition of
 every event that changes a card's column — `created` (null → `todo`), `taken` (`todo` →
 `doing`), `dropped` (e.g. `doing` → `todo`) and `moved` (e.g. `doing` → `review`) — so following
 them tracks every card's column; they are null for every other kind; `text` is the event's
 text (the note, the block reason, …). `--since` resumes after a restart: only events at/after
 that unix second are streamed, in `(ts, id)` order — an orchestrator records the last event
-it saw and passes the next start second on restart.
+it saw and passes the next start second on restart. `actor_id` and `identity` say who `actor`
+was: a stream has no `actors[]` to look an id up in, so the whole **identity** object (above)
+is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
@@ -137,6 +167,13 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 { "ok": true, "card": { …card… } }
 ```
 
+On a board set to `tb config rm archive`, `rm` archives instead of deleting and says so with
+one more field, `"archived": true` (absent on a plain delete). `tb restore ID --json` answers
+like any write, with the restored card. `tb list --archived --json` is an array, most
+recently archived first: `[{ "id": 3, "title": "…", "tag": null, "column": "review",
+"owner": "bot-1", "archived_at": 1790000000, "archived_by": "lead" }]` — `column` and `owner`
+are where the card was, and returns to. Archived cards appear in no other output.
+
 Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
 (`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
 note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
@@ -146,7 +183,9 @@ terminal on standard input (refused at once, never waited on). Text given twice 
 `--desc-file`, note text with `--file`) is an argument error (exit 2).
 
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
-`config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
+`prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
+tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
+`config sort --json`, `config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
 default included: `"value": "local"` / `"value": 3`. `config --json` lists them once set.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
@@ -169,6 +208,8 @@ When the board was chosen **explicitly by name or `-b`** and is not `default`, t
 hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
 the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
 
+## Warnings — `"warnings": ["…"]`
+
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
 A **row is the card object above**, so `tb board --json` or `tb show ID --json` output can be
@@ -187,7 +228,11 @@ edited and fed back. Documents: an array of cards, `{"cards": […]}`, a whole b
 | everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `days_left`, `due_state`, `events`, unknown fields | the same |
 
 In `edit --from` an absent field is left alone and a value the card already has is no change
-(no event), so a file can be run twice. Events are the single commands' own — `created` +
+(no event), so a file can be run twice. It follows **the holder rule**, exactly as a single
+`tb edit` does: a row naming a DOING card somebody else holds is refused — and because a bulk
+edit is all or nothing, that refuses the WHOLE file, with the row named. `--force` overrides
+it and writes the same `force` event per card (`edited #ID held by OWNER`). A REVIEW card is
+not held, so it needs no override. Events are the single commands' own — `created` +
 `imported` (text `row N of FILE`), `edit`, `due`, `blocked` / `unblocked` — by whoever ran it.
 
 Success (exit 0; `--dry-run` answers the same object with `"dry_run": true` and writes nothing):
@@ -216,27 +261,53 @@ same moment waits, then runs whole.
 
 ## `tb agents --json`
 
-herdr agent panes merged with the board (empty array when herdr is not available).
+Some things tb has to say without failing the command: `TB_BOARD` was ignored because
+`TB_DB` pins a file; the board file can be opened by other users; the board was backed up
+before its schema was upgraded. Each is one line on **stderr** (`tb: …`), and with `--json`
+every **object**-shaped result — a write, `board`, `show`, `config`, `sync`, a failure —
+also carries them as its last key:
 
 ```json
-[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036 } ]
+{ "ok": true, "card": { …card… }, "warnings": ["TB_DB is set, so TB_BOARD=work is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"] }
+```
+
+The field is **absent when there is nothing to say** — it is never an empty list — so output
+without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `watch` lines
+have no place for a field: read their warnings on stderr. A warning never changes the exit
+code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
+
+## `tb agents --json`
+
+Who is on **this** board, then the herdr agents that are not — the list the AGENTS panel
+shows, in the same order. The board says who: the owner of every card that is not `done`, the
+reviewer of every `review` card, and every actor with a card event in the last hour (the
+`github` sync is not one). herdr only adds the live fields, and only from a pane whose agent
+name is exactly that name (ASCII case aside; never a pane label or a title). So the array is
+useful without herdr, and empty only when nobody is on the board and herdr shows no agents.
+
+```json
+[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036, "on_board": true, "card_role": "owner" },
+  { "name": "rev-1", "harness": "-", "status": "-", "pane_id": "", "job": null, "card_id": 4, "last_note": "reading the diff", "last_event_at": 1789763100, "on_board": true, "card_role": "reviewer" },
+  { "name": "bot-9", "harness": "codex", "status": "working", "pane_id": "w:p7", "job": null, "card_id": null, "last_note": null, "last_event_at": null, "on_board": false, "card_role": null } ]
 ```
 
 | field | type | notes |
 |---|---|---|
-| `name` | string | herdr agent name, else the pane label |
-| `harness` | string | `claude`, `aider`, … |
-| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown` |
-| `pane_id` | string | |
+| `name` | string | the name as the board has it; for an agent that is not on the board, the herdr agent name, else the pane label |
+| `harness` | string | `claude`, `aider`, …; `-` when no herdr pane has exactly this name |
+| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown`; `-` when no herdr pane has exactly this name |
+| `pane_id` | string | empty when no herdr pane has exactly this name |
 | `job` | string\|null | the last `·` segment of the pane label |
-| `card_id` | int\|null | the card it holds (DOING first) |
+| `card_id` | int\|null | the card it is on: its DOING card, else the card it reviews, else another open card it owns |
 | `last_note` | string\|null | that card's last note text (what the agent says it is doing) |
 | `last_event_at` | int\|null | unix seconds of the card's last event — compute the age yourself; an agent that never notes shows an old age |
+| `on_board` | bool | true for the board's own actors (listed first); false for a herdr agent that is none of them — tb does not read other boards, so it says nothing about what those are doing |
+| `card_role` | string\|null | what `card_id` is to it: `owner` or `reviewer`; null without a card |
 
 ## Other read commands
 
-- `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`).
-- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
+- `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
+- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

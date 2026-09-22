@@ -32,6 +32,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
 | edit title and description | `e` (Tab switches field, Enter saves) | `tb edit 3 --title "…" --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
+| keep deleted cards instead | — | `tb config rm archive`, then `tb list --archived` · `tb restore 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
@@ -40,6 +41,11 @@ A due date is a calendar date (`YYYY-MM-DD`), kept exactly as typed — it never
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
 "today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
 days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
+
+`tb config sort due` turns the board into a deadline queue: TODO and REVIEW show the nearest due
+date first (overdue on top, cards without a date last, equal dates in the order you gave them),
+and `tb next` hands out that card. Reordering by hand (shift+arrows, `tb prio`) then only orders
+cards that share a date — the status line says so. `tb config sort position` is the default.
 
 ### Moving cards
 
@@ -81,7 +87,13 @@ Keep separate boards for separate things. `tb` opens `default`; any other name o
 board. A board is created by its first `tb <name> add …` (or `tb <name> config …`) — any
 other command on a name that does not exist says so and lists the boards you have, so a typo
 never leaves a phantom board behind. (With `TB_DB` set there is one file only — board names
-are refused; unset `TB_DB` to use boards.)
+are refused; unset `TB_DB` to use boards. A `TB_BOARD` left in the environment is ignored
+there, with a one-line warning.)
+
+Board files are private (mode `0600`). A board from an earlier version is readable by other
+users of the machine, and tb says so until you run `tb config file-mode private` (or
+`tb config file-mode shared`, if that is what you want). Before a newer tb upgrades an older
+board it writes a backup next to it and tells you where — see the README, "Where your data lives".
 
 ```sh
 tb home                      # open the board called "home"
@@ -118,14 +130,74 @@ went idle while holding a card.
 
 ## Watching agents
 
-If your AI agents run in herdr panes, the AGENTS panel lists them: `*` working, `-` idle,
-and the card each one holds. `!` in red means an agent went idle while still holding a
-DOING card — it probably stopped halfway; look at its last note. `A` shows or hides the
-panel; `tb agents` lists them in the terminal.
+The AGENTS panel answers two questions: who is working on **this** board, and on what. It
+lists the people and agents the board itself knows about — whoever holds a card that is not
+done, whoever claimed a card to review it, and anyone who wrote to a card in the last hour —
+so it works without any extra tool. Each row shows the card (`#4`, its `gh#`, its title), the
+last note on it and how old that note is; a row that reviews a card says `review`, and someone
+who holds nothing shows the last thing they did (`last created #7 5m`).
+
+If your agents run in herdr panes, a pane whose agent name is **exactly** a name on the board
+adds the live part of the row: `*` working, `-` idle, `x` blocked, and the harness. A name
+that only looks similar adds nothing — the row stays, with `-` where the status would be,
+rather than show somebody else's status. `!` in red means an agent went idle while still
+holding a DOING card — it probably stopped halfway; look at its last note.
+
+Agents in other herdr panes are not listed. They are counted: the header says
+`7 agents (4 here, 3 elsewhere)` and the panel ends in `+3 elsewhere (not on this board)`.
+"Elsewhere" means only that: tb does not read other boards, so it does not say what they
+are doing (enter on that line names them). In a narrow pane a row gives up whole fields,
+the least useful first: the status word (the mark already says it), then the note, then its
+age, then the card title — the only part that is ever cut — and the card id last. `A` shows
+or hides the panel; `tb agents` prints the same list in the terminal.
 
 To hand work to an agent, add a card with a clear description ("Done = …") and a checklist,
 and tell the agent: "Your work is on Terminal Board: run `tb next --as <your-name>`… Full
 manual: `tb guide`." Its notes appear in the card's history as it works.
+
+### Which agent, which model, which session
+
+A card says `added by lead` — a short name, so cards stay readable. Behind the name tb keeps a
+fuller record of **who that was**: the harness, the model, the role, the session and the
+machine. When a run produces a bad batch of work, that is how you trace it back to the session
+that wrote it. `tb show ID` lists it under the card's history:
+
+```
+actors:
+  lead — claude-code model-x orchestrator session 0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70 on buildbox
+```
+
+Where each part comes from:
+
+| part | from |
+|---|---|
+| harness, session | picked up by itself: from what the harness exports (Claude Code does), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
+| model, role | **only** from `TB_MODEL` and `TB_ROLE`. No harness tells its child processes which model it runs, and tb does not guess: a wrong model written down as fact is worse than none |
+| machine | the first part of the host name, or `TB_HOST` |
+
+So put the two explicit ones in whatever starts the agent — its launch script, or the
+environment of its pane — next to its name:
+
+```sh
+export TB_AS=coder-2 TB_MODEL=model-x TB_ROLE=coder
+```
+
+Good to know:
+
+- Nothing changes on the board: the name on a card, in the AGENTS panel and in `actor` in the
+  JSON is the short one, as before. The record is in `tb show`, in `--json` (`actor_id`,
+  `actors[]` — docs/JSON.md) and in the `actors` table (docs/SCHEMA.md).
+- One session is one record, however many commands it runs. A new session, another name or
+  another model is a new one.
+- You, typing in a plain terminal, export none of this — so nothing is recorded about you
+  beyond your name, exactly as before, and your machine's name is not written into the board.
+- A board is a file people share, so a **path is never stored**: a harness that reports its
+  session as the path of a file gets the identifier inside the file's name or, when there is
+  none, `path-` and 12 hex digits (a hash of the path — enough to tell two sessions apart,
+  useless for reading the path back). Values are cleaned of control characters and cut to 64
+  characters.
+- It is **self-reported**, like the name: good for tracing honest work, not proof of anything.
+- Events written before this existed keep their plain name. Nothing is filled in afterwards.
 
 ## Pane sizes and views
 
