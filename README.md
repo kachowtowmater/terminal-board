@@ -213,8 +213,8 @@ Press `?` on the board to see all keys at any time.
 |---|---|
 | arrows | select a card (←→ column, ↑↓ card) |
 | `a` | add a card (`tag: title`) |
-| `e` | edit the title and description |
-| `x` | delete the card (asks y/n) |
+| `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
+| `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
 | `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
@@ -253,7 +253,32 @@ tb -b home list
 tb boards
 ```
 
-You can also set `TB_BOARD=work` in your shell to change the default.
+**Choose the board plain `tb` opens.** `tb boards --default home` saves it: from then on
+`tb`, `tb add …`, `tb next` and every other command without a board name act on `home`, and
+`tb boards` and the board picker mark it with `*`.
+
+```sh
+tb boards --default home     # plain tb now opens "home"
+tb boards --default          # show it, and where it comes from
+tb boards --default --clear  # back to the board called "default"
+```
+
+The board has to exist — an unknown or archived board is refused — and if it disappears
+later, plain `tb` says so instead of quietly making an empty one. It is your choice on this
+machine, so it is kept in `~/.config/terminal-board/config.json` (or the file `TB_CONFIG`
+names), never inside a board file that someone might copy. That file is yours alone (mode
+`0600`), it is written whole or not at all, and two `tb` commands writing it at the same moment
+take turns, so neither loses the other's setting. If it is a symbolic link, tb writes the file
+the link points at. If tb cannot read it at all, commands that did not ask about a setting say
+so once and carry on as if nothing were set.
+
+**Which board a command uses**, first match wins:
+`TB_DB` > a board named on the command line > `TB_BOARD` > the saved default board > `default`.
+So `TB_BOARD=work` still changes the default for one shell, `tb home …` or `-b home` beats
+both, and with `TB_DB` set there is one file: the saved default is ignored there (`tb boards
+--default` says so, and saving one is refused). The command in a hint names its board
+whenever a bare `tb` would reach a different one, so a copied hint always acts on the board
+you were looking at.
 
 On the board, `B` opens the board picker: the same rows as `tb boards` — name, card counts
 and the default board marked — and `enter` switches to the one you choose without quitting
@@ -343,11 +368,16 @@ tb guide
 > `tb note`, tick `tb check`, and `tb done` when finished (`tb drop` if you stop,
 > `tb block` if stuck). Full manual: `tb guide`.
 
-**The AGENTS panel.** If you run agents in herdr panes (a terminal multiplexer for coding
-agents), the AGENTS panel shows each one, whether it is working or idle, and which card it
-holds. An agent that went idle while still holding a card is shown in red — it probably
-stopped halfway. Show or hide it with `A` or `tb config agents-panel shown|hidden`; list
-them with `tb agents`.
+**The AGENTS panel.** It shows who is working on *this* board and on what: everyone who holds
+a card that is not done, reviews one, or wrote to a card in the last hour, each with the card
+they are on (`review` when they are reviewing it), its last note and the note's age. The board
+itself knows all of that, so the panel works with no extra tool. If you run agents in herdr
+panes (a terminal multiplexer for coding agents), a pane whose agent name is exactly a name on
+the board adds whether it is working or idle; an agent that went idle while still holding a
+card is shown in red — it probably stopped halfway. Agents in other panes are counted, not
+listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the panel with `A` or
+`tb config agents-panel shown|hidden`; print the same list with `tb agents`
+([more](docs/HUMANS.md#watching-agents)).
 
 ## Command-line reference
 
@@ -391,27 +421,94 @@ tb --version
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
+| `tb block ID "text" --on NAME\|#ID --until DATE` | say who you wait on and when to look again — see [Waiting on something](#waiting-on-something) |
+| `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
-| `tb done ID --approve` | record your approval without moving the card |
+| `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
+| `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
+| `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
-| `tb rm ID` | delete a card |
+| `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |
+| `tb list --archived` / `tb restore ID` | the archived cards / bring one back with its checklist and whole history |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
-| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb new NAME [--kind default\|deadline]` / `[--from BOARD]` | make a board with a kind's settings, or another board's (settings, not cards) — see [A deadline board in one command](#a-deadline-board-in-one-command) |
+| `tb boards --default [NAME]` / `--default --clear` | show, save or clear the board plain `tb` opens |
+| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
+| `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
+| `tb config card-line age\|due` | what a card line shows where the age is: the age (default), or the due date and the days left |
+| `tb config label COLUMN "TEXT"` / `--off` | a display name for `todo`, `doing`, `review` or `done` — **display only**; see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
-| `tb agents` | the herdr agents and the card each holds |
+| `tb agents` | who is on this board and the card each holds or reviews, then the other herdr agents |
 | `tb guide` | the manual for AI agents |
 | `tb setup` | the setup wizard (GitHub, panels, agent instructions) |
 
 Who you are: `--as NAME`, or `TB_AS`, or `HERDR_AGENT_NAME`, or — inside a herdr pane — the
 name herdr gives the agent in that pane, or your login name.
+
+**Showing less of the board.** `tb list` and `tb board --json` take filters, and they combine:
+
+<!-- no-test -->
+```sh
+tb list --tag docs                   # one tag (--tag none = the cards without one)
+tb list --owner alice --blocked      # what alice holds that is stuck
+tb list --blocked-on '#7'            # everything waiting on card 7 (a name works too)
+tb list --due-before 2026-10-09      # dated before that day
+tb list --column todo --group tag    # one column, gathered under each tag
+tb board --json --tag docs           # the same on the JSON board
+```
+
+Filters apply to every way `tb list` picks cards, including `--done` and `--archived`; on an
+archived card, which keeps only its title, tag, column and owner, `--blocked`, `--blocked-on`
+and `--due-before` are refused by name rather than ignored. A filter **removes rows and
+nothing else** — the list stays in the order the board defines, including under
+`tb config sort due`. `--column` takes the internal name (`todo`, `doing`,
+`review`, `done`), never a display label; a label is refused and the message names the column
+to use. Filters that find nothing say what was asked for and exit 0 — that is an answer.
+
+**A card on the wrong board.** `tb mv ID --to BOARD` sends it with its checklist and its whole
+history:
+
+<!-- no-test -->
+```sh
+tb mv 3 --to work
+tb list --all-boards --owner alice   # one person's work, wherever it is
+```
+
+The card gets a **new number** on the board it arrives at — ids belong to a board, and the old
+one may already be taken there. It lands in TODO and unowned, because the other board has its
+own work-in-progress limit and its own people; the event log on the card says where it came
+from, and both boards record the move. The destination has to exist already, and a card
+somebody else is holding is not moved out from under them without `--force`, which is logged
+on the card and on both boards.
+
+A move holds the source board for the whole operation, so a `tb note` or `tb edit` that arrives
+while it runs waits and then finds the card gone, rather than being told "noted" and thrown
+away; two `tb mv` of the same card at the same moment cannot both succeed.
+
+**Which agent, model and session did the work.** The name on a card stays short. Behind it, tb
+records who that name was — harness, model, role, session, machine — so a bad batch of work
+can be traced back to the session that wrote it. The harness and the session are picked up by
+themselves (from what the harness exports, or from herdr inside a herdr pane); the model and
+the role are yours to set, because no harness exports them and tb never guesses:
+
+<!-- no-test -->
+```sh
+export TB_AS=coder-2 TB_MODEL=model-x TB_ROLE=coder   # in the agent's launch script
+tb show 3      # … ends with:  actors:
+               #   coder-2 — claude-code model-x coder session 0b9f6a52-… on buildbox
+```
+
+It is in `--json` too (`actor_id` on every event, `actors[]` next to them). A person in a
+plain terminal sets none of this and nothing is recorded beyond the name; a path is never
+stored; the record is self-reported. More in [docs/HUMANS.md](docs/HUMANS.md#which-agent-which-model-which-session).
 
 **Long text from a file.** `-d "…"` and `tb note ID "…"` go through your shell, which eats
 backticks, `$` and quotes in a long string. `--desc-file PATH` (on `tb add` and `tb edit`) and
@@ -436,6 +533,107 @@ text once — `--desc` with `--desc-file`, or note text with `--file`, is an arg
 Control characters are stored as they are and removed whenever the text is shown, like any
 other card text.
 
+**Many cards from one file.** `tb import cards.json` creates cards and `tb edit --from
+changes.json` changes existing ones, from a JSON file (`-` reads standard input). A row is the
+card object `tb show ID --json` and `tb board --json` already print, so a board can be exported,
+edited in a script or a spreadsheet tool, and fed back:
+
+<!-- no-test -->
+```sh
+tb import cards.json --dry-run     # a report per row; nothing is written
+tb import cards.json               # [{"title": "docs: write the guide", "due": "2026-10-09", "checklist": ["draft"]}, …]
+tb board --json > board.json       # export, change the dates in the file, then:
+tb edit --from board.json          # only what differs changes; [{"id": 7, "due": "2026-10-16"}, …] works too
+```
+
+- **All or nothing.** Every row is checked first; one bad row and nothing is written. Each
+  problem names its row, its card and its field — `row 250 (#41) due: '2026-02-30' is not a
+  real calendar date — use YYYY-MM-DD …` — so a long file is fixed in one pass. `--dry-run`
+  does the same work and reports exactly what the real run would do. Two imports at the same
+  moment wait for each other; they never mix.
+- **import** reads `title` (it may carry `tag:` and `gh#N`, as `tb add` accepts), `tag`,
+  `gh_ref`, `description`, `due`, `blocked` and `checklist` (texts, or `{"text", "done"}`).
+  New cards always land at the bottom of TODO with new ids, and their history starts with an
+  `imported` event that says which row of which file, and who ran it.
+- **edit --from** follows the same holder rule as `tb edit`: a card somebody else holds in
+  DOING is not rewritten from a file, and because the whole file is one change, one such row
+  refuses all of it (add `--force` to override, which is logged on each card). It needs `id`
+  and changes `title`, `tag`, `gh_ref`, `description`, `due` and
+  `blocked` — only the fields present in a row, `null` clears `due`, `blocked` and `tag`, and a
+  value the card already has is no change and logs nothing, so running a file twice is
+  harmless. Each change is written, and logged, exactly as `tb edit` and `tb block` would.
+  It never moves a card or changes its owner.
+- Anything else in a row — `column`, `owner`, `position`, timestamps, `events`, fields tb does
+  not know — is **ignored with one warning** that lists the fields. History is never imported.
+
+**Getting the board out again.** `tb export` writes the whole board, with its history, for
+someone who will never open a terminal:
+
+<!-- no-test -->
+```sh
+tb export --json > board.json        # every card with its whole history; tb import reads it back
+tb export --csv  > board.csv         # one row per card, for a spreadsheet
+tb export --csv --history > log.csv  # one row per event instead
+tb log --since 2026-10-09            # what happened since a date (--json for a parser)
+tb list --done --since 2026-10-01    # finished work older than today
+```
+
+- The JSON is the same card object `tb board --json` prints, but with **every** event instead
+  of the last ten, wrapped as `{"v":1, "board", "exported_at", "tz", "cards":[…]}`. That
+  `cards` array is exactly what `tb import` and `tb edit --from` read, so export → edit →
+  import is a round trip.
+- The CSV is meant for Excel or Numbers: a byte-order mark so UTF-8 names and dashes are not
+  mangled, RFC 4180 quoting (a description keeps its commas, quotes and line breaks in one
+  cell), CRLF row ends, and dates written as local `YYYY-MM-DD HH:MM` in the board's zone.
+  A cell that would start `=`, `+`, `-` or `@` gets a leading apostrophe, so a card titled
+  `=cmd|…` is text in the sheet and never a formula. It is one-way; `--json` is what comes back.
+- `--since` takes a calendar date and means **local midnight in the board's zone** (`tb config
+  tz`), not a UTC instant, so "since Tuesday" is your Tuesday. A unix second works too.
+- All of these only read: they never change the board file.
+- Accepted documents: a JSON array of cards, `{"cards": […]}`, the whole `tb board --json`
+  object (its columns in board order), or one card object. At most 4 MiB of UTF-8.
+
+### A deadline board in one command
+
+```sh
+tb new filings --kind deadline
+tb filings add "permits: renew the fire permit" --due 2026-10-09
+tb filings add "tax: file the quarterly return" --due 2026-10-15
+tb filings next --as anna
+tb filings block 2 "waiting for the signed copy" --on "the other side" --until 2026-10-06
+tb filings config
+tb new matters --from filings
+```
+
+Everything below this section is a setting you can change one at a time. A **kind** is a name
+for a combination that works together, so you do not have to know all of them on day one:
+
+| kind | what it writes | what it is for |
+|---|---|---|
+| `default` | nothing at all | the board tb has always made: a priority queue, `tb next` takes the top card |
+| `deadline` | `sort due`, `card-line due`, `due-warn 7`, `waiting-lane shown`, `wip-counts-blocked no`, and the column labels TO PREPARE / IN HAND / WITH REVIEWER / FILED | a board of filing dates: the nearest date first, the date on every card line, a week of warning, and whatever you are waiting on in its own section |
+
+`tb new NAME` with no kind makes exactly the board it always did. `tb new NAME --from BOARD`
+copies another board's **settings and not its cards**, which is how you give a second matter
+the same shape as the first. Three settings belong to one board and never travel — the
+command says which it left behind:
+
+| not copied | why |
+|---|---|
+| `github` | a new board must not start syncing to another board's issues |
+| `done-by` | who may close a card is a decision about that board's people |
+| `file-mode` | the file's own permissions decide it, and they are set when it is created |
+
+`new` is a command word, so `tb new …` always means the command. A board **called** `new`
+(one an older version let you make) is still yours: it is listed by `tb boards` and opens with
+`tb -b new` or `TB_BOARD=new`.
+
+**A kind is a label, not a lock.** The settings are yours: change any of them whenever you
+like and the board follows the setting, not the name. `tb config` then shows
+`kind deadline (changed)` so the name never claims more than it should; putting the setting
+back, or `tb config kind default`, clears the mark. Declaring a kind writes its settings and
+never undoes one, so it is safe on a board that already holds work.
+
 ### Due dates
 
 For a board that tracks deadlines — filing dates, renewals, anything with a day on it:
@@ -449,7 +647,8 @@ tb deadlines show 1 --json
 tb deadlines edit 1 --due none
 ```
 
-A due date is a **calendar date**: `YYYY-MM-DD`, stored exactly as you typed it. tb never
+A due date is a **calendar date**: `YYYY-MM-DD`, stored as you typed it (spaces around it are
+dropped). tb never
 turns it into a point in time, so it cannot slip to the day before or the day after — not when
 the board is read in another time zone, not at 23:59, not across a daylight-saving change.
 Anything that is not a real date (`2026-02-30`, `10/09/2026`, `tomorrow`) is refused with the
@@ -464,7 +663,143 @@ past) and `due_state` — `overdue`, `soon` (due within `due-warn` days; 3 unles
 or `ok`. A finished card carries neither. `tb config tz` and `tb config due-warn` with no value
 print the one in force; `tb config` lists them once the board sets them.
 
-A board with no due dates and neither setting looks and behaves exactly as it did before.
+#### A deadline queue: `tb config sort due`
+
+```sh
+tb deadlines add "tax: file the quarterly return" --due 2026-10-15
+tb deadlines config sort due
+tb deadlines list
+tb deadlines prio 1 top
+tb deadlines next --as alice
+```
+
+A board is a priority queue by default: `tb next` takes the top card, and you order cards by
+hand (`tb prio`, shift+arrows). `tb config sort due` makes it a deadline queue instead. TODO and
+REVIEW show the **nearest due date first** — so an overdue card is on top — and `tb next` (and
+`tb next --review`) takes that card, skipping blocked ones as always. Cards without a date come
+after every dated card. Cards with the same date, or with none, keep their position order, so
+the order is always the same for everyone: `tb next`, `tb list`, `tb board`, every `--json`
+board and the full-screen board all sort with one function and cannot disagree. The order
+never depends on what today is — dates are compared as dates. DOING stays in position order and
+DONE newest first.
+
+Position still matters as the tie-break, so `tb prio` still works — and on a due-sorted column
+it tells you where the card really is: `#1 is now at position 1 in todo — this board sorts by
+due date, so position only orders cards with the same date (or none): #1 is 2 of 2 in todo
+(unchanged); its date decides the rest — 'tb deadlines edit 1 --due DATE'`.
+`tb config sort position` goes back; `tb config sort` prints the one in force.
+#### The look: the due mark, the card line, your own column names
+
+```sh
+tb deadlines config card-line due
+tb deadlines config label review "WITH REVIEWER"
+tb deadlines config label review
+tb deadlines list
+tb deadlines config label review --off
+```
+
+A card that is due within `due-warn` days, or overdue, carries a **loud mark** on its card line —
+`! due in 2d`, `! due today`, `! overdue 3d` (bold on the board, red once overdue) — in the
+full-screen board, the focus view and `tb list`. A finished card never does. On a narrow card
+line the mark is the last thing to go: it outlives the tag, the checklist count and the age, and
+it shrinks in whole words (`! overdue 3d` → `! late 3d` → `! late` → `!`), never inside one.
+
+`tb config card-line due` puts the date where the age is: `permits - alice - due Oct 27 - 18d`
+(the days left; a date in another year is written in full). A card without a date still shows
+its age. `tb config card-line age` is the default.
+
+`tb config label review "WITH REVIEWER"` names a column in your own words (up to 24
+characters; control characters are removed). **Labels are display only.** Every command still
+takes the plain names — `tb move 5 review` — and JSON `column` is `todo`, `doing`, `review` or
+`done` for ever; the label travels next to it as `column_label` (and `labels` on the board
+object). A message that names a column names the one to type: `#5 is now in review (shown as
+WITH REVIEWER)`, and typing the label gets `'with reviewer' is a display label, not a column —
+the column is review: 'tb move 5 review'`. In a narrow header a label gives way in whole words
+and the count is never pushed off; when not even its first word fits, the plain name is shown.
+`tb config label review` prints it; `--off` clears it. A column that the board orders by due
+date says `by due` in its header.
+
+### Who closes a card
+
+```sh
+tb office add "filing: proof of service"
+tb office config done-by anna,ben
+tb office config done-by
+tb office take 1 --as anna
+tb office done 1 --as anna
+tb office done 1 --approve --as ben
+tb office config done-by --off
+```
+
+`tb config done-by anna,ben` says who may close a card: tb then refuses to move a card into
+DONE as anybody else, and names the people to ask. It guards **every** way into DONE, so
+moving a card out of review first is not a way round it.
+
+**It is an honest-mistake stop, not security.** Names in tb are **self-asserted** — `--as` is
+whatever the caller types — so this catches the slip of the wrong person closing a card, and
+nothing more. `--force` gets past it and is open to everyone; it is recorded as its own event
+with the name that used it, and answering `y` to the full-screen board's `approve your own
+work?` is the same `--force` by another route. A board that needs real authority needs it outside tb: file
+permissions, a repository, a person. (`tb`'s older never-approve-your-own-work rule works the
+same way, and still applies: a name on the `done-by` list cannot close its own work either.)
+The GitHub sync is exempt — a merged PR closing its card is evidence, not a person.
+
+`tb done ID --approve` records that somebody **checked** a card and leaves it in REVIEW. It
+works on every card, not only one linked to an issue, and `done-by` does not gate it: noting
+"I looked at this" is not closing it. Each checker is listed once in JSON as `approved_by`.
+
+### Tags you choose
+
+```sh
+tb office add "due 10/9 (file by 10/6): prepare the brief" --tag "00-key 2"
+tb office edit 2 --tag "client-a matter 7"
+tb office edit 2 --tag none
+```
+
+tb guesses a tag from a `tag: title` prefix, and that guess is deliberately narrow: letters,
+digits, hyphens and underscores, no spaces, up to 20 characters — so `00-key 2: x`, and a
+title whose colon comes later, get no tag at all. `--tag KEY` sets it **explicitly** and
+allows digits, spaces and hyphens, so a title like `due 10/9 (file by 10/6): …` can carry a
+real tag. `--tag none` clears it.
+
+When you give `--tag`, tb guesses nothing about the title: it is kept exactly as typed,
+colon and all (a leading `gh#N` is still pulled out, as always). A tag that no title could
+have produced also survives a later title edit, instead of being quietly dropped.
+
+### Waiting on something
+
+```sh
+tb deadlines block 2 "waiting for the signed copy" --on "#1" --until 2026-10-09
+tb deadlines block 2 "their counsel has it" --on "the other side" --until 2026-10-20
+tb deadlines config wip-counts-blocked no
+tb deadlines config waiting-lane shown
+tb deadlines block 2 --clear
+```
+
+`tb block ID "text"` is unchanged. `--on NAME|#ID` says **who** you are waiting for and
+`--until DATE` **when to look again**; both ride next to the block text, so a board can be
+asked what it is waiting on instead of being read as prose (`blocked_on`, `blocked_until` in
+JSON). When the `--until` date arrives the card is a **recheck** — worked out when you read
+the board, in the board's `tz`; nothing is stored and no clock runs in the background.
+
+**A card blocked `--on #7` unblocks itself when card 7 reaches DONE**, in the same breath as
+that move, recorded as `#7 is done`. Only DONE does that: deleting or archiving card 7 leaves
+your block standing and reports it as `gone` (tb does not decide on its own that "we are
+waiting on this" is void), and reopening a finished card does not block anything again.
+Blocking a card on one that is already done is refused — nothing would ever lift it.
+
+`tb config wip-counts-blocked no` frees the work slot of a blocked card, so waiting on the
+other side does not stall the board. At most as many blocked cards as the WIP limit are
+discounted, so DOING can never exceed twice the limit however much is blocked.
+
+`tb config waiting-lane shown` gives blocked cards their own **WAITING** section in
+`tb board`, with what each is waiting on; each column keeps its real count and says how many
+of its cards are there (`TODO (3) · 1 waiting`), so no card is drawn twice. It is display
+only: JSON, the columns, the counts, `tb next` and every command are unaffected.
+
+A board whose cards carry **no due dates**, and which sets none of these settings, looks and
+behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows
+its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 
 ## Layouts and themes
 
@@ -525,9 +860,34 @@ and `tb config theme dark|light`.
 
 - Boards: `~/.local/state/terminal-board/boards/<name>.db` (one SQLite file per board).
 - **Back up** by copying that folder (ideally while `tb` is closed).
+- Your own settings on this machine (the saved default board): `~/.config/terminal-board/config.json`,
+  readable only by you. `TB_CONFIG=/path/to/file.json` uses another file.
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails
-  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
+  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`. A `TB_BOARD`
+  left in the environment is not a typed name: `TB_DB` wins, and tb says so in one warning
+  line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
+- **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
+  a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
+  alike. A board path may be a symbolic link (`boards/work.db -> /mnt/secure/work.db`): the board
+  is the file the link leads to, and tb creates *that* file `0600`; a link into a folder that
+  does not exist, or a loop of links, is refused, and tb never changes the mode of anything
+  through a link. A board made by an earlier version is `0644`; tb never changes the mode of an
+  existing file on its own (you may share a board with a group on purpose). It tells you —
+  one warning line naming the file — until you choose:
+
+  ```sh
+  tb config file-mode            # private (0600), or what is wrong with it
+  tb config file-mode private    # the board file and its sidecars become 0600; logged on the board
+  tb config file-mode shared     # it is shared on purpose: tb leaves the mode alone and stops saying so
+  ```
+- **A backup is written before a board's schema is upgraded.** When a newer tb opens a board
+  an older one wrote and has to add columns, it first copies the board next to itself as
+  `<file>.before-<version>.<UTC date-time>.bak` and says where. The copy is one complete
+  file (it includes cards still in the `-wal`, and needs no sidecars), and there is exactly
+  one however many `tb` processes open the board at that moment. If the copy cannot be
+  written, nothing is upgraded and the command fails. Going back to an older version:
+  [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb).
 
 ## Troubleshooting
 

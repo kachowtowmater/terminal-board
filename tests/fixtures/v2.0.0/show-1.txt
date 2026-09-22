@@ -1,0 +1,16 @@
+#1 gh#12 login form rejects long names
+doing - widgets - bot-1 - 1h03m - r2
+
+Done = a 64-character name logs in
+
+[x] 1 write the test
+[ ] 2 ship it
+
+10:01 added by lead
+10:04 taken by bot-1
+10:05 bot-1: half way: the test fails as expected
+10:06 bot-1 check: [x] write the test
+10:07 bot-1 moved: doing -> review
+10:08 reviewing rev-1
+10:09 rev-1 moved: review -> doing
+10:09 rev-1 returned: the long-name case still fails

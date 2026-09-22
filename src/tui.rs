@@ -2,7 +2,7 @@
 
 use crate::github::{self, GhView};
 use crate::herdr::{self, Agent, AgentsState};
-use crate::plain::{card_head, event_line, fit, meta_fit_quiet};
+use crate::plain::{card_head, event_line, fit, meta_parts};
 use crate::store::{fmt_age, CardDetail, Card, Snapshot, Store, COLUMNS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -170,6 +170,9 @@ pub enum Confirm {
     /// Move someone else's DOING card to the column the key asked for (card, target): the
     /// forced, logged path.
     NotMine(i64, String),
+    /// Delete (or archive) someone else's DOING card: the prompt named the holder, so `y` is
+    /// the forced, logged path.
+    DeleteHeld(i64),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -177,33 +180,51 @@ pub enum Confirm {
 pub struct EditForm {
     pub id: i64,
     pub title: String,
+    /// The due date as typed, `YYYY-MM-DD`; empty = no date (what `--due none` does).
+    pub due: String,
     pub desc: String,
     /// What the fields read when the form opened (the save-conflict baseline).
     pub open_title: String,
+    pub open_due: String,
     pub open_desc: String,
-    /// 0 = title, 1 = description
+    /// 0 = title, 1 = due, 2 = description
     pub field: u8,
     pub cursor: usize,
     pub from_popup: bool,
 }
 
+/// How many fields the form has, in tab order.
+pub const FORM_FIELDS: u8 = 3;
+
 impl EditForm {
     fn text(&mut self) -> &mut String {
-        if self.field == 0 {
-            &mut self.title
-        } else {
-            &mut self.desc
+        match self.field {
+            0 => &mut self.title,
+            1 => &mut self.due,
+            _ => &mut self.desc,
+        }
+    }
+
+    /// The field's text, for the cursor and the width maths.
+    pub fn field_text(&self) -> &str {
+        match self.field {
+            0 => &self.title,
+            1 => &self.due,
+            _ => &self.desc,
         }
     }
 
     /// Apply one editing key; returns false if the key isn't an edit key.
     pub fn key(&mut self, code: KeyCode) -> bool {
-        let len = if self.field == 0 { self.title.chars().count() } else { self.desc.chars().count() };
+        let len = self.field_text().chars().count();
         let cur = self.cursor.min(len);
         match code {
             KeyCode::Tab | KeyCode::BackTab => {
-                self.field = 1 - self.field;
-                self.cursor = if self.field == 0 { self.title.chars().count() } else { self.desc.chars().count() };
+                self.field = match code {
+                    KeyCode::BackTab => (self.field + FORM_FIELDS - 1) % FORM_FIELDS,
+                    _ => (self.field + 1) % FORM_FIELDS,
+                };
+                self.cursor = self.field_text().chars().count();
             }
             KeyCode::Left => self.cursor = cur.saturating_sub(1),
             KeyCode::Right => self.cursor = (cur + 1).min(len),
@@ -630,12 +651,9 @@ impl App {
                 self.mode = Mode::Normal;
                 if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                     match action {
-                        Confirm::Delete(id) => {
-                            let r = store.delete_card(id, &actor);
-                            if self.report(r, |c| format!("deleted #{} \"{}\"", c.id, c.title)).is_some() {
-                                self.reload(store);
-                            }
-                        }
+                        // the holder rule: only a prompt that named the holder forces it
+                        Confirm::Delete(id) => self.remove_confirmed(id, false, store),
+                        Confirm::DeleteHeld(id) => self.remove_confirmed(id, true, store),
                         Confirm::ForceDone(id) => {
                             if self.is_own_review(id, store) {
                                 self.mode = approve_own(id);
@@ -671,16 +689,62 @@ impl App {
                     self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
                 }
                 KeyCode::Enter => {
+                    let typed = form.due.trim().to_string();
+                    let due_changed = typed != form.open_due.trim();
+                    // the date is checked before anything is written, in the words the CLI
+                    // uses (store::due), so the form and `tb edit --due` refuse alike
+                    let date = if due_changed {
+                        let raw = if typed.is_empty() { "none".to_string() } else { typed.clone() };
+                        match crate::store::due::DueDate::parse(&raw, &format!("tb edit {} --due 2026-10-09", form.id)) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                self.status = Some((e.to_string(), true));
+                                self.mode = Mode::Edit(form);
+                                return false;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    // the same stale-form rule the title and description follow: a date the
+                    // person changed that someone else changed too is refused, not overwritten
+                    if due_changed {
+                        let now = store.card(form.id).ok().and_then(|c| c.due).unwrap_or_default();
+                        if now.trim() != form.open_due.trim() {
+                            self.status = Some((
+                                format!("#{} changed while you were editing — the due date has a newer value; reopen with e", form.id),
+                                true,
+                            ));
+                            self.mode = Mode::Edit(form);
+                            return false;
+                        }
+                    }
                     // only the fields the person changed are written; a field they left at
                     // its open-time value but that moved on since is refused, not overwritten
-                    let r = store.edit(
-                        form.id,
-                        (form.title != form.open_title).then_some(form.title.as_str()),
-                        (form.desc != form.open_desc).then_some(form.desc.as_str()),
-                        &actor,
-                        Some((form.open_title.as_str(), form.open_desc.as_str())),
-                    );
-                    if self.report(r, |c| format!("#{} saved", c.id)).is_some() {
+                    let text_changed = form.title != form.open_title || form.desc != form.open_desc;
+                    // a form nobody changed answers exactly as it did before this field
+                    // existed: `nothing to change`, from the same call the CLI makes
+                    let r = if text_changed || !due_changed {
+                        store.edit(
+                            form.id,
+                            (form.title != form.open_title).then_some(form.title.as_str()),
+                            (form.desc != form.open_desc).then_some(form.desc.as_str()),
+                            &actor,
+                            Some((form.open_title.as_str(), form.open_desc.as_str())),
+                        )
+                    } else {
+                        store.card(form.id)
+                    };
+                    let saved = self.report(r, |c| format!("#{} saved", c.id)).is_some();
+                    if saved && due_changed {
+                        let r = store.set_due(form.id, date.as_ref().and_then(Option::as_ref), &actor).map(|_| ());
+                        if self.report(r, |()| format!("#{} saved", form.id)).is_none() {
+                            self.reload(store);
+                            self.mode = Mode::Edit(form);
+                            return false;
+                        }
+                    }
+                    if saved {
                         self.reload(store);
                         self.focus_card(form.id);
                         self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
@@ -781,15 +845,36 @@ impl App {
         }
     }
 
+    /// `y` on the delete prompt: delete the card — or archive it, on an archive board.
+    fn remove_confirmed(&mut self, id: i64, force: bool, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.remove_card(id, &actor, force);
+        let said = |r: &crate::store::archive::Removed| {
+            let verb = if r.archived { "archived" } else { "deleted" };
+            format!("{verb} #{} \"{}\"", r.card.id, r.card.title)
+        };
+        if self.report(r, said).is_some() {
+            self.reload(store);
+        }
+    }
+
     fn open_edit(&mut self, id: i64, from_popup: bool) {
         if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
+            // the holder rule: someone else's DOING card is not rewritten from here
+            if let Some(owner) = c.owner.as_deref().filter(|o| c.column == "doing" && !o.eq_ignore_ascii_case(&self.actor)) {
+                self.status = Some((format!("#{id} is held by {owner} — to edit it anyway use 'tb edit {id} … --force' (logged)"), true));
+                return;
+            }
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
+            let due = c.due.clone().unwrap_or_default();
             self.mode = Mode::Edit(EditForm {
                 id,
                 open_title: title.clone(),
+                open_due: due.clone(),
                 open_desc: c.description.clone(),
                 title,
+                due,
                 desc: c.description.clone(),
                 field: 0,
                 cursor,
@@ -874,7 +959,15 @@ impl App {
         }
         let actor = self.actor.clone();
         let r = store.reorder(id, how, &actor);
-        if self.report(r, |_| format!("#{id} moved {how}")).is_some() {
+        // on a due-sorted column position is only the tie-break: say so instead of seeming
+        // to do nothing (a board that does not set `sort due` reports exactly as before)
+        let by_date = self.snap.sort.by_date(COLUMNS[self.col.min(COLUMNS.len() - 1)]);
+        let said = if by_date {
+            format!("#{id} moved {how} — sorted by due date: position only orders cards with the same date (or none)")
+        } else {
+            format!("#{id} moved {how}")
+        };
+        if self.report(r, |_| said).is_some() {
             self.reload(store);
             self.focus_card(id);
         }
@@ -1018,15 +1111,15 @@ impl App {
         f.issues.get(i - 1 - s.prs.len()).map(|r| (false, r.number))
     }
 
+    /// Who is on this board, then the herdr agents that are not (`roster`). The AGENTS panel,
+    /// its bar, the header count and the row keys all read this one list.
+    pub fn roster(&self) -> crate::roster::Roster<'_> {
+        crate::roster::roster(&self.snap, agent_list(self))
+    }
+
+    /// The card of AGENTS row `i` (the one it holds or reviews).
     fn agent_card(&self, i: usize) -> Option<&Card> {
-        let agents = match &self.agents {
-            AgentsState::Agents(a) => a,
-            _ => return None,
-        };
-        let a = agents.get(i)?;
-        let mine = |c: &&Card| herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id);
-        let owned: Vec<&Card> = self.snap.cards.iter().filter(|c| c.column != "done").filter(mine).collect();
-        owned.iter().find(|c| c.column == "doing").or(owned.first()).copied()
+        self.roster().here.get(i).and_then(|r| r.card)
     }
 
     fn open_picker(&mut self, preselect: bool) {
@@ -1113,10 +1206,7 @@ impl App {
         }
         let a_shown = a_shown || self.bars.get().1;
         let _ = g_shown;
-        let n_agents = match &self.agents {
-            AgentsState::Agents(a) => a.len(),
-            _ => 0,
-        };
+        let n_agents = self.roster().panel_rows();
         match (self.focus, key.code) {
             (_, KeyCode::Char('q')) => return true,
             (_, KeyCode::Esc) => {
@@ -1375,9 +1465,18 @@ impl App {
             }
             KeyCode::Char('x') => {
                 if let Some(c) = self.selected() {
-                    self.mode = Mode::Confirm {
-                        action: Confirm::Delete(c.id),
-                        prompt: format!("delete #{} \"{}\"? y/n", c.id, c.title),
+                    // an archive board archives; someone else's DOING card is named as held
+                    let verb = if store.rm_mode().is_ok_and(|m| m == crate::store::archive::RM_ARCHIVE) { "archive" } else { "delete" };
+                    let holder = c.owner.as_deref().filter(|o| c.column == "doing" && !o.eq_ignore_ascii_case(&self.actor));
+                    self.mode = match holder {
+                        Some(owner) => Mode::Confirm {
+                            action: Confirm::DeleteHeld(c.id),
+                            prompt: format!("#{} is held by {owner} — {verb} it anyway? y/n (logged)", c.id),
+                        },
+                        None => Mode::Confirm {
+                            action: Confirm::Delete(c.id),
+                            prompt: format!("{verb} #{} \"{}\"? y/n", c.id, c.title),
+                        },
                     };
                 }
             }
@@ -1525,18 +1624,26 @@ fn agent_list(app: &App) -> &[Agent] {
 }
 
 fn header(app: &App, width: u16) -> Line<'static> {
-    let agents = agent_list(app);
-    let working = agents.iter().filter(|a| a.status == "working").count();
-    let idle = agents.iter().filter(|a| a.is_idle()).count();
-    let left = format!(
-        " TERMINAL BOARD · {} · {} cards · {} agents ({working} working, {idle} idle)",
+    let r = app.roster();
+    let base = format!(
+        " TERMINAL BOARD · {} · {} cards · {} agents",
         if app.snap.board.is_empty() { "default" } else { &app.snap.board },
         app.snap.cards.len(),
-        agents.len()
+        r.total()
     );
+    // nobody on this board and no agent pane anywhere: the line reads as it always has
+    let count = if r.total() == 0 {
+        " (0 working, 0 idle)".to_string()
+    } else {
+        format!(" ({} here, {} elsewhere)", r.here.len(), r.elsewhere.len())
+    };
+    let mut left = format!("{base}{count}");
     let mut right = format!("refreshed {} ", clock_secs(app.snap.now));
     if left.chars().count() + right.chars().count() > width as usize {
         right.clear(); // no room: drop the clock rather than cut it
+    }
+    if r.total() > 0 && left.chars().count() > width as usize {
+        left = base; // still no room: the count goes whole, never `(3 here, 2 els…`
     }
     let left = fit(&left, width as usize);
     let pad = (width as usize).saturating_sub(left.chars().count() + right.chars().count());
@@ -1579,24 +1686,32 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     first.push(Span::styled(fit(&card.title, room), hl));
     let mut lines = vec![Line::from(first)];
 
-    let (base, warn, q) = meta_fit_quiet(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let parts = meta_parts(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let (base, warn, q) = (parts.base, parts.warn, parts.quiet);
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
         Some(a) if a.status == "blocked" => bold(),
         _ => dim(),
     };
-    let sep = if base.is_empty() || (warn.is_empty() && q.is_empty()) { "" } else { " " };
+    let sep = if base.is_empty() || (parts.mark.is_empty() && warn.is_empty() && q.is_empty()) { "" } else { " " };
     let mut second = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
         second.push(Span::raw(meta_gh));
     }
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
+    // the due mark: loud (bold), and red — the colour of a real problem — only once overdue
+    if !parts.mark.is_empty() {
+        second.push(Span::styled(parts.mark.clone(), due_mark_style(parts.overdue)));
+        if !warn.is_empty() {
+            second.push(Span::raw(" "));
+        }
+    }
     if !warn.is_empty() {
         second.push(Span::styled(warn.clone(), red()));
     }
     if !q.is_empty() {
-        second.push(Span::raw(if warn.is_empty() { "" } else { " " }));
+        second.push(Span::raw(if warn.is_empty() && parts.mark.is_empty() { "" } else { " " }));
         second.push(Span::styled(q, dim()));
     }
     lines.push(Line::from(second));
@@ -1609,6 +1724,58 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
         }
     }
     lines
+}
+
+/// The due mark's look: bold, and red only when the card is overdue.
+pub(crate) fn due_mark_style(overdue: bool) -> Style {
+    if overdue {
+        red().add_modifier(Modifier::BOLD)
+    } else {
+        bold()
+    }
+}
+
+/// Display width of `s` in terminal cells (a CJK character or an emoji takes two).
+pub(crate) fn cells(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// The words of `label` that fit in `room` cells, whole: a label is never cut inside a word.
+/// None when not even its first word fits.
+pub(crate) fn label_words(label: &str, room: usize) -> Option<String> {
+    let mut out = String::new();
+    for w in label.split_whitespace() {
+        let next = if out.is_empty() { w.to_string() } else { format!("{out} {w}") };
+        if cells(&next) > room {
+            break;
+        }
+        out = next;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A column's name for a header with `room` cells for it. Without a label this is the name
+/// tb always drew, whatever the room. A label is shown in whole words, as many as fit (then
+/// ` today` on DONE if that fits too); when not even its first word fits, the plain name is.
+pub(crate) fn column_name(snap: &Snapshot, col: &str, room: usize) -> String {
+    let plain = if col == "done" { "DONE today".to_string() } else { col.to_ascii_uppercase() };
+    let Some(label) = snap.display.label(col) else { return plain };
+    match label_words(&label, room) {
+        Some(l) if col == "done" && cells(&l) + 6 <= room => format!("{l} today"),
+        Some(l) => l,
+        None => plain,
+    }
+}
+
+/// ` by due` for the header of a column the board orders by due date, when `room` cells are
+/// left for it; nothing otherwise (it is the first thing a narrow header gives up).
+pub(crate) fn date_order_note(snap: &Snapshot, col: &str, room: usize) -> &'static str {
+    const NOTE: &str = "by due ";
+    if snap.display.date_ordered(col) && room >= NOTE.len() {
+        NOTE
+    } else {
+        ""
+    }
 }
 
 fn owner_agent<'a>(app: &'a App, card: &Card) -> Option<&'a Agent> {
@@ -1656,17 +1823,24 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     let focused = ci == app.col;
     let n = cards.len();
     let count = if col == "doing" { format!("{n}/{}", app.snap.wip) } else { n.to_string() };
-    let name = if col == "done" { "DONE today".to_string() } else { col.to_ascii_uppercase() };
+    // the header is ` o NAME (count) ` between the two corners: the count is never pushed off
+    let room = (area.width as usize).saturating_sub(2 + 7 + count.len());
+    let name = column_name(&app.snap, col, room);
+    let note = date_order_note(&app.snap, col, room.saturating_sub(cells(&name)));
     let full = col == "doing" && n as i64 >= app.snap.wip;
     let colour = column_colour_in(col, &app.snap.theme);
     let hs = bold().fg(colour);
-    let title = Line::from(vec![
+    let mut title = vec![
         Span::raw(" "),
         Span::styled("o", Style::default().fg(colour)),
         Span::styled(format!(" {name} ("), hs),
         Span::styled(count, if full { hs.add_modifier(Modifier::REVERSED) } else { hs }),
         Span::styled(") ", hs),
-    ]);
+    ];
+    if !note.is_empty() {
+        title.push(Span::styled(note, dim()));
+    }
+    let title = Line::from(title);
     // Column frame: plain fg (cards carry the colour now; less busy), thick when focused.
     // Column frame in the column's colour (same as its cards), thick when focused.
     let block = frame(focused, Some(colour)).title(title);
@@ -1830,90 +2004,135 @@ pub fn activity(note: Option<&String>, age: &str, room: usize) -> String {
     }
 }
 
-fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
-    let agents = match &app.agents {
-        AgentsState::Agents(a) => a,
-        AgentsState::Pending => return vec![Line::styled(" checking herdr...", dim())],
-        AgentsState::Unavailable(msg) => return vec![Line::styled(format!(" {msg}"), dim())],
+/// What the AGENTS panel says when nobody is on this board and herdr shows no agent pane.
+pub(crate) fn agents_empty(app: &App) -> Line<'static> {
+    let text = match &app.agents {
+        AgentsState::Agents(_) => " no agent panes in herdr".to_string(),
+        AgentsState::Pending => " checking herdr...".to_string(),
+        AgentsState::Unavailable(msg) => format!(" {msg}"),
     };
-    if agents.is_empty() {
-        return vec![Line::styled(" no agent panes in herdr", dim())];
+    Line::styled(text, dim())
+}
+
+/// The line that closes the AGENTS panel: herdr agents that are nobody on this board. They
+/// are counted, never described — tb does not read other boards. The words in brackets go
+/// whole when the panel is too narrow for them.
+pub(crate) fn elsewhere_line(n: usize, width: usize) -> Line<'static> {
+    let short = format!(" +{n} elsewhere");
+    let long = format!("{short} (not on this board)");
+    Line::styled(if long.chars().count() <= width { long } else { short }, dim())
+}
+
+/// A panel with fewer rows than it has lines still ends in the count: its last row says how
+/// many actors of this board are below it and how many agents are elsewhere. A focused panel
+/// scrolls instead (every row can be reached), so it is left alone; so is a panel of one or
+/// two rows, where the count would cost half of what it shows (its title or the header
+/// already carries the numbers).
+pub(crate) fn close_clipped(mut lines: Vec<Line<'static>>, app: &App, height: usize, width: usize) -> Vec<Line<'static>> {
+    let r = app.roster();
+    if app.focus == Focus::Agents || height < 3 || lines.len() <= height || r.total() == 0 {
+        return lines;
     }
-    agents
-        .iter()
-        .map(|a| {
-            let owned: Vec<&Card> = app
-                .snap
-                .cards
-                .iter()
-                .filter(|c| {
-                    c.column != "done"
-                        && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id)
-                })
-                .collect();
-            let doing = owned.iter().find(|c| c.column == "doing");
-            let holds = a.is_idle() && doing.is_some();
-            let (mark, st) = if holds {
-                ("!", red())
-            } else {
-                match a.status.as_str() {
-                    "working" => ("*", Style::default().fg(GREEN)),
-                    // a blocked agent is shown by its mark only; red is reserved for cards
-                    "blocked" => ("x", bold()),
-                    "idle" | "done" => ("-", dim()),
-                    _ => ("?", dim()),
-                }
-            };
-            // colour only the warning marks; the rest of the row stays monochrome
-            let text_st = match (holds, a.status.as_str()) {
-                (true, _) => bold(),
-                (_, "working") => Style::default(),
-                _ => st,
-            };
-            let mut spans = vec![
-                Span::raw(" "),
-                Span::styled(mark, st),
-                Span::raw(" "),
-                Span::styled(format!("{:<14} ", fit(&a.name, 14)), text_st.add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{:<7.7} ", a.harness)),
-                Span::styled(format!("{:<8.8} ", a.status), text_st),
-            ];
-            match doing.or(owned.first()) {
-                Some(c) => {
-                    spans.push(Span::raw(format!("#{:<4} ", c.id)));
-                    if let Some(n) = crate::store::shown_ref(c) {
-                        spans.push(Span::raw(format!("gh#{n} ")));
-                    }
-                    spans.push(Span::raw(format!("{:<28} ", fit(&c.title, 28))));
-                    spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
-                    if holds {
-                        // the duration is shown whole or not at all: a panel too narrow for it
-                        // keeps the plain warning
-                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                        let flag = "! idle, holds card";
-                        let age = idle_hold_age(app, a);
-                        let fits = used + flag.chars().count() + age.chars().count() <= width;
-                        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
-                    } else {
-                        let age = app
-                            .snap
-                            .last_event_at
-                            .get(&c.id)
-                            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
-                            .unwrap_or_default();
-                        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used));
-                        spans.push(Span::styled(text, dim()));
-                    }
-                }
-                None => spans.push(Span::styled(
-                    a.job.clone().unwrap_or_else(|| "-".into()),
-                    dim(),
-                )),
-            }
-            Line::from(spans)
-        })
-        .collect()
+    let hidden = r.here.len().saturating_sub(height - 1);
+    let n = r.elsewhere.len();
+    // (at least one actor is hidden: the lines only outnumber the rows when the actors do)
+    let texts = if n == 0 {
+        vec![format!(" +{hidden} more here"), format!(" +{hidden} more")]
+    } else {
+        vec![format!(" +{hidden} more here · +{n} elsewhere"), format!(" +{hidden} more · +{n} elsewhere"), format!(" +{} more", hidden + n)]
+    };
+    let last = texts.last().cloned().unwrap_or_default();
+    let text = texts.into_iter().find(|t| t.chars().count() <= width).unwrap_or(last);
+    lines.truncate(height - 1);
+    lines.push(Line::styled(text, dim()));
+    lines
+}
+
+/// `last note #13 5m`: what an actor holding no card last did here (the age goes first
+/// when there is no room for both).
+pub(crate) fn last_seen(app: &App, row: &crate::roster::Row, room: usize) -> String {
+    let Some(e) = row.last else { return String::new() };
+    let what = format!("last {} #{}", e.kind, e.card_id);
+    let full = format!("{what} {}", crate::store::fmt_age((app.snap.now - e.ts).max(0)));
+    [full, what].into_iter().find(|t| t.chars().count() <= room).unwrap_or_default()
+}
+
+fn agents_panel(app: &App, width: usize) -> Vec<Line<'static>> {
+    let r = app.roster();
+    if r.total() == 0 {
+        return vec![agents_empty(app)];
+    }
+    let mut lines: Vec<Line<'static>> = r.here.iter().map(|row| agent_row(app, row, width)).collect();
+    if !r.elsewhere.is_empty() {
+        lines.push(elsewhere_line(r.elsewhere.len(), width));
+    }
+    lines
+}
+
+/// One actor of this board: mark, name, harness and status (`-` without a herdr pane of
+/// exactly that name), then the card it holds or reviews and what it last said about it.
+/// A later "harness · model" per actor goes in the harness cell, from `Row`.
+fn agent_row(app: &App, row: &crate::roster::Row, width: usize) -> Line<'static> {
+    let holds = row.idle_holder();
+    let (mark, st) = match (holds, row.live.is_some(), row.status()) {
+        (true, _, _) => ("!", red()),
+        // no live status: no mark, and nothing dimmed — the board says it holds the card
+        (_, false, _) => (" ", Style::default()),
+        (_, _, "working") => ("*", Style::default().fg(GREEN)),
+        // a blocked agent is shown by its mark only; red is reserved for cards
+        (_, _, "blocked") => ("x", bold()),
+        (_, _, "idle" | "done") => ("-", dim()),
+        _ => ("?", dim()),
+    };
+    // colour only the warning marks; the rest of the row stays monochrome
+    let text_st = match (holds, row.status()) {
+        (true, _) => bold(),
+        (_, "working") => Style::default(),
+        _ => st,
+    };
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(mark, st),
+        Span::raw(" "),
+        Span::styled(format!("{:<14} ", fit(&row.name, 14)), text_st.add_modifier(Modifier::BOLD)),
+        Span::raw(format!("{:<7.7} ", row.harness())),
+        Span::styled(format!("{:<8.8} ", row.status()), text_st),
+    ];
+    let used = |spans: &[Span]| spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let Some(c) = row.card else {
+        spans.push(Span::raw(format!("{:<5} ", "-")));
+        let room = width.saturating_sub(used(&spans));
+        // the pane's own job line is live data: it gives way to what the board knows
+        let seen = last_seen(app, row, room);
+        let job = row.live.and_then(|a| a.job.clone()).map(|j| format!("{j} · {seen}")).filter(|t| t.chars().count() <= room);
+        spans.push(Span::styled(job.unwrap_or(seen), dim()));
+        return Line::from(spans);
+    };
+    spans.push(Span::raw(format!("#{:<4} ", c.id)));
+    if let Some(n) = crate::store::shown_ref(c) {
+        spans.push(Span::raw(format!("gh#{n} ")));
+    }
+    let title = if row.role == Some(crate::roster::CardRole::Reviewer) { format!("review: {}", c.title) } else { c.title.clone() };
+    spans.push(Span::raw(format!("{:<28} ", fit(&title, 28))));
+    spans.push(Span::raw(format!("{:>5} ", crate::store::coarse_age(app.snap.now - c.column_since))));
+    if holds {
+        // the duration is shown whole or not at all: a panel too narrow for it
+        // keeps the plain warning
+        let flag = "! idle, holds card";
+        let age = idle_hold_age(app, row);
+        let fits = used(&spans) + flag.chars().count() + age.chars().count() <= width;
+        spans.push(Span::styled(format!("{flag}{}", if fits { age.as_str() } else { "" }), st));
+    } else {
+        let age = app
+            .snap
+            .last_event_at
+            .get(&c.id)
+            .map(|ts| crate::store::fmt_age((app.snap.now - ts).max(0)))
+            .unwrap_or_default();
+        let text = activity(app.snap.last_note.get(&c.id), &age, width.saturating_sub(used(&spans)));
+        spans.push(Span::styled(text, dim()));
+    }
+    Line::from(spans)
 }
 
 fn detail_strip(app: &App) -> Vec<Line<'static>> {
@@ -2401,28 +2620,14 @@ fn base_style(app: &App) -> Style {
 }
 
 
-fn holds_card(app: &App, a: &Agent) -> bool {
-    a.is_idle()
-        && app.snap.cards.iter().any(|c| {
-            c.column == "doing" && herdr::find_owner(agent_list(app), c).is_some_and(|o| o.pane_id == a.pane_id)
-        })
-}
-
 /// How long an idle card-holder's card has been quiet (` (1h20m)`), from the card's last event.
-pub(crate) fn idle_hold_age(app: &App, a: &Agent) -> String {
-    let agents = agent_list(app);
-    let held = app
-        .snap
-        .cards
-        .iter()
-        .find(|c| c.column == "doing" && herdr::find_owner(agents, c).is_some_and(|o| o.pane_id == a.pane_id));
-    held.and_then(|c| app.snap.last_event_at.get(&c.id))
+pub(crate) fn idle_hold_age(app: &App, row: &crate::roster::Row) -> String {
+    row.card
+        .filter(|_| row.idle_holder())
+        .and_then(|c| app.snap.last_event_at.get(&c.id))
         .map(|ts| format!(" ({})", crate::store::fmt_age((app.snap.now - ts).max(0))))
         .unwrap_or_default()
 }
-
-
-
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -2484,9 +2689,33 @@ fn cursor_line(text: &str, cursor: usize, active: bool) -> Line<'static> {
 }
 
 /// The `e` edit form: Title (one line) and Description (one logical line that wraps).
+/// The form's three fields, in tab order. Each wants a label row and a three-row box.
+const FORM_ROWS_PER_FIELD: u16 = 4;
+
+/// Which fields fit in `rows` of interior, given which one is being typed into.
+///
+/// Fields are dropped from the END — the description first — because the ones above it are
+/// short and the description is the one that can be read on the card instead. The field
+/// being typed into is ALWAYS drawn, whatever else goes: typing into something invisible is
+/// worse than a missing box. Returns the field indexes to draw, in order.
+pub fn form_fields_for(rows: u16, active: u8) -> Vec<u8> {
+    let fits = (rows / FORM_ROWS_PER_FIELD).min(FORM_FIELDS as u16) as usize;
+    let mut shown: Vec<u8> = (0..fits as u8).collect();
+    if fits > 0 && !shown.contains(&active) {
+        // the last one makes way for the field the cursor is in
+        let last = shown.len() - 1;
+        shown[last] = active;
+    }
+    shown
+}
+
 fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
-    let area = centered(f.area(), 80, 14);
-    if area.width < 10 || area.height < 8 {
+    // three fields (title, due, description) want 12 rows of interior plus the border
+    let want = if f.area().height >= 18 { 18 } else { 14 };
+    let area = centered(f.area(), 80, want);
+    // below this even one field cannot be drawn whole; the form stays open, and `esc` and
+    // `enter` still work, so nothing is lost by drawing nothing here
+    if area.width < 10 || area.height < FORM_ROWS_PER_FIELD + 2 {
         return;
     }
     f.render_widget(Clear, area);
@@ -2498,22 +2727,46 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
     f.render_widget(b, area);
     let pad = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let label = |active: bool, t: &str| Line::styled(t.to_string(), if active { bold() } else { dim() });
-    let title_active = form.field == 0;
-    f.render_widget(Paragraph::new(label(title_active, "Title  (tag: prefix sets the tag)")), Rect { height: 1, ..pad });
-    let tb = frame(title_active, None).padding(Padding::horizontal(1));
-    let title_rect = Rect { y: pad.y + 1, height: 3, ..pad };
-    // keep the cursor visible in a long title
-    let w = title_rect.width.saturating_sub(4) as usize;
-    let skip = if title_active { form.cursor.saturating_sub(w.saturating_sub(1)) } else { 0 };
-    let shown: String = form.title.chars().skip(skip).collect();
-    f.render_widget(Paragraph::new(cursor_line(&shown, form.cursor - skip.min(form.cursor), title_active)).block(tb), title_rect);
-    f.render_widget(Paragraph::new(label(!title_active, "Description")), Rect { y: pad.y + 4, height: 1, ..pad });
-    let db = frame(!title_active, None).padding(Padding::horizontal(1));
-    let desc_rect = Rect { y: pad.y + 5, height: pad.height.saturating_sub(5), ..pad };
-    f.render_widget(
-        Paragraph::new(cursor_line(&form.desc, form.cursor, !title_active)).block(db).wrap(Wrap { trim: false }),
-        desc_rect,
-    );
+    // one field: a label row, then a boxed line of text with the cursor in it. Every row is
+    // worked out from the height the form actually got, never from a fixed offset.
+    let mut field = |y: u16, height: u16, active: bool, name: &str, text: &str, wrap: bool| {
+        if y + 1 + height > pad.height {
+            return; // never draw past the box: a short pane drops a field, it does not panic
+        }
+        f.render_widget(Paragraph::new(label(active, name)), Rect { y: pad.y + y, height: 1, ..pad });
+        let block = frame(active, None).padding(Padding::horizontal(1));
+        let rect = Rect { y: pad.y + y + 1, height, ..pad };
+        // keep the cursor visible in a long line
+        let w = rect.width.saturating_sub(4) as usize;
+        let skip = if active && !wrap { form.cursor.saturating_sub(w.saturating_sub(1)) } else { 0 };
+        let shown: String = text.chars().skip(skip).collect();
+        let line = cursor_line(&shown, form.cursor - skip.min(form.cursor), active);
+        let p = Paragraph::new(line).block(block);
+        f.render_widget(if wrap { p.wrap(Wrap { trim: false }) } else { p }, rect);
+    };
+    let shown = form_fields_for(pad.height, form.field);
+    let last = shown.len().saturating_sub(1);
+    for (row, which) in shown.iter().enumerate() {
+        let y = row as u16 * FORM_ROWS_PER_FIELD;
+        // the last field drawn takes the rest of the box (the description wraps into it)
+        let height = if row == last { pad.height.saturating_sub(y + 1) } else { 3 };
+        match which {
+            0 => field(y, height.min(3), form.field == 0, "Title  (tag: prefix sets the tag)", &form.title, false),
+            1 => field(y, height.min(3), form.field == 1, "Due  (YYYY-MM-DD, empty for none)", &form.due, false),
+            _ => field(y, height, form.field == 2, "Description", &form.desc, true),
+        }
+    }
+    // a pane too short for every field says which are not on screen, rather than hiding them
+    let hidden: Vec<&str> = [(0u8, "title"), (1, "due"), (2, "description")]
+        .iter()
+        .filter(|(i, _)| !shown.contains(i))
+        .map(|(_, n)| *n)
+        .collect();
+    let used = shown.len() as u16 * FORM_ROWS_PER_FIELD;
+    if !hidden.is_empty() && used < pad.height {
+        let text = format!("{} not shown — make the pane taller (tab still reaches it)", hidden.join(" and "));
+        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + used, height: 1, ..pad });
+    }
 }
 
 /// Every key, grouped, plus the CLI verbs.
@@ -2709,25 +2962,37 @@ fn draw_gh_item(f: &mut Frame, app: &App, pr: bool, number: i64) {
     info_popup(f, app, format!(" {what} #{number} "), lines, " a add to board  o open in browser  esc close ");
 }
 
-/// Enter on an agent row in the AGENTS panel.
+/// Enter on a row of the AGENTS panel: one actor of this board, or the `+N elsewhere` line.
 fn draw_agent_info(f: &mut Frame, app: &App, i: usize) {
-    let AgentsState::Agents(agents) = &app.agents else { return };
-    let Some(a) = agents.get(i) else { return };
-    let mut lines = vec![
-        Line::raw(format!("harness {} · status {} · pane {}", a.harness, a.status, a.pane_id)),
-        Line::raw(format!("job {}", a.job.clone().unwrap_or_else(|| "-".into()))),
-    ];
-    let hint = match app.agent_card(i) {
-        Some(c) => {
-            lines.push(Line::raw(format!("holds #{} {} ({})", c.id, c.title, c.column)));
+    let r = app.roster();
+    let Some(row) = r.here.get(i) else {
+        if i == r.here.len() && !r.elsewhere.is_empty() {
+            // named, never described: tb does not read the boards they work on
+            let mut lines = vec![Line::styled("herdr agents that hold or review nothing on this board", dim())];
+            lines.extend(r.elsewhere.iter().map(|a| Line::raw(format!("{:<16} {:<8} {}", fit(&a.name, 16), a.harness, a.status))));
+            info_popup(f, app, format!(" {} elsewhere ", r.elsewhere.len()), lines, " esc close ");
+        }
+        return;
+    };
+    let mut lines = match row.live {
+        Some(a) => vec![
+            Line::raw(format!("harness {} · status {} · pane {}", a.harness, a.status, a.pane_id)),
+            Line::raw(format!("job {}", a.job.clone().unwrap_or_else(|| "-".into()))),
+        ],
+        None => vec![Line::styled("no live status: no herdr agent has exactly this name", dim())],
+    };
+    let hint = match (row.card, row.role) {
+        (Some(c), role) => {
+            let verb = if role == Some(crate::roster::CardRole::Reviewer) { "reviews" } else { "holds" };
+            lines.push(Line::raw(format!("{verb} #{} {} ({})", c.id, c.title, c.column)));
             " enter jump to card  esc close "
         }
-        None => {
-            lines.push(Line::styled("holds no card", dim()));
+        _ => {
+            lines.push(Line::styled(format!("holds no card · {}", last_seen(app, row, usize::MAX)), dim()));
             " esc close "
         }
     };
-    info_popup(f, app, format!(" {} ", a.name), lines, hint);
+    info_popup(f, app, format!(" {} ", row.name), lines, hint);
 }
 
 /// The `R` repo picker popup: search box, `off` row, owner-grouped repo table.
@@ -3004,10 +3269,8 @@ pub fn board_budget(h: u16, gh_full: u16, want_ag: bool, want_detail: bool, agen
 
 fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
     let wide = area.width >= NARROW;
-    let agent_rows = match &app.agents {
-        AgentsState::Agents(a) if !a.is_empty() => a.len().min(8) as u16,
-        _ => 1,
-    };
+    // one row per actor of this board plus the `+N elsewhere` line, as many as before (<= 8)
+    let agent_rows = app.roster().panel_rows().clamp(1, 8) as u16;
     // the GITHUB panel shows even without a repo (a 1-line "pick one" panel), unless G hid it
     let want_gh = wide && app.show_github;
     let gh_full = match (want_gh, app.gh.repo.is_some()) {
@@ -3068,7 +3331,8 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         note_area(app, 1, rows[i]);
         let focused = app.focus == Focus::Agents;
         let b = frame(focused, None).title(Span::styled(" AGENTS ", bold()));
-        let mut lines = agents_panel(app, rows[i].width.saturating_sub(2) as usize);
+        let inner_w = rows[i].width.saturating_sub(2) as usize;
+        let mut lines = close_clipped(agents_panel(app, inner_w), app, rows[i].height.saturating_sub(2) as usize, inner_w);
         if focused {
             let sel = app.ag_sel.min(lines.len().saturating_sub(1));
             if let Some(l) = lines.get_mut(sel) {
@@ -3223,4 +3487,61 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
     })();
     ratatui::restore();
     res
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+    use crate::store::display::Display;
+
+    fn snap(labels: [Option<&str>; 4], by_due: bool) -> Snapshot {
+        Snapshot { display: Display { labels: labels.map(|l| l.map(str::to_string)), by_due, ..Default::default() }, ..Default::default() }
+    }
+
+    /// The header FUNCTION, snapshotted: a label at every room it can be given.
+    #[test]
+    fn a_label_gives_way_in_whole_words_and_the_plain_name_is_the_last_resort() {
+        let s = snap([None, None, Some("WITH THE REVIEWER"), Some("FILED")], false);
+        let at = |room: usize| column_name(&s, "review", room);
+        assert_eq!(at(40), "WITH THE REVIEWER");
+        assert_eq!(at(17), "WITH THE REVIEWER");
+        assert_eq!(at(16), "WITH THE");
+        assert_eq!(at(8), "WITH THE");
+        assert_eq!(at(7), "WITH");
+        assert_eq!(at(4), "WITH");
+        assert_eq!(at(3), "REVIEW", "not even one word fits: the plain name, never half a word");
+        for room in 0..40 {
+            let name = at(room);
+            assert!(name == "REVIEW" || (cells(&name) <= room && "WITH THE REVIEWER".starts_with(&name)), "room {room}: {name:?}");
+            assert!(!name.ends_with(' '));
+        }
+        // DONE keeps its ` today` while it fits whole
+        assert_eq!(column_name(&s, "done", 11), "FILED today");
+        assert_eq!(column_name(&s, "done", 10), "FILED");
+        // no label: the name tb always drew, whatever the room
+        for room in [0, 3, 40] {
+            assert_eq!(column_name(&s, "todo", room), "TODO");
+            assert_eq!(column_name(&snap([None; 4], false), "done", room), "DONE today");
+        }
+    }
+
+    #[test]
+    fn wide_characters_count_as_the_cells_they_take() {
+        assert_eq!(cells("審査中"), 6);
+        assert_eq!(cells("OK ✅"), 5);
+        let s = snap([None, None, Some("審査中 担当者"), None], false);
+        assert_eq!(column_name(&s, "review", 13), "審査中 担当者");
+        assert_eq!(column_name(&s, "review", 12), "審査中", "13 cells do not fit in 12");
+        assert_eq!(column_name(&s, "review", 5), "REVIEW");
+    }
+
+    #[test]
+    fn a_date_ordered_column_says_so_when_there_is_room() {
+        let s = snap([None; 4], true);
+        assert_eq!(date_order_note(&s, "todo", 7), "by due ");
+        assert_eq!(date_order_note(&s, "review", 30), "by due ");
+        assert_eq!(date_order_note(&s, "todo", 6), "", "it is the first thing a narrow header gives up");
+        assert_eq!(date_order_note(&s, "doing", 30), "");
+        assert_eq!(date_order_note(&snap([None; 4], false), "todo", 30), "");
+    }
 }
