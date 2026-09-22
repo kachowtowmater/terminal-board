@@ -304,3 +304,18 @@ its `-wal`/`-shm` files if they are there, to another name in the same folder:
 ```sh
 cd ~/.local/state/terminal-board/boards && for f in import.db*; do mv "$f" "intake${f#import}"; done
 ```
+
+## A board named `export` or `log`
+
+**Before.** Neither was a command, so `tb export list` opened a board called `export`.
+
+**Now.** `tb export` writes the board out and `tb log` prints its history, so both are command
+names and neither can name a board. A board already called `export` or `log` still has its
+file, but tb will not open it by that name.
+
+**The way through:** rename it — move the file, and its `-wal`/`-shm` if they are there, to
+another name in the same folder:
+
+```sh
+cd ~/.local/state/terminal-board/boards && for f in export.db*; do mv "$f" "outbox${f#export}"; done
+```

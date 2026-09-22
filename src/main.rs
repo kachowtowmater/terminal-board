@@ -14,18 +14,18 @@ use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Store, COLUMNS};
-use terminal_board::{boards, contract, github, import, plain, resolve_actor, setup, textin, tui};
+use terminal_board::{boards, contract, export, github, import, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID [--force]
-        list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
+        list [--archived] [--done [--since DATE]] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
 Look    config card-line age|due · label COLUMN \"TEXT\"|--off (display only) · waiting-lane shown|hidden · wip-counts-blocked yes|no
-Bulk    import FILE.json|- · edit --from FILE.json|-   [--dry-run]   many cards from one JSON file, all or nothing
+In/out  import FILE.json|- · edit --from FILE.json|- [--dry-run] (all or nothing) · export --json|--csv [--history] · log [--since DATE]
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -82,6 +82,12 @@ enum Cmd {
         /// The cards `tb rm` archived on an archive board (`tb config rm archive`).
         #[arg(long)]
         archived: bool,
+        /// Finished cards only — today's, or every one since `--since`.
+        #[arg(long, conflicts_with = "archived")]
+        done: bool,
+        /// From this local calendar date (`YYYY-MM-DD`), or a unix second.
+        #[arg(long, value_name = "DATE", requires = "done")]
+        since: Option<String>,
     },
     Show { id: i64 },
     Next {
@@ -208,6 +214,25 @@ enum Cmd {
     Agents,
     Sync,
     Guide,
+    /// The whole board, for a person who does not use tb: `--json` re-imports, `--csv` opens
+    /// in a spreadsheet.
+    Export {
+        /// One JSON document: every card with its whole history (the default).
+        #[arg(long, conflicts_with = "csv")]
+        json_out: bool,
+        /// Comma-separated, for a spreadsheet.
+        #[arg(long)]
+        csv: bool,
+        /// With --csv: one row per EVENT instead of one per card.
+        #[arg(long)]
+        history: bool,
+    },
+    /// The board's history, oldest first.
+    Log {
+        /// From this local calendar date (`YYYY-MM-DD`), or a unix second.
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+    },
     /// Create many cards from one JSON file (`-` = standard input), all or nothing.
     Import {
         file: std::path::PathBuf,
@@ -244,6 +269,7 @@ impl Cmd {
         !matches!(
             self,
             Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
+                | Cmd::Export { .. } | Cmd::Log { .. }
         )
     }
 }
@@ -766,7 +792,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
-        Cmd::List { archived: true } => {
+        Cmd::List { archived: true, .. } => {
             let cards = store.archived()?;
             if j {
                 println!("{}", pretty(&cards));
@@ -786,6 +812,33 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     );
                 }
                 say!("bring one back with {}", cmd_hint(explicit, "restore ID"));
+            }
+        }
+        Cmd::List { done: true, since, .. } => {
+            // D10: the board's DONE column shows the last 24 hours, so finished work older
+            // than that is invisible. `--since` moves the boundary to a local calendar day.
+            let tz = store.tz()?;
+            let from = match &since {
+                Some(raw) => export::since_value(raw, tz, "tb list --done --since")?,
+                None => now - terminal_board::store::DONE_WINDOW_SECS,
+            };
+            let cards = export::done_since(&store, from)?;
+            let snap = store.snapshot()?;
+            if j {
+                let ctx = store.due_ctx()?;
+                let rows: Vec<_> =
+                    cards.iter().map(|c| snap.blocks.with(snap.display.with(ctx.with(c, c), c), c)).collect();
+                println!("{}", pretty(&rows));
+            } else if cards.is_empty() {
+                let what = match &since {
+                    Some(raw) => format!("no cards finished since {raw}"),
+                    None => "no cards finished today".to_string(),
+                };
+                say!("{what} — look further back with {}", cmd_hint(explicit, "list --done --since 2026-10-09"));
+            } else {
+                for c in &cards {
+                    say!("{:<16} {}", export::local_time(c.column_since, tz), plain::card_head(c));
+                }
             }
         }
         Cmd::List { .. } => {
@@ -1128,6 +1181,19 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Guide => print!("{GUIDE}"),
+        Cmd::Export { csv, history, .. } => {
+            let format = if csv { export::Format::Csv } else { export::Format::Json };
+            let mut out = std::io::stdout().lock();
+            export::export(&store, &mut out, format, history)?;
+        }
+        Cmd::Log { since } => {
+            let from = match &since {
+                Some(raw) => export::since_value(raw, store.tz()?, "tb log --since")?,
+                None => 0,
+            };
+            let mut out = std::io::stdout().lock();
+            export::log(&store, &mut out, from, j)?;
+        }
         Cmd::Import { .. } => unreachable!("handled above"),
         Cmd::Config { key: None, .. } => {
             let all = store.settings()?;
