@@ -86,6 +86,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column_since": 1789763036,
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
   "round": 1,
+  "approved_by": [],
   "events": [
     { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
     { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "", "actor_id": 4 }
@@ -97,7 +98,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 |---|---|---|
 | `id` | int | stable card id |
 | `title` | string | without the `tag:` prefix and without a **leading** `gh#N` token; a `gh#N` later in the title stays in the text |
-| `tag` | string\|null | parsed from `tag: title` |
+| `tag` | string\|null | the tag: the one given with `--tag` (which may hold digits, spaces and hyphens), else the one parsed from a `tag: title` prefix |
 | `description` | string | |
 | `column` | `todo`\|`doing`\|`review`\|`done` | |
 | `position` | int | order within the column, 0 = top |
@@ -116,8 +117,9 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `created_at`, `column_since` | int | unix seconds |
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
+| `approved_by` | string[] | everyone who recorded `tb done ID --approve` on this card, oldest first, each once. A record of who checked it — **not** a permission; `done-by` (which says who may close a card) is a separate, self-asserted setting, see README |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (a review pass recorded with `tb done ID --approve`), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
 
 ### identity
 
@@ -282,6 +284,53 @@ A file that cannot be read at all (missing, not JSON, not cards, empty, too big,
 on `-`) is the usual `{ok:false,error,hint}`. One write transaction: a second import at the
 same moment waits, then runs whole.
 
+## `tb export` — the whole board, with its history
+
+```sh
+tb export --json              # one document, re-importable
+tb export --csv               # one row per card, for a spreadsheet
+tb export --csv --history     # one row per event instead
+```
+
+```json
+{ "v": 1, "board": "default", "exported_at": 1790069406, "tz": "America/Los_Angeles",
+  "cards": [ { "…card…": null }, "…" ] }
+```
+
+Each element of `cards` is **the card object above** — the same fields `tb board --json`
+prints — except that `events` holds **every** event, oldest first, not the last ten. `tz` is
+the board's zone (`tb config tz`) or null. `cards` is exactly the array `tb import` and
+`tb edit --from` accept, so export → edit → import is a round trip (the fields those commands
+ignore are listed in their own section above, and are reported as warnings, not errors).
+
+The output is **streamed**: a board with 10,000 cards and 110,000 events exports in 0.74 s in
+about 15 MB of memory, because one card is held at a time rather than the whole document.
+
+**CSV** is for a person opening the file in a spreadsheet, and is one-way — `--json` is what
+comes back. It carries a UTF-8 **byte-order mark** (without one Excel reads the file as the
+local code page and mangles every accent and dash), RFC 4180 quoting with `"` doubled and any
+cell holding a comma, a quote or a line break wrapped, and CRLF row ends. Times are local
+`YYYY-MM-DD HH:MM` in the board's zone. **A cell that would begin `=`, `+`, `-`, `@`, a tab or
+a carriage return is written with a leading apostrophe**, so a card title is text in the sheet
+and never a *formula* — card text is written by other people, and a spreadsheet would
+otherwise run it. The stored card is unchanged; this is a property of the file.
+
+## `tb log [--json] [--since DATE]` — the board's history
+
+`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text}` — the
+same event fields `tb watch --events` streams, without the live stream's `from`/`to`.
+`--since` takes `YYYY-MM-DD`, meaning **local midnight in the board's zone**, or a unix
+second; events are selected by their timestamp, so a history written out of order still
+answers "everything since Tuesday" correctly.
+
+## `tb list --done [--since DATE]`
+
+The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —
+every card finished at or after local midnight of that date, newest first. `--json` is an
+array of card objects, the same shape as `tb list --json`.
+
+`tb export`, `tb log` and `tb list` never write to the board file.
+
 ## `tb agents --json`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
@@ -298,6 +347,50 @@ The field is **absent when there is nothing to say** — it is never an empty li
 without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `watch` lines
 have no place for a field: read their warnings on stderr. A warning never changes the exit
 code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
+
+## Filters — `tb list` and `tb board --json`
+
+`--tag`, `--owner`, `--blocked`, `--blocked-on`, `--due-before`, `--column` and `--group tag`.
+They combine, and every one that is set has to pass, and they apply to **every** way `tb list`
+picks cards: the ordinary list, `--done [--since]` and `--archived`. An archived card keeps
+only its title, tag, column and owner, so `--blocked`, `--blocked-on` and `--due-before` are
+**refused by name** there rather than ignored. `--all-boards` is refused with `--done` and
+`--archived`: "finished today" and "archived" are each one board's own question. A filter is
+never accepted and quietly dropped. A filter **removes rows and nothing else**: the cards stay in the order the board defines (position, or `sort due`), so a filtered
+result is always a subsequence of the unfiltered one, column by column. `--tag none` and
+`--owner none` are the cards without one. `--column` takes the internal name only — a display
+label is refused, and the refusal names the column to use. A value that is not a date, not a
+column and not a grouping is refused before the board is read.
+
+## `tb mv ID --to BOARD` — a card on another board
+
+```json
+{ "ok": true, "from_board": "default", "to_board": "work", "old_id": 3, "id": 12,
+  "title": "docs: write the guide", "checklist": 2, "events": 7 }
+```
+
+`id` is the card's number on the board it arrived at, and it is **not** `old_id`: ids belong to
+a board. The card, its checklist and its whole history travel, with each event's original
+actor and time, and a `moved-in` event records where it came from; the source board's log
+records where it went. The column and the owner do **not** travel — a moved card lands in
+`todo`, unowned. A `--on` that names a card is dropped (that number means a different card
+over there); the block's text is kept.
+
+Refused (exit 1, the usual `{ok,error,hint}`): a destination that does not exist (tb never
+creates one), the board the card is already on, a card somebody else holds in DOING (add
+`--force`, which is logged as a `force` event on the moved card and on both boards' logs), and
+any move under `TB_DB`, which pins a single file.
+
+A move holds the **source** board's write lock for the whole operation — read, far-end write,
+delete. So a write to the source that arrives during a move waits and then finds the card gone
+(a refusal), instead of being acknowledged and then destroyed by the delete; and two moves of
+the same card cannot both succeed.
+
+## `tb list --all-boards --owner NAME`
+
+Every board on this machine, filtered the same way, as an array of card objects with one extra
+key: `board`, the board each card is on. A board that cannot be read is named on stderr and
+skipped. Refused under `TB_DB`.
 
 ## `tb agents --json`
 

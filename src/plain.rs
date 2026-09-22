@@ -381,6 +381,23 @@ pub fn board(snap: &Snapshot) -> String {
 }
 
 /// One line per card.
+/// The rows `list` prints, for a chosen set of cards (a filtered list) with `indent` in
+/// front of each. They are printed in the order they are given — a filter removes rows, it
+/// never reorders them.
+pub fn list_of(snap: &Snapshot, cards: &[&Card], indent: &str) -> String {
+    let mut out = String::new();
+    for c in cards {
+        let w = waiting_for(c, snap);
+        let meta = match (meta(c, snap), w) {
+            (m, w) if w.is_empty() => m,
+            (m, w) if m.is_empty() => w,
+            (m, w) => format!("{m} · {w}"),
+        };
+        line(&mut out, format!("{indent}{:<7} {}  [{}]", c.column, card_head(c), meta));
+    }
+    out
+}
+
 pub fn list(snap: &Snapshot) -> String {
     let mut out = String::new();
     for col in COLUMNS {
