@@ -325,6 +325,14 @@ same event fields `tb watch --events` streams, without the live stream's `from`/
 second; events are selected by their timestamp, so a history written out of order still
 answers "everything since Tuesday" correctly.
 
+Interleaved with the card events, oldest first by the same clock, are the board's own —
+`mv` leaving a `moved-out` behind on the board a card left (the moved-in half is a card
+event, and `tb show` on the new id prints it; the moved-out half has no card of its own to
+attach to), a WIP change, a file-mode change, a soft-delete: `card_id` is **`null`** on these
+rows, never a card's id repurposed to mean "the board" (`actor_id` is whatever it always is —
+null when nothing but the name is known). Plain text marks the same row `board` where a card
+row shows `#ID`. Previously nothing printed this half of a move's trail (#106).
+
 ## `tb list --done [--since DATE]`
 
 The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —

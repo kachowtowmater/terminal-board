@@ -214,22 +214,37 @@ fn json(store: &Store, out: &mut dyn Write) -> Result<()> {
 }
 
 /// `tb log`: the board's whole history, oldest first, from `since` (unix seconds, 0 = all).
-/// Streams the same way `export` does.
+/// Streams the same way `export` does. Card events are interleaved with the board's own log
+/// (a move's `moved-out` on the board a card left, a WIP change, …) — `card_id` (JSON) or the
+/// id column (plain text) marks each row as one or the other; see `Store::for_each_log_event`
+/// and #106.
 pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Result<()> {
+    use crate::store::LogEvent;
     let tz = store.tz()?;
     if json_out {
         wrote(out.write_all(b"[\n"))?;
         let mut first = true;
-        store.for_each_event(since, &mut |e| {
-            let line = serde_json::json!({
-                "v": contract::SCHEMA_VERSION,
-                "ts": e.ts,
-                "card_id": e.card_id,
-                "actor": e.actor,
-                "actor_id": e.actor_id,
-                "kind": e.kind,
-                "text": e.text,
-            });
+        store.for_each_log_event(since, &mut |e| {
+            let line = match &e {
+                LogEvent::Card(e) => serde_json::json!({
+                    "v": contract::SCHEMA_VERSION,
+                    "ts": e.ts,
+                    "card_id": e.card_id,
+                    "actor": e.actor,
+                    "actor_id": e.actor_id,
+                    "kind": e.kind,
+                    "text": e.text,
+                }),
+                LogEvent::Board { ts, actor, kind, text, actor_id } => serde_json::json!({
+                    "v": contract::SCHEMA_VERSION,
+                    "ts": ts,
+                    "card_id": null,
+                    "actor": actor,
+                    "actor_id": actor_id,
+                    "kind": kind,
+                    "text": text,
+                }),
+            };
             let text = serde_json::to_string(&crate::clean_json(&line)).unwrap_or_else(|_| "null".into());
             let r = out.write_all(if first { b"  " } else { b",\n  " }).and_then(|()| out.write_all(text.as_bytes()));
             first = false;
@@ -240,18 +255,23 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
     }
     let titles = store.card_titles()?;
     let mut any = false;
-    store.for_each_event(since, &mut |e| {
+    store.for_each_log_event(since, &mut |e| {
         any = true;
-        let title = titles.get(&e.card_id).cloned().unwrap_or_default();
-        let detail = if e.text.is_empty() { String::new() } else { format!(": {}", e.text) };
+        let (ts, id_col, actor, kind, tail) = match &e {
+            LogEvent::Card(e) => {
+                let title = titles.get(&e.card_id).cloned().unwrap_or_default();
+                let detail = if e.text.is_empty() { String::new() } else { format!(": {}", e.text) };
+                (e.ts, format!("#{}", e.card_id), e.actor.as_str(), e.kind.as_str(), format!("{}{}", crate::plain::fit(&title, 28), detail))
+            }
+            LogEvent::Board { ts, actor, kind, text, .. } => (*ts, "board".to_string(), actor.as_str(), kind.as_str(), text.clone()),
+        };
         let line = crate::text::sanitize(&format!(
-            "{}  #{:<4} {:<10} {:<9} {}{}",
-            local_time(e.ts, tz),
-            e.card_id,
-            crate::plain::fit(&e.actor, 10),
-            e.kind,
-            crate::plain::fit(&title, 28),
-            detail
+            "{}  {:<5} {:<10} {:<9} {}",
+            local_time(ts, tz),
+            id_col,
+            crate::plain::fit(actor, 10),
+            kind,
+            tail
         ));
         wrote(out.write_all(line.as_bytes()).and_then(|()| out.write_all(b"\n")))
     })?;

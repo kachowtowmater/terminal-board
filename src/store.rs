@@ -218,6 +218,13 @@ pub struct Event {
     pub actor_id: Option<i64>,
 }
 
+/// One row of `Store::for_each_log_event`: a card event, or a board-level one (no card —
+/// `card_id` is `None` everywhere this is rendered). See `board_events` and #106.
+pub enum LogEvent {
+    Card(Event),
+    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64> },
+}
+
 /// An event with its database id (for `tb watch --events` resumption).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WatchEvent {
@@ -1320,6 +1327,53 @@ impl Store {
         let mut rows = st.query([from_ts])?;
         while let Some(r) = rows.next()? {
             f(&row_event(r)?)?;
+        }
+        Ok(())
+    }
+
+    /// Every event at or after `from_ts`, oldest first, card events interleaved with the
+    /// board's own log (`board_events` — a move's `moved-out` on the board a card left, a WIP
+    /// change, a file-mode change, a soft-delete, …), which otherwise has no command that
+    /// reads it (#106: a card moved off a board leaves a trail on that board nothing prints).
+    /// Two cursors, merged by timestamp, so this streams exactly like `for_each_event`.
+    pub fn for_each_log_event(&self, from_ts: i64, f: &mut dyn FnMut(LogEvent) -> Result<()>) -> Result<()> {
+        let mut cst = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut crows = cst.query([from_ts])?;
+        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut brows = bst.query([from_ts])?;
+
+        fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(row_event(r)?),
+                None => None,
+            })
+        }
+        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<(i64, String, String, String, Option<i64>)>> {
+            Ok(match rows.next()? {
+                Some(r) => Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                None => None,
+            })
+        }
+
+        let mut c_cur = next_card(&mut crows)?;
+        let mut b_cur = next_board(&mut brows)?;
+        loop {
+            let card_first = match (&c_cur, &b_cur) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(c), Some(b)) => c.ts <= b.0,
+            };
+            if card_first {
+                f(LogEvent::Card(c_cur.take().unwrap()))?;
+                c_cur = next_card(&mut crows)?;
+            } else {
+                let (ts, actor, kind, text, actor_id) = b_cur.take().unwrap();
+                f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
+                b_cur = next_board(&mut brows)?;
+            }
         }
         Ok(())
     }

@@ -253,6 +253,37 @@ fn a_card_moves_to_another_board_with_its_history() {
     assert!(v["id"].as_i64().unwrap() > 0 && v["id"] != v["old_id"], "the id changes: {v}");
 }
 
+/// #106: a card leaving a board used to vanish from it with no readable trail — the
+/// `moved-out` row landed in `board_events`, and no command printed that table. `tb log` now
+/// interleaves it with the card events, marked so it is never mistaken for one.
+#[test]
+fn the_source_board_log_says_where_a_moved_card_went() {
+    let h = Home::new();
+    h.ok(&["add", "docs: write the guide"]);
+    h.ok(&["work", "add", "x: already here"]);
+    h.ok(&["mv", "1", "--to", "work"]);
+
+    // plain text: a board-level row, marked `board` where a card row would show `#ID`
+    let plain = h.ok(&["log"]);
+    assert!(plain.contains("moved-out") && plain.contains("#1 to work is #2 there"), "{plain}");
+    let moved_out_line = plain.lines().find(|l| l.contains("moved-out")).unwrap();
+    assert!(moved_out_line.contains(" board "), "not marked as a board-level row: {moved_out_line}");
+
+    // --json: card_id (and actor_id) are null, so a consumer can tell the halves apart
+    let all = h.json(&["log", "--json"]);
+    let all = all.as_array().unwrap();
+    let moved_out = all.iter().find(|e| e["kind"] == "moved-out").expect("a moved-out row on the source board's log");
+    assert_eq!(moved_out["card_id"], Value::Null, "{moved_out}");
+    assert_eq!(moved_out["actor_id"], Value::Null, "{moved_out}");
+    assert!(moved_out["text"].as_str().unwrap().contains("#1 to work is #2 there"), "{moved_out}");
+
+    // still oldest-first, card and board events merged by the same clock
+    let kinds: Vec<&str> = all.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let created_at = kinds.iter().position(|k| *k == "created").unwrap();
+    let moved_out_at = kinds.iter().position(|k| *k == "moved-out").unwrap();
+    assert!(created_at < moved_out_at, "{kinds:?}");
+}
+
 /// What `tb mv` refuses, and that nothing is half-moved when it does.
 #[test]
 fn a_move_that_cannot_happen_changes_neither_board() {
