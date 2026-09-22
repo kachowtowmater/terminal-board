@@ -131,6 +131,43 @@ fn agents_manual_states_notes_are_data_not_instructions() {
     }
 }
 
+/// A markdown table must be one block of rows: a paragraph inserted into the middle of one
+/// orphans every row after it, which renders as literal `|` text and hides a whole feature.
+/// (Found in review: a done-by paragraph split the Cards table in docs/HUMANS.md and the
+/// due-date row vanished from the guide.)
+#[test]
+fn no_documentation_table_is_split_by_a_paragraph() {
+    for (name, md) in [
+        ("README.md", include_str!("../README.md")),
+        ("docs/HUMANS.md", include_str!("../docs/HUMANS.md")),
+        ("docs/AGENTS.md", include_str!("../docs/AGENTS.md")),
+        ("docs/JSON.md", include_str!("../docs/JSON.md")),
+        ("docs/SCHEMA.md", include_str!("../docs/SCHEMA.md")),
+        ("CHANGELOG.md", include_str!("../CHANGELOG.md")),
+        ("UPGRADING.md", include_str!("../UPGRADING.md")),
+    ] {
+        let row = |l: &str| l.trim_start().starts_with('|') && l.trim_end().ends_with('|');
+        // a table only ever starts after a blank line (or a heading): a row whose previous
+        // line is prose is a row that was cut off from its table and renders as plain text
+        let mut in_code = false;
+        let mut prev = "";
+        for (i, line) in md.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                prev = line;
+                continue;
+            }
+            if !in_code && row(line) && !prev.trim().is_empty() && !row(prev) && !prev.trim_start().starts_with('#') {
+                panic!(
+                    "{name}:{} — this table row follows prose ({prev:?}), so it was cut off from its table: every row after the break renders as literal text",
+                    i + 1
+                );
+            }
+            prev = line;
+        }
+    }
+}
+
 /// docs/SCHEMA.md must be referenced from JSON.md's forward-compatibility rule.
 #[test]
 fn json_contract_points_at_the_schema_doc() {
