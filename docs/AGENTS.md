@@ -73,6 +73,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | finished work older than today | `tb list --done [--since 2026-10-09]` |
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
+| narrow a list (they combine) | `tb list --tag docs --owner alice --blocked --blocked-on #7 --due-before 2026-10-09 --column todo` · `--group tag` |
+| your work on every board | `tb list --all-boards --owner <your-name>` |
+| send a card to another board (it gets a NEW id there) | `tb mv ID --to BOARD` (`--force` for a card someone else holds, logged) |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
 | make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |

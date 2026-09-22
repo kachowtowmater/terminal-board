@@ -14,14 +14,14 @@ use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Store, COLUMNS};
-use terminal_board::{boards, contract, export, github, import, plain, resolve_actor, setup, textin, tui};
+use terminal_board::{boards, contract, export, filter, github, import, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]... [--tag KEY]   edit ID [--title T] [--desc D] [--tag KEY]   rm ID [--force]
-        list [--archived] [--done [--since DATE]] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
+        list [--archived] [--done [--since DATE]] [filters] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
 Look    config card-line age|due · label COLUMN \"TEXT\"|--off · waiting-lane shown|hidden · wip-counts-blocked yes|no · done-by NAMES|--off
@@ -29,7 +29,7 @@ In/out  import FILE.json|- · edit --from FILE.json|- [--dry-run] (all or nothin
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] · new NAME [--kind default|deadline | --from BOARD] · board (print) · watch --json
+Boards  boards [--default [NAME|--clear]] · new NAME [--kind default|deadline | --from BOARD] · mv ID --to BOARD · board · watch --json
 Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
         config file-mode [private|shared] (who may open the board file; tb creates it 0600)
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
@@ -63,6 +63,49 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
+/// The filters `tb list` and `tb board` share. Nothing set = today's output, untouched.
+#[derive(clap::Args, Clone, Default)]
+struct Filters {
+    /// Only this tag (`none` = the cards without one).
+    #[arg(long, value_name = "TAG")]
+    tag: Option<String>,
+    /// Only cards this person or agent holds (`none` = nobody).
+    #[arg(long, value_name = "NAME")]
+    owner: Option<String>,
+    /// Only blocked cards.
+    #[arg(long)]
+    blocked: bool,
+    /// Only cards waiting on this card or name (`#7`, or `alice`).
+    #[arg(long = "blocked-on", value_name = "NAME|#ID")]
+    blocked_on: Option<String>,
+    /// Only cards due before this calendar date.
+    #[arg(long = "due-before", value_name = "DATE")]
+    due_before: Option<String>,
+    /// Only this column — the internal name (todo, doing, review, done), never a label.
+    #[arg(long, value_name = "COLUMN")]
+    column: Option<String>,
+    /// Print the cards grouped: `tag`.
+    #[arg(long, value_name = "WHAT")]
+    group: Option<String>,
+}
+
+impl Filters {
+    fn build(&self, look: &terminal_board::store::display::Display) -> Result<filter::Filter, BoardError> {
+        filter::Filter::parse(
+            filter::Asked {
+                tag: self.tag.clone(),
+                owner: self.owner.clone(),
+                blocked: self.blocked,
+                blocked_on: self.blocked_on.clone(),
+                due_before: self.due_before.clone(),
+                column: self.column.clone(),
+                group: self.group.clone(),
+            },
+            look,
+        )
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     Add {
@@ -91,6 +134,14 @@ enum Cmd {
         /// From this local calendar date (`YYYY-MM-DD`), or a unix second.
         #[arg(long, value_name = "DATE", requires = "done")]
         since: Option<String>,
+        /// Every board this machine has, not just this one (with `--owner`).
+        /// Not with `--done` or `--archived`: "finished today" and "archived" are each one
+        /// board's own question (its own zone, its own archive), and answering them across
+        /// boards needs a decision about whose day it is — refused rather than guessed.
+        #[arg(long = "all-boards", conflicts_with_all = ["archived", "done"])]
+        all_boards: bool,
+        #[command(flatten)]
+        filters: Filters,
     },
     Show { id: i64 },
     Next {
@@ -219,7 +270,10 @@ enum Cmd {
         #[arg(long, value_name = "BOARD")]
         from: Option<String>,
     },
-    Board,
+    Board {
+        #[command(flatten)]
+        filters: Filters,
+    },
     /// Opt-in event stream: one NDJSON line per event; `--since` resumes after a restart.
     Watch {
         /// Print one NDJSON line per event instead of the whole board on every change.
@@ -250,6 +304,16 @@ enum Cmd {
         /// From this local calendar date (`YYYY-MM-DD`), or a unix second.
         #[arg(long, value_name = "DATE")]
         since: Option<String>,
+    },
+    /// Move a card to another board, with its checklist and its history.
+    Mv {
+        id: i64,
+        /// The board it goes to. It has to exist already.
+        #[arg(long = "to", value_name = "BOARD")]
+        to: String,
+        /// Move a DOING card someone else holds (logged on the card and on both boards).
+        #[arg(long)]
+        force: bool,
     },
     /// Create many cards from one JSON file (`-` = standard input), all or nothing.
     Import {
@@ -286,7 +350,7 @@ impl Cmd {
     fn writes(&self) -> bool {
         !matches!(
             self,
-            Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide | Cmd::New { .. }
+            Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board { .. } | Cmd::Agents | Cmd::Guide | Cmd::New { .. }
                 | Cmd::Export { .. } | Cmd::Log { .. }
         )
     }
@@ -758,6 +822,100 @@ fn text_from_files(cmd: &mut Cmd) -> Result<(), BoardError> {
     Ok(())
 }
 
+/// `tb mv ID --to BOARD`. Everything that can be refused is refused BEFORE either board is
+/// written: the destination has to exist (tb never creates a board here — see the note in
+/// `store::transfer` about issue #112), it has to be a different board, and `TB_DB` pins one
+/// file so there is no second board to move to.
+fn move_card(
+    store: &mut Store,
+    id: i64,
+    to: &str,
+    actor: &str,
+    force: bool,
+) -> Result<terminal_board::store::transfer::Moved, BoardError> {
+    if terminal_board::env("DB").is_some() {
+        return Err(BoardError(
+            "TB_DB pins one board file, so there is no other board to move a card to — unset TB_DB to use boards".into(),
+        ));
+    }
+    boards::validate(to)?;
+    if to == store.name {
+        return Err(BoardError(format!(
+            "#{id} is already on '{to}' — name the board it should go to, e.g. 'tb mv {id} --to home'"
+        )));
+    }
+    if !boards::path_for(to).exists() {
+        let names = boards::list();
+        let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+        // the command names the DESTINATION board, so it is written unquoted: `with_board`
+        // rewrites a quoted `'tb …'` to carry the board the CURRENT command is on, which
+        // would turn this into a command for the wrong board
+        return Err(BoardError(format!(
+            "no board '{to}' — boards: {all} · a card only moves to a board that exists: make it first with  tb {to} add \"…\""
+        )));
+    }
+    // the holder rule, exactly as `tb rm` and `tb edit` apply it: a card somebody else holds
+    // in DOING is not taken off their board by someone walking past. `--force` is offered
+    // because the refusal offers it, and because a move is no more final than `tb rm --force`
+    // — it is logged on the card, which survives at the far end, and on both boards' logs.
+    let forced = store.holder_check(id, actor, force, &format!("move it to {to}"))?;
+    let mut dest = Store::open(&boards::path_for(to))?.named(to);
+    store.move_to_board(id, &mut dest, actor, forced.as_deref())
+}
+
+/// `tb list --all-boards --owner NAME`: one person's work wherever it is. Reads every board
+/// this machine has; a board that cannot be read is named and skipped, never fatal, because
+/// the point is to find the work that IS there.
+fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> Result<(), BoardError> {
+    if terminal_board::env("DB").is_some() {
+        return Err(BoardError(
+            "TB_DB pins one board file, so there is only one board to look at — unset TB_DB to use boards".into(),
+        ));
+    }
+    let names = boards::list();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    for name in &names {
+        let store = match Store::open(&boards::path_for(name)) {
+            Ok(s) => s.named(name),
+            Err(e) => {
+                warn!("tb: board '{name}' could not be read ({e}) — skipped");
+                continue;
+            }
+        };
+        let snap = store.snapshot()?;
+        let ctx = store.due_ctx()?;
+        for c in f.apply(snap.listed(), &snap.blocks) {
+            if json_out {
+                let card = snap.blocks.with(snap.display.with(ctx.with(c, c), c), c);
+                let mut v = serde_json::to_value(&card).unwrap_or(serde_json::Value::Null);
+                if let Some(o) = v.as_object_mut() {
+                    // which board it is on: the one thing a cross-board row needs that a
+                    // single-board row does not
+                    o.insert("board".into(), json!(name));
+                }
+                rows.push(v);
+            } else {
+                lines.push(format!("{:<12} {:<7} {}", name, c.column, plain::card_head(c)));
+            }
+        }
+    }
+    if json_out {
+        println!("{}", pretty(&rows));
+        return Ok(());
+    }
+    if lines.is_empty() {
+        let what = if f.any() { format!(" matching {}", f.describe()) } else { String::new() };
+        let where_ = if names.is_empty() { "no boards yet".to_string() } else { format!("{} boards", names.len()) };
+        say!("no cards{what} on any board ({where_}) — {}", cmd_hint(explicit, "boards"));
+        return Ok(());
+    }
+    for l in &lines {
+        say!("{l}");
+    }
+    Ok(())
+}
+
 fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
     // silently lose to the fallback chain — refuse before anything is written
@@ -906,10 +1064,23 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
-        Cmd::List { archived: true, .. } => {
-            let cards = store.archived()?;
+        Cmd::List { archived: true, filters, .. } => {
+            let f = filters.build(&store.display()?)?;
+            if let Some(flag) = f.not_for_archived() {
+                return Err(BoardError(format!(
+                    "{flag} does not apply to an archived card — an archived card keeps only its title, tag, column and owner; drop it, or ask the live board with {}",
+                    cmd_hint(explicit, "list")
+                )));
+            }
+            let all = store.archived()?;
+            let cards: Vec<_> = all
+                .into_iter()
+                .filter(|c| f.keeps_archived(c.tag.as_deref(), c.owner.as_deref(), &c.column))
+                .collect();
             if j {
                 println!("{}", pretty(&cards));
+            } else if cards.is_empty() && f.any() {
+                say!("no archived cards match {} — loosen it, or {}", f.describe(), cmd_hint(explicit, "list --archived"));
             } else if cards.is_empty() {
                 say!("no archived cards — 'tb rm ID' archives instead of deleting once the board says 'tb config rm archive'");
             } else {
@@ -928,7 +1099,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 say!("bring one back with {}", cmd_hint(explicit, "restore ID"));
             }
         }
-        Cmd::List { done: true, since, .. } => {
+        Cmd::List { done: true, since, filters, .. } => {
             // D10: the board's DONE column shows the last 24 hours, so finished work older
             // than that is invisible. `--since` moves the boundary to a local calendar day.
             let tz = store.tz()?;
@@ -936,17 +1107,21 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 Some(raw) => export::since_value(raw, tz, "tb list --done --since")?,
                 None => now - terminal_board::store::DONE_WINDOW_SECS,
             };
-            let cards = export::done_since(&store, from)?;
+            let f = filters.build(&store.display()?)?;
+            let found = export::done_since(&store, from)?;
             let snap = store.snapshot()?;
+            let cards: Vec<terminal_board::store::Card> =
+                f.apply(found.iter().collect(), &snap.blocks).into_iter().cloned().collect();
             if j {
                 let ctx = store.due_ctx()?;
                 let rows: Vec<_> =
                     cards.iter().map(|c| snap.blocks.with(snap.display.with(ctx.with(c, c), c), c)).collect();
                 println!("{}", pretty(&rows));
             } else if cards.is_empty() {
+                let narrowed = if f.any() { format!(" matching {}", f.describe()) } else { String::new() };
                 let what = match &since {
-                    Some(raw) => format!("no cards finished since {raw}"),
-                    None => "no cards finished today".to_string(),
+                    Some(raw) => format!("no cards finished{narrowed} since {raw}"),
+                    None => format!("no cards finished{narrowed} today"),
                 };
                 say!("{what} — look further back with {}", cmd_hint(explicit, "list --done --since 2026-10-09"));
             } else {
@@ -955,15 +1130,40 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::List { .. } => {
+        Cmd::List { all_boards: true, filters, .. } => {
+            let f = filters.build(&store.display()?)?;
+            return across_boards(&f, j, explicit);
+        }
+        Cmd::List { filters, .. } => {
             let snap = store.snapshot()?;
+            let f = filters.build(&snap.display)?;
+            // A filter removes rows and nothing else, so each output form is filtered in the
+            // order that form already uses: `--json` follows `listed()`, and the plain list
+            // follows `plain::list`, which walks the columns in turn.
             if j {
                 let ctx = store.due_ctx()?;
-                let rows: Vec<_> =
-                    snap.listed().into_iter().map(|c| snap.blocks.with(snap.display.with(ctx.with(c, c), c), c)).collect();
+                let rows: Vec<_> = f
+                    .apply(snap.listed(), &snap.blocks)
+                    .into_iter()
+                    .map(|c| snap.blocks.with(snap.display.with(ctx.with(c, c), c), c))
+                    .collect();
                 println!("{}", pretty(&rows));
-            } else {
+                return Ok(());
+            }
+            let in_print_order: Vec<&terminal_board::store::Card> =
+                terminal_board::store::COLUMNS.iter().flat_map(|col| snap.in_column(col)).collect();
+            let kept = f.apply(in_print_order, &snap.blocks);
+            if !f.any() && f.group.is_none() {
                 print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
+            } else if kept.is_empty() {
+                say!("no cards match {} — loosen it, or {}", f.describe(), cmd_hint(explicit, "list"));
+            } else if f.group.is_some() {
+                for (tag, cards) in filter::Filter::groups(&kept) {
+                    say!("{tag}");
+                    print_lines!("{}", plain::list_of(&snap, &cards, "  "));
+                }
+            } else {
+                print_lines!("{}", plain::list_of(&snap, &kept, ""));
             }
         }
         Cmd::Show { id } => {
@@ -976,9 +1176,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 print_lines!("{}", plain::detail_all(&d, now, &snap.display, Some(&plain::waiting_for(&d.card, &snap))));
             }
         }
-        Cmd::Board => {
+        Cmd::Board { filters } => {
+            let f = filters.build(&store.display()?)?;
             if j {
-                println!("{}", pretty(&contract::board(&store)?));
+                println!("{}", pretty(&contract::board_where(&store, &f)?));
             } else {
                 let snap = store.snapshot()?;
                 print_lines!("{}", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit));
@@ -1300,6 +1501,22 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             let mut out = std::io::stdout().lock();
             export::log(&store, &mut out, from, j)?;
+        }
+        Cmd::Mv { id, to, force } => {
+            let moved = move_card(&mut store, id, &to, &actor, force)?;
+            if j {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "from_board": moved.from_board, "to_board": moved.to_board,
+                                   "old_id": moved.old_id, "id": moved.new_id, "title": moved.title,
+                                   "checklist": moved.checklist, "events": moved.events}))
+                );
+            } else {
+                say!(
+                    "#{} \"{}\" moved to '{}' as #{} (its checklist and {} events went with it) — it is in TODO, unowned: 'tb {} take {}'",
+                    moved.old_id, moved.title, moved.to_board, moved.new_id, moved.events, moved.to_board, moved.new_id
+                );
+            }
         }
         Cmd::Import { .. } => unreachable!("handled above"),
         Cmd::Config { key: None, .. } => {

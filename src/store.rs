@@ -16,6 +16,7 @@ pub mod display;
 pub mod due;
 pub mod kinds;
 pub mod order;
+pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
@@ -129,7 +130,7 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(BoardError(msg.into()))
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct Card {
     pub id: i64,
     pub title: String,
@@ -1420,11 +1421,20 @@ impl Store {
     }
 
     pub fn note(&self, id: i64, text: &str, actor: &str) -> Result<()> {
-        self.card(id)?;
         if text.trim().is_empty() {
             return err(format!("note is empty — try 'tb note {id} \"what changed\"'"));
         }
-        Self::log(&self.conn, id, actor, "note", text.trim())
+        // The card is checked INSIDE the write transaction, not before it. Checking first
+        // and writing after leaves a window: under WAL the check reads happily while another
+        // process holds the write lock, and by the time the insert runs the card can be gone
+        // — which surfaced as a raw `FOREIGN KEY constraint failed` instead of `no card #N`
+        // (a `tb note` racing a `tb mv` of the same card). Same shape as `block` and `edit`.
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
+        get_card(&tx, id)?;
+        Self::log(&tx, id, actor, "note", text.trim())?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Toggle checklist item `n` (1-based). Returns new state.
@@ -1448,12 +1458,14 @@ impl Store {
 
     /// Mark a card blocked (`reason` like `#7`), or clear it with None.
     pub fn block(&self, id: i64, reason: Option<&str>, actor: &str) -> Result<()> {
-        self.card(id)?;
         let reason = reason.map(|r| r.trim().trim_start_matches("by ").trim().to_string());
         if reason.as_deref() == Some("") {
             return err(format!("say what blocks it — 'tb block {id} \"#7\"'"));
         }
+        // the card is checked inside the transaction, for the reason given on `note`
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
+        get_card(&tx, id)?;
         tx.execute("UPDATE cards SET blocked=? WHERE id=?", params![reason, id])?;
         match &reason {
             Some(r) => Self::log(&tx, id, actor, "blocked", &format!("by {r}"))?,

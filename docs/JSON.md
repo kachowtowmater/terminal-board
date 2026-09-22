@@ -342,6 +342,50 @@ without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `w
 have no place for a field: read their warnings on stderr. A warning never changes the exit
 code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
 
+## Filters — `tb list` and `tb board --json`
+
+`--tag`, `--owner`, `--blocked`, `--blocked-on`, `--due-before`, `--column` and `--group tag`.
+They combine, and every one that is set has to pass, and they apply to **every** way `tb list`
+picks cards: the ordinary list, `--done [--since]` and `--archived`. An archived card keeps
+only its title, tag, column and owner, so `--blocked`, `--blocked-on` and `--due-before` are
+**refused by name** there rather than ignored. `--all-boards` is refused with `--done` and
+`--archived`: "finished today" and "archived" are each one board's own question. A filter is
+never accepted and quietly dropped. A filter **removes rows and nothing else**: the cards stay in the order the board defines (position, or `sort due`), so a filtered
+result is always a subsequence of the unfiltered one, column by column. `--tag none` and
+`--owner none` are the cards without one. `--column` takes the internal name only — a display
+label is refused, and the refusal names the column to use. A value that is not a date, not a
+column and not a grouping is refused before the board is read.
+
+## `tb mv ID --to BOARD` — a card on another board
+
+```json
+{ "ok": true, "from_board": "default", "to_board": "work", "old_id": 3, "id": 12,
+  "title": "docs: write the guide", "checklist": 2, "events": 7 }
+```
+
+`id` is the card's number on the board it arrived at, and it is **not** `old_id`: ids belong to
+a board. The card, its checklist and its whole history travel, with each event's original
+actor and time, and a `moved-in` event records where it came from; the source board's log
+records where it went. The column and the owner do **not** travel — a moved card lands in
+`todo`, unowned. A `--on` that names a card is dropped (that number means a different card
+over there); the block's text is kept.
+
+Refused (exit 1, the usual `{ok,error,hint}`): a destination that does not exist (tb never
+creates one), the board the card is already on, a card somebody else holds in DOING (add
+`--force`, which is logged as a `force` event on the moved card and on both boards' logs), and
+any move under `TB_DB`, which pins a single file.
+
+A move holds the **source** board's write lock for the whole operation — read, far-end write,
+delete. So a write to the source that arrives during a move waits and then finds the card gone
+(a refusal), instead of being acknowledged and then destroyed by the delete; and two moves of
+the same card cannot both succeed.
+
+## `tb list --all-boards --owner NAME`
+
+Every board on this machine, filtered the same way, as an array of card objects with one extra
+key: `board`, the board each card is on. A board that cannot be read is named on stderr and
+skipped. Refused under `TB_DB`.
+
 ## `tb agents --json`
 
 Who is on **this** board, then the herdr agents that are not — the list the AGENTS panel
