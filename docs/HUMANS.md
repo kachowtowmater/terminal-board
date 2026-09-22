@@ -27,7 +27,10 @@ and FILED.
 
 Every part of that is an ordinary setting you can change afterwards (`tb config`), and the
 board follows the setting, not the name. `tb new NAME --from BOARD` gives a new board the same
-settings as one you already like — its settings, not its cards.
+settings as one you already like — its settings, not its cards, and not the three that belong
+to one board (its GitHub repository, who may close its cards, its file permissions). If you
+already have a board called `new`, it is still there: `tb boards` lists it and `tb -b new`
+opens it.
 
 ## The columns
 
@@ -59,7 +62,14 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | say who you wait on, and when to look again | — | `tb block 3 "waiting for the fee" --on #5 --until 2026-10-09` |
+| give it a tag of your own | — | `tb edit 3 --tag "00-key 2"` · `tb edit 3 --tag none` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
+
+`tb config done-by anna,ben` names who may close a card; anyone else is refused, with the
+people to ask. It catches an honest mistake — names in tb are self-asserted, and `--force`
+gets past it (logged), as does answering `y` to the board's `approve your own work?` — so it
+is not a lock. `tb done 3 --approve` records that you checked a card without closing it, on
+any card.
 
 A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
@@ -276,5 +286,11 @@ background, so it looks the same whatever your terminal theme is.
   due date for sixty cards in one command. Add `--dry-run` first: it reports every row and
   writes nothing. One bad row and nothing is written; the report names the row and the field.
   The README has the file format.
+- To hand work to someone who does not use a terminal: `tb export --csv > board.csv` opens in
+  Excel or Numbers (accents and dashes intact, one row per card; `--csv --history` gives one
+  row per event instead). `tb export --json` is the version tb itself can read back in.
+  `tb log --since 2026-10-09` is what happened since a date, and `tb list --done --since
+  2026-10-01` shows finished work older than today, which the board itself stops showing after
+  a day. None of them change the board.
 - Back up a board by copying `~/.local/state/terminal-board/boards/`.
 - `tb list` prints the board without opening it; handy in scripts.

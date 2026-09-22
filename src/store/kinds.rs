@@ -44,6 +44,22 @@ pub fn bundle(kind: &str) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+/// Settings that belong to ONE board and are never copied by `--from`, with the reason.
+///
+/// A new board must not start life wired to another board's repository, holding another
+/// board's list of who may close a card, or claiming a file mode its own file does not have.
+/// Everything else — the look, the ordering, the dates, the WIP limit, the kind — is what
+/// somebody copies a board FOR.
+pub const NOT_COPIED: [(&str, &str); 3] = [
+    ("github", "a new board must not start syncing to another board's issues"),
+    ("done-by", "who may close a card is a decision about this board's people"),
+    ("file-mode", "the file's own permissions decide this, and they are set when it is created"),
+];
+
+pub fn copyable(key: &str) -> bool {
+    !NOT_COPIED.iter().any(|(k, _)| *k == key) && key != crate::setup::SETUP_DONE
+}
+
 pub fn known(kind: &str) -> Result<&'static str> {
     let k = kind.trim().to_ascii_lowercase();
     KINDS.iter().copied().find(|v| *v == k).ok_or_else(|| {
@@ -84,31 +100,39 @@ impl Store {
             self.set_config(key, value)?;
         }
         if kind == "default" {
-            self.conn.execute("DELETE FROM config WHERE key='kind'", [])?;
-        } else {
-            self.set_config("kind", kind)?;
+            // a default board is the board tb always made, down to its event log: declaring
+            // the kind a board already is writes nothing at all
+            let had = self.conn.execute("DELETE FROM config WHERE key='kind'", [])?;
+            if had > 0 {
+                Store::log_board(&self.conn, actor, "kind", "kind default")?;
+            }
+            return Ok(kind);
         }
+        self.set_config("kind", kind)?;
         Store::log_board(&self.conn, actor, "kind", &format!("kind {kind}"))?;
         Ok(kind)
     }
 
     /// Copy another board's settings — never its cards. `kind` travels with them, so a copy
     /// of a deadline board is a deadline board.
-    pub fn copy_settings_from(&self, other: &Store, actor: &str) -> Result<usize> {
+    pub fn copy_settings_from(&self, other: &Store, actor: &str) -> Result<(usize, Vec<&'static str>)> {
         let mut st = other.conn.prepare("SELECT key, value FROM config ORDER BY key")?;
         let rows: Vec<(String, String)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut n = 0;
+        let mut skipped = Vec::new();
         for (key, value) in &rows {
-            // what `tb setup` records about a machine is not a board setting worth copying
-            if key == crate::setup::SETUP_DONE {
+            if !copyable(key) {
+                if let Some((k, _)) = NOT_COPIED.iter().find(|(k, _)| k == key) {
+                    skipped.push(*k);
+                }
                 continue;
             }
             self.set_config(key, value)?;
             n += 1;
         }
         Store::log_board(&self.conn, actor, "kind", &format!("settings copied from '{}'", other.name))?;
-        Ok(n)
+        Ok((n, skipped))
     }
 
     /// `kind` for the `tb config` listing: shown once it is anything but the default, with
@@ -190,8 +214,9 @@ mod tests {
         from.add("permits: renewal", "", &[], "alice").unwrap();
         let (_d2, to) = store();
         to.add("its own card", "", &[], "bob").unwrap();
-        let n = to.copy_settings_from(&from, "bob").unwrap();
+        let (n, skipped) = to.copy_settings_from(&from, "bob").unwrap();
         assert!(n >= bundle("deadline").len());
+        assert!(skipped.is_empty(), "this board set none of the ones that never travel");
         assert_eq!(to.kind().unwrap(), "deadline", "a copy of a deadline board is one");
         assert_eq!(to.wip().unwrap(), 5);
         assert_eq!(to.card_line().unwrap().as_str(), "due");

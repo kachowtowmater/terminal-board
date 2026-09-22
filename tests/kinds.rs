@@ -16,7 +16,7 @@ const NOW: i64 = 1_790_856_000; // 2026-10-01T12:00:00Z
 
 /// Boards mode: a temp HOME with its own boards directory, so `tb new` really makes files.
 struct Home {
-    dir: tempfile::TempDir,
+    pub dir: tempfile::TempDir,
 }
 
 impl Home {
@@ -140,7 +140,8 @@ fn changing_a_setting_afterwards_keeps_working_and_is_shown() {
     let cfg = h.ok(&["filings", "config"]);
     assert!(cfg.contains("sort          position"), "the setting decides:\n{cfg}");
     assert!(cfg.contains("kind          deadline (changed)"), "the name says it was changed:\n{cfg}");
-    assert_eq!(h.json(&["filings", "config", "--json"])["config"]["kind"], "deadline (changed)");
+    let v = h.json(&["filings", "config", "--json"]);
+    assert_eq!((v["config"]["kind"].as_str(), v["config"]["kind_changed"].as_bool()), (Some("deadline"), Some(true)));
     // putting it back clears the mark
     h.ok(&["filings", "config", "sort", "due"]);
     assert!(h.ok(&["filings", "config"]).contains("kind          deadline\n"));
@@ -184,7 +185,6 @@ fn tb_new_refuses_with_the_command_to_run_and_writes_nothing() {
         (vec!["new", "filings"], "board 'filings' already exists"),
         (vec!["new", "x", "--kind", "law"], "unknown kind 'law' — tb knows default and deadline"),
         (vec!["new", "y", "--from", "nope"], "no board 'nope' to copy — boards: filings"),
-        (vec!["new", "new"], "'new' is a command, so it can't be a board name"),
         (vec!["new", "Filings"], "is not a command or a valid board name"),
         (vec!["new", "z", "--from", "z"], "'z' cannot copy itself"),
     ] {
@@ -193,9 +193,160 @@ fn tb_new_refuses_with_the_command_to_run_and_writes_nothing() {
     }
     let boards = h.ok(&["boards"]);
     assert!(boards.contains("filings") && !boards.contains(" x ") && !boards.contains(" y "), "nothing was created:\n{boards}");
+    // `new` IS a legal board name (an older tb made such boards), so this one is made and
+    // stays reachable — it is only the first WORD that belongs to the command
+    h.ok(&["new", "new"]);
+    assert!(h.ok(&["boards"]).contains("new"), "a board called new is listed");
+    assert!(h.ok(&["-b", "new", "list"]).contains("no cards"), "and opens");
     // --kind and --from together is an argument error, not a silent winner
     let o = h.run(&["new", "w", "--kind", "deadline", "--from", "filings"]);
     assert_eq!(o.status.code(), Some(2));
+}
+
+/// D2 (review of #121): `tb new` under `TB_DB` used to write a kind's settings straight
+/// into the pinned board — a board with real cards — and report success. `TB_DB` pins ONE
+/// file: there is no board to make and none to copy, so it is refused like every other
+/// command that names a board, and the pinned board is left exactly as it was.
+#[test]
+fn tb_new_is_refused_under_tb_db_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pinned.db");
+    let pinned = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("TB_DB", &db)
+            .env("TB_AS", "alice")
+            .env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC")
+            .env("TB_NOW", NOW.to_string())
+            .env_remove("TB_BOARD")
+            .output()
+            .unwrap()
+    };
+    assert!(pinned(&["add", "permits: renewal"]).status.success());
+    let before_config = String::from_utf8(pinned(&["config"]).stdout).unwrap();
+    let before_rows: Vec<(String, String)> = {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let mut st = c.prepare("SELECT key, value FROM config ORDER BY key").unwrap();
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        v
+    };
+    for args in [
+        vec!["new", "anything", "--kind", "deadline"],
+        vec!["new", "anything"],
+        vec!["new", "anything", "--from", "doesnotexist"],
+        vec!["new", "default", "--kind", "deadline"],
+    ] {
+        let o = pinned(&args);
+        assert_eq!(o.status.code(), Some(1), "{args:?} was allowed: {}", String::from_utf8_lossy(&o.stdout));
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("TB_DB is set — board names are ignored"), "{args:?}: {err}");
+        assert!(!String::from_utf8_lossy(&o.stdout).contains("created board"), "{args:?} claimed to create one");
+    }
+    // the pinned board is untouched: same settings, same rows, same card
+    assert_eq!(String::from_utf8(pinned(&["config"]).stdout).unwrap(), before_config);
+    let after_rows: Vec<(String, String)> = {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let mut st = c.prepare("SELECT key, value FROM config ORDER BY key").unwrap();
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        v
+    };
+    assert_eq!(after_rows, before_rows, "a kind's settings were written into the pinned board");
+    assert!(String::from_utf8_lossy(&pinned(&["list"]).stdout).contains("#1 renewal"), "the card is still there");
+}
+
+/// D3 (review of #121): a board called `new`, made by a version before `tb new` existed,
+/// must not become unreachable. `new` is a command word but still a valid BOARD NAME.
+#[test]
+fn a_board_called_new_is_never_swallowed_by_the_command() {
+    let h = Home::new();
+    // made the way an older tb made it (that version had no `new` command, so its users
+    // could and did call a board this; `-b` names it here because `new` is now a command word)
+    h.ok(&["-b", "new", "add", "permits: renewal"]);
+    assert!(h.db("new").exists(), "the file is there");
+    // it is listed, and every way of naming it still opens it
+    let boards = h.ok(&["boards"]);
+    assert!(boards.contains("new"), "tb boards hides a board whose file is right there:\n{boards}");
+    assert!(h.ok(&["-b", "new", "list"]).contains("#1 renewal"), "-b opens it");
+    assert!(h.ok(&["-b", "new", "list"]).contains("#1 renewal"), "-b new");
+    let by_env = Command::new(env!("CARGO_BIN_EXE_tb"))
+        .args(["list"])
+        .env("HOME", h.dir.path())
+        .env("TB_BOARD", "new")
+        .env("TB_AS", "alice")
+        .env("TB_NO_HERDR", "1")
+        .env_remove("TB_DB")
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&by_env.stdout).contains("#1 renewal"), "TB_BOARD=new");
+    // and `tb new` with no name says which command to run for that board
+    let e = h.refused(&["new"]);
+    assert!(e.contains("say what to call the board") && e.contains("'tb -b new'"), "{e}");
+    // the command itself still works on other names
+    h.ok(&["new", "filings", "--kind", "deadline"]);
+    assert!(h.ok(&["boards"]).contains("filings") && h.ok(&["boards"]).contains("new"));
+}
+
+/// D4/D5 (review of #121): some settings belong to ONE board. `--from` must not wire a new
+/// board to another board's repository, hand it another board's list of who may close a
+/// card, or claim a file mode its own file does not have.
+#[test]
+fn from_leaves_behind_the_settings_that_belong_to_one_board() {
+    let h = Home::new();
+    h.ok(&["new", "filings", "--kind", "deadline"]);
+    h.ok(&["filings", "config", "wip", "5"]);
+    h.ok(&["filings", "config", "tz", "America/Los_Angeles"]);
+    h.ok(&["filings", "config", "done-by", "anna,ben"]);
+    // set the two that need no external check straight in the file
+    {
+        let c = rusqlite::Connection::open(h.db("filings")).unwrap();
+        for (k, v) in [("github", "acme/widgets"), ("file-mode", "shared")] {
+            c.execute("INSERT INTO config(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [k, v]).unwrap();
+        }
+    }
+    let out = h.ok(&["new", "matters", "--from", "filings"]);
+    assert!(out.contains("(not done-by, file-mode, github: each belongs to one board)"), "it says what it left: {out}");
+    let copied: Vec<String> = h.config_rows("matters").into_iter().map(|(k, _)| k).collect();
+    for never in ["github", "done-by", "file-mode"] {
+        assert!(!copied.contains(&never.to_string()), "{never} was copied: {copied:?}");
+    }
+    // what a person copies a board FOR did travel
+    for want in ["kind", "sort", "card-line", "due-warn", "waiting-lane", "wip-counts-blocked", "wip", "tz", "label.review"] {
+        assert!(copied.contains(&want.to_string()), "{want} did not travel: {copied:?}");
+    }
+    let cfg = h.ok(&["matters", "config"]);
+    assert!(cfg.contains("github        off"), "the new board is not wired to another board's repo:\n{cfg}");
+    assert!(!cfg.contains("done-by"), "and does not decide who may close its cards:\n{cfg}");
+    assert!(!cfg.contains("shared"), "and claims no file mode it does not have:\n{cfg}");
+    assert_eq!(h.ok(&["matters", "config", "done-by"]).trim(), "anyone");
+}
+
+/// D6/D7 (review of #121): the default kind writes nothing, not even an event; and a machine
+/// reading `config --json` gets the kind and whether it changed as two fields.
+#[test]
+fn the_default_kind_logs_nothing_and_json_splits_the_kind() {
+    let h = Home::new();
+    h.ok(&["new", "one"]);
+    h.ok(&["two", "add", "x"]);
+    h.ok(&["one", "add", "x"]);
+    let events = |b: &str| -> i64 {
+        rusqlite::Connection::open(h.db(b)).unwrap().query_row("SELECT COUNT(*) FROM board_events", [], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(events("one"), events("two"), "`tb new` wrote a board event `tb add` does not");
+    // a real kind IS worth a line in the board's log
+    h.ok(&["new", "filings", "--kind", "deadline"]);
+    assert_eq!(events("filings"), 1);
+    // JSON: two fields, no string to parse
+    let v = h.json(&["filings", "config", "--json"]);
+    assert_eq!((v["config"]["kind"].as_str(), v["config"]["kind_changed"].as_bool()), (Some("deadline"), Some(false)));
+    h.ok(&["filings", "config", "sort", "position"]);
+    let v = h.json(&["filings", "config", "--json"]);
+    assert_eq!((v["config"]["kind"].as_str(), v["config"]["kind_changed"].as_bool()), (Some("deadline"), Some(true)));
+    assert!(h.ok(&["filings", "config"]).contains("kind          deadline (changed)"), "the plain listing is unchanged");
+    // a default board has neither field
+    let v = h.json(&["one", "config", "--json"]);
+    assert!(v["config"]["kind"].is_null() && v["config"]["kind_changed"].is_null());
 }
 
 // ------------------------------------------------------------------ the deadline golden
