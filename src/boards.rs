@@ -41,9 +41,36 @@ pub fn select(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) -
     Ok(name)
 }
 
-/// The board that bare `ttyboard` uses: `TTYBOARD_BOARD` or `default`.
+/// The board a command acts on: `select`, with the saved default board between `TB_BOARD` and
+/// `default`. The settings are read only when nothing above them decides, so a settings file
+/// that cannot be used never blocks a command that names its board (and never one under
+/// `TB_DB`). A saved default whose board is gone is refused — never re-created as an empty
+/// phantom, never silently swapped for `default`.
+pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) -> Result<String> {
+    let ambient = env.filter(|e| !e.trim().is_empty());
+    if positional.is_none() && flag.is_none() && ambient.is_none() {
+        if let Some(saved) = saved_default_for_read()? {
+            if !path_for(&saved).exists() {
+                let names = list();
+                let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+                return Err(BoardError(format!(
+                    "the saved default board is '{saved}', but there is no board '{saved}' — boards: {all} · choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'"
+                )));
+            }
+            return Ok(saved);
+        }
+    }
+    select(positional, flag, env)
+}
+
+/// The board that bare `tb` uses: `TB_BOARD`, else the saved default board, else `default`.
+/// (A settings file that cannot be read counts as "nothing saved" HERE — this only marks a row;
+/// the command that actually opens a board refuses instead, see `saved_default`.)
 pub fn default_name() -> String {
-    env_board().0.unwrap_or_else(|| DEFAULT_BOARD.into())
+    env_board()
+        .0
+        .or_else(|| saved_default_for_read().ok().flatten())
+        .unwrap_or_else(|| DEFAULT_BOARD.into())
 }
 
 /// `TB_BOARD` — unless `TB_DB` pins one file. A pinned file has no boards to choose from, so
@@ -56,6 +83,116 @@ pub fn env_board() -> (Option<String>, Option<String>) {
         return (name, None);
     }
     (None, name.filter(|n| n.trim() != DEFAULT_BOARD))
+}
+
+/// The key of the saved default board in the machine-local settings (`crate::machine`).
+pub const DEFAULT_BOARD_KEY: &str = "default_board";
+
+/// The saved default board — the board plain `tb` opens when neither a name on the command
+/// line nor `TB_BOARD` says otherwise — or `None` when nothing is saved. It is a per-user
+/// choice, so it lives in the machine-local settings, never in a board file. `TB_DB` pins one
+/// file: there is nothing to choose, and the settings are not even read.
+/// Errors: the settings file cannot be used, or holds something that is not a board name.
+pub fn saved_default() -> Result<Option<String>> {
+    saved_from(crate::machine::load()?)
+}
+
+/// The saved default board for a command that did NOT ask about it: a settings file tb cannot
+/// read is "nothing is saved" (said once on stderr), so a machine that never saved anything
+/// behaves exactly as it did before this file existed. A file that reads fine but is not a
+/// settings object is still an error — the setting may be in there, and opening the wrong
+/// board without a word is worse than refusing.
+pub fn saved_default_for_read() -> Result<Option<String>> {
+    if db_pinned() {
+        return Ok(None);
+    }
+    saved_from(crate::machine::load_for_read()?)
+}
+
+fn saved_from(settings: serde_json::Map<String, serde_json::Value>) -> Result<Option<String>> {
+    if db_pinned() {
+        return Ok(None);
+    }
+    let fix = "set it again with 'tb boards --default NAME' or go back with 'tb boards --default --clear'";
+    match settings.get(DEFAULT_BOARD_KEY) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(name)) if validate(name).is_ok() => Ok(Some(name.clone())),
+        Some(other) => Err(BoardError(format!(
+            "the saved default board in {} is {other}, which is not a board name — {fix}",
+            crate::machine::path().display()
+        ))),
+    }
+}
+
+/// Why plain `tb` opens the board it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultSource {
+    /// `TB_DB` pins one file: no boards to choose from.
+    Pinned,
+    /// `TB_BOARD` in this environment.
+    Env,
+    /// The saved default board.
+    Setting,
+    /// Nothing set: the built-in `default`.
+    Builtin,
+}
+
+impl DefaultSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DefaultSource::Pinned => "TB_DB",
+            DefaultSource::Env => "TB_BOARD",
+            DefaultSource::Setting => "setting",
+            DefaultSource::Builtin => "builtin",
+        }
+    }
+}
+
+/// The board plain `tb` opens here, and why. THE precedence, stated once:
+/// **`TB_DB` > `TB_BOARD` > the saved default board > `default`** (a board named on the
+/// command line — `tb NAME …`, `-b NAME` — beats all of them, and is refused under `TB_DB`).
+pub fn plain_board() -> Result<(String, DefaultSource)> {
+    if db_pinned() {
+        return Ok((DEFAULT_BOARD.into(), DefaultSource::Pinned));
+    }
+    // through env_board(), so the TB_DB rule lives in exactly one place
+    if let Some(name) = env_board().0 {
+        return Ok((name, DefaultSource::Env));
+    }
+    Ok(match saved_default()? {
+        Some(name) => (name, DefaultSource::Setting),
+        None => (DEFAULT_BOARD.into(), DefaultSource::Builtin),
+    })
+}
+
+/// Save `name` as the default board (`None`, or the built-in `default`, clears it). Refused
+/// for a board that does not exist — an archived board is not in the boards directory, so it
+/// is refused the same way — and under `TB_DB`, where there is nothing to choose.
+pub fn set_default(name: Option<&str>) -> Result<()> {
+    if db_pinned() {
+        return Err(BoardError(
+            "TB_DB pins one board file, so there is no default board to choose — unset TB_DB, then 'tb boards --default NAME'".into(),
+        ));
+    }
+    let name = name.map(str::trim).filter(|n| *n != DEFAULT_BOARD);
+    if let Some(n) = name {
+        validate(n)?;
+        let names = list();
+        if !names.iter().any(|b| b == n) {
+            let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+            return Err(BoardError(format!(
+                "no board '{n}' — boards: {all} · choose one that exists: 'tb boards --default NAME' (create it first with 'tb {n} add \"…\"')"
+            )));
+        }
+    }
+    crate::machine::update(|m| match name {
+        Some(n) => {
+            m.insert(DEFAULT_BOARD_KEY.into(), serde_json::Value::String(n.to_string()));
+        }
+        None => {
+            m.remove(DEFAULT_BOARD_KEY);
+        }
+    })
 }
 
 fn home() -> PathBuf {
@@ -205,6 +342,12 @@ mod tests {
         assert!(validate("").is_err());
         let e = validate("add").unwrap_err().to_string();
         assert!(e.contains("is a command") && e.contains("tb "), "{e}");
+    }
+
+    #[test]
+    fn default_source_names() {
+        let all = [DefaultSource::Pinned, DefaultSource::Env, DefaultSource::Setting, DefaultSource::Builtin];
+        assert_eq!(all.map(DefaultSource::as_str), ["TB_DB", "TB_BOARD", "setting", "builtin"]);
     }
 
     #[test]

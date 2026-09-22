@@ -141,6 +141,46 @@ commands and sixty chances to get one wrong halfway.
 - `import` is now a command, so it can no longer be a board name. A board already called
   `import` has to be renamed: move `boards/import.db` (and its `-wal`/`-shm`) to another name.
 
+### A command to choose the board plain `tb` opens (`tb boards --default`)
+
+Plain `tb` always opened the board called `default`; the only way to change that was
+`TB_BOARD`, which has to be set in every shell and every agent's environment.
+`tb boards --default NAME` now saves the choice, `tb boards --default` shows it (and where it
+comes from), and `tb boards --default --clear` — or naming `default` — goes back. `tb boards`
+and the `B` picker mark the chosen board with `*`.
+- **One precedence, everywhere:** `TB_DB` > a board named on the command line > `TB_BOARD` >
+  the saved default board > `default`. `TB_BOARD` still wins for one shell. With `TB_DB` set
+  there is one file: the saved default is ignored, `tb boards --default` says so, and saving
+  or clearing is refused there — a test harness never rewrites a person's settings.
+- An unknown or archived board is refused. A saved default whose board later disappears is
+  refused by plain `tb` with the way out, never re-created as an empty board and never
+  swapped for `default` without a word; naming a board (`tb home …`) keeps working.
+- The choice is a person's, on a machine, so it is kept in the new machine-local settings
+  file `~/.config/terminal-board/config.json` (`TB_CONFIG=/path` names another) — created
+  readable only by its owner, written atomically, keys it does not know are kept, and a file
+  that is not a JSON object is refused by name and never overwritten. No board file changes.
+- `--json`: `{ok, default, source, setting}`; see docs/JSON.md.
+- **Hints keep naming the right board.** The command in a hint drops a typed board name only
+  when a bare `tb` is certain to reach that board: it is the board plain `tb` opens, and no
+  `TB_BOARD` is set. With a saved default of `work`, `tb default add …` now hints
+  `'tb default take 1'`.
+  **This is the one change a board that saves nothing can see, and it is a bug fix.** With
+  `TB_BOARD=work` set, EVERY hint printed by `tb default <command>` used to drop the name —
+  `'tb take 1'`, `'tb note 1 "…"'`, `'tb done 1'`, `see 'tb list' for ids` — and each of those,
+  copied into the same shell, acted on `work` instead of `default` (on a populated board, that
+  takes or finishes somebody else's card). The `hint` VALUE in a `--json` failure is the same
+  rule and changes with them. Every hint now names the board it acted on. Nothing changes
+  unless `TB_BOARD` is set or a default board is saved.
+- The machine-local settings file is written under an advisory lock (`flock`) held across
+  read → change → write, and is re-read inside it, so two `tb` commands writing different
+  settings at the same moment cannot revert each other. Values tb does not recognise keep
+  their exact text, digit for digit. A settings file tb cannot READ (no permission, a pipe, a
+  device, over 1 MiB) is treated as "nothing is set" by commands that did not ask about a
+  setting — with one line on stderr — so a machine that saved nothing keeps working; asking to
+  show or set the default still refuses. A settings path that is a symbolic link is followed:
+  tb writes the file the link points at, creating it if it is not there yet.
+A machine that saves nothing behaves exactly as before, and no settings file is created.
+
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
 
 Cards have had a `due` field since 1.0, but no command set it. Now `tb add … --due 2026-10-09`

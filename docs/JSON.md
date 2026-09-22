@@ -3,7 +3,9 @@
 Apps and agents drive Terminal Board through `tb … --json`. Every object below carries
 fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking change bumps
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
-Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
+Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, the saved default board
+(`tb boards --default`, below), or `TB_DB=/path/file.db` — in the order `TB_DB` > a named board >
+`TB_BOARD` > the saved default board > `default`.
 With `TB_DB` set there is a single file — an explicit non-default board name is refused
 (`TB_DB is set — board names are ignored; unset TB_DB to use boards`), so `board` never
 reports a name that was not opened. A `TB_BOARD` in the environment is not a typed name: with
@@ -209,9 +211,11 @@ An argument error names what is missing and gives the usage line, e.g. `tb note 
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue gh#11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
-When the board was chosen **explicitly by name or `-b`** and is not `default`, the command in a
-hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
-the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
+When the board was chosen **explicitly by name or `-b`**, the command in a hint carries it —
+`see 'tb work list' for ids` — so copying the hint into a fresh shell acts on the same board.
+The name is left out only when a bare `tb` is certain to reach that board: it is the board
+plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
+picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
 
 ## Warnings — `"warnings": ["…"]`
 
@@ -313,6 +317,15 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
-- `tb boards --json` — `[{name, default, todo, doing, review, done}]`.
+- `tb boards --json` — `[{name, default, todo, doing, review, done}]`; `default` is true on the board plain `tb` opens here.
+- `tb boards --default --json` — `{ok, default, source, setting, missing}`: `default` is the board plain `tb` opens
+  in this environment, `source` says why (`"TB_DB"` | `"TB_BOARD"` | `"setting"` | `"builtin"`), `setting` is the
+  saved default board (string, or null when none is saved — and always null under `TB_DB`, where it is not
+  read). `missing` is true when a board is saved but its file is gone — plain `tb` then refuses, and the
+  text answer says so instead of claiming it opens it. `tb boards --default NAME --json` and
+  `--default --clear --json` answer the same object after the change. Refusals (exit 1, the usual `{ok:false,error,hint}`): an unknown or archived board, a name that is
+  not a board name, a name together with `--clear`, any change under `TB_DB`, a settings file that is not a
+  JSON object (never overwritten). The setting lives in `~/.config/terminal-board/config.json` (`TB_CONFIG`
+  names another file), never in a board file.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.

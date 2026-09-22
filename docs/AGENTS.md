@@ -95,10 +95,12 @@ that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, ne
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | list boards with counts | `tb boards` |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
+| see which board plain `tb` opens (saving one is a person's choice) | `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
-Leave settings alone unless a person asks you to change them.
+Leave settings alone unless a person asks you to change them. Board order: `TB_DB` > a name on the command
+line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb` would miss it — copy it as printed.
 
 ## Recipes
 
