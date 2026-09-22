@@ -206,6 +206,14 @@ fn the_full_screen_board_is_refused_too() {
     let (master, slave_path) = pty::open();
     let slave = std::fs::OpenOptions::new().read(true).write(true).open(&slave_path).unwrap();
     let sfd = slave.as_raw_fd();
+    // the window size ioctl must wait until the slave side has been opened at least once —
+    // on macOS (unlike Linux), TIOCSWINSZ on a master with no slave ever opened yet fails
+    // ENOTTY. A 0x0 terminal is not a terminal the board can draw on, so this still runs
+    // before the child is spawned.
+    unsafe {
+        let size = libc::winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
+        assert_eq!(libc::ioctl(sfd, libc::TIOCSWINSZ, &size), 0, "TIOCSWINSZ: {}", std::io::Error::last_os_error());
+    }
     let dup = |fd: i32| unsafe { std::process::Stdio::from_raw_fd(libc::dup(fd)) };
     let mut child = Command::new(env!("CARGO_BIN_EXE_tb"))
         .env("TB_DB", &b.db)
@@ -278,9 +286,8 @@ mod pty {
             assert!(master >= 0, "posix_openpt: {}", std::io::Error::last_os_error());
             assert_eq!(libc::grantpt(master), 0, "grantpt: {}", std::io::Error::last_os_error());
             assert_eq!(libc::unlockpt(master), 0, "unlockpt: {}", std::io::Error::last_os_error());
-            // a 0x0 terminal is not a terminal the board can draw on
-            let size = libc::winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
-            assert_eq!(libc::ioctl(master, libc::TIOCSWINSZ, &size), 0, "TIOCSWINSZ: {}", std::io::Error::last_os_error());
+            // the window size is set by the caller, once the slave side has been opened —
+            // see the comment at the call site for why that order matters on macOS.
             let name = libc::ptsname(master);
             assert!(!name.is_null(), "ptsname: {}", std::io::Error::last_os_error());
             (master, PathBuf::from(std::ffi::CStr::from_ptr(name).to_str().unwrap()))
