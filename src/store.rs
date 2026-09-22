@@ -8,11 +8,12 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod access;
 pub mod actors;
 pub mod archive;
 pub mod blocks;
-pub mod closing;
 pub mod bulk;
+pub mod closing;
 pub mod display;
 pub mod due;
 pub mod kinds;
@@ -49,6 +50,9 @@ impl std::error::Error for BoardError {}
 
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
+        if access::is_readonly_error(&e) {
+            return access::refusal("that command");
+        }
         BoardError(format!("database error: {e} — check TB_DB points at a writable file"))
     }
 }
@@ -632,6 +636,28 @@ fn is_board(conn: &Connection) -> Result<bool> {
 ///
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
+/// Would `migrate` change this board's schema? Asked on a READ-ONLY connection, where the
+/// upgrade itself cannot run: a transaction that only reads and is always rolled back.
+fn needs_upgrade(conn: &Connection) -> Result<bool> {
+    // an empty database (no tables at all) is a board this mode cannot create either
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))?;
+    if tables == 0 {
+        return Ok(true);
+    }
+    // every column the current code reads, in one probe: a missing one means an old schema
+    let probe = conn.query_row(
+        r#"SELECT id, title, tag, description, "column", owner, due, gh_ref, created_at,
+                  column_since, blocked, position, reviewer, blocked_on, blocked_until
+           FROM cards LIMIT 1"#,
+        [],
+        |_| Ok(()),
+    );
+    match probe {
+        Ok(()) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(_) => Ok(true),
+    }
+}
+
 fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
     let pending = {
         let tx = conn.unchecked_transaction()?;
@@ -804,11 +830,33 @@ impl Store {
         // the file every later refusal names (`position_error`): where the board really is,
         // whether it was named by `TB_DB`, by `-b NAME`, by `TB_BOARD` or by the saved default
         remember_board_file(on_disk.then_some(real.as_path()));
-        let mut conn = Connection::open(&real)?;
+        // In read-only mode the DATABASE is opened read-only. There are 80-odd write sites
+        // in this crate, and a list of them is a list somebody forgets to add to; this way a
+        // write that slips past the command-level refusal fails at SQLite instead of landing.
+        // (See `store::access`. The command layer refuses first, with a better message.)
+        let readonly = access::readonly_env();
+        let mut conn = if readonly && on_disk {
+            use rusqlite::OpenFlags;
+            Connection::open_with_flags(&real, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?
+        } else {
+            Connection::open(&real)?
+        };
         conn.busy_timeout(Duration::from_secs(10))?;
-        let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
-        upgrade(&mut conn, &real, on_disk)?;
+        if !readonly {
+            let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+            conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
+            upgrade(&mut conn, &real, on_disk)?;
+        } else {
+            // a read-only connection cannot upgrade the schema; say so plainly rather than
+            // failing later with SQLite's own words
+            conn.execute_batch("PRAGMA foreign_keys=ON")?;
+            if on_disk && needs_upgrade(&conn)? {
+                return Err(BoardError(format!(
+                    "board '{}' was made by an older tb and needs an upgrade, which read-only mode cannot do — run any command without TB_READONLY (or --read-only) once, then read it",
+                    real.display()
+                )));
+            }
+        }
         if on_disk && !created {
             report_wide_file(&conn, path, &real);
         }
@@ -1036,6 +1084,7 @@ impl Store {
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
         all.extend(self.kind_settings()?);
+        all.extend(self.access_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1145,6 +1194,10 @@ impl Store {
     pub fn is_set_up(&self) -> Result<bool> {
         let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM config", [], |r| r.get(0))?;
         Ok(n > 0)
+    }
+
+    pub(crate) fn write_config(&self, key: &str, value: &str) -> Result<()> {
+        self.set_config(key, value)
     }
 
     fn set_config(&self, key: &str, value: &str) -> Result<()> {
@@ -1777,6 +1830,12 @@ impl Store {
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
+            // `wip-per-owner N` (store/access.rs): a SECOND, independent question. The
+            // board-wide limit above asks "is the board full?"; this asks "are YOU full?",
+            // which is what keeps one agent from taking every slot. Both must pass, and each
+            // discounts blocked cards the same way, capped by its own number.
+            let holder = if kind == Kind::Claim { actor } else { c.owner.as_deref().unwrap_or(actor) };
+            access::room_for(&tx, holder)?;
         }
 
         // 3. the change, then its events
