@@ -458,11 +458,38 @@ fn bad_position<T>(id: rusqlite::Result<i64>, value: impl std::fmt::Display) -> 
     ))
 }
 
+/// The board file the last `Store::open` opened. `row_card` is a row mapper — SQLite hands it
+/// a row, never the store that is loading it — so the one message that has to name the file
+/// (`position_error`) reads the path from here. It is remembered when the file is OPENED
+/// because a board file is chosen four ways (`TB_DB`, a board named on the command line,
+/// `TB_BOARD`, the saved default) and only one of them is an environment variable to read
+/// back: on a named board `TB_DB` is unset, and a repair command that says "the board file"
+/// is a command nobody can run.
+static OPEN_BOARD_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Remember the file a board was just opened from (`None` for an in-memory board, which has
+/// no file to name).
+fn remember_board_file(path: Option<&Path>) {
+    if let Ok(mut open) = OPEN_BOARD_FILE.lock() {
+        *open = path.map(|p| p.display().to_string()).filter(|p| !p.is_empty());
+    }
+}
+
+/// The board file a refusal names: the one actually open, else `TB_DB` for a message raised
+/// before any board was opened, else a phrase that at least reads as English.
+fn board_file() -> String {
+    OPEN_BOARD_FILE
+        .lock()
+        .ok()
+        .and_then(|open| open.clone())
+        .or_else(|| crate::env("DB").filter(|f| !f.is_empty()))
+        .unwrap_or_else(|| "the board file".into())
+}
+
 /// The message itself, so the tests can hold it in one place: what is wrong, which FILE, and
 /// the one command that fixes it.
 fn position_error(id: i64, value: impl std::fmt::Display) -> String {
-    let file = crate::env("DB").unwrap_or_default();
-    let file = if file.is_empty() { "the board file" } else { &file };
+    let file = board_file();
     format!(
         "card #{id} has a position that is not a number ({value}) — {file} was written by something other than tb; give card #{id} a whole-number position again with: sqlite3 \"{file}\" \"UPDATE cards SET position=0 WHERE id={id}\""
     )
@@ -755,6 +782,9 @@ impl Store {
         } else {
             (path.to_path_buf(), false)
         };
+        // the file every later refusal names (`position_error`): where the board really is,
+        // whether it was named by `TB_DB`, by `-b NAME`, by `TB_BOARD` or by the saved default
+        remember_board_file(on_disk.then_some(real.as_path()));
         let mut conn = Connection::open(&real)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
