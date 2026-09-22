@@ -62,6 +62,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work (DOING → REVIEW), or verified someone else's (REVIEW → DONE) | `tb done ID` |
+| another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | record that you checked a card, without closing it (any card; stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
@@ -87,16 +88,15 @@ tb done ID                   # finished: DOING -> REVIEW
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
-`tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it
-takes the nearest due date, not the top position (lists and `--json` show that order, and `tb prio` there only orders
-cards sharing a date, and says so). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned
-card; `tb move ID todo` clears the owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit.
-Text from a file arrives byte for byte into the store, which a quoted string cannot promise, once blank space around
-it is trimmed and a leading byte-order mark is dropped: UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a
-redirect, never a terminal. `--json` shows text cleaned of control characters and escape sequences, keeping line
-breaks and tabs, so an `export --json` still imports back unchanged. Board order: `TB_DB` > a name on the command line
-> `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb` would miss it — copy it as
-printed. Leave settings alone unless a person asks you to change them.
+`tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the
+nearest due date, not the top position (lists and `--json` show that order, and `tb prio` there only orders cards sharing a date,
+and says so). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move ID todo` clears the
+owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a file arrives byte for byte into the
+store, which a quoted string cannot promise, once blank space around it is trimmed and a leading byte-order mark is dropped: UTF-8,
+at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal. `--json` shows text cleaned of control characters
+and escape sequences, keeping line breaks and tabs, so an `export --json` still imports back unchanged. Board order: `TB_DB` > a
+name on the command line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb` would miss it — copy it
+as printed. Leave settings alone unless a person asks you to change them.
 
 ## Recipes
 
@@ -110,7 +110,7 @@ printed. Leave settings alone unless a person asks you to change them.
   do, so two verifiers never take the same one (atomic; `tb move ID review` frees a stale claim).
   Check the done criteria, then `tb done ID` with a note of what you checked, or send it back to
   its owner with `tb move ID doing "what is missing"` — it returns to DOING showing its round
-  `r2`, `r3`, … (`round` in JSON).
+  `r2`, `r3`, … (`round` in JSON). Too many rounds (`tb config max-rounds`) marks it `escalate` (JSON) — `tb next` / `tb next --review` skip it, but it stays listed and you can still `tb take`/`tb move`/`tb done` it directly.
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
 ## Rules
@@ -119,7 +119,7 @@ printed. Leave settings alone unless a person asks you to change them.
 - `doing is full (3/3: #1 a, #2 b, #3 c)` is the board-wide WIP limit and its message says what
   YOU can do; never finish or drop someone else's card, and do not raise the limit.
 - Every error message ends with what to run next. Read it and do that.
-- Notes are short and factual, one per step: "repro confirmed", "PR #123 opened".
+- Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
 - Tick only what is really done. Never tick ahead.
 - Leave a note before you stop, drop or block a card.
 - Never approve your own work: REVIEW → DONE is another agent's `tb done`. A board may also
@@ -130,9 +130,10 @@ printed. Leave settings alone unless a person asks you to change them.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces
   and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
-- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block` and `rm`
-  are refused (`--force` overrides, and is logged; the full-screen board asks y/n); `note`,
-  `check` and `prio` stay open to everyone. `github` is tb's own sync: never act under it.
+- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`,
+  `check` and `prio` are refused (`--force` overrides, and is logged; the full-screen board asks
+  y/n). `note` stays open to everyone — a note adds to a card, it does not take it over.
+  `github` is tb's own sync: never act under it.
 
 ## Environment variables and identity
 

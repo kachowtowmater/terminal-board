@@ -96,7 +96,7 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `unclaimed` | the reviewer whose claim was released |
 | `returned` | why a REVIEW card was sent back to its owner |
 | `approved` | — (a reviewer's `tb done ID --approve`; the card does not move) |
-| `force` | what `--force` got past (moving, editing, blocking, deleting or archiving a held card; approving your own work) |
+| `force` | what `--force` got past (moving, dropping, editing, blocking, deleting or archiving a held card; ticking, adding, removing a checklist item on one; reordering one; approving your own work) |
 | `archived` | — (`tb rm` on a board set to `rm archive`; the card leaves `cards` with this as its last event) |
 | `restored` | — (`tb restore ID` brought the card back) |
 
@@ -149,7 +149,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-link`, `kind`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-link`, `done-needs-note`, `max-rounds`, `kind`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards

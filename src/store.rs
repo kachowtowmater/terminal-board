@@ -18,6 +18,7 @@ pub mod due;
 pub mod kinds;
 pub mod links;
 pub mod order;
+pub mod rounds;
 pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -209,6 +210,9 @@ pub struct CardDetail {
     pub events: Vec<Event>,
     /// Rework round: 1, plus one per send-back (`returned` event).
     pub round: i64,
+    /// Sent back more times than `config max-rounds` allows (`store::rounds`) — derived, never
+    /// stored, always false once `done`.
+    pub escalate: bool,
     /// Everyone who recorded `tb done ID --approve`, oldest first (`store::closing`).
     pub approved_by: Vec<String>,
     /// The identities behind this card's events (`Event::actor_id`), in id order.
@@ -1050,6 +1054,7 @@ impl Store {
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
         all.extend(self.link_settings()?);
+        all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
@@ -1282,10 +1287,11 @@ impl Store {
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
+        let escalate = rounds::escalate_of(round, &card.column, self.max_rounds()?);
         let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
         let approved_by = closing::approved_by(&events);
         let links = self.links_of(id)?;
-        Ok(CardDetail { card, checklist, events, round, approved_by, actors, links })
+        Ok(CardDetail { card, checklist, events, round, escalate, approved_by, actors, links })
     }
 
     /// Every card's title, for an export that names a card without loading it again.
@@ -1441,9 +1447,16 @@ impl Store {
             v.sort_by(|a, b| order::cmp(sort, a, b));
             v
         };
+        // an escalated card (`config max-rounds`, store/rounds.rs) is skipped by the automatic
+        // claim here too, same reasoning as `tb next`'s TODO pick: it is not counted as "yours"
+        // or as "waiting", just passed over, so it never inflates either message below.
+        let max_rounds = rounds::max_rounds_of(&tx)?;
         let mut own = 0;
         let mut target = None;
         for c in &cards {
+            if rounds::is_escalated(&tx, c.id, &c.column, max_rounds)? {
+                continue;
+            }
             if author_of(&tx, c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
                 own += 1;
             } else {
@@ -1509,13 +1522,24 @@ impl Store {
                 // refuse the claim, never be silently skipped for a card that parses (an
                 // agent runs `tb next` blind — what it hands out must be what the board shows
                 // on top, or nothing).
+                // an escalated card (`config max-rounds`, store/rounds.rs) is skipped here too:
+                // this is the AUTOMATIC pick, and handing out a card that is already stuck in a
+                // worker/reviewer loop would extend the loop unnoticed. `tb take ID` names a
+                // card explicitly and is not filtered — an escalated card is skipped, not hidden.
+                let max_rounds = rounds::max_rounds_of(tx)?;
                 let found: Option<i64> = {
                     let mut st = tx.prepare(&format!(
                         r#"SELECT {CARD_COLS} FROM cards WHERE "column"='todo'"#
                     ))?;
                     let open = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<Card>>>()?;
                     let sort = order::sort_of(&tx)?;
-                    open.into_iter().filter(|c| c.blocked.is_none()).min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
+                    let mut candidates = Vec::with_capacity(open.len());
+                    for c in open {
+                        if c.blocked.is_none() && !rounds::is_escalated(tx, c.id, &c.column, max_rounds)? {
+                            candidates.push(c);
+                        }
+                    }
+                    candidates.into_iter().min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
                 };
                 match found {
                     Some(i) => i,
@@ -1682,7 +1706,12 @@ impl Store {
     ///    a change that changes nothing ends here;
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
     ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
-    ///    `--force`, logged) → the WIP limit (entering DOING, except a send-back);
+    ///    `--force`, logged) → `done-by` (entering DONE needs to be one of the named closers,
+    ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
+    ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
+    ///    send-back). The first two are about WHO may touch the card; `done-by` and
+    ///    `done-needs-note` are about closing it responsibly, so they come after — a person
+    ///    blocked by ownership or self-approval never even reaches the closing checks.
     /// 3. the change, then its events.
     ///
     /// A new guard — and a hook on a change — belongs in step 2, after the ones that are there.
@@ -1783,12 +1812,28 @@ impl Store {
                 Self::log(&tx, id, actor, "force", &format!("closed #{id}, not on the done-by list"))?;
             }
         }
+        // a closing note (`config done-needs-note`, store/closing.rs) — off by default (a
+        // board that sets nothing is unchanged). "A note" means one written during the stay
+        // being left, not one from an earlier round: a note from round 1 must not silently
+        // satisfy round 3's close. `--force` is open to everyone and logged, exactly like the
+        // guards above; `github` is exempt — a merged PR is its own trace, the same reasoning
+        // as the holder and `done-by` exemptions.
+        if column == "done" && c.column != "done" && actor != "github" && closing::needs_note(&tx, id)? {
+            if !force {
+                return Err(closing::no_note_err(id));
+            }
+            Self::log(&tx, id, actor, "force", &format!("closed #{id} with no note since it entered {}", c.column))?;
+        }
         // evidence gate (`config done-needs-link`, store/links.rs): a card may not reach DONE
-        // without a link carrying that label. Same shape as `done-by` right above it — checked
-        // right after, so both DONE-entry gates (who may close it, what it must carry) apply
-        // before the WIP guard below ever runs; `--force` is open to everyone and logged, and
-        // `github` is exempt, as it is for the holder rule and `done-by`: a merged PR is
-        // already evidence, not a person claiming the card is done.
+        // without a link carrying that label. Same shape as `done-by` and `done-needs-note`
+        // above it — checked right after them, so every DONE-entry gate (who may close it, did
+        // they leave a note, what it must carry) applies before the WIP guard below ever runs;
+        // `--force` is open to everyone and logged, and `github` is exempt, as it is for the
+        // holder rule, `done-by` and `done-needs-note`: a merged PR is already evidence, not a
+        // person claiming the card is done. Ordered after `done-needs-note` rather than before
+        // it only because that guard landed on main first — a board setting both sees whichever
+        // it is missing first hit here in that order, and each refusal names exactly one thing
+        // to fix, so a board that sets only one is never affected by this choice.
         if column == "done" && c.column != "done" && actor != "github" {
             if let Some(label) = links::required_label(&tx)? {
                 if !links::has_label(&tx, id, &label)? {

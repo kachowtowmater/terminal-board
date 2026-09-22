@@ -89,6 +89,8 @@ const CARD: &[&str] = &[
     "approved_by",
     // evidence attached with `tb link` (additive; `[]` on a card with none)
     "links",
+    // sent back more times than `config max-rounds` allows (derived; false without a cap)
+    "escalate",
 ];
 
 #[test]

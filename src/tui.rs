@@ -173,6 +173,47 @@ pub enum Confirm {
     /// Delete (or archive) someone else's DOING card: the prompt named the holder, so `y` is
     /// the forced, logged path.
     DeleteHeld(i64),
+    /// A queue-order or checklist change on someone else's DOING card: the prompt named the
+    /// holder, so `y` is the forced, logged path — like `NotMine`, but for `check`/`prio`
+    /// instead of a column move.
+    NotMineWrite(i64, HeldWrite),
+}
+
+/// A queue-order or checklist write the store applies no guard to itself (like `note`, `check`
+/// and `prio` are open to everyone at the store layer — the CLI guards them in `main.rs` with
+/// `holder_check`/`log_forced`; this is the TUI's copy of the same rule for its own keys).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeldWrite {
+    /// `prio` — `how` is `up`, `down`, `top` or `bottom`.
+    Reorder(String),
+    /// Toggle checklist item `n`.
+    Check(i64),
+    /// Add a checklist item with this text.
+    AddCheck(String),
+    /// Remove checklist item `n`.
+    RemoveCheck(i64),
+}
+
+impl HeldWrite {
+    /// Finishes "held by OWNER — … anyway?" — the same tokens `main.rs` uses for `--force`.
+    fn what(&self) -> &'static str {
+        match self {
+            HeldWrite::Reorder(_) => "reorder it",
+            HeldWrite::Check(_) => "tick it",
+            HeldWrite::AddCheck(_) => "add to it",
+            HeldWrite::RemoveCheck(_) => "remove it",
+        }
+    }
+
+    /// The `force` event's verb — matches `main.rs`'s `did` for the same change.
+    fn did(&self) -> &'static str {
+        match self {
+            HeldWrite::Reorder(_) => "reordered",
+            HeldWrite::Check(_) => "checked",
+            HeldWrite::AddCheck(_) => "added a check to",
+            HeldWrite::RemoveCheck(_) => "removed a check from",
+        }
+    }
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -512,11 +553,10 @@ impl App {
                 KeyCode::Esc => self.mode = Mode::Popup(id),
                 KeyCode::Enter => {
                     if !buf.trim().is_empty() {
-                        let r = store.add_check(id, &buf, &actor);
-                        if let Some(n) = self.report(r, |n| format!("#{id} item {n} added")) {
-                            self.reload(store);
-                            self.cursor = (n as usize).saturating_sub(1);
+                        if self.guard_write(id, HeldWrite::AddCheck(buf.clone())) {
+                            return false;
                         }
+                        self.commit_add_check(id, &buf, store);
                     }
                     self.mode = Mode::Popup(id);
                 }
@@ -544,11 +584,10 @@ impl App {
                     KeyCode::Enter => {
                         if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                             let n = item.idx;
-                            let r = store.check(id, n, &actor);
-                            self.report(r, |d| {
-                                format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" })
-                            });
-                            self.reload(store);
+                            if self.guard_write(id, HeldWrite::Check(n)) {
+                                return false;
+                            }
+                            self.commit_check(id, n, store);
                         }
                     }
                     KeyCode::Char('n') => {
@@ -560,11 +599,10 @@ impl App {
                     KeyCode::Char('d') => {
                         if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                             let n = item.idx;
-                            let r = store.remove_check(id, n, &actor);
-                            if self.report(r, |_| format!("#{id} item {n} deleted")).is_some() {
-                                self.reload(store);
-                                self.cursor = self.cursor.min(items.len().saturating_sub(2));
+                            if self.guard_write(id, HeldWrite::RemoveCheck(n)) {
+                                return false;
                             }
+                            self.commit_remove_check(id, n, store);
                         }
                     }
                     _ => {}
@@ -679,6 +717,7 @@ impl App {
                                 self.focus_card(id);
                             }
                         }
+                        Confirm::NotMineWrite(id, write) => self.commit_forced_write(id, write, store),
                     }
                 } else {
                     self.status = Some(("cancelled".into(), false));
@@ -957,6 +996,13 @@ impl App {
         if self.col == 3 {
             return; // DONE is ordered by time
         }
+        if self.guard_write(id, HeldWrite::Reorder(how.to_string())) {
+            return;
+        }
+        self.commit_reorder(id, how, store);
+    }
+
+    fn commit_reorder(&mut self, id: i64, how: &str, store: &mut Store) {
         let actor = self.actor.clone();
         let r = store.reorder(id, how, &actor);
         // on a due-sorted column position is only the tie-break: say so instead of seeming
@@ -970,6 +1016,68 @@ impl App {
         if self.report(r, |_| said).is_some() {
             self.reload(store);
             self.focus_card(id);
+        }
+    }
+
+    /// Someone else's DOING card: queue this change through a y/n Confirm (like `x`/shift-arrow
+    /// already do for delete/move) instead of writing it — returns `true` if a prompt was shown
+    /// (the caller stops there). `check`/`prio` have no guard of their own at the store layer
+    /// (only `edit`, `block`, `rm` and a column move go through `holder_check`), so the TUI
+    /// applies the same rule here that `main.rs` applies at the CLI.
+    fn guard_write(&mut self, id: i64, write: HeldWrite) -> bool {
+        let Some(c) = self.snap.cards.iter().find(|c| c.id == id) else { return false };
+        if c.column != "doing" || self.actor == "github" {
+            return false;
+        }
+        let Some(owner) = c.owner.as_deref().filter(|o| !o.eq_ignore_ascii_case(&self.actor)) else {
+            return false;
+        };
+        self.mode = Mode::Confirm {
+            prompt: format!("#{id} is held by {owner} — {} anyway? y/n (logged)", write.what()),
+            action: Confirm::NotMineWrite(id, write),
+        };
+        true
+    }
+
+    /// `y` on a `guard_write` prompt: the change goes through forced, then a `force` event is
+    /// logged — the same two steps `main.rs` does for `check --force` / `prio --force`.
+    fn commit_forced_write(&mut self, id: i64, write: HeldWrite, store: &mut Store) {
+        let actor = self.actor.clone();
+        let forced = store.holder_check(id, &actor, true, write.what());
+        match &write {
+            HeldWrite::Reorder(how) => self.commit_reorder(id, how, store),
+            HeldWrite::Check(n) => self.commit_check(id, *n, store),
+            HeldWrite::AddCheck(text) => self.commit_add_check(id, text, store),
+            HeldWrite::RemoveCheck(n) => self.commit_remove_check(id, *n, store),
+        }
+        if let Ok(Some(owner)) = forced {
+            let _ = store.log_forced(id, &actor, write.did(), &owner);
+        }
+    }
+
+    fn commit_check(&mut self, id: i64, n: i64, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.check(id, n, &actor);
+        self.report(r, |d| format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" }));
+        self.reload(store);
+    }
+
+    fn commit_add_check(&mut self, id: i64, text: &str, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.add_check(id, text, &actor);
+        if let Some(n) = self.report(r, |n| format!("#{id} item {n} added")) {
+            self.reload(store);
+            self.cursor = (n as usize).saturating_sub(1);
+        }
+    }
+
+    fn commit_remove_check(&mut self, id: i64, n: i64, store: &mut Store) {
+        let actor = self.actor.clone();
+        let pre_len = self.popup.as_ref().map(|d| d.checklist.len()).unwrap_or(0);
+        let r = store.remove_check(id, n, &actor);
+        if self.report(r, |_| format!("#{id} item {n} deleted")).is_some() {
+            self.reload(store);
+            self.cursor = self.cursor.min(pre_len.saturating_sub(2));
         }
     }
 
@@ -1417,10 +1525,10 @@ impl App {
                 let items = store.show(id).map(|d| d.checklist).unwrap_or_default();
                 if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                     let n = item.idx;
-                    let actor = self.actor.clone();
-                    let r = store.check(id, n, &actor);
-                    self.report(r, |d| format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" }));
-                    self.reload(store);
+                    if self.guard_write(id, HeldWrite::Check(n)) {
+                        return Some(false);
+                    }
+                    self.commit_check(id, n, store);
                     self.cursor = self.focus_first_open(store, id);
                 }
             }

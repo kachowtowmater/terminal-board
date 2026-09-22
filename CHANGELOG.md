@@ -21,6 +21,36 @@ commit, a URL — and until now that only ever went in prose in a note.
 - A board that sets nothing behaves exactly as before: `done-needs-link` is off by default,
   and a card with no links renders and reads exactly as it always did.
 
+### Ownership: `check` and `prio` follow the holder rule; `note` stays open
+
+A DOING card someone else holds is theirs — and so are its checklist and its place in the
+column. `tb check ID N` (toggle), `tb check ID --add`, `tb check ID --rm` and
+`tb prio ID top|bottom|up|down` on a held card are refused for anyone else, worded exactly as
+`tb edit` refuses (`#1 is held by bot-1 — your cards: none · to tick it anyway use --force
+(logged)`), and `--force` (new on both commands) goes through and is logged as its own `force`
+event (`checked #1 held by bot-1`, `added a check to #1 held by bot-1`,
+`removed a check from #1 held by bot-1`, `reordered #1 held by bot-1`). The holder, cards
+nobody holds and REVIEW cards are unaffected. `tb note` stays open to everyone on purpose: a
+progress note adds to a card, it does not take it over. The full-screen board follows the same
+rule with its own keys: `Enter`/`a`/`d` on the checklist popup and `K`/`J`/shift-Up/Down for
+queue order ask "… anyway? y/n (logged)" on someone else's DOING card, exactly like the
+existing prompt for a column move or delete, and `y` takes the forced, logged path.
+### A closing note requirement, and a rounds cap that marks a looping card `escalate`
+
+- `tb config done-needs-note on` refuses to move a card into DONE until a `tb note` was
+  written during the stay being left — not just anywhere in the card's history, so a note kept
+  from round 1 cannot silently stand in for round 3's close. Off (the default) is unchanged
+  behaviour. `--force` gets past it, logged; the GitHub sync is exempt, same reasoning as
+  `done-by`. Sits in `Store::transition` right after `done-by`: who may close answers before
+  whether they left a trace.
+- `tb config max-rounds N` marks a card `escalate` (JSON, derived — never stored, and always
+  `false` once DONE) once it has been sent back more than N times, built on the existing round
+  counter (`returned` events), not a second one. `tb next` and `tb next --review` skip an
+  escalated card in their automatic pick; it is never hidden from `tb list`, `tb board` or
+  `tb show`, and `tb take ID` / `tb move` / `tb done` still act on it directly.
+- Both settings are unset by default, so a board that sets nothing renders and behaves exactly
+  as before.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a
