@@ -150,18 +150,18 @@ fn standard_input_arrives_byte_for_byte() {
     let o = b.piped(&["edit", "2", "--desc-file", "-", "--json"], NASTY.as_bytes());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], true, "{v}");
-    // the --json answer shows the stored text cleaned (tab and CR became spaces); the words stay
+    // the --json answer shows the stored text cleaned: line breaks and TABS are text and
+    // survive, so the text still round-trips; only the CR of a CRLF becomes a space
     let cleaned = v["card"]["description"].as_str().unwrap();
-    let norm = |s: &str| s.replace(['\t', '\r'], " ");
-    assert_eq!(norm(cleaned), norm(want), "the --json answer shows the stored text (cleaned)");
+    assert_eq!(cleaned, want.replace('\r', " "), "the --json answer keeps the tabs and folds only CR");
+    assert!(cleaned.contains("a tab\there"), "a tab written from a file survives the JSON view: {cleaned:?}");
     assert!(!cleaned.contains('\x1b') && !cleaned.contains('\r'), "JSON output is cleaned: {cleaned:?}");
 
     let o = b.piped(&["note", "2", "--file", "-", "--json"], NASTY.as_bytes());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], true, "{v}");
     let note_text = v["card"]["events"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap();
-    let norm = |s: &str| s.replace(['\t', '\r'], " ");
-    assert_eq!(norm(note_text), norm(want), "the --json answer shows the stored note (cleaned)");
+    assert_eq!(note_text, want.replace('\r', " "), "the --json answer shows the stored note (cleaned)");
 
     // through /bin/sh: a redirect and a pipe
     let f = b.file("brief.md", NASTY.as_bytes());

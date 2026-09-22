@@ -1,7 +1,17 @@
 //! Displayed text is data: control characters and terminal escape sequences in it are removed
-//! before anything reaches the terminal. The store keeps text raw; JSON output shows the same
-//! cleaned text (`sanitize_json`), so piping `--json` output pastes control bytes the screen
-//! never would.
+//! before anything reaches the terminal. The store keeps text raw; JSON output goes through the
+//! same cleaner (`sanitize_json`), so piping `--json` output never pastes control bytes the
+//! screen would have removed.
+//!
+//! One cleaner, three destinations. What is removed never changes: every control character and
+//! every escape sequence, whole. What differs is which **whitespace** counts as content there —
+//! `Keep`. A screen has fixed columns, so a tab (jump to the next tab stop) and a CR (back to
+//! column one, over what is already drawn) are layout, not text, and become one space. JSON is
+//! data for a parser, so a tab is just a tab: `serde_json` writes it as `\t` and the reader gets
+//! U+0009 back, which is why `tb export --json` piped through `tb edit --from` returns a
+//! description unchanged. A CR is folded there too — it is the one whitespace that moves the
+//! cursor backwards, so a description holding `real text\rspoofed` would print as `spoofed`
+//! in any log or pager that shows a decoded value.
 
 /// Where a `Cleaner` is inside an escape sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,25 +30,50 @@ enum State {
     StrEsc,
 }
 
-/// Streaming sanitizer: feed chars one at a time, get back what may be displayed.
+/// Which whitespace a `Cleaner` treats as content and passes through as itself. Everything
+/// else about a cleaner is the same whatever this is: control characters and escape sequences
+/// are removed whole, and any whitespace NOT kept becomes a single space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Keep {
+    /// One line on a screen: tab, CR and newline all become a space.
+    #[default]
+    Nothing,
+    /// Many lines on a screen: a newline is a line break; a tab would jump to the next tab
+    /// stop and a CR back over the line, so both still become a space.
+    Newlines,
+    /// Text as data, not as a rendering: newlines AND tabs are content and stay as themselves.
+    /// CR does not — it is cursor motion, never text (see the module docs).
+    NewlinesAndTabs,
+}
+
+impl Keep {
+    fn newlines(self) -> bool {
+        !matches!(self, Keep::Nothing)
+    }
+    fn tabs(self) -> bool {
+        matches!(self, Keep::NewlinesAndTabs)
+    }
+}
+
+/// Streaming sanitizer: feed chars one at a time, get back what may be shown.
 /// C0 and C1 control characters and ESC-initiated sequences (CSI, OSC, DCS/SOS/PM/APC and
-/// two-byte escapes) are dropped. Tab, CR and newline become a space, or with `keep_newlines`
+/// two-byte escapes) are dropped. Whitespace `keep` does not name becomes a space; a kept
 /// newline stays a line break (and ends any unterminated sequence).
 #[derive(Debug, Clone, Default)]
 pub struct Cleaner {
     state: State,
-    keep_newlines: bool,
+    keep: Keep,
 }
 
 impl Cleaner {
-    pub fn new(keep_newlines: bool) -> Cleaner {
-        Cleaner { state: State::Text, keep_newlines }
+    pub fn new(keep: Keep) -> Cleaner {
+        Cleaner { state: State::Text, keep }
     }
 
-    /// The char to display for `c`, if any.
+    /// The char to show for `c`, if any.
     pub fn push(&mut self, c: char) -> Option<char> {
         let u = c as u32;
-        if self.keep_newlines && c == '\n' {
+        if self.keep.newlines() && c == '\n' {
             self.state = State::Text;
             return Some('\n');
         }
@@ -95,6 +130,8 @@ impl Cleaner {
             '\x1b' => self.state = State::Esc,
             '\u{9b}' => self.state = State::Csi,
             '\u{9d}' | '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => self.state = State::Str,
+            // a tab outside a sequence, where `keep` says a tab is content
+            '\t' if self.keep.tabs() => return Some('\t'),
             '\t' | '\n' | '\r' => return Some(' '),
             _ if u < 0x20 || (0x7f..=0x9f).contains(&u) => {}
             _ => return Some(c),
@@ -106,26 +143,30 @@ impl Cleaner {
 /// `s` safe to show on one line: no control characters or escape sequences; tabs and line
 /// breaks become spaces.
 pub fn sanitize(s: &str) -> String {
-    clean(s, false)
+    clean(s, Keep::Nothing)
 }
 
 /// Like `sanitize`, but line breaks are kept (multi-line output: descriptions, whole reports).
 pub fn sanitize_lines(s: &str) -> String {
-    clean(s, true)
+    clean(s, Keep::Newlines)
 }
 
-/// `s` inside a JSON string, as JSON output shows stored text: escape sequences and control
-/// characters are removed exactly as on screen (`sanitize_lines`, so a description's newlines
-/// are kept as `\n`; tabs and CR become spaces), everything else is left for serde to escape
-/// as usual.
+/// `s` inside a JSON string: the same cleaner the screen uses, with the same rules about what
+/// is removed — escape sequences and control characters, whole — but tabs kept, because JSON
+/// is data and a tab is text there (`Keep::NewlinesAndTabs`). Everything else is left for
+/// serde to escape as usual.
 ///
 /// JSON already escapes `"`/`\` and C0 controls; it passes DEL (U+007F) and C1 (U+0080–U+009F)
 /// through raw. In UTF-8 those C1 bytes can act on a terminal (`U+009B` is a CSI), so an agent
 /// that prints `--json` output would run them — the screen paths never do. Escape-sequence
 /// state does not survive into `errors`/`warnings` entries: they carry whole texts, never
 /// fragments that could split a sequence.
+///
+/// Keeping tabs is what makes `tb export --json` → `tb edit --from` give a description back
+/// unchanged (`tests/export.rs::an_export_imports_straight_back`): a tab in a description is
+/// text somebody wrote, and serde carries it as `\t`, never as a byte a terminal could act on.
 pub fn sanitize_json(s: &str) -> String {
-    clean(s, true)
+    clean(s, Keep::NewlinesAndTabs)
 }
 
 /// Append `s` as one output line (leading blank lines kept): stored or remote text inside it
@@ -139,11 +180,11 @@ pub fn push_line(out: &mut String, s: &str) {
     out.push('\n');
 }
 
-fn clean(s: &str, keep_newlines: bool) -> String {
+fn clean(s: &str, keep: Keep) -> String {
     if !s.chars().any(needs_cleaning) {
         return s.to_string();
     }
-    let mut c = Cleaner::new(keep_newlines);
+    let mut c = Cleaner::new(keep);
     s.chars().filter_map(|ch| c.push(ch)).collect()
 }
 
@@ -163,7 +204,7 @@ pub fn sanitize_buffer(buf: &mut ratatui::buffer::Buffer) {
         if !row.iter().any(|cell| cell.symbol().chars().any(needs_cleaning)) {
             continue;
         }
-        let mut c = Cleaner::new(false);
+        let mut c = Cleaner::new(Keep::Nothing);
         for cell in row.iter_mut() {
             let sym = cell.symbol();
             let kept: String = sym.chars().filter_map(|ch| c.push(ch)).collect();
@@ -207,15 +248,51 @@ mod tests {
         // whole sequences removed, as on screen
         assert_eq!(sanitize_json("a\x1b[31mred\x1b[0mb"), "aredb");
         assert_eq!(sanitize_json("x\x1b]0;title\x07y"), "xy");
-        // newlines are kept (they become \n in the JSON string); tab and CR become spaces, as
-        // on screen
-        assert_eq!(
-            sanitize_json("one\ntwo\tthree\rfour"),
-            "one\ntwo three four"
-        );
         // serde does the quoting; the cleaned text needs no escapes of its own
         let v = serde_json::to_string(&sanitize_json("quote\" back\\slash\n")).unwrap();
         assert_eq!(v, r#""quote\" back\\slash\n""#);
+    }
+
+    /// The ONE place the JSON view and the screen differ, pinned in both directions: a tab is
+    /// text in JSON and a jump to the next tab stop on a screen. Everything else — what is
+    /// removed, and CR — is identical, because it is the same cleaner.
+    #[test]
+    fn json_keeps_tabs_the_screen_folds_them() {
+        // newline kept by both; tab kept ONLY by the JSON view; CR folded by both
+        assert_eq!(sanitize_json("one\ntwo\tthree\rfour"), "one\ntwo\tthree four");
+        assert_eq!(sanitize_lines("one\ntwo\tthree\rfour"), "one\ntwo three four");
+        assert_eq!(sanitize("one\ntwo\tthree\rfour"), "one two three four");
+        // a tab is the only difference: with none in the text the two agree exactly
+        for s in ["plain", "a\x1b[31mred\x1b[0mb", "del\x7f é✅審査", "one\ntwo\rthree", "\u{9b}2Jgone"] {
+            assert_eq!(sanitize_json(s), sanitize_lines(s), "no tab in {s:?}: the two views agree");
+        }
+        // a tab INSIDE a sequence is still part of the sequence and goes with it
+        assert_eq!(sanitize_json("a\x1b]0;ti\ttle\x07b"), "ab");
+        assert_eq!(sanitize_json("a\x1b[3\t1mb"), "a\t1mb", "a tab breaks a CSI, as any non-parameter byte does");
+        // serde writes a kept tab as \t: no byte a terminal could act on leaves the process
+        assert_eq!(serde_json::to_string(&sanitize_json("a\tb")).unwrap(), r#""a\tb""#);
+    }
+
+    /// The exact set, one code point at a time — the list docs/JSON.md states.
+    #[test]
+    fn json_strips_exactly_the_controls_and_keeps_the_text() {
+        for u in (0x00..0x20u32).chain([0x7f]).chain(0x80..0xa0) {
+            let c = char::from_u32(u).unwrap();
+            let got = sanitize_json(&format!("A{c}B"));
+            let want = match c {
+                '\n' => "A\nB",
+                '\t' => "A\tB",
+                '\r' => "A B",
+                // a sequence opener swallows what follows it
+                '\x1b' | '\u{90}' | '\u{98}' | '\u{9b}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => "A",
+                _ => "AB",
+            };
+            assert_eq!(got, want, "U+{u:04X}");
+        }
+        // nothing above U+009F is touched, including the whitespace that looks like a control
+        for c in ['\u{a0}', '\u{2028}', '\u{2029}', '✅', '審', 'é'] {
+            assert_eq!(sanitize_json(&format!("A{c}B")), format!("A{c}B"), "{c:?}");
+        }
     }
 
     #[test]

@@ -379,7 +379,11 @@ macro_rules! warn {
 fn pretty<T: serde::Serialize>(v: &T) -> String {
     let text = serde_json::to_string_pretty(&terminal_board::clean_json(v))
         .unwrap_or_else(|_| "null".into());
-    terminal_board::notice::splice(&text, &terminal_board::notice::all())
+    // a warning quotes what it is about — a `TB_BOARD` from the environment, a path, the
+    // board's own `tz` setting — so it goes through the same cleaner the body does
+    let warnings: Vec<String> =
+        terminal_board::notice::all().iter().map(|w| terminal_board::text::sanitize_json(w)).collect();
+    terminal_board::notice::splice(&text, &warnings)
 }
 
 /// Print each warning nobody has printed yet, once, on stderr: `tb: …`.

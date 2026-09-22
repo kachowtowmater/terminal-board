@@ -73,18 +73,25 @@ field clears it — the same thing `--due none` does.
 (U+0080–U+009F) through raw: serde_json escapes only C0, so a card's text holding those
 bytes reached a terminal, a log or another tool with them — in UTF-8 a terminal that honours
 C1 would act on U+009B as a CSI. Every screen path was already clean.
-- Every text field in JSON output now goes through the same display sanitiser as the screen
-  (`text::sanitize_json` = `sanitize_lines`): escape sequences and control characters are
-  removed whole, line breaks are kept, tab and CR become spaces. One shared implementation —
-  no second sanitiser to drift. All non-ASCII letters, emoji and CJK pass through untouched,
-  and the JSON stays valid (serde still escapes `"`/`\` and C0 as before).
+- Every text field in JSON output now goes through the **same cleaner as the screen**
+  (`text::sanitize_json`): escape sequences are removed whole, and so is every control
+  character. One shared implementation — no second sanitiser to drift. All non-ASCII letters,
+  emoji and CJK pass through untouched, and the JSON stays valid (serde still escapes `"`/`\`
+  and C0 as before).
+- **Line breaks and tabs are text, and are kept.** They are the same cleaner with a different
+  answer to one question — which whitespace is content here. A screen has fixed columns, so a
+  tab (jump to the next tab stop) is layout and becomes a space there; JSON is data for a
+  parser, where serde writes a tab as `\t` and the reader gets U+0009 back. So a description
+  written from a file still goes out through `export --json` and back in through `import` or
+  `edit --from` **unchanged** — the round trip tb has always promised.
+- **CR becomes a space in both views.** It is the one whitespace that moves the cursor
+  backwards, over what is already printed: a description holding `real text` + CR + `spoofed`
+  would print as `spoofed` in any log or pager that shows a decoded value. It carries no text
+  of its own — a CRLF file's line break is the newline beside it.
 - The store keeps text raw; this changes only what `--json` shows (`show`, `list`, `board`,
-  bare `tb --json`, every write's `{ok, card}`, `github --json`, `boards --json`,
+  bare `tb --json`, every write's `{ok, card}`, `github --json`, `boards --json`, `export`,
   `import`/`edit --from` reports, errors and warnings, `watch --json` and
-  `watch --events --json`).
-- A card whose text held control bytes can no longer round-trip through `board --json` →
-  `edit --from` byte for byte: the export is the cleaned view, so re-importing it normalizes
-  the bytes (documented in docs/JSON.md). Reading the store back directly is unchanged.
+  `watch --events --json`). Reading the store back directly is unchanged.
 
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 

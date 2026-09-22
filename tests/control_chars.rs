@@ -231,6 +231,8 @@ fn json_output_is_cleaned_too() {
         vec!["show", "2", "--json"],
         vec!["list", "--json"],
         vec!["board", "--json"],
+        vec!["log", "--json"],
+        vec!["export", "--json"],
         vec!["--json"],
     ] {
         let out = tb(&db, &args, &[]).stdout;
@@ -259,14 +261,82 @@ fn json_output_is_cleaned_too() {
     let desc = shown["description"].as_str().unwrap();
     let want = format!("line one\n{}", noisy_desc_cleaned());
     assert_eq!(desc, want, "newlines kept as in the stored text; sequences gone:\n{desc:?}");
+    // a warning quotes what it is about — here a board name out of the environment — and it
+    // rides along inside the JSON object, so it goes through the cleaner too
+    let warned = text(&tb(&db, &["show", "1", "--json"], &[("TB_BOARD", &noisy("envboard"))]).stdout);
+    assert_clean("a warning spliced into --json", &warned);
+    let v: serde_json::Value = serde_json::from_str(&warned).unwrap();
+    let w = v["warnings"][0].as_str().unwrap();
+    assert!(w.contains("envboard"), "the warning still names it: {w:?}");
+    assert!(!w.contains('\x1b') && !w.contains('\u{9b}'), "cleaned like every other text: {w:?}");
+
     // the owner was `noisy("owner")`: cleaned like the screen (no raw bytes), words kept
     let owner = shown["owner"].as_str().unwrap();
     assert!(owner.contains("owner"), "{owner:?}");
     assert!(!owner.chars().any(|c| { let u = c as u32; (u < 0x20 && c != '\n') || (0x7f..=0x9f).contains(&u) }), "{owner:?}");
 }
 
-/// The noisy description as the display sanitiser shows it (`sanitize_lines`): the words and
-/// the line break survive, every sequence and control character is gone.
+/// The noisy description as the JSON view shows it. The fixture holds no tab, so this is also
+/// exactly what the screen shows — asserted, so the two views cannot drift apart anywhere but
+/// the tab.
 fn noisy_desc_cleaned() -> String {
-    terminal_board::text::sanitize_lines(&noisy("desc"))
+    let json = terminal_board::text::sanitize_json(&noisy("desc"));
+    assert_eq!(json, terminal_board::text::sanitize_lines(&noisy("desc")), "no tab in the fixture: the JSON view and the screen agree");
+    json
+}
+
+/// BOTH promises at once, through the real binary: the JSON view carries no byte a terminal
+/// could act on, AND it is still lossless for text somebody wrote — a description with tabs,
+/// newlines, emoji and CJK comes back unchanged from `export --json` → `import`. A tab is the
+/// one thing the JSON view keeps that the screen folds (src/text.rs `Keep`), and this is the
+/// contract that needs it: `tests/export.rs::an_export_imports_straight_back`.
+#[test]
+fn text_survives_the_round_trip_through_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("from.db");
+    // tabs, newlines, emoji and CJK are text; the ESC sequence, the DEL and the C1 CSI are not
+    let stored = "Done = ship it\n\tindented\x1b[31m with a tab\ncolumns\tA\tB\ndel\x7f c1\u{9b}2J gone\n✅ 審査 naïve — 你好 🚀";
+    let want = "Done = ship it\n\tindented with a tab\ncolumns\tA\tB\ndel c1 gone\n✅ 審査 naïve — 你好 🚀";
+    let desc_file = dir.path().join("desc.md");
+    std::fs::write(&desc_file, stored).unwrap();
+    let o = tb(&from, &["add", "docs: round trip", "--desc-file", desc_file.to_str().unwrap()], &[]);
+    assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
+
+    // the export is the cleaned view, and it carries no raw control byte at all — a tab
+    // travels as the two characters \t, which is why keeping it is safe
+    let export = tb(&from, &["export", "--json"], &[]).stdout;
+    assert_clean("export --json", &text(&export));
+    assert!(text(&export).contains("\\t"), "a tab travels escaped, never raw:\n{}", text(&export));
+
+    let export_file = dir.path().join("export.json");
+    std::fs::write(&export_file, &export).unwrap();
+    let to = dir.path().join("to.db");
+    let o = tb(&to, &["import", export_file.to_str().unwrap()], &[]);
+    assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
+
+    assert_eq!(shown_desc(&from, 1), want, "the JSON view: tabs, newlines, emoji and CJK stay; sequences and DEL/C1 go");
+    assert_eq!(shown_desc(&to, 1), want, "the description survived export --json -> import unchanged");
+    // and it is stable: exporting the imported board gives the same bytes back again
+    let again = tb(&to, &["export", "--json"], &[]).stdout;
+    let of = |raw: &[u8]| -> String {
+        let v: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        v["cards"][0]["description"].as_str().unwrap().to_string()
+    };
+    assert_eq!(of(&again), of(&export), "a second round trip changes nothing");
+
+    // CR is the one whitespace the JSON view still folds: it moves the cursor back over what
+    // is already printed, so `real\rspoofed` would print as `spoofed` in any log that shows a
+    // decoded value. It carries no text of its own, and no contract pins it.
+    let cr = dir.path().join("cr.md");
+    std::fs::write(&cr, "real\rspoofed\nand a\ttab").unwrap();
+    let o = tb(&from, &["add", "docs: carriage return", "--desc-file", cr.to_str().unwrap()], &[]);
+    assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(shown_desc(&from, 2), "real spoofed\nand a\ttab", "CR becomes a space, the tab stays");
+}
+
+/// The `description` of card `id` as `tb show --json` reports it.
+fn shown_desc(db: &Path, id: i64) -> String {
+    let out = tb(db, &["show", &id.to_string(), "--json"], &[]).stdout;
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap_or_else(|e| panic!("{e}: {}", text(&out)));
+    v["description"].as_str().unwrap().to_string()
 }

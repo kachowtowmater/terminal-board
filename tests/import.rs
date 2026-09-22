@@ -199,7 +199,7 @@ fn worked_board() -> Board {
     let b = Board::new();
     b.ok(&["add", "docs: gh#12 write the guide", "-d", "Done = merged", "--check", "draft", "--check", "review", "--due", "2026-10-09"]);
     b.ok(&["add", "ops: rotate tokens"]);
-    b.ok(&["add", "a plain card", "-d", "line one\n\n line three with `ticks`, $VARS and \"quotes\""]);
+    b.ok(&["add", "a plain card", "-d", "line one\n\n\tline three with `ticks`, $VARS and \"quotes\""]);
     b.ok(&["add", "ops: waits on the guide"]);
     b.ok(&["check", "1", "1"]);
     b.ok(&["block", "4", "#1"]);

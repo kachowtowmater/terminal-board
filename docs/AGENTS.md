@@ -87,8 +87,9 @@ that order, and `tb prio` there only orders cards sharing a date, and says so). 
 respects the WIP limit and makes you the owner of an unowned card; `tb move ID todo` clears the
 owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a
 file arrives byte for byte into the store, which a quoted string cannot promise: UTF-8, at most
-256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal. What `--json` shows is
-the cleaned view, like the screen. Board order: `TB_DB` > a name on the
+256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal. `--json` shows text
+cleaned of control characters and escape sequences, keeping line breaks and tabs, so an
+`export --json` still imports back unchanged. Board order: `TB_DB` > a name on the
 command line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb`
 would miss it — copy it as printed. Leave settings alone unless a person asks you to change them.
 
