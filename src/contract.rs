@@ -74,6 +74,9 @@ pub struct CardJ {
     pub checklist: Vec<CheckJ>,
     /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
     pub round: i64,
+    /// Everyone who recorded `tb done ID --approve` on this card, oldest first, no repeats.
+    /// A record of who checked it — not a permission (see `done-by` in the docs).
+    pub approved_by: Vec<String>,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
 }
@@ -188,6 +191,7 @@ pub fn card_with(
         last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
         round: crate::store::round_of(&d.events),
+        approved_by: crate::store::closing::approved_by(&d.events),
         events: d
             .events
             .iter()
