@@ -29,6 +29,63 @@ pub mod text;
 pub mod textin;
 pub mod tui;
 
+/// Convert a value to JSON with every text leaf cleaned through the display sanitiser
+/// (`text::sanitize_json`) — one shared function with the screen paths, so `--json` output
+/// never carries DEL, C1 controls or terminal escape sequences (see docs/JSON.md). Shape,
+/// field names and key order are untouched; only `String` content changes.
+pub fn clean_json<T: serde::Serialize>(v: &T) -> serde_json::Value {
+    use serde_json::Value;
+    enum Cleaned<'a> {
+        Val(&'a Value),
+        Text(&'a str),
+        Seq(Vec<Cleaned<'a>>),
+        Map(Vec<(String, Cleaned<'a>)>),
+    }
+    fn of(v: &Value) -> Cleaned<'_> {
+        match v {
+            Value::String(s) => Cleaned::Text(s),
+            Value::Array(xs) => Cleaned::Seq(xs.iter().map(of).collect()),
+            Value::Object(m) => Cleaned::Map(m.iter().map(|(k, v)| (k.clone(), of(v))).collect()),
+            other => Cleaned::Val(other),
+        }
+    }
+    fn put(c: &Cleaned<'_>, s: &mut String) {
+        match c {
+            Cleaned::Val(v) => s.push_str(&v.to_string()),
+            Cleaned::Text(t) => {
+                s.push_str(&serde_json::to_string(&text::sanitize_json(t)).unwrap_or_default())
+            }
+            Cleaned::Seq(xs) => {
+                s.push('[');
+                for (i, x) in xs.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    put(x, s);
+                }
+                s.push(']');
+            }
+            Cleaned::Map(entries) => {
+                s.push('{');
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&serde_json::to_string(k).unwrap_or_default());
+                    s.push(':');
+                    put(v, s);
+                }
+                s.push('}');
+            }
+        }
+    }
+    let value = serde_json::to_value(v).unwrap_or(Value::Null);
+    let mut out = String::new();
+    let cleaned = of(&value);
+    put(&cleaned, &mut out);
+    serde_json::from_str(&out).unwrap_or(Value::Null)
+}
+
 /// Write `s` to stdout and flush. A closed stdout (the reader went away) exits 0: the reader
 /// has what it wanted. Any other write error exits 1 with a message. Never panics.
 pub fn write_stdout(s: &str) {

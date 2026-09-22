@@ -371,11 +371,19 @@ macro_rules! warn {
     ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
 }
 
-/// Pretty JSON for stdout. Warnings raised so far ride along as `"warnings": […]` on
-/// object-shaped output (additive; absent when there are none — see `notice`).
+/// Pretty JSON for stdout. Stored text is cleaned through the display sanitiser before it is
+/// serialized (see `text::sanitize_json`), so DEL, C1 and terminal escape sequences never
+/// reach a terminal, a log or another tool — whatever wrote them to the board; line breaks
+/// are kept. Warnings raised so far ride along as `"warnings": […]` on object-shaped output
+/// (additive; absent when there are none — see `notice`).
 fn pretty<T: serde::Serialize>(v: &T) -> String {
-    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into());
-    terminal_board::notice::splice(&text, &terminal_board::notice::all())
+    let text = serde_json::to_string_pretty(&terminal_board::clean_json(v))
+        .unwrap_or_else(|_| "null".into());
+    // a warning quotes what it is about — a `TB_BOARD` from the environment, a path, the
+    // board's own `tz` setting — so it goes through the same cleaner the body does
+    let warnings: Vec<String> =
+        terminal_board::notice::all().iter().map(|w| terminal_board::text::sanitize_json(w)).collect();
+    terminal_board::notice::splice(&text, &warnings)
 }
 
 /// Print each warning nobody has printed yet, once, on stderr: `tb: …`.
@@ -538,7 +546,8 @@ fn watch(
                     None => None,
                 };
                 let line = EventLine::of(&e.event, identity);
-                let text = serde_json::to_string(&line).unwrap_or_default();
+                let text =
+                    serde_json::to_string(&terminal_board::clean_json(&line)).unwrap_or_default();
                 if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
                     return Ok(()); // reader went away
                 }
@@ -558,7 +567,8 @@ fn watch(
         if last != Some(v) || turned {
             last = Some(v);
             let text = if jsonout {
-                serde_json::to_string(&contract::board(store)?).unwrap_or_default()
+                serde_json::to_string(&terminal_board::clean_json(&contract::board(store)?))
+                    .unwrap_or_default()
             } else {
                 let snap = store.snapshot()?;
                 format!("{}\n", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit))
