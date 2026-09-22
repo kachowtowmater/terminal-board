@@ -20,7 +20,7 @@ const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
-Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
+Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | restore ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
 Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
