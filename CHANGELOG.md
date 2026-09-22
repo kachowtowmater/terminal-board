@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
+
+`tb block ID "text"` is unchanged. It now also takes **`--on NAME|#ID`** (who you are waiting
+for) and **`--until DATE`** (when to look again), stored next to the block text as
+`blocked_on` / `blocked_until`, so a board can be asked what it waits on instead of read as
+prose. `tb show`, `tb list` and the plain board say it in words (`on #7 · recheck 2026-10-09`).
+- **Recheck is derived, never stored**: the `--until` date is compared with the board's today
+  (its `tz`) as the board is read. No flag is written and nothing runs in the background, so
+  the same file answers differently tomorrow — and `TB_NOW` pins it for tests.
+- **A card blocked `--on #7` unblocks itself when card 7 reaches DONE**, inside the same
+  transaction as that move, recorded as `#7 is done`. Only DONE: deleting or archiving card 7
+  leaves the block standing and reports `blocked_on_state: "gone"`, and reopening a finished
+  card does not block anything again. Blocking on a card that is already done is refused.
+- **`tb config wip-counts-blocked no`** frees the work slot of a blocked card. At most `wip`
+  of them are discounted, so blocking everything can never hand out unlimited work.
+- **`tb config waiting-lane shown`** gives blocked cards their own WAITING section in
+  `tb board`; each column keeps its real count and says how many of its cards are there, so
+  nothing is drawn twice. Display only: JSON, `tb next`, the columns and every command are
+  unaffected.
+- JSON (additive, `"v"` stays 1): `blocked_on`, `blocked_until`, `recheck`, `blocked_on_state`
+  on every card object. A blocked card is still never handed out by `tb next`, including on a
+  board sorted by due date where it may be the nearest-due card.
+- A board that sets neither setting, and blocks as it always did, reads and renders as before.
+
 ### Which harness, model and session did the work
 
 A card says `added by lead`: a short name, reused across runs, machines and harnesses. It

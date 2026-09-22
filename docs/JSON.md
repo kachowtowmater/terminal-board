@@ -74,6 +74,10 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column_label": "DOING",
   "gh_ref": 327,
   "blocked": null,
+  "blocked_on": null,
+  "blocked_until": null,
+  "recheck": false,
+  "blocked_on_state": null,
   "created_at": 1789763036,
   "column_since": 1789763036,
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
@@ -101,6 +105,10 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `column_label` | string | what a person reads for `column`: the board's label (`tb config label review "WITH REVIEWER"`), else the name in capitals. **Display only** — `column` is the name every command takes and it never changes |
 | `gh_ref` | int\|null | GitHub issue/PR number. A **leading** `gh#N` (first word after the optional `tag:`) is moved out of the stored title; a `gh#N` **later in the title stays in the text** and still sets the link (the first such ref wins). |
 | `blocked` | string\|null | what blocks it (e.g. `#7`) |
+| `blocked_on` | string\|null | `--on`: who or what the card waits for — `#7` (another card) or a name |
+| `blocked_until` | string\|null | `--until`: the local calendar date to look again, `YYYY-MM-DD` |
+| `recheck` | bool | the `--until` date has arrived (today or earlier) in the board's `tz` — **derived at read time**, never stored and never a background clock, so a card becomes a recheck simply by being read on the day |
+| `blocked_on_state` | `open`\|`done`\|`gone`\|null | only for `--on #ID`: whether that card is still open, is done, or is no longer on the board (deleted or archived). A card blocked on `#ID` is unblocked by tb when that card reaches DONE |
 | `created_at`, `column_since` | int | unix seconds |
 | `last_event_at` | int | unix seconds of the card's last event (any kind) — compute staleness yourself (the board shows `quiet 1h20m` on a DOING card quiet for 60+ minutes; fixed threshold, no setting) |
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |

@@ -154,6 +154,8 @@ mod tests {
             created_at: 0,
             column_since: id * 10,
             blocked: None,
+            blocked_on: None,
+            blocked_until: None,
             position,
             reviewer: None,
         }
