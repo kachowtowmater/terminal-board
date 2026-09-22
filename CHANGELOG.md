@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
+
+`--file -` (and `--desc-file -`) waited for standard input to close however long that took,
+with no way to tell a producer that is merely slow to start from a pipe nobody will ever
+close — the worst outcome for an unattended agent loop. A named pipe named as the path had the
+same gap, and a plain `open()` on one with no writer blocked before any guard could even run.
+- `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only, on `-` and on a FIFO
+  path alike; unset (the default) or `0`, nothing changes — tb waits exactly as it always did,
+  including for a FIFO whose writer attaches a moment later. Nothing after the first byte is
+  ever timed, so a slow-but-real producer is never truncated.
+- Whole seconds, leniently parsed like tb's other read-only knobs (docs/AGENTS.md).
+
+### `tb log` shows a board's own trail, not only its cards'
+
+`tb mv` recorded `moved-out` on the board a card LEFT, but nothing ever printed it — the card
+simply vanished from that board's own history, though the destination board's `moved-in` was
+always readable via `tb show`. `tb log` now interleaves the board's own events (a move, a WIP
+change, a file-mode change, a soft-delete) with its card events, oldest first by the same
+clock.
+- `card_id` (and `actor_id`, when known) is `null` on a board-level row in `--json`; plain text
+  marks the row `board` where a card row shows `#ID`.
+
+### A locked database says so, not "check TB_DB"
+
+Every write that collided with another `tb` mid-write surfaced as `database error: database is
+locked — check TB_DB points at a writable file` — naming TB_DB even when it was never set, and
+telling you to check a file that was never the problem.
+- A contended write now says `database is locked — another tb is writing this board right now:
+  wait a moment and try again`. TB_DB is still named for a real path problem (cannot open,
+  read-only, …), but only when it is actually set.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a
