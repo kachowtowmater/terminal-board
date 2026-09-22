@@ -259,7 +259,11 @@ fn a_card_moves_to_another_board_with_its_history() {
 #[test]
 fn the_source_board_log_says_where_a_moved_card_went() {
     let h = Home::new();
+    // #1 leaves for "work" — its whole history, "created" included, travels with it, so the
+    // source board's log keeps NO card event of its own for #1 once it is gone. #2 stays
+    // behind on purpose, so the source board still has a card event to interleave against.
     h.ok(&["add", "docs: write the guide"]);
+    h.ok(&["add", "ops: stays on the source board"]);
     h.ok(&["work", "add", "x: already here"]);
     h.ok(&["mv", "1", "--to", "work"]);
 
@@ -277,7 +281,8 @@ fn the_source_board_log_says_where_a_moved_card_went() {
     assert_eq!(moved_out["actor_id"], Value::Null, "{moved_out}");
     assert!(moved_out["text"].as_str().unwrap().contains("#1 to work is #2 there"), "{moved_out}");
 
-    // still oldest-first, card and board events merged by the same clock
+    // still oldest-first, card and board events merged by the same clock: #2's "created"
+    // (a card event) happened before the move, so it precedes "moved-out" in the merged log
     let kinds: Vec<&str> = all.iter().map(|e| e["kind"].as_str().unwrap()).collect();
     let created_at = kinds.iter().position(|k| *k == "created").unwrap();
     let moved_out_at = kinds.iter().position(|k| *k == "moved-out").unwrap();

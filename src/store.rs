@@ -1348,15 +1348,25 @@ impl Store {
         let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
         let mut brows = bst.query([from_ts])?;
 
+        /// One `board_events` row, held between cursor advances (a named struct, not a
+        /// 5-tuple, so the type stays readable).
+        struct BoardRow {
+            ts: i64,
+            actor: String,
+            kind: String,
+            text: String,
+            actor_id: Option<i64>,
+        }
+
         fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
             Ok(match rows.next()? {
                 Some(r) => Some(row_event(r)?),
                 None => None,
             })
         }
-        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<(i64, String, String, String, Option<i64>)>> {
+        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<BoardRow>> {
             Ok(match rows.next()? {
-                Some(r) => Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? }),
                 None => None,
             })
         }
@@ -1368,13 +1378,13 @@ impl Store {
                 (None, None) => break,
                 (Some(_), None) => true,
                 (None, Some(_)) => false,
-                (Some(c), Some(b)) => c.ts <= b.0,
+                (Some(c), Some(b)) => c.ts <= b.ts,
             };
             if card_first {
                 f(LogEvent::Card(c_cur.take().unwrap()))?;
                 c_cur = next_card(&mut crows)?;
             } else {
-                let (ts, actor, kind, text, actor_id) = b_cur.take().unwrap();
+                let BoardRow { ts, actor, kind, text, actor_id } = b_cur.take().unwrap();
                 f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
                 b_cur = next_board(&mut brows)?;
             }
