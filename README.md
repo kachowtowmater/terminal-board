@@ -412,6 +412,8 @@ tb --version
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
+| `tb config card-line age\|due` | what a card line shows where the age is: the age (default), or the due date and the days left |
+| `tb config label COLUMN "TEXT"` / `--off` | a display name for `todo`, `doing`, `review` or `done` — **display only**; see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | who is on this board and the card each holds or reviews, then the other herdr agents |
 | `tb guide` | the manual for AI agents |
@@ -508,7 +510,8 @@ tb deadlines show 1 --json
 tb deadlines edit 1 --due none
 ```
 
-A due date is a **calendar date**: `YYYY-MM-DD`, stored exactly as you typed it. tb never
+A due date is a **calendar date**: `YYYY-MM-DD`, stored as you typed it (spaces around it are
+dropped). tb never
 turns it into a point in time, so it cannot slip to the day before or the day after — not when
 the board is read in another time zone, not at 23:59, not across a daylight-saving change.
 Anything that is not a real date (`2026-02-30`, `10/09/2026`, `tomorrow`) is refused with the
@@ -548,8 +551,40 @@ it tells you where the card really is: `#1 is now at position 1 in todo — this
 due date, so position only orders cards with the same date (or none): #1 is 2 of 2 in todo
 (unchanged); its date decides the rest — 'tb deadlines edit 1 --due DATE'`.
 `tb config sort position` goes back; `tb config sort` prints the one in force.
+#### The look: the due mark, the card line, your own column names
 
-A board with no due dates and none of these settings looks and behaves exactly as it did before.
+```sh
+tb deadlines config card-line due
+tb deadlines config label review "WITH REVIEWER"
+tb deadlines config label review
+tb deadlines list
+tb deadlines config label review --off
+```
+
+A card that is due within `due-warn` days, or overdue, carries a **loud mark** on its card line —
+`! due in 2d`, `! due today`, `! overdue 3d` (bold on the board, red once overdue) — in the
+full-screen board, the focus view and `tb list`. A finished card never does. On a narrow card
+line the mark is the last thing to go: it outlives the tag, the checklist count and the age, and
+it shrinks in whole words (`! overdue 3d` → `! late 3d` → `! late` → `!`), never inside one.
+
+`tb config card-line due` puts the date where the age is: `permits - alice - due Oct 27 - 18d`
+(the days left; a date in another year is written in full). A card without a date still shows
+its age. `tb config card-line age` is the default.
+
+`tb config label review "WITH REVIEWER"` names a column in your own words (up to 24
+characters; control characters are removed). **Labels are display only.** Every command still
+takes the plain names — `tb move 5 review` — and JSON `column` is `todo`, `doing`, `review` or
+`done` for ever; the label travels next to it as `column_label` (and `labels` on the board
+object). A message that names a column names the one to type: `#5 is now in review (shown as
+WITH REVIEWER)`, and typing the label gets `'with reviewer' is a display label, not a column —
+the column is review: 'tb move 5 review'`. In a narrow header a label gives way in whole words
+and the count is never pushed off; when not even its first word fits, the plain name is shown.
+`tb config label review` prints it; `--off` clears it. A column that the board orders by due
+date says `by due` in its header.
+
+A board whose cards carry **no due dates**, and which sets none of these settings, looks and
+behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows
+its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 
 ## Layouts and themes
 

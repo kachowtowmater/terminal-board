@@ -37,7 +37,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
 
-A due date is a calendar date (`YYYY-MM-DD`), kept exactly as typed — it never moves a day
+A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
 "today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
 days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
@@ -46,6 +46,12 @@ days ahead a card counts as due soon (default 3). More in the README under *Due 
 date first (overdue on top, cards without a date last, equal dates in the order you gave them),
 and `tb next` hands out that card. Reordering by hand (shift+arrows, `tb prio`) then only orders
 cards that share a date — the status line says so. `tb config sort position` is the default.
+
+A card that is due soon or overdue carries a loud mark on its line — `! due in 2d`, `! due today`,
+`! overdue 3d` (red once overdue) — and keeps it however narrow the pane gets. `tb config card-line
+due` shows the date and the days left where the age is. `tb config label review "WITH REVIEWER"`
+gives a column your own name (`--off` clears it): that changes what you read, never what you type —
+commands still take `todo`, `doing`, `review`, `done`.
 
 ### Moving cards
 

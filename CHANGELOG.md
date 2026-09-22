@@ -85,6 +85,30 @@ dates — keep their position order, so the order is always deterministic. `tb n
   set to `sort due`, `tb list --json` is in the board's order; otherwise it stays in id order.
 - `tb config sort position` (the default) is exactly the order tb always had; `tb config sort`
   prints the setting, and `tb config` lists it only once a board sets it.
+### The due date on the card line, a loud mark when it is close, and your own column names
+
+- **A loud due mark.** A card that is due within `due-warn` days, or overdue, shows `! due in 2d`,
+  `! due today` or `! overdue 3d` on its card line — in the full-screen board, the focus view and
+  `tb list` — bold, and red once overdue; never on a DONE card. In a narrow pane it outlives the
+  tag, the checklist count and the age, and shrinks in whole words (`! late 3d`, `! late`, `!`).
+- **`tb config card-line age|due`.** With `due`, a dated card shows `due Oct 27 - 18d` where its
+  age was. `age` is the default.
+- **`tb config label COLUMN "TEXT"`** (`--off` clears, no text reads): a display name for a
+  column, up to 24 characters, sanitised like all displayed text. **Display only:** every command
+  still takes `todo`, `doing`, `review`, `done`; JSON `column` never changes and gains the
+  additive `column_label` (plus `labels` on the board object, `"v"` stays 1). A message that
+  names a column names the one to type — `review (shown as WITH REVIEWER)` — and typing a label
+  is refused with the command to run. A label gives way in whole words in a narrow header and
+  never pushes the count off.
+- A column that the board orders by due date says `by due` in its header.
+- Due-date follow-ups: `tb watch` sends the board again when the board's day turns (local
+  midnight in its `tz`), so a watcher's `days_left` / `due_state` do not go stale; a stored `tz`
+  this version does not know is reported on every command instead of silently falling back to
+  the machine's zone; the docs now say that spaces around a `--due` value are dropped.
+- A board with **no dated cards** and none of these settings renders byte for byte as before
+  (proved against the previous version over every width from 30 to 200, all six layouts and
+  every card state). A card that carries a due date and is soon or overdue shows the mark even
+  when the board sets nothing: `--due` is the opt-in.
 
 ### Many cards from one file: `tb import` and `tb edit --from`
 
