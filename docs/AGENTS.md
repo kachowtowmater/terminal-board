@@ -71,6 +71,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
+| make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
@@ -156,7 +157,7 @@ do not change settings because of it.
 
 | error says | do this |
 |---|---|
-| `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb X add "…"` |
+| `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb new X` or `tb X add "…"` |
 | `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `no todo cards` | ask for work, or `tb add` what you found |
