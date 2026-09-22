@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+
+### Boards: a corrupt `position` is refused with the fix, never a database error
+
+A board file written by something other than tb can hold anything in `cards.position` (a
+string, a blob, nothing). On such a file every read (`tb next`, `tb list`, `tb board`,
+`tb show`, `tb boards`, the full-screen board, plain and `--json`) failed with tb's raw
+database error — or worse, `tb next` handed out a LATER card when the unreadable one was
+blocked, so an agent took work that was not what the board showed on top.
+- Every read now refuses the same way: `card #1 has a position that is not a number (abc) —
+  <file> was written by something other than tb; give card #1 a whole-number position again
+  with: sqlite3 "<file>" "UPDATE cards SET position=0 WHERE id=1"`. The card, the value, the
+  file and the ONE fix, on every path and in the JSON `error`/`hint` object.
+- A NULL reads as 0 (the schema default) and a foreign REAL orders by its whole part, so a
+  board a foreign tool touched halfway still works; tb's next renumbering write (`prio`,
+  `move`, `add`) makes the row a whole integer again.
+- `tb next` reads the whole TODO queue, blocks included: a row it cannot read refuses the
+  claim instead of being silently skipped.
+- A normal board renders exactly as before (a full command battery is byte-identical).
+
 ### Which harness, model and session did the work
 
 A card says `added by lead`: a short name, reused across runs, machines and harnesses. It
