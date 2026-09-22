@@ -65,6 +65,11 @@ tb done ID                   # finished: DOING -> REVIEW
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
 | put it in any column | `tb move ID todo` · `doing` · `review` · `done` |
+
+### Create and delete cards, boards and settings
+
+| do this | run |
+|---|---|
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue, or with a due date | `tb add "repo: gh#315 short title"` · `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
 | many cards from one JSON file, all or nothing (try it with `--dry-run` first) | `tb import cards.json` · `tb edit --from changes.json` (rows keyed by `id`; only the fields present change; a card someone else holds refuses the whole file) |
@@ -86,10 +91,11 @@ tb done ID                   # finished: DOING -> REVIEW
 that order, and `tb prio` there only orders cards sharing a date, and says so). `tb move ID doing`
 respects the WIP limit and makes you the owner of an unowned card; `tb move ID todo` clears the
 owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a
-file arrives byte for byte into the store, which a quoted string cannot promise: UTF-8, at most
-256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal. `--json` shows text
-cleaned of control characters and escape sequences, keeping line breaks and tabs, so an
-`export --json` still imports back unchanged. Board order: `TB_DB` > a name on the
+file arrives byte for byte into the store, which a quoted string cannot promise, once blank space
+around it is trimmed and a leading byte-order mark is dropped: UTF-8, at most 256 KiB, empty
+refused; `-` reads a pipe or a redirect, never a terminal. `--json` shows text cleaned of control
+characters and escape sequences, keeping line breaks and tabs, so an `export --json` still imports
+back unchanged. Board order: `TB_DB` > a name on the
 command line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb`
 would miss it — copy it as printed. Leave settings alone unless a person asks you to change them.
 
