@@ -85,6 +85,8 @@ const CARD: &[&str] = &[
     "column_label",
     // structured blocks (`--on`, `--until`): the two stored fields plus what they mean today
     "blocked_on", "blocked_until", "recheck", "blocked_on_state",
+    // who checked this card (`tb done ID --approve`), a record and not a permission
+    "approved_by",
 ];
 
 #[test]

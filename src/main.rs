@@ -20,11 +20,11 @@ const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
-Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID [--force]
+Cards   add \"tag: title\" [-d DESC] [--check ITEM]... [--tag KEY]   edit ID [--title T] [--desc D] [--tag KEY]   rm ID [--force]
         list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
-Look    config card-line age|due · label COLUMN \"TEXT\"|--off (display only) · waiting-lane shown|hidden · wip-counts-blocked yes|no
+Look    config card-line age|due · label COLUMN \"TEXT\"|--off · waiting-lane shown|hidden · wip-counts-blocked yes|no · done-by NAMES|--off
 Bulk    import FILE.json|- · edit --from FILE.json|-   [--dry-run]   many cards from one JSON file, all or nothing
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
@@ -77,6 +77,9 @@ enum Cmd {
         /// Read the description from a file, byte for byte (`-` = standard input).
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
+        /// The card's tag, instead of the one guessed from a `tag:` prefix in the title.
+        #[arg(long, value_name = "KEY")]
+        tag: Option<String>,
     },
     List {
         /// The cards `tb rm` archived on an archive board (`tb config rm archive`).
@@ -175,6 +178,9 @@ enum Cmd {
         /// only the fields present change, all or nothing.
         #[arg(long, value_name = "FILE", conflicts_with_all = ["id", "title", "desc", "due", "desc_file"])]
         from: Option<std::path::PathBuf>,
+        /// The card's tag, or `none` to clear it. Digits, spaces and hyphens are allowed.
+        #[arg(long, value_name = "KEY|none", conflicts_with = "from")]
+        tag: Option<String>,
         /// With --from: report what would change, write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -474,6 +480,17 @@ fn due_flag(cmd: Option<&Cmd>) -> Result<Option<Option<DueDate>>, BoardError> {
     DueDate::parse(raw, &example).map(Some)
 }
 
+/// The `--tag` of `add` / `edit`, checked: `None` = no flag, `Some(None)` = `--tag none`
+/// (clear it), `Some(Some(key))` = set it.
+fn tag_flag(cmd: Option<&Cmd>) -> Result<Option<Option<String>>, BoardError> {
+    let (raw, example) = match cmd {
+        Some(Cmd::Add { tag: Some(t), .. }) => (t, "tb add \"title\" --tag filing".to_string()),
+        Some(Cmd::Edit { id: Some(id), tag: Some(t), .. }) => (t, format!("tb edit {id} --tag filing")),
+        _ => return Ok(None),
+    };
+    terminal_board::store::closing::clean_tag(raw, &example).map(Some)
+}
+
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
     if !path.exists() {
@@ -705,6 +722,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let cmd_ref = cli.cmd.as_ref();
     // a `--due` that is not a date is refused before the board file is opened (or created)
     let due_arg = due_flag(cmd_ref)?;
+    let tag_arg = tag_flag(cmd_ref)?;
     // on a named board only `add` and `config` (and bare `tb` in a terminal) may create it;
     // every other command on a missing board must fail with the boards list + create hint
     let creates = cmd_ref.map_or(tty, |c| {
@@ -760,7 +778,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let now = terminal_board::store::now();
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
-            let id = store.add(&title, &desc, &checks, &actor)?;
+            let id = store.add_tagged(&title, &desc, &checks, &actor, tag_arg.as_ref().map(|t| t.as_deref()))?;
             if let Some(Some(date)) = &due_arg {
                 store.set_due(id, Some(date), &actor)?;
             }
@@ -920,21 +938,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         }
         Cmd::Done { id, force, approve } => {
             if approve {
-                if store.card(id)?.column != "review" {
-                    return Err(BoardError(format!(
-                        "#{id} is not in review — approval records a review pass; move it to review first"
-                    )));
-                }
-                // the self-approval rule (#11) applies to --approve too: the card's author
-                // cannot record their own approval
-                if store.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(&actor)) {
-                    return Err(BoardError(format!(
-                        "you did this work — ask another person or agent to approve #{id}"
-                    )));
-                }
-                store.note_kind(id, &actor, "approved (the card stays in review; done waits for the merge)", "approved")?;
-                let human = format!("#{id} approved by {actor} — it stays in review until the gh# PR merges");
-                done_card(&store, j, id, human)?;
+                // every card, not only a gh# one: it records that somebody checked this and
+                // leaves the card in review (store/closing.rs)
+                let c = store.approve(id, &actor)?;
+                let waits = match c.gh_ref {
+                    Some(n) => format!("it stays in review until the gh#{n} PR merges"),
+                    None => format!("it stays in review — close it with {}", cmd_hint(explicit, &format!("done {id}"))),
+                };
+                done_card(&store, j, id, format!("#{id} checked by {actor} — {waits}"))?;
                 return Ok(());
             }
             if store.card(id)?.column != "doing" {
@@ -1059,8 +1070,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let forced = store.holder_check(id, &actor, force, "edit it")?;
             // `--due` alone is a whole edit; with --title/--desc the date (already checked)
             // is written after them
-            if due_arg.is_none() || title.is_some() || desc.is_some() {
-                store.edit(id, title.as_deref(), desc.as_deref(), &actor, None)?;
+            if due_arg.is_none() || title.is_some() || desc.is_some() || tag_arg.is_some() {
+                store.edit_tagged(id, title.as_deref(), desc.as_deref(), &actor, None, tag_arg.as_ref().map(|t| t.as_deref()))?;
             }
             if let Some(date) = &due_arg {
                 store.set_due(id, date.as_ref(), &actor)?;
@@ -1204,6 +1215,22 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         return Ok(());
                     }
                     ("waiting-lane".into(), json!(text))
+                }
+                ("done-by", _) if off => {
+                    store.set_done_by(None)?;
+                    ("done-by".into(), serde_json::Value::Null)
+                }
+                // who may close a card (store/closing.rs) — an honest-mistake stop, not security
+                ("done-by", value) => {
+                    let names = match &value {
+                        Some(v) => store.set_done_by(Some(v))?,
+                        None => store.done_by()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", if names.is_empty() { "anyone".to_string() } else { names.join(",") });
+                        return Ok(());
+                    }
+                    ("done-by".into(), json!(names))
                 }
                 ("card-line", _) if off => {
                     return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string()))
@@ -1357,6 +1384,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         say!("card-line is now due — a dated card shows its due date and the days left where its age was")
                     }
                     ("card-line", _) => say!("card-line is now age — every card shows its age in the column"),
+                    ("done-by", serde_json::Value::Null) => say!("done-by is off — anyone may close a card"),
+                    ("done-by", n) => say!(
+                        "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
+                        n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
                     ("wip-counts-blocked", v) if v.as_str() == Some("no") => say!(
                         "wip-counts-blocked is now no — a blocked card frees a work slot (up to the WIP limit of them; past that they count again)"
                     ),
