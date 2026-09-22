@@ -421,6 +421,8 @@ tb --version
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
+| `tb block ID "text" --on NAME\|#ID --until DATE` | say who you wait on and when to look again — see [Waiting on something](#waiting-on-something) |
+| `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
@@ -607,6 +609,37 @@ the column is review: 'tb move 5 review'`. In a narrow header a label gives way 
 and the count is never pushed off; when not even its first word fits, the plain name is shown.
 `tb config label review` prints it; `--off` clears it. A column that the board orders by due
 date says `by due` in its header.
+
+### Waiting on something
+
+```sh
+tb deadlines block 2 "waiting for the signed copy" --on "#1" --until 2026-10-09
+tb deadlines block 2 "their counsel has it" --on "the other side" --until 2026-10-20
+tb deadlines config wip-counts-blocked no
+tb deadlines config waiting-lane shown
+tb deadlines block 2 --clear
+```
+
+`tb block ID "text"` is unchanged. `--on NAME|#ID` says **who** you are waiting for and
+`--until DATE` **when to look again**; both ride next to the block text, so a board can be
+asked what it is waiting on instead of being read as prose (`blocked_on`, `blocked_until` in
+JSON). When the `--until` date arrives the card is a **recheck** — worked out when you read
+the board, in the board's `tz`; nothing is stored and no clock runs in the background.
+
+**A card blocked `--on #7` unblocks itself when card 7 reaches DONE**, in the same breath as
+that move, recorded as `#7 is done`. Only DONE does that: deleting or archiving card 7 leaves
+your block standing and reports it as `gone` (tb does not decide on its own that "we are
+waiting on this" is void), and reopening a finished card does not block anything again.
+Blocking a card on one that is already done is refused — nothing would ever lift it.
+
+`tb config wip-counts-blocked no` frees the work slot of a blocked card, so waiting on the
+other side does not stall the board. At most as many blocked cards as the WIP limit are
+discounted, so DOING can never exceed twice the limit however much is blocked.
+
+`tb config waiting-lane shown` gives blocked cards their own **WAITING** section in
+`tb board`, with what each is waiting on; each column keeps its real count and says how many
+of its cards are there (`TODO (3) · 1 waiting`), so no card is drawn twice. It is display
+only: JSON, the columns, the counts, `tb next` and every command are unaffected.
 
 A board whose cards carry **no due dates**, and which sets none of these settings, looks and
 behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows

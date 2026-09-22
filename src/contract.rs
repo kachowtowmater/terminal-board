@@ -52,6 +52,14 @@ pub struct CardJ {
     pub column_label: String,
     pub gh_ref: Option<i64>,
     pub blocked: Option<String>,
+    /// `--on`: who or what the card waits for — `#7` or a name; null without one.
+    pub blocked_on: Option<String>,
+    /// `--until`: the calendar date to look again; null without one.
+    pub blocked_until: Option<String>,
+    /// The `--until` date has arrived in the board's zone — derived, never stored.
+    pub recheck: bool,
+    /// For `--on #ID`: `open` | `done` | `gone` (the card was deleted or archived); else null.
+    pub blocked_on_state: Option<&'static str>,
     pub created_at: i64,
     pub column_since: i64,
     /// Unix seconds of the card's last event (any kind); readers compute staleness themselves.
@@ -131,6 +139,17 @@ fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<C
 }
 
 fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
+    card_all(store, c, due, look, &store.block_ctx()?)
+}
+
+fn card_all(
+    store: &Store,
+    c: &Card,
+    due: &crate::store::due::DueCtx,
+    look: &crate::store::display::Display,
+    blocks: &crate::store::blocks::BlockCtx,
+) -> Result<CardJ> {
+    let block = blocks.of(c);
     let d = store.show(c.id)?;
     let due = due.info(c);
     let skip = d.events.len().saturating_sub(CARD_EVENTS);
@@ -149,6 +168,10 @@ fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &c
         column_label: look.column_label(&c.column),
         gh_ref: c.gh_ref,
         blocked: c.blocked.clone(),
+        blocked_on: block.blocked_on,
+        blocked_until: block.blocked_until,
+        recheck: block.recheck,
+        blocked_on_state: block.blocked_on_state,
         created_at: c.created_at,
         column_since: c.column_since,
         last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
@@ -173,7 +196,8 @@ pub fn board(store: &Store) -> Result<BoardJ> {
     let snap = store.snapshot()?;
     let due = store.due_ctx()?;
     let look = &snap.display;
-    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_shown(store, c, &due, look)).collect() };
+    let blocks = store.block_ctx()?;
+    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_all(store, c, &due, look, &blocks)).collect() };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json

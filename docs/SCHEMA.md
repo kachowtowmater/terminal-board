@@ -32,6 +32,8 @@ tool owns the events log, positions and migrations, and a foreign writer skips t
 | `created_at` | INTEGER | unix seconds |
 | `column_since` | INTEGER | unix seconds since the last column move |
 | `blocked` | TEXT NULL | what blocks it (e.g. `#7`) |
+| `blocked_on` | TEXT NULL | `--on`: who or what it waits for — `#<id>` of another card, or a name. A card blocked on `#<id>` is unblocked by tb when that card reaches DONE |
+| `blocked_until` | TEXT NULL | `--until`: a local calendar date (`YYYY-MM-DD`) to look again. "Recheck" is **derived** from it at read time (the board's `tz`); nothing is stored when the date arrives |
 | `position` | INTEGER | order within the column, 0 = top |
 | `reviewer` | TEXT NULL | who claimed it with `tb next --review`; kept in `done`, cleared by any other move |
 
@@ -65,8 +67,8 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `moved` | `<from> -> <to>` (e.g. `doing -> review`) |
 | `note` | the note text |
 | `check` | the checklist item ticked/unticked |
-| `blocked` | `by <what>` |
-| `unblocked` | — |
+| `blocked` | `by <what>`, plus ` · on <who>` and ` · until <date>` when `--on` / `--until` were given |
+| `unblocked` | — · `cleared on done` · `#<id> is done` (the card it waited on finished) |
 | `dropped` | — (owner cleared) |
 | `edit` | what changed |
 | `due` | `<old> -> <new>` due date (`none` = no date), e.g. `none -> 2026-10-09` |
@@ -129,7 +131,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards

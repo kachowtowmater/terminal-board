@@ -21,10 +21,10 @@ tb {version} - Terminal Board: one shared task board for people and agents (todo
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID [--force]
-        list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" | --clear
+        list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
-Look    config card-line age|due · config label todo|doing|review|done \"TEXT\" | --off   (display only: commands take the plain names)
+Look    config card-line age|due · label COLUMN \"TEXT\"|--off (display only) · waiting-lane shown|hidden · wip-counts-blocked yes|no
 Bulk    import FILE.json|- · edit --from FILE.json|-   [--dry-run]   many cards from one JSON file, all or nothing
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
@@ -131,6 +131,12 @@ enum Cmd {
         /// Block or unblock a DOING card someone else holds (logged as its own event).
         #[arg(long)]
         force: bool,
+        /// Who or what the card waits for: a name, or `#ID` (that card unblocks it when done).
+        #[arg(long, value_name = "NAME|#ID", conflicts_with = "clear")]
+        on: Option<String>,
+        /// When to look again: a calendar date, YYYY-MM-DD.
+        #[arg(long, value_name = "DATE", conflicts_with = "clear")]
+        until: Option<String>,
     },
     Drop {
         id: i64,
@@ -786,7 +792,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let snap = store.snapshot()?;
             if j {
                 let ctx = store.due_ctx()?;
-                println!("{}", pretty(&snap.listed().into_iter().map(|c| snap.display.with(ctx.with(c, c), c)).collect::<Vec<_>>()));
+                let rows: Vec<_> =
+                    snap.listed().into_iter().map(|c| snap.blocks.with(snap.display.with(ctx.with(c, c), c), c)).collect();
+                println!("{}", pretty(&rows));
             } else {
                 print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
@@ -794,9 +802,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Show { id } => {
             let d = store.show(id)?;
             if j {
-                println!("{}", pretty(&store.display()?.with(store.due_ctx()?.with(&d, &d.card), &d.card)));
+                let (snap, ctx) = (store.snapshot()?, store.due_ctx()?);
+                println!("{}", pretty(&snap.blocks.with(snap.display.with(ctx.with(&d, &d.card), &d.card), &d.card)));
             } else {
-                print_lines!("{}", plain::detail_on(&d, now, &store.display()?));
+                let snap = store.snapshot()?;
+                print_lines!("{}", plain::detail_all(&d, now, &snap.display, Some(&plain::waiting_for(&d.card, &snap))));
             }
         }
         Cmd::Board => {
@@ -942,18 +952,41 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Block { id, reason, clear, force } => {
+        Cmd::Block { id, reason, clear, force, on, until } => {
             // the holder rule (store/archive.rs): not someone else's DOING card, unless forced
             let (what, did) = if clear { ("unblock it", "unblocked") } else { ("block it", "blocked") };
             let forced = if reason.is_some() || clear { store.holder_check(id, &actor, force, what)? } else { None };
+            // `--on` / `--until` are checked before anything is written
+            let on = match &on {
+                Some(o) => Some(terminal_board::store::blocks::clean_on(id, o)?),
+                None => None,
+            };
+            let until = match &until {
+                Some(u) => DueDate::parse(u, &format!("tb block {id} \"…\" --until 2026-10-09"))?
+                    .ok_or_else(|| BoardError(format!("'--until none' says nothing — give a date, or clear the block: 'tb block {id} --clear'")))?
+                    .as_str()
+                    .to_string()
+                    .into(),
+                None => None,
+            };
             let human = match (reason, clear) {
                 (_, true) => {
-                    store.block(id, None, &actor)?;
+                    store.block_opts(id, None, None, None, &actor)?;
                     format!("#{id} unblocked")
                 }
                 (Some(r), false) => {
-                    store.block(id, Some(&r), &actor)?;
-                    format!("#{id} blocked — clear it with {}", cmd_hint(explicit, &format!("block {id} --clear")))
+                    store.block_opts(id, Some(&r), on.as_deref(), until.as_deref(), &actor)?;
+                    let mut line = format!("#{id} blocked");
+                    if let Some(o) = &on {
+                        line.push_str(&format!(" on {o}"));
+                        if terminal_board::store::blocks::on_card(o).is_some() {
+                            line.push_str(" — it unblocks itself when that card is done");
+                        }
+                    }
+                    if let Some(u) = &until {
+                        line.push_str(&format!("; look again on {u}"));
+                    }
+                    format!("{line} — clear it with {}", cmd_hint(explicit, &format!("block {id} --clear")))
                 }
                 (None, false) => {
                     return Err(BoardError(format!(
@@ -1143,6 +1176,35 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     (format!("label.{column}"), json!(shown))
                 }
+                (k @ ("wip-counts-blocked" | "waiting-lane"), _) if off => {
+                    let instead = if k == "waiting-lane" { "'tb config waiting-lane hidden' is the default" } else { "'tb config wip-counts-blocked yes' is the default" };
+                    return Err(BoardError(format!("--off does not go with {key} — {instead}")));
+                }
+                // blocks (store/blocks.rs): a blocked card's work slot, and the waiting lane
+                ("wip-counts-blocked", value) => {
+                    let yes = match &value {
+                        Some(v) => store.set_wip_counts_blocked(v)?,
+                        None => store.wip_counts_blocked()?,
+                    };
+                    let text = if yes { "yes" } else { "no" };
+                    if value.is_none() && !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("wip-counts-blocked".into(), json!(text))
+                }
+                ("waiting-lane", value) => {
+                    let shown = match &value {
+                        Some(v) => store.set_waiting_lane(v)?,
+                        None => store.waiting_lane()?,
+                    };
+                    let text = if shown { "shown" } else { "hidden" };
+                    if value.is_none() && !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("waiting-lane".into(), json!(text))
+                }
                 ("card-line", _) if off => {
                     return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string()))
                 }
@@ -1295,6 +1357,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         say!("card-line is now due — a dated card shows its due date and the days left where its age was")
                     }
                     ("card-line", _) => say!("card-line is now age — every card shows its age in the column"),
+                    ("wip-counts-blocked", v) if v.as_str() == Some("no") => say!(
+                        "wip-counts-blocked is now no — a blocked card frees a work slot (up to the WIP limit of them; past that they count again)"
+                    ),
+                    ("wip-counts-blocked", _) => say!("wip-counts-blocked is now yes — every DOING card uses a work slot, blocked or not"),
+                    ("waiting-lane", v) if v.as_str() == Some("shown") => {
+                        say!("waiting-lane is now shown — blocked cards get their own WAITING section; their column, JSON and 'tb next' are unchanged")
+                    }
+                    ("waiting-lane", _) => say!("waiting-lane is now hidden — blocked cards stay in their column, marked in red"),
                     ("sort", s) if s.as_str() == Some("due") => say!(
                         "sort is now due — TODO and REVIEW show the nearest due date first and 'tb next' takes it; cards without a date follow; equal dates keep their position"
                     ),

@@ -300,6 +300,8 @@ mod tests {
             created_at: 0,
             column_since: 0,
             blocked: None,
+            blocked_on: None,
+            blocked_until: None,
             position: 0,
             reviewer: None,
         }

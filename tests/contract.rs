@@ -83,6 +83,8 @@ const CARD: &[&str] = &[
     "days_left", "due_state",
     // the column's display name (`config label`): chrome — `column` stays the internal name
     "column_label",
+    // structured blocks (`--on`, `--until`): the two stored fields plus what they mean today
+    "blocked_on", "blocked_until", "recheck", "blocked_on_state",
 ];
 
 #[test]
