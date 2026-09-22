@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod archive;
 pub mod due;
 pub mod order;
 
@@ -46,9 +47,10 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
-/// The refusal for moving someone else's DOING card: what it is held by, what the actor
-/// holds, and the escape hatch.
-fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+/// The refusal for changing someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch. `what` finishes "to … anyway": `move it to review`,
+/// `delete it`, `edit it`.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, what: &str) -> Result<BoardError> {
     let mine: Vec<i64> = {
         let mut st =
             tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
@@ -57,7 +59,7 @@ fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -
     };
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
     Ok(BoardError(format!(
-        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+        "#{id} is held by {owner} — your cards: {yours} · to {what} anyway use --force (logged)"
     )))
 }
 
@@ -387,6 +389,244 @@ fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     })
 }
 
+/// Bring a board's schema up to date: the tables, then every column added since the first
+/// release. Idempotent, and the ONLY place a schema change may live — `upgrade` runs it inside
+/// a transaction and backs the board file up first whenever it would change an existing board.
+fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    // migration: `blocked` arrived after the first release
+    let has_blocked: bool = conn
+        .query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='blocked'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|n| n > 0)?;
+    if !has_blocked {
+        if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN blocked TEXT") {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
+    // migration: `position` (order within a column) — existing cards ordered by created_at
+    let has_pos: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='position'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_pos == 0 {
+        match conn.execute_batch("ALTER TABLE cards ADD COLUMN position INTEGER NOT NULL DEFAULT 0") {
+            Ok(()) => {
+                conn.execute_batch(
+                    r#"UPDATE cards SET position = (SELECT COUNT(*) FROM cards c2 WHERE c2."column" = cards."column"
+                       AND (c2.created_at < cards.created_at OR (c2.created_at = cards.created_at AND c2.id < cards.id)))"#,
+                )?;
+            }
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // migration: github fail counter (red only after 3 consecutive failed refreshes)
+    let has_fails: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_fails == 0 {
+        match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(e.into()),
+            _ => {}
+        }
+    }
+    // migration: `reviewer` (v2, `tb next --review`)
+    let has_reviewer: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='reviewer'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_reviewer == 0 {
+        if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN reviewer TEXT") {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Everything `sqlite_master` says about the schema, as one string: any table, index or
+/// column a migration adds changes it.
+fn schema_fingerprint(conn: &Connection) -> Result<String> {
+    let mut st = conn.prepare("SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")?;
+    let rows = st
+        .query_map([], |r| {
+            Ok(format!("{}|{}|{}|{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.join("\n"))
+}
+
+fn is_board(conn: &Connection) -> Result<bool> {
+    let n: i64 =
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cards'", [], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
+/// Run `migrate`, and keep a copy of an existing board before its schema changes.
+///
+/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
+///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
+///    never taken, and that is the end of it.
+/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
+///    from the decision to the commit:
+///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
+///      this board? A process that waited for the lock while another one upgraded the board
+///      finds nothing to do, and does nothing — no backup, no warning;
+///    - an existing board that would change is backed up first, through a second connection.
+///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
+///      the board, it reads the last COMMITTED state, and nobody can commit while this
+///      connection holds the write lock. So the copy is always the board as the older tb
+///      left it, and there is exactly one however many processes open the board at once;
+///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
+///      with nothing changed and refuses the command.
+///
+/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
+///
+/// It compares the schema before and after instead of keeping a list of migrations, so a
+/// migration written later, by anyone, in any style, is backed up without registering anything.
+fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
+    let pending = {
+        let tx = conn.unchecked_transaction()?;
+        let before = schema_fingerprint(&tx)?;
+        // an error here (e.g. the lock was busy mid-run) just means "find out for real below"
+        let changed = migrate(&tx).and_then(|()| schema_fingerprint(&tx)).map_or(true, |after| after != before);
+        tx.rollback()?;
+        changed
+    };
+    if !pending {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let existed = is_board(&tx)?;
+    let before = schema_fingerprint(&tx)?;
+    tx.execute_batch("SAVEPOINT tb_probe")?;
+    migrate(&tx)?;
+    let changes = schema_fingerprint(&tx)? != before;
+    // undo the probe but keep the transaction — and with it the write lock
+    tx.execute_batch("ROLLBACK TO tb_probe; RELEASE tb_probe")?;
+    if !changes {
+        // another process upgraded the board while this one waited for the lock
+        tx.rollback()?;
+        return Ok(());
+    }
+    let backup = if on_disk && existed { Some(backup_aside(path)?) } else { None };
+    if let Err(e) = migrate(&tx).and_then(|()| Ok(tx.commit()?)) {
+        // the board is unchanged, so a copy made for this upgrade has nothing to go back from
+        if let Some(b) = &backup {
+            let _ = std::fs::remove_file(b);
+        }
+        return Err(e);
+    }
+    if let Some(backup) = backup {
+        crate::notice::push(format!(
+            "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+            path.display(),
+            backup.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Copy the board aside, next to itself: `<file>.before-<tb version>.<UTC date-time>.bak`.
+/// The caller holds the board's write lock (see `upgrade`), so one process is here at a time.
+///
+/// Written by SQLite (`VACUUM INTO`, on a connection of its own), not by copying the file:
+/// committed cards may still sit in a hot `-wal`, and a copy of the `.db` alone would lose
+/// them. The result is one complete database with no sidecars, created private, that never
+/// ends in `.db` (so it is never listed as a board). It is written as `….bak.partial` and
+/// renamed when complete, so a file named `….bak` is always a whole backup — a process killed
+/// half way leaves a `.partial`, which the next upgrade of that board clears.
+fn backup_aside(path: &Path) -> Result<std::path::PathBuf> {
+    use chrono::TimeZone;
+    let cannot = |why: String| {
+        BoardError(format!(
+            "cannot back up {} before upgrading it: {why} — nothing was changed; make room next to it (or fix the directory's permissions) and run the command again",
+            path.display()
+        ))
+    };
+    let stamp = chrono::Utc
+        .timestamp_opt(now(), 0)
+        .single()
+        .map(|t| t.format("%Y%m%d-%H%M%S").to_string())
+        .unwrap_or_else(|| now().to_string());
+    let base = format!("{}.before-{}.{stamp}", path.display(), env!("CARGO_PKG_VERSION"));
+    let target = (1..100)
+        .map(|n| std::path::PathBuf::from(if n == 1 { format!("{base}.bak") } else { format!("{base}-{n}.bak") }))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .ok_or_else(|| cannot("too many backups with this name".into()))?;
+    let partial = std::path::PathBuf::from(format!("{}.partial", target.display()));
+    // a leftover from a run that was killed mid-copy; O_EXCL below never follows a link
+    let _ = std::fs::remove_file(&partial);
+    let _ = std::fs::remove_file(format!("{}-journal", partial.display()));
+    let write = || -> std::result::Result<(), String> {
+        if !crate::fsperm::create_private(&partial).map_err(|e| e.to_string())? {
+            return Err(format!("{} is in the way", partial.display()));
+        }
+        let to = partial.to_str().ok_or("its path is not valid UTF-8")?;
+        let reader = Connection::open(path).map_err(|e| e.to_string())?;
+        reader.busy_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+        reader.execute("VACUUM INTO ?1", [to]).map_err(|e| e.to_string())?;
+        drop(reader);
+        std::fs::rename(&partial, &target).map_err(|e| e.to_string())
+    };
+    if let Err(why) = write() {
+        let _ = std::fs::remove_file(&partial);
+        return Err(cannot(why));
+    }
+    Ok(target)
+}
+
+/// The board a hint should name for the file at `path`: None when a bare `tb` reaches it
+/// (`TB_DB` pins it, or it is the default board), else its name in the boards directory.
+fn board_of(path: &Path) -> Option<String> {
+    if crate::boards::db_pinned() || path.parent() != Some(crate::boards::boards_dir().as_path()) {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?.strip_suffix(".db")?;
+    (crate::boards::validate(name).is_ok() && name != crate::boards::default_name()).then(|| name.to_string())
+}
+
+/// `tb config …` / `tb NAME config …` for the board in `path`.
+fn config_cmd(path: &Path, rest: &str) -> String {
+    match board_of(path) {
+        Some(name) => format!("'tb {name} config {rest}'"),
+        None => format!("'tb config {rest}'"),
+    }
+}
+
+/// An existing board file that other users can open is REPORTED, never quietly re-moded: it
+/// may be shared with a group on purpose. `tb config file-mode private` tightens it (and says
+/// so); `tb config file-mode shared` records that it is meant to be, which ends the report.
+fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
+    let Some(mode) = crate::fsperm::mode_of(real).filter(|m| crate::fsperm::is_wide(*m)) else { return };
+    let shared = conn
+        .query_row("SELECT value FROM config WHERE key='file-mode'", [], |r| r.get::<_, String>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some_and(|v| v == "shared");
+    if shared {
+        return;
+    }
+    crate::notice::push(format!(
+        "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
+        real.display(),
+        crate::fsperm::fmt_mode(mode),
+        config_cmd(path, "file-mode private"),
+        config_cmd(path, "file-mode shared"),
+    ));
+}
+
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).
 pub struct Seed<'a> {
     pub title: &'a str,
@@ -401,6 +641,8 @@ pub struct Seed<'a> {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
+        // `:memory:` (and SQLite's unnamed temporary database) have no file to look after
+        let on_disk = !path.as_os_str().is_empty() && path.as_os_str() != ":memory:";
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
                 std::fs::create_dir_all(dir).map_err(|e| {
@@ -411,67 +653,23 @@ impl Store {
                 })?;
             }
         }
-        let conn = Connection::open(path)?;
+        // A board file is born private (0600): SQLite then opens the empty file as a new
+        // database and gives the -wal/-shm sidecars the same mode. An existing file is never
+        // re-moded here; `report_wide_file` says so instead. `real` is where the board lives:
+        // `path` itself, or the end of its chain of symbolic links — tb creates THAT file
+        // (SQLite would create a link's missing target 0644) and opens the database there.
+        let (real, created) = if on_disk {
+            crate::fsperm::create_board(path).map_err(BoardError)?
+        } else {
+            (path.to_path_buf(), false)
+        };
+        let mut conn = Connection::open(&real)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
-        conn.execute_batch(SCHEMA)?;
-        // migration: `blocked` arrived after the first release
-        let has_blocked: bool = conn
-            .query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='blocked'", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map(|n| n > 0)?;
-        if !has_blocked {
-            if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN blocked TEXT") {
-                if !e.to_string().contains("duplicate column") {
-                    return Err(e.into());
-                }
-            }
-        }
-        // migration: `position` (order within a column) — existing cards ordered by created_at
-        let has_pos: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='position'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_pos == 0 {
-            match conn.execute_batch("ALTER TABLE cards ADD COLUMN position INTEGER NOT NULL DEFAULT 0") {
-                Ok(()) => {
-                    conn.execute_batch(
-                        r#"UPDATE cards SET position = (SELECT COUNT(*) FROM cards c2 WHERE c2."column" = cards."column"
-                           AND (c2.created_at < cards.created_at OR (c2.created_at = cards.created_at AND c2.id < cards.id)))"#,
-                    )?;
-                }
-                Err(e) if e.to_string().contains("duplicate column") => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        // migration: github fail counter (red only after 3 consecutive failed refreshes)
-        let has_fails: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('github_snapshot') WHERE name='fails'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_fails == 0 {
-            match conn.execute_batch("ALTER TABLE github_snapshot ADD COLUMN fails INTEGER NOT NULL DEFAULT 0") {
-                Err(e) if e.to_string().contains("duplicate column") => {}
-                Err(e) => return Err(e.into()),
-                _ => {}
-            }
-        }
-        // migration: `reviewer` (v2, `tb next --review`)
-        let has_reviewer: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='reviewer'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_reviewer == 0 {
-            if let Err(e) = conn.execute_batch("ALTER TABLE cards ADD COLUMN reviewer TEXT") {
-                if !e.to_string().contains("duplicate column") {
-                    return Err(e.into());
-                }
-            }
+        upgrade(&mut conn, &real, on_disk)?;
+        if on_disk && !created {
+            report_wide_file(&conn, path, &real);
         }
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
     }
@@ -678,8 +876,96 @@ impl Store {
         // due dates (store/due.rs): listed once the board sets them, so a board that sets
         // nothing lists exactly what it always did
         all.extend(self.due_settings()?);
+        all.extend(self.rm_settings()?);
         all.extend(self.sort_settings()?);
+        // `file-mode` is listed only when there is something to say (a file other users can
+        // open, or one kept shared on purpose): a private board's listing is unchanged
+        all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
         Ok(all)
+    }
+
+    /// (permission bits of the board file, kept shared on purpose?). The mode is None for an
+    /// in-memory board and on a platform without unix permissions.
+    pub fn file_mode(&self) -> Result<(Option<u32>, bool)> {
+        let shared: Option<String> =
+            self.conn.query_row("SELECT value FROM config WHERE key='file-mode'", [], |r| r.get(0)).optional()?;
+        Ok((self.path().and_then(|p| crate::fsperm::mode_of(&p)), shared.as_deref() == Some("shared")))
+    }
+
+    /// The `file-mode` row of `tb config`: None while the file is private and nothing was set.
+    fn file_mode_setting(&self) -> Result<Option<String>> {
+        let (mode, shared) = self.file_mode()?;
+        Ok(match (mode, shared) {
+            (Some(m), true) => Some(format!("shared ({})", crate::fsperm::fmt_mode(m))),
+            (None, true) => Some("shared".into()),
+            (Some(m), false) if crate::fsperm::is_wide(m) => Some(format!("{} (open to other users)", crate::fsperm::fmt_mode(m))),
+            _ => None,
+        })
+    }
+
+    /// What `tb config file-mode` answers: `private (0600)`, `0644 (open to other users)`,
+    /// `shared (0664)`, or `not applicable` where there is no file mode to speak of.
+    pub fn file_mode_text(&self) -> Result<String> {
+        Ok(match (self.file_mode_setting()?, self.file_mode()?.0) {
+            (Some(s), _) => s,
+            (None, Some(m)) => format!("private ({})", crate::fsperm::fmt_mode(m)),
+            (None, None) => "not applicable".into(),
+        })
+    }
+
+    /// `tb config file-mode private|shared`. `private` makes the board file and its live
+    /// sidecars 0600 — the one place tb changes the mode of an existing file, because it was
+    /// asked to, and it says what it did. `shared` records that other users are meant to reach
+    /// this file, which ends the report. Both are logged on the board. Returns the line to print.
+    pub fn set_file_mode(&self, value: &str, actor: &str) -> Result<String> {
+        let log = |text: String| -> Result<()> {
+            self.conn.execute(
+                "INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,'file-mode',?)",
+                params![now(), actor, text],
+            )?;
+            Ok(())
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "private" => {
+                let Some(path) = self.path() else {
+                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'");
+                };
+                if crate::fsperm::mode_of(&path).is_none() {
+                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'");
+                }
+                let done = crate::fsperm::make_private(&path).map_err(|e| {
+                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()))
+                })?;
+                let base = |f: &std::path::PathBuf| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                // a path that is not a regular file (a symbolic link someone planted) is never
+                // re-moded: tb says so and leaves it
+                let left = if done.skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · left alone, not a regular file: {}", done.skipped.iter().map(base).collect::<Vec<_>>().join(", "))
+                };
+                self.conn.execute("DELETE FROM config WHERE key='file-mode'", [])?;
+                if done.changed.is_empty() {
+                    return Ok(format!("{} is already private (mode {}){left}", path.display(), crate::fsperm::fmt_mode(crate::fsperm::PRIVATE)));
+                }
+                let was: Vec<String> =
+                    done.changed.iter().map(|(f, m)| format!("{} was {}", base(f), crate::fsperm::fmt_mode(*m))).collect();
+                log(format!("private: {}", was.join(", ")))?;
+                Ok(format!(
+                    "{} is now private (mode {}): {}{left}",
+                    path.display(),
+                    crate::fsperm::fmt_mode(crate::fsperm::PRIVATE),
+                    was.join(", ")
+                ))
+            }
+            "shared" => {
+                self.set_config("file-mode", "shared")?;
+                let mode = self.file_mode()?.0.map(crate::fsperm::fmt_mode).unwrap_or_else(|| "unknown".into());
+                log(format!("shared: mode {mode} kept"))?;
+                Ok(format!("file-mode is now shared — tb leaves the mode ({mode}) alone and stops reporting it"))
+            }
+            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'")),
+        }
     }
 
     pub fn layout(&self) -> Result<String> {
@@ -968,10 +1254,15 @@ impl Store {
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
     /// both win the same card.
     fn claim(&mut self, id: Option<i64>, actor: &str) -> Result<Card> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let wip = wip_of(&tx)?;
-        let doing: i64 =
-            tx.query_row(r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#, [], |r| r.get(0))?;
+        self.transition(Change::Claim(id), actor, false)
+    }
+
+    /// The card `next` / `take` claims: the named one (it must be in TODO), or the top
+    /// unblocked TODO card. Runs inside `transition`'s transaction. (The body is the selection
+    /// exactly as it was written inside `claim`, `&tx` and all, so work on the ordering that is
+    /// in flight elsewhere still merges line for line — hence the lint allowance.)
+    #[allow(clippy::needless_borrow)]
+    fn claim_target(tx: &Connection, id: Option<i64>) -> Result<i64> {
         let target = match id {
             Some(id) => {
                 let c = get_card(&tx, id)?;
@@ -1004,23 +1295,7 @@ impl Store {
                 }
             }
         };
-        if doing >= wip {
-            return Err(wip_full_err(&tx, doing, wip, actor));
-        }
-        let pos = bottom_of(&tx, "doing")?;
-        let changed = tx.execute(
-            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=?, reviewer=NULL WHERE id=? AND "column"='todo'"#,
-            params![actor, now(), pos, target],
-        )?;
-        if changed != 1 {
-            return err(format!(
-                "card #{target} was taken by someone else — try 'tb next'"
-            ));
-        }
-        Self::log(&tx, target, actor, "taken", "")?;
-        let card = get_card(&tx, target)?;
-        tx.commit()?;
-        Ok(card)
+        Ok(target)
     }
 
     /// Log an event of any kind on a card (e.g. `github` auto-moves).
@@ -1154,37 +1429,80 @@ impl Store {
     }
 
     fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
-        let column = column.to_ascii_lowercase();
-        if !COLUMNS.contains(&column.as_str()) {
-            return err(format!(
-                "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
-            ));
-        }
-        let reason = reason.map(str::trim);
+        self.transition(Change::Move { id, column, reason }, actor, force)
+    }
+
+    /// EVERY column change goes through here — `next`/`take`, `move`/`done`/send-back (and the
+    /// GitHub sync, which calls `move_to`), and `drop` — from the CLI and the full-screen
+    /// board alike. One transaction (`BEGIN IMMEDIATE`), and one fixed order:
+    ///
+    /// 1. what is asked: the card, the column it goes to, and the refusals that belong to the
+    ///    request itself (unknown column, a send-back without its reason, nothing to take);
+    ///    a change that changes nothing ends here;
+    /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
+    ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
+    ///    `--force`, logged) → the WIP limit (entering DOING, except a send-back);
+    /// 3. the change, then its events.
+    ///
+    /// A new guard — and a hook on a change — belongs in step 2, after the ones that are there.
+    fn transition(&mut self, change: Change<'_>, actor: &str, force: bool) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let c = get_card(&tx, id)?;
-        let send_back = c.column == "review" && column == "doing";
-        if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
-            return err(format!(
-                "say why it goes back — 'tb move {id} doing \"what to fix\"'"
-            ));
-        }
-        if !send_back && reason.is_some() {
-            return err(format!(
-                "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
-            ));
-        }
-        if c.column == column {
-            // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
-            if column == "review" && c.reviewer.is_some() {
-                tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
-                Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
-                let c = get_card(&tx, id)?;
-                tx.commit()?;
-                return Ok(c);
+        // 1. what is asked
+        let (c, column, reason) = match change {
+            Change::Claim(id) => {
+                let target = Self::claim_target(&tx, id)?;
+                (get_card(&tx, target)?, "doing".to_string(), None)
             }
-            return Ok(c);
-        }
+            Change::Drop(id) => {
+                let c = get_card(&tx, id)?;
+                if c.column == "todo" && c.owner.is_none() {
+                    return Ok(c);
+                }
+                (c, "todo".to_string(), None)
+            }
+            Change::Move { id, column, reason } => {
+                let column = column.to_ascii_lowercase();
+                if !COLUMNS.contains(&column.as_str()) {
+                    return err(format!(
+                        "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
+                    ));
+                }
+                let reason = reason.map(str::trim);
+                let c = get_card(&tx, id)?;
+                let send_back = c.column == "review" && column == "doing";
+                if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
+                    return err(format!(
+                        "say why it goes back — 'tb move {id} doing \"what to fix\"'"
+                    ));
+                }
+                if !send_back && reason.is_some() {
+                    return err(format!(
+                        "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+                    ));
+                }
+                if c.column == column {
+                    // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
+                    if column == "review" && c.reviewer.is_some() {
+                        tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+                        Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
+                        let c = get_card(&tx, id)?;
+                        tx.commit()?;
+                        return Ok(c);
+                    }
+                    return Ok(c);
+                }
+                (c, column, reason)
+            }
+        };
+        let id = c.id;
+        let kind = match change {
+            Change::Claim(_) => Kind::Claim,
+            Change::Drop(_) => Kind::Drop,
+            Change::Move { .. } => Kind::Move,
+        };
+        let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
+
+        // 2. the guards
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
         // The `github` automation is exempt: its moves are evidence-driven and logged.
@@ -1192,13 +1510,17 @@ impl Store {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                        return Err(ownership_err(&tx, id, owner, actor, &format!("move it to {column}"))?);
                     }
-                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                    let text = match kind {
+                        Kind::Drop => format!("moved #{id} held by {owner} back to todo"),
+                        _ => format!("moved #{id} held by {owner} to {column}"),
+                    };
+                    Self::log(&tx, id, actor, "force", &text)?;
                 }
             }
         }
-        if column == "done" && c.column == "review" {
+        if kind == Kind::Move && column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
                     if !force {
@@ -1220,9 +1542,12 @@ impl Store {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
-        let owner = match column.as_str() {
-            "todo" => None,
-            "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
+
+        // 3. the change, then its events
+        let owner = match (kind, column.as_str()) {
+            (Kind::Claim, _) => Some(actor.to_string()),
+            (_, "todo") => None,
+            (_, "doing") => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
         // a block set while in REVIEW must not survive into DONE (or it renders as a live
@@ -1234,17 +1559,27 @@ impl Store {
         // the reviewer stays on the card that reaches done (who approved it); any other move
         // ends the review, so the next round is claimed afresh
         let reviewer = if column == "done" { c.reviewer.clone() } else { None };
-        tx.execute(
+        // compare-and-swap on the column the card was read in: two callers never both win it
+        let changed = tx.execute(
             r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, reviewer=?,
-               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
-            params![column, owner, now(), pos, reviewer, column, id],
+               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=? AND "column"=?"#,
+            params![column, owner, now(), pos, reviewer, column, id, c.column],
         )?;
-        if block_cleared {
-            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        if changed != 1 {
+            return err(format!("card #{id} was taken by someone else — try 'tb next'"));
         }
-        Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
-        if let (true, Some(r)) = (send_back, reason) {
-            Self::log(&tx, id, actor, "returned", r)?;
+        match kind {
+            Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
+            Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
+            Kind::Move => {
+                if block_cleared {
+                    Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+                }
+                Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+                if let (true, Some(r)) = (send_back, reason) {
+                    Self::log(&tx, id, actor, "returned", r)?;
+                }
+            }
         }
         let c = get_card(&tx, id)?;
         tx.commit()?;
@@ -1404,31 +1739,26 @@ impl Store {
     /// it, see move_card) unless forced; the check, the `force` event and the drop are one
     /// transaction.
     fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let c = get_card(&tx, id)?;
-        if c.column == "todo" && c.owner.is_none() {
-            return Ok(c);
-        }
-        if c.column == "doing" && actor != "github" {
-            if let Some(owner) = c.owner.as_deref() {
-                if !owner.eq_ignore_ascii_case(actor) {
-                    if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
-                    }
-                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
-                }
-            }
-        }
-        let pos = bottom_of(&tx, "todo")?;
-        tx.execute(
-            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=?, reviewer=NULL WHERE id=?"#,
-            params![now(), pos, id],
-        )?;
-        Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
-        let c = get_card(&tx, id)?;
-        tx.commit()?;
-        Ok(c)
+        self.transition(Change::Drop(id), actor, force)
     }
+}
+
+/// A column change, as asked for (see `Store::transition`).
+#[derive(Clone, Copy)]
+enum Change<'a> {
+    /// `next` (None: the top unblocked TODO card) / `take ID`: TODO → DOING, owned by the actor.
+    Claim(Option<i64>),
+    /// `move` / `done` / send-back / GitHub sync; `reason` only with REVIEW → DOING.
+    Move { id: i64, column: &'a str, reason: Option<&'a str> },
+    /// `drop`: back to TODO, unowned.
+    Drop(i64),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Claim,
+    Move,
+    Drop,
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.

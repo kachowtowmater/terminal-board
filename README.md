@@ -214,7 +214,7 @@ Press `?` on the board to see all keys at any time.
 | arrows | select a card (←→ column, ↑↓ card) |
 | `a` | add a card (`tag: title`) |
 | `e` | edit the title and description |
-| `x` | delete the card (asks y/n) |
+| `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
 | `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
@@ -404,11 +404,12 @@ tb --version
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
-| `tb rm ID` | delete a card |
+| `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |
+| `tb list --archived` / `tb restore ID` | the archived cards / bring one back with its checklist and whole history |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
-| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
@@ -559,7 +560,30 @@ and `tb config theme dark|light`.
 - **Back up** by copying that folder (ideally while `tb` is closed).
 - `TB_DB=/path/to/file.db` makes `tb` use a specific file. In that mode board names are
   not available (every name would alias the same file): an explicit non-default name fails
-  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`.
+  with `TB_DB is set — board names are ignored; unset TB_DB to use boards`. A `TB_BOARD`
+  left in the environment is not a typed name: `TB_DB` wins, and tb says so in one warning
+  line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
+- **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
+  a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
+  alike. A board path may be a symbolic link (`boards/work.db -> /mnt/secure/work.db`): the board
+  is the file the link leads to, and tb creates *that* file `0600`; a link into a folder that
+  does not exist, or a loop of links, is refused, and tb never changes the mode of anything
+  through a link. A board made by an earlier version is `0644`; tb never changes the mode of an
+  existing file on its own (you may share a board with a group on purpose). It tells you —
+  one warning line naming the file — until you choose:
+
+  ```sh
+  tb config file-mode            # private (0600), or what is wrong with it
+  tb config file-mode private    # the board file and its sidecars become 0600; logged on the board
+  tb config file-mode shared     # it is shared on purpose: tb leaves the mode alone and stops saying so
+  ```
+- **A backup is written before a board's schema is upgraded.** When a newer tb opens a board
+  an older one wrote and has to add columns, it first copies the board next to itself as
+  `<file>.before-<version>.<UTC date-time>.bak` and says where. The copy is one complete
+  file (it includes cards still in the `-wal`, and needs no sidecars), and there is exactly
+  one however many `tb` processes open the board at that moment. If the copy cannot be
+  written, nothing is upgraded and the command fails. Going back to an older version:
+  [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb).
 
 ## Troubleshooting
 

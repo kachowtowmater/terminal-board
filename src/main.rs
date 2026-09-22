@@ -20,15 +20,16 @@ const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
-Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID
-        list · show ID · note ID \"text\" · block ID \"#7\" | --clear
+Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--desc D]   rm ID [--force]
+        list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
 Boards  boards · board (print; --json = full state) · watch --json (NDJSON on every change)
-Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden]
+Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
+        config file-mode [private|shared] (who may open the board file; tb creates it 0600)
 GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
 Agents  agents (who is on this board + the card each holds or reviews; herdr adds the live status)
 Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--agents-md PATH] [--dry-run]
@@ -75,7 +76,11 @@ enum Cmd {
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
     },
-    List,
+    List {
+        /// The cards `tb rm` archived on an archive board (`tb config rm archive`).
+        #[arg(long)]
+        archived: bool,
+    },
     Show { id: i64 },
     Next {
         /// Claim the top REVIEW card you did not do yourself, instead of a TODO card.
@@ -121,6 +126,9 @@ enum Cmd {
         reason: Option<String>,
         #[arg(long, conflicts_with = "reason")]
         clear: bool,
+        /// Block or unblock a DOING card someone else holds (logged as its own event).
+        #[arg(long)]
+        force: bool,
     },
     Drop {
         id: i64,
@@ -128,7 +136,14 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    Rm { id: i64 },
+    Rm {
+        id: i64,
+        /// Remove a DOING card someone else holds (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Bring an archived card back (`tb list --archived` shows them).
+    Restore { id: i64 },
     Prio { id: i64, how: String },
     Edit {
         id: i64,
@@ -142,6 +157,9 @@ enum Cmd {
         /// Read the description from a file, byte for byte (`-` = standard input).
         #[arg(long = "desc-file", value_name = "PATH", conflicts_with = "desc")]
         desc_file: Option<std::path::PathBuf>,
+        /// Edit a DOING card someone else holds (logged as its own event).
+        #[arg(long)]
+        force: bool,
     },
     Config {
         key: Option<String>,
@@ -191,7 +209,7 @@ impl Cmd {
     fn writes(&self) -> bool {
         !matches!(
             self,
-            Cmd::List | Cmd::Show { .. } | Cmd::Boards | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
+            Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards | Cmd::Github { .. } | Cmd::Board | Cmd::Agents | Cmd::Guide
         )
     }
 }
@@ -211,8 +229,18 @@ macro_rules! warn {
     ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
 }
 
+/// Pretty JSON for stdout. Warnings raised so far ride along as `"warnings": […]` on
+/// object-shaped output (additive; absent when there are none — see `notice`).
 fn pretty<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into())
+    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into());
+    terminal_board::notice::splice(&text, &terminal_board::notice::all())
+}
+
+/// Print each warning nobody has printed yet, once, on stderr: `tb: …`.
+fn print_warnings() {
+    for w in terminal_board::notice::take_unprinted() {
+        warn!("tb: {w}");
+    }
 }
 
 /// The command a hint names: `tb take 1` on the default board, `tb work take 1` on an
@@ -467,6 +495,18 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         ));
     }
     let actor = resolve_actor(cli.actor.as_deref());
+    // `github` is the name tb's own GitHub sync acts under, and the store lets that name move
+    // a card someone holds (its moves are evidence-driven). Nobody else may carry it: a write
+    // — or the full-screen board — under that name is refused before anything opens.
+    let acts = match &cli.cmd {
+        None => std::io::stdout().is_terminal(),
+        Some(c) => c.writes() && !matches!(c, Cmd::Watch { .. }),
+    };
+    if acts && actor.trim().eq_ignore_ascii_case("github") {
+        return Err(BoardError(
+            "'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1".to_string(),
+        ));
+    }
     if !terminal_board::env("DB").is_some() {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
             Ok(notes) => {
@@ -477,10 +517,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             Err(e) => warn!("tb: could not migrate the legacy board: {e}"),
         }
     }
+    // TB_DB and TB_BOARD both set: the pinned file wins and the name is dropped, with one
+    // warning — an environment that names a board must not break a harness that pins a file.
+    let (env, ignored) = boards::env_board();
+    if let Some(n) = ignored {
+        terminal_board::notice::push(format!(
+            "TB_DB is set, so TB_BOARD={n} is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"
+        ));
+    }
     if matches!(cli.cmd, Some(Cmd::Boards)) {
         return list_boards(cli.json);
     }
-    let env = terminal_board::env("BOARD");
     let name = boards::select(positional.as_deref(), cli.board.as_deref(), env.as_deref())?;
     // TB_DB pins ONE file: a board NAME would silently alias it (every name opens the same
     // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
@@ -512,6 +559,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             || (c.writes() && name == boards::DEFAULT_BOARD)
     });
     let mut store = open_board(&name, creates)?;
+    // before the full-screen board or `watch` takes over the terminal
+    print_warnings();
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
@@ -538,7 +587,29 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, format!("added #{id} — take it with {}", cmd_hint(explicit, &format!("take {id}"))))?;
         }
-        Cmd::List => {
+        Cmd::List { archived: true } => {
+            let cards = store.archived()?;
+            if j {
+                println!("{}", pretty(&cards));
+            } else if cards.is_empty() {
+                say!("no archived cards — 'tb rm ID' archives instead of deleting once the board says 'tb config rm archive'");
+            } else {
+                for c in &cards {
+                    let tag = c.tag.as_deref().map(|t| format!("{t} - ")).unwrap_or_default();
+                    let owner = c.owner.as_deref().map(|o| format!(" - {o}")).unwrap_or_default();
+                    say!(
+                        "#{} {}  [{tag}was {}{owner} - archived {} ago by {}]",
+                        c.id,
+                        c.title,
+                        c.column,
+                        terminal_board::store::fmt_age(now - c.archived_at),
+                        c.archived_by
+                    );
+                }
+                say!("bring one back with {}", cmd_hint(explicit, "restore ID"));
+            }
+        }
+        Cmd::List { .. } => {
             let snap = store.snapshot()?;
             if j {
                 let ctx = store.due_ctx()?;
@@ -681,7 +752,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Block { id, reason, clear } => {
+        Cmd::Block { id, reason, clear, force } => {
+            // the holder rule (store/archive.rs): not someone else's DOING card, unless forced
+            let (what, did) = if clear { ("unblock it", "unblocked") } else { ("block it", "blocked") };
+            let forced = if reason.is_some() || clear { store.holder_check(id, &actor, force, what)? } else { None };
             let human = match (reason, clear) {
                 (_, true) => {
                     store.block(id, None, &actor)?;
@@ -699,6 +773,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     )))
                 }
             };
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, did, &owner)?;
+            }
             done_card(&store, j, id, human)?;
         }
         Cmd::Drop { id, force } => {
@@ -709,14 +786,23 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
         }
-        Cmd::Rm { id } => {
+        Cmd::Rm { id, force } => {
             let before = contract::card_by_id(&store, id)?;
-            let c = store.delete_card(id, &actor)?;
-            if j {
-                println!("{}", pretty(&json!({"ok": true, "card": before})));
-            } else {
-                say!("deleted #{id} \"{}\"", c.title);
+            let r = store.remove_card(id, &actor, force)?;
+            match (j, r.archived) {
+                (true, false) => println!("{}", pretty(&json!({"ok": true, "card": before}))),
+                (true, true) => println!("{}", pretty(&json!({"ok": true, "card": before, "archived": true}))),
+                (false, false) => say!("deleted #{id} \"{}\"", r.card.title),
+                (false, true) => say!(
+                    "archived #{id} \"{}\" — bring it back with {}",
+                    r.card.title,
+                    cmd_hint(explicit, &format!("restore {id}"))
+                ),
             }
+        }
+        Cmd::Restore { id } => {
+            let c = store.restore(id, &actor)?;
+            done_card(&store, j, id, format!("#{id} restored to {} with its history", c.column))?;
         }
         Cmd::Prio { id, how } => {
             let before = store.place(id).ok();
@@ -744,7 +830,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 done_card(&store, j, id, human)?;
             }
         }
-        Cmd::Edit { id, title, desc, .. } => {
+        Cmd::Edit { id, title, desc, force, .. } => {
+            // the holder rule (store/archive.rs): not someone else's DOING card, unless forced
+            let forced = store.holder_check(id, &actor, force, "edit it")?;
             // `--due` alone is a whole edit; with --title/--desc the date (already checked)
             // is written after them
             if due_arg.is_none() || title.is_some() || desc.is_some() {
@@ -752,6 +840,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             if let Some(date) = &due_arg {
                 store.set_due(id, date.as_ref(), &actor)?;
+            }
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, "edited", &owner)?;
             }
             done_card(&store, j, id, format!("#{id} saved"))?;
         }
@@ -917,6 +1008,33 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         return Ok(());
                     }
                     ("due-warn".into(), json!(n))
+                }
+                // rm: what `tb rm` and the delete key do — delete (default) or archive
+                ("rm", None) => {
+                    let mode = store.rm_mode()?;
+                    if !j {
+                        say!("{mode}");
+                        return Ok(());
+                    }
+                    ("rm".into(), json!(mode))
+                }
+                ("rm", Some(value)) => ("rm".into(), json!(store.set_rm_mode(&value, &actor)?)),
+                // file-mode: who may open the board file (see fsperm)
+                ("file-mode", None) => {
+                    let text = store.file_mode_text()?;
+                    if !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("file-mode".into(), json!(text))
+                }
+                ("file-mode", Some(value)) => {
+                    let said = store.set_file_mode(&value, &actor)?;
+                    if !j {
+                        say!("{said}");
+                        return Ok(());
+                    }
+                    ("file-mode".into(), json!(store.file_mode_text()?))
                 }
                 _ => {
                     return Err(BoardError(format!(
@@ -1087,6 +1205,8 @@ fn main() -> ExitCode {
         },
         Err(e) => Err(e),
     };
+    // warnings raised after the board was opened (a board the picker opened, a late backup)
+    print_warnings();
     match parsed {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

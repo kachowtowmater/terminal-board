@@ -391,17 +391,26 @@ fn a_board_name_with_tb_db_is_refused() {
     // nothing mixed in: the pinned file holds only the default board's card
     let list = b.ok(&["list"]);
     assert!(list.contains("on the pinned file") && !list.contains("mixed in"), "{list}");
-    // TB_BOARD env: same refusal
-    let o = Command::new(env!("CARGO_BIN_EXE_tb"))
-        .args(["list"])
-        .env("TB_DB", &b.db)
-        .env("TB_BOARD", "other")
-        .env("TB_AS", "tester")
-        .env("TB_NO_HERDR", "1")
-        .output()
-        .unwrap();
+    // TB_BOARD in the environment is not a typed name: TB_DB wins, with one warning, and the
+    // pinned file is what opens (tests/file_safety.rs covers this case in full). A name typed
+    // on the command line is still refused with TB_BOARD set.
+    let with_env = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("TB_DB", &b.db)
+            .env("TB_BOARD", "other")
+            .env("TB_AS", "tester")
+            .env("TB_NO_HERDR", "1")
+            .output()
+            .unwrap()
+    };
+    let o = with_env(&["list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("on the pinned file"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("TB_BOARD=other is ignored"));
+    let o = with_env(&["other", "list"]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("TB_DB is set"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("board names are ignored; unset TB_DB"));
     // bare and default name keep working under TB_DB
     b.ok(&["default", "list"]);
     let v: serde_json::Value = serde_json::from_str(&b.ok(&["board", "--json"])).unwrap();

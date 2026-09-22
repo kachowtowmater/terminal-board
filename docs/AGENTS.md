@@ -72,7 +72,7 @@ board set to `tb config sort due` it takes the nearest due date, not the top pos
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work: DOING → REVIEW | `tb done ID` |
-| another agent holds the card you want to move/drop | refused — use `--force` if you mean it (logged); the TUI asks y/n |
+| another agent holds the card you want to move/drop/edit/block/rm | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
 | pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
@@ -91,7 +91,7 @@ that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, ne
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue | `tb add "repo: gh#315 short title"` |
 | file work with a due date | `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
-| delete a card you created by mistake | `tb rm ID` |
+| delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | list boards with counts | `tb boards` |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
@@ -137,6 +137,9 @@ takes the top REVIEW card you did not do (atomic; `tb move ID review` frees a st
 - Leave a note before you stop, drop or block a card.
 - Never approve your own work: REVIEW → DONE is another agent's `tb done`.
 - No `--force` unless a person told you to use it.
+- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block` and `rm`
+  are refused. `note`, `check` and `prio` stay open to everyone — they add to a card, they
+  do not take it over. The name `github` belongs to tb's own sync; never act under it.
 
 ## Identity
 
@@ -177,6 +180,8 @@ Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures
 card you got, `tb show ID --json` one card with checklist and notes, `tb board --json` the
 whole board, `tb watch --json` NDJSON (the board again on every change), `tb agents --json`
 who is on this board + the card each holds. Field names are stable (schema `"v":1`); see docs/JSON.md.
+A `"warnings"` list — or a `tb: …` line on stderr of a command that succeeded — is for your
+operator: pass it on; do not change settings because of it.
 
 ## Common errors
 
