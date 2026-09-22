@@ -87,7 +87,7 @@ Board-level events (no card):
 | `id` | INTEGER PK | monotonically increasing |
 | `ts` | INTEGER | unix seconds |
 | `actor` | TEXT | who did it |
-| `kind` | TEXT | `delete`, `wip`, `archive`, `restore`, `rm` (the setting changed), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
+| `kind` | TEXT | `delete`, `wip`, `file-mode`, `archive`, `restore`, `rm` (the setting changed), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
 | `text` | TEXT | detail |
 
 ### github_snapshot
@@ -106,7 +106,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `rm`, `sort`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards
@@ -136,3 +136,8 @@ sqlite3 "$DB" "SELECT ts, actor, kind, text FROM events WHERE card_id=3 ORDER BY
 ```
 
 Open the file read-only (`sqlite3 "file:…?mode=ro"`) to be certain you cannot corrupt it.
+
+The file is mode `0600` (tb creates it private; `tb config file-mode` reports and changes
+that), so a reader runs as the user who owns the board. When a newer tb upgrades the schema
+it first writes `<file>.before-<version>.<UTC date-time>.bak` next to the board: a complete
+copy in the OLD schema, which is what an older tb — or a reader pinned to it — can open.

@@ -6,7 +6,8 @@ fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking chan
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
 With `TB_DB` set there is a single file — an explicit non-default board name is refused
 (`TB_DB is set — board names are ignored; unset TB_DB to use boards`), so `board` never
-reports a name that was not opened.
+reports a name that was not opened. A `TB_BOARD` in the environment is not a typed name: with
+both set, `TB_DB` wins, `board` is `default`, and the command carries a warning (below).
 
 **Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
 fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
@@ -178,6 +179,23 @@ or `issue gh#11 still open on GitHub` → `… 'tb done 11 --force' to mark it d
 When the board was chosen **explicitly by name or `-b`** and is not `default`, the command in a
 hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
 the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
+
+## Warnings — `"warnings": ["…"]`
+
+Some things tb has to say without failing the command: `TB_BOARD` was ignored because
+`TB_DB` pins a file; the board file can be opened by other users; the board was backed up
+before its schema was upgraded. Each is one line on **stderr** (`tb: …`), and with `--json`
+every **object**-shaped result — a write, `board`, `show`, `config`, `sync`, a failure —
+also carries them as its last key:
+
+```json
+{ "ok": true, "card": { …card… }, "warnings": ["TB_DB is set, so TB_BOARD=work is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"] }
+```
+
+The field is **absent when there is nothing to say** — it is never an empty list — so output
+without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `watch` lines
+have no place for a field: read their warnings on stderr. A warning never changes the exit
+code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
 
 ## `tb agents --json`
 

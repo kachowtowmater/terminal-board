@@ -43,8 +43,19 @@ pub fn select(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) -
 
 /// The board that bare `ttyboard` uses: `TTYBOARD_BOARD` or `default`.
 pub fn default_name() -> String {
-    crate::env("BOARD")
-        .unwrap_or_else(|| DEFAULT_BOARD.into())
+    env_board().0.unwrap_or_else(|| DEFAULT_BOARD.into())
+}
+
+/// `TB_BOARD` — unless `TB_DB` pins one file. A pinned file has no boards to choose from, so
+/// `TB_DB` wins and the name is dropped: `(None, Some(name))`, for the caller to say so once.
+/// (`TB_BOARD=default` names the board a pinned file already is: nothing dropped, nothing to
+/// say.) A name TYPED on the command line is a different matter and is still refused.
+pub fn env_board() -> (Option<String>, Option<String>) {
+    let name = crate::env("BOARD");
+    if !db_pinned() {
+        return (name, None);
+    }
+    (None, name.filter(|n| n.trim() != DEFAULT_BOARD))
 }
 
 fn home() -> PathBuf {

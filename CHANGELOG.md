@@ -85,6 +85,41 @@ date is refused before the board is touched, with the command to run instead.
   `{ok, error, hint}` shape. Control characters are stored as given and still removed
   wherever the text is shown. Nothing changes for commands that do not use the new flags.
 
+### File safety: private board files, `TB_DB` over `TB_BOARD`, a backup before an upgrade
+
+- **Board files are created private.** A board file — and so its `-wal`/`-shm` sidecars —
+  was created mode `0644`, readable by every user of the machine. Every file tb creates is
+  now `0600`, whatever the umask, in the boards folder and under `TB_DB`. An **existing**
+  wider file is never re-moded on the quiet (it may be shared with a group on purpose): tb
+  reports it in one warning line naming the file and the fix. `tb config file-mode private`
+  tightens the file and its live sidecars, says what it changed and logs it on the board;
+  `tb config file-mode shared` records that the mode is deliberate and ends the report;
+  `tb config file-mode` reads it. The `file-mode` row appears in `tb config` only when there
+  is something to say, so a private board's listing is unchanged. A board path that is a
+  symbolic link is followed by tb itself, which creates the link's target `0600` (SQLite
+  would have created it `0644`); a link into a missing folder or a loop of links is refused,
+  and no mode is ever changed through a link.
+- **`TB_DB` wins over `TB_BOARD`.** With both set every command was refused, which broke any
+  harness that pins `TB_DB` in an environment that also names a board. Now the pinned file
+  opens, JSON reports the board as `default`, and tb prints one warning line. A board name
+  *typed on the command line* under `TB_DB` is still refused — that is the mistake the
+  refusal guards. `tb boards` under `TB_DB` reports the file under its real name, `default`.
+- **Warnings have one home.** One line on stderr (`tb: …`), and with `--json` an additive
+  `"warnings": ["…"]` as the last key of every object-shaped result, failures included. The
+  field is absent when there are none, so output without warnings is byte-for-byte what it
+  was; array results (`list`, `boards`, `agents`) and `watch` lines carry them on stderr
+  only. See docs/JSON.md.
+- **A board is backed up before its schema is upgraded.** Opening a board written by an older
+  tb used to alter it in place with no way back. tb now writes
+  `<file>.before-<version>.<UTC date-time>.bak` next to it first and says where. The copy is
+  made by SQLite, so it includes cards still in a hot `-wal` (a plain copy of the `.db`
+  loses them), is a single file with no sidecars, is `0600`, and is never listed as a board.
+  Deciding, copying and upgrading happen under the board's write lock: many processes opening
+  an older board at once produce exactly one backup, always of the old schema. It is written
+  as `.partial` and renamed when complete. The upgrade is one transaction; if the backup
+  cannot be written nothing is upgraded and the command fails. It is detected from the schema itself, so every future migration is
+  covered. The way back is in UPGRADING.md ("Going back to an older tb").
+
 ### The board footer keeps every hint that fits
 
 The footer used to swap its whole hint line for a fixed four the moment the full set did not
