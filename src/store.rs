@@ -123,7 +123,7 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
-fn err<T>(msg: impl Into<String>) -> Result<T> {
+pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(BoardError(msg.into()))
 }
 
@@ -1140,6 +1140,45 @@ impl Store {
         let round = round_of(&events);
         let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
         Ok(CardDetail { card, checklist, events, round, actors })
+    }
+
+    /// Every card's title, for an export that names a card without loading it again.
+    pub fn card_titles(&self) -> Result<HashMap<i64, String>> {
+        let mut st = self.conn.prepare("SELECT id, title FROM cards")?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<HashMap<i64, String>>>()?;
+        Ok(v)
+    }
+
+    /// Every event at or after `from_ts`, oldest first, handed to `f` ONE AT A TIME. A board
+    /// with a hundred thousand events must not be collected into a Vec before anything is
+    /// written: this is what lets `tb export` and `tb log` stream.
+    ///
+    /// The filter is the TIME, not an id: `tb watch --since` may resume from an id because a
+    /// live stream only ever moves forward, but a history can hold an event written with an
+    /// earlier timestamp than the row before it (a clock that stepped, a fixture), and
+    /// "everything since Tuesday" must still mean everything since Tuesday.
+    pub fn for_each_event(&self, from_ts: i64, f: &mut dyn FnMut(&Event) -> Result<()>) -> Result<()> {
+        let mut st = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut rows = st.query([from_ts])?;
+        while let Some(r) = rows.next()? {
+            f(&row_event(r)?)?;
+        }
+        Ok(())
+    }
+
+    /// Every event of one card, oldest first — the whole history an export carries, where
+    /// `contract::card` carries only the last ten.
+    pub fn all_events_of(&self, id: i64) -> Result<Vec<crate::contract::EventJ>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id")?;
+        let v = st
+            .query_map([id], row_event)?
+            .map(|e| e.map(crate::contract::EventJ::of))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
     }
 
     /// Events with `id > after`, oldest first (for `tb watch --events`).
