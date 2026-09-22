@@ -1,7 +1,7 @@
 //! The JSON contract for apps and agents (`board --json`, `watch --json`, write `--json`,
 //! `agents --json`). Field names here are pinned by golden tests; see docs/JSON.md.
 
-use crate::herdr::{self, Agent};
+use crate::herdr::Agent;
 use crate::store::{Card, Result, Store, COLUMNS};
 use serde::Serialize;
 
@@ -107,6 +107,11 @@ pub struct AgentJ {
     pub last_note: Option<String>,
     /// Unix seconds of the held card's last event (any kind); the screen computes the age.
     pub last_event_at: Option<i64>,
+    /// True for an actor of THIS board (it owns an open card, reviews one, or wrote a card
+    /// event in the last hour); false for a herdr agent that is none of them.
+    pub on_board: bool,
+    /// What `card_id` is to it: `owner` | `reviewer`; null without a card.
+    pub card_role: Option<&'static str>,
 }
 
 /// A card with its checklist and last events.
@@ -184,33 +189,35 @@ pub fn board(store: &Store) -> Result<BoardJ> {
     })
 }
 
-/// herdr agents merged with the board: the card each one holds (doing first), with that
-/// card's last note and the age of its last activity (what the agent is doing).
+/// Who is on this board (`roster`), then the herdr agents that are not. A board actor with
+/// no herdr pane of exactly its name has `harness` and `status` `-` and an empty `pane_id`.
 pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
-    list.iter()
-        .map(|a| {
-            let mine: Vec<&Card> = snap
-                .cards
-                .iter()
-                .filter(|c| c.column != "done" && herdr::find_owner(list, c).is_some_and(|o| o.pane_id == a.pane_id))
-                .collect();
-            let held = mine.iter().find(|c| c.column == "doing").or(mine.first());
-            let (last_note, last_event_at) = match held {
-                Some(c) => (snap.last_note.get(&c.id).cloned(), snap.last_event_at.get(&c.id).copied()),
-                None => (None, None),
-            };
-            AgentJ {
-                name: a.name.clone(),
-                harness: a.harness.clone(),
-                status: a.status.clone(),
-                pane_id: a.pane_id.clone(),
-                job: a.job.clone(),
-                card_id: held.map(|c| c.id),
-                last_note,
-                last_event_at,
-            }
-        })
-        .collect()
+    let r = crate::roster::roster(snap, list);
+    let here = r.here.iter().map(|row| AgentJ {
+        name: row.name.clone(),
+        harness: row.harness().to_string(),
+        status: row.status().to_string(),
+        pane_id: row.live.map(|a| a.pane_id.clone()).unwrap_or_default(),
+        job: row.live.and_then(|a| a.job.clone()),
+        card_id: row.card.map(|c| c.id),
+        last_note: row.card.and_then(|c| snap.last_note.get(&c.id).cloned()),
+        last_event_at: row.card.and_then(|c| snap.last_event_at.get(&c.id).copied()),
+        on_board: true,
+        card_role: row.role.map(crate::roster::CardRole::as_str),
+    });
+    let elsewhere = r.elsewhere.iter().map(|a| AgentJ {
+        name: a.name.clone(),
+        harness: a.harness.clone(),
+        status: a.status.clone(),
+        pane_id: a.pane_id.clone(),
+        job: a.job.clone(),
+        card_id: None,
+        last_note: None,
+        last_event_at: None,
+        on_board: false,
+        card_role: None,
+    });
+    here.chain(elsewhere).collect()
 }
 
 /// `{"ok":false,"error":…,"hint":…}` from an error message shaped "what — what to do".

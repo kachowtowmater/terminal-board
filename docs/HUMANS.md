@@ -32,6 +32,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
 | edit title and description | `e` (Tab switches field, Enter saves) | `tb edit 3 --title "…" --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
+| keep deleted cards instead | — | `tb config rm archive`, then `tb list --archived` · `tb restore 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
@@ -86,7 +87,13 @@ Keep separate boards for separate things. `tb` opens `default`; any other name o
 board. A board is created by its first `tb <name> add …` (or `tb <name> config …`) — any
 other command on a name that does not exist says so and lists the boards you have, so a typo
 never leaves a phantom board behind. (With `TB_DB` set there is one file only — board names
-are refused; unset `TB_DB` to use boards.)
+are refused; unset `TB_DB` to use boards. A `TB_BOARD` left in the environment is ignored
+there, with a one-line warning.)
+
+Board files are private (mode `0600`). A board from an earlier version is readable by other
+users of the machine, and tb says so until you run `tb config file-mode private` (or
+`tb config file-mode shared`, if that is what you want). Before a newer tb upgrades an older
+board it writes a backup next to it and tells you where — see the README, "Where your data lives".
 
 ```sh
 tb home                      # open the board called "home"
@@ -123,10 +130,26 @@ went idle while holding a card.
 
 ## Watching agents
 
-If your AI agents run in herdr panes, the AGENTS panel lists them: `*` working, `-` idle,
-and the card each one holds. `!` in red means an agent went idle while still holding a
-DOING card — it probably stopped halfway; look at its last note. `A` shows or hides the
-panel; `tb agents` lists them in the terminal.
+The AGENTS panel answers two questions: who is working on **this** board, and on what. It
+lists the people and agents the board itself knows about — whoever holds a card that is not
+done, whoever claimed a card to review it, and anyone who wrote to a card in the last hour —
+so it works without any extra tool. Each row shows the card (`#4`, its `gh#`, its title), the
+last note on it and how old that note is; a row that reviews a card says `review`, and someone
+who holds nothing shows the last thing they did (`last created #7 5m`).
+
+If your agents run in herdr panes, a pane whose agent name is **exactly** a name on the board
+adds the live part of the row: `*` working, `-` idle, `x` blocked, and the harness. A name
+that only looks similar adds nothing — the row stays, with `-` where the status would be,
+rather than show somebody else's status. `!` in red means an agent went idle while still
+holding a DOING card — it probably stopped halfway; look at its last note.
+
+Agents in other herdr panes are not listed. They are counted: the header says
+`7 agents (4 here, 3 elsewhere)` and the panel ends in `+3 elsewhere (not on this board)`.
+"Elsewhere" means only that: tb does not read other boards, so it does not say what they
+are doing (enter on that line names them). In a narrow pane a row gives up whole fields,
+the least useful first: the status word (the mark already says it), then the note, then its
+age, then the card title — the only part that is ever cut — and the card id last. `A` shows
+or hides the panel; `tb agents` prints the same list in the terminal.
 
 To hand work to an agent, add a card with a clear description ("Done = …") and a checklist,
 and tell the agent: "Your work is on Terminal Board: run `tb next --as <your-name>`… Full

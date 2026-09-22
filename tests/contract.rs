@@ -190,9 +190,11 @@ fn golden_agents_shape() {
     let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
     assert_eq!(
         keys(&v[0]),
-        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at"])
+        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at", "on_board", "card_role"])
     );
     assert_eq!((v[0]["card_id"].as_i64(), v[0]["job"].as_str()), (Some(id), Some("fix #1")));
+    // added fields: it is on this board, and the card is one it owns
+    assert_eq!((v[0]["on_board"].as_bool(), v[0]["card_role"].as_str()), (Some(true), Some("owner")));
     // no note yet: last_note null, last_event_at = the take event
     assert!(v[0]["last_note"].is_null(), "{}", v[0]);
     assert!(v[0]["last_event_at"].as_i64().unwrap() > 0);

@@ -129,9 +129,9 @@ fn board_renders_columns_cards_and_agents() {
     app.agents = AgentsState::Agents(parse_agents(AGENTS, Some(PANES)).unwrap());
     let (screen, buf) = render(&app, 140, 45);
     for want in [
-        "TERMINAL BOARD · default · 10 cards · 4 agents (2 working, 2 idle)",
-        "lead ",
-        "fix login",
+        // who is on THIS board (alice, bot-2, rev and the seeder), and how many panes are not
+        "TERMINAL BOARD · default · 10 cards · 6 agents (4 here, 2 elsewhere)",
+        "+2 elsewhere (not on this board)",
         "TODO (4)",
         "DOING (2/3)",
         "REVIEW (1)",
@@ -177,6 +177,8 @@ fn board_renders_columns_cards_and_agents() {
     // only single-width glyphs
     assert!(!screen.contains('⚠') && !screen.contains('●'));
     assert!(!screen.contains("lead ("));
+    // panes that hold nothing here are counted, never described: not their names, not their jobs
+    assert!(!screen.contains("lead ") && !screen.contains("fix login") && !screen.contains("bot-4"), "{screen}");
 }
 
 #[test]
@@ -236,12 +238,15 @@ fn narrow_hides_agents_and_detail() {
     let mut app = App::new(s.snapshot().unwrap(), "alice");
     app.agents = AgentsState::Unavailable("herdr not available".into());
     let (wide, _) = render(&app, 120, 40);
-    assert!(wide.contains("herdr not available"));
+    // without herdr the board still says who is on it: no live status, but the card each holds
+    assert!(!wide.contains("herdr not available"), "{wide}");
+    let row = wide.lines().find(|l| l.contains(" bot-2 ") && l.contains("#5 ")).expect(&wide);
+    assert!(row.contains("\"patch applied, tests running\"") && !row.contains("working"), "{row}");
     assert!(wide.contains("> #1"), "detail strip shows the selection");
     // narrower: no detail strip, and AGENTS stays visible (as a 1-line bar)
     let (narrow, _) = render(&app, 95, 40);
     assert!(narrow.contains("TODO (4)") && !narrow.contains("> #1"));
-    assert!(narrow.contains(" AGENTS herdr not available   tab >"), "{narrow}");
+    assert!(narrow.contains(" AGENTS 4 here · 0 elsewhere   tab >"), "{narrow}");
 }
 
 fn key(c: KeyCode) -> KeyEvent {

@@ -6,7 +6,8 @@ fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking chan
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, or `TB_DB=/path/file.db`.
 With `TB_DB` set there is a single file — an explicit non-default board name is refused
 (`TB_DB is set — board names are ignored; unset TB_DB to use boards`), so `board` never
-reports a name that was not opened.
+reports a name that was not opened. A `TB_BOARD` in the environment is not a typed name: with
+both set, `TB_DB` wins, `board` is `default`, and the command carries a warning (below).
 
 **Forward compatibility (a rule, pinned by a test):** consumers must **ignore unknown
 fields and unknown event kinds** — tb adds fields and event kinds without bumping `"v"`,
@@ -166,6 +167,13 @@ Success (exit 0) — the card after the change (for `rm`, the card as it was):
 { "ok": true, "card": { …card… } }
 ```
 
+On a board set to `tb config rm archive`, `rm` archives instead of deleting and says so with
+one more field, `"archived": true` (absent on a plain delete). `tb restore ID --json` answers
+like any write, with the restored card. `tb list --archived --json` is an array, most
+recently archived first: `[{ "id": 3, "title": "…", "tag": null, "column": "review",
+"owner": "bot-1", "archived_at": 1790000000, "archived_by": "lead" }]` — `column` and `owner`
+are where the card was, and returns to. Archived cards appear in no other output.
+
 Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
 (`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
 note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
@@ -200,24 +208,50 @@ When the board was chosen **explicitly by name or `-b`** and is not `default`, t
 hint carries it — `see 'tb work list' for ids` — so copying the hint into a fresh shell acts on
 the same board. A board picked by `TB_BOARD` travels in the environment, so its hints stay bare.
 
-## `tb agents --json`
+## Warnings — `"warnings": ["…"]`
 
-herdr agent panes merged with the board (empty array when herdr is not available).
+Some things tb has to say without failing the command: `TB_BOARD` was ignored because
+`TB_DB` pins a file; the board file can be opened by other users; the board was backed up
+before its schema was upgraded. Each is one line on **stderr** (`tb: …`), and with `--json`
+every **object**-shaped result — a write, `board`, `show`, `config`, `sync`, a failure —
+also carries them as its last key:
 
 ```json
-[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036 } ]
+{ "ok": true, "card": { …card… }, "warnings": ["TB_DB is set, so TB_BOARD=work is ignored and the pinned file is used — unset TB_BOARD (or TB_DB) to stop this warning"] }
+```
+
+The field is **absent when there is nothing to say** — it is never an empty list — so output
+without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `watch` lines
+have no place for a field: read their warnings on stderr. A warning never changes the exit
+code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
+
+## `tb agents --json`
+
+Who is on **this** board, then the herdr agents that are not — the list the AGENTS panel
+shows, in the same order. The board says who: the owner of every card that is not `done`, the
+reviewer of every `review` card, and every actor with a card event in the last hour (the
+`github` sync is not one). herdr only adds the live fields, and only from a pane whose agent
+name is exactly that name (ASCII case aside; never a pane label or a title). So the array is
+useful without herdr, and empty only when nobody is on the board and herdr shows no agents.
+
+```json
+[ { "name": "bot-2", "harness": "aider", "status": "working", "pane_id": "w:p5", "job": "fix #327", "card_id": 1, "last_note": "tests pass, opening PR", "last_event_at": 1789763036, "on_board": true, "card_role": "owner" },
+  { "name": "rev-1", "harness": "-", "status": "-", "pane_id": "", "job": null, "card_id": 4, "last_note": "reading the diff", "last_event_at": 1789763100, "on_board": true, "card_role": "reviewer" },
+  { "name": "bot-9", "harness": "codex", "status": "working", "pane_id": "w:p7", "job": null, "card_id": null, "last_note": null, "last_event_at": null, "on_board": false, "card_role": null } ]
 ```
 
 | field | type | notes |
 |---|---|---|
-| `name` | string | herdr agent name, else the pane label |
-| `harness` | string | `claude`, `aider`, … |
-| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown` |
-| `pane_id` | string | |
+| `name` | string | the name as the board has it; for an agent that is not on the board, the herdr agent name, else the pane label |
+| `harness` | string | `claude`, `aider`, …; `-` when no herdr pane has exactly this name |
+| `status` | string | `working`, `idle`, `done`, `blocked`, `unknown`; `-` when no herdr pane has exactly this name |
+| `pane_id` | string | empty when no herdr pane has exactly this name |
 | `job` | string\|null | the last `·` segment of the pane label |
-| `card_id` | int\|null | the card it holds (DOING first) |
+| `card_id` | int\|null | the card it is on: its DOING card, else the card it reviews, else another open card it owns |
 | `last_note` | string\|null | that card's last note text (what the agent says it is doing) |
 | `last_event_at` | int\|null | unix seconds of the card's last event — compute the age yourself; an agent that never notes shows an old age |
+| `on_board` | bool | true for the board's own actors (listed first); false for a herdr agent that is none of them — tb does not read other boards, so it says nothing about what those are doing |
+| `card_role` | string\|null | what `card_id` is to it: `owner` or `reviewer`; null without a card |
 
 ## Other read commands
 
