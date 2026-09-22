@@ -938,13 +938,7 @@ impl Store {
     /// asked to, and it says what it did. `shared` records that other users are meant to reach
     /// this file, which ends the report. Both are logged on the board. Returns the line to print.
     pub fn set_file_mode(&self, value: &str, actor: &str) -> Result<String> {
-        let log = |text: String| -> Result<()> {
-            self.conn.execute(
-                "INSERT INTO board_events(ts, actor, kind, text) VALUES (?,?,'file-mode',?)",
-                params![now(), actor, text],
-            )?;
-            Ok(())
-        };
+        let log = |text: String| -> Result<()> { Self::log_board(&self.conn, actor, "file-mode", &text) };
         match value.trim().to_ascii_lowercase().as_str() {
             "private" => {
                 let Some(path) = self.path() else {
