@@ -240,3 +240,33 @@ chmod 600 work.db
 ```
 
    The backup is a single complete file: there is no `-wal` or `-shm` to bring along.
+
+## `rm`, `edit` and `block` on a card someone else holds
+
+**Before.** `done`, `drop` and `move` refused to take a DOING card away from its holder, but
+`tb rm`, `tb edit` and `tb block` did not look: a stale or off-by-one id deleted another
+agent's card with its whole history, rewrote its brief, or blocked it — exit 0, no trace.
+
+**Now.** The same rule, the same refusal:
+`#1 is held by bot-1 — your cards: none · to delete it anyway use --force (logged)`.
+The full-screen board's `x` asks y/n naming the holder. `note`, `check` and `prio` stay open
+to everyone, and cards nobody holds (TODO, REVIEW, DONE) are unaffected.
+
+**Escape hatch.** `--force`, new on `rm`, `edit` and `block`, recorded as its own event.
+
+```sh
+tb rm 3 --as bot-2            # before: deleted bot-1's card. now: refused
+tb rm 3 --as bot-2 --force    # goes through, and is logged
+```
+
+If you would rather never lose a card: `tb config rm archive` makes `tb rm` archive instead
+(`tb list --archived`, `tb restore ID`). The default is unchanged.
+
+## The name `github`
+
+**Before.** Any command could run `--as github`, and because tb's own sync acts under that
+name, it was let past the holder rule.
+
+**Now.** A write (or the full-screen board) under the name `github` is refused:
+`'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1`.
+`tb sync` itself is unchanged, and reads under that name still work.

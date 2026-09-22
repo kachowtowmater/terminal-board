@@ -32,6 +32,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
 | edit title and description | `e` (Tab switches field, Enter saves) | `tb edit 3 --title "…" --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
+| keep deleted cards instead | — | `tb config rm archive`, then `tb list --archived` · `tb restore 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |

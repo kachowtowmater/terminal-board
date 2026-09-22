@@ -170,6 +170,9 @@ pub enum Confirm {
     /// Move someone else's DOING card to the column the key asked for (card, target): the
     /// forced, logged path.
     NotMine(i64, String),
+    /// Delete (or archive) someone else's DOING card: the prompt named the holder, so `y` is
+    /// the forced, logged path.
+    DeleteHeld(i64),
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -630,12 +633,9 @@ impl App {
                 self.mode = Mode::Normal;
                 if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                     match action {
-                        Confirm::Delete(id) => {
-                            let r = store.delete_card(id, &actor);
-                            if self.report(r, |c| format!("deleted #{} \"{}\"", c.id, c.title)).is_some() {
-                                self.reload(store);
-                            }
-                        }
+                        // the holder rule: only a prompt that named the holder forces it
+                        Confirm::Delete(id) => self.remove_confirmed(id, false, store),
+                        Confirm::DeleteHeld(id) => self.remove_confirmed(id, true, store),
                         Confirm::ForceDone(id) => {
                             if self.is_own_review(id, store) {
                                 self.mode = approve_own(id);
@@ -781,8 +781,26 @@ impl App {
         }
     }
 
+    /// `y` on the delete prompt: delete the card — or archive it, on an archive board.
+    fn remove_confirmed(&mut self, id: i64, force: bool, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.remove_card(id, &actor, force);
+        let said = |r: &crate::store::archive::Removed| {
+            let verb = if r.archived { "archived" } else { "deleted" };
+            format!("{verb} #{} \"{}\"", r.card.id, r.card.title)
+        };
+        if self.report(r, said).is_some() {
+            self.reload(store);
+        }
+    }
+
     fn open_edit(&mut self, id: i64, from_popup: bool) {
         if let Some(c) = self.snap.cards.iter().find(|c| c.id == id) {
+            // the holder rule: someone else's DOING card is not rewritten from here
+            if let Some(owner) = c.owner.as_deref().filter(|o| c.column == "doing" && !o.eq_ignore_ascii_case(&self.actor)) {
+                self.status = Some((format!("#{id} is held by {owner} — to edit it anyway use 'tb edit {id} … --force' (logged)"), true));
+                return;
+            }
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
             self.mode = Mode::Edit(EditForm {
@@ -1383,9 +1401,18 @@ impl App {
             }
             KeyCode::Char('x') => {
                 if let Some(c) = self.selected() {
-                    self.mode = Mode::Confirm {
-                        action: Confirm::Delete(c.id),
-                        prompt: format!("delete #{} \"{}\"? y/n", c.id, c.title),
+                    // an archive board archives; someone else's DOING card is named as held
+                    let verb = if store.rm_mode().is_ok_and(|m| m == crate::store::archive::RM_ARCHIVE) { "archive" } else { "delete" };
+                    let holder = c.owner.as_deref().filter(|o| c.column == "doing" && !o.eq_ignore_ascii_case(&self.actor));
+                    self.mode = match holder {
+                        Some(owner) => Mode::Confirm {
+                            action: Confirm::DeleteHeld(c.id),
+                            prompt: format!("#{} is held by {owner} — {verb} it anyway? y/n (logged)", c.id),
+                        },
+                        None => Mode::Confirm {
+                            action: Confirm::Delete(c.id),
+                            prompt: format!("{verb} #{} \"{}\"? y/n", c.id, c.title),
+                        },
                     };
                 }
             }

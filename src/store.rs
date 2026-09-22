@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod archive;
 pub mod due;
 pub mod order;
 
@@ -46,9 +47,10 @@ impl From<rusqlite::Error> for BoardError {
 
 pub type Result<T> = std::result::Result<T, BoardError>;
 
-/// The refusal for moving someone else's DOING card: what it is held by, what the actor
-/// holds, and the escape hatch.
-fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -> Result<BoardError> {
+/// The refusal for changing someone else's DOING card: what it is held by, what the actor
+/// holds, and the escape hatch. `what` finishes "to … anyway": `move it to review`,
+/// `delete it`, `edit it`.
+fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, what: &str) -> Result<BoardError> {
     let mine: Vec<i64> = {
         let mut st =
             tx.prepare(r#"SELECT id FROM cards WHERE "column"='doing' AND owner=? COLLATE NOCASE ORDER BY id"#)?;
@@ -57,7 +59,7 @@ fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, to: &str) -
     };
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
     Ok(BoardError(format!(
-        "#{id} is held by {owner} — your cards: {yours} · to move it to {to} anyway use --force (logged)"
+        "#{id} is held by {owner} — your cards: {yours} · to {what} anyway use --force (logged)"
     )))
 }
 
@@ -871,6 +873,7 @@ impl Store {
         // due dates (store/due.rs): listed once the board sets them, so a board that sets
         // nothing lists exactly what it always did
         all.extend(self.due_settings()?);
+        all.extend(self.rm_settings()?);
         all.extend(self.sort_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
@@ -1242,10 +1245,15 @@ impl Store {
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
     /// both win the same card.
     fn claim(&mut self, id: Option<i64>, actor: &str) -> Result<Card> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let wip = wip_of(&tx)?;
-        let doing: i64 =
-            tx.query_row(r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#, [], |r| r.get(0))?;
+        self.transition(Change::Claim(id), actor, false)
+    }
+
+    /// The card `next` / `take` claims: the named one (it must be in TODO), or the top
+    /// unblocked TODO card. Runs inside `transition`'s transaction. (The body is the selection
+    /// exactly as it was written inside `claim`, `&tx` and all, so work on the ordering that is
+    /// in flight elsewhere still merges line for line — hence the lint allowance.)
+    #[allow(clippy::needless_borrow)]
+    fn claim_target(tx: &Connection, id: Option<i64>) -> Result<i64> {
         let target = match id {
             Some(id) => {
                 let c = get_card(&tx, id)?;
@@ -1278,23 +1286,7 @@ impl Store {
                 }
             }
         };
-        if doing >= wip {
-            return Err(wip_full_err(&tx, doing, wip, actor));
-        }
-        let pos = bottom_of(&tx, "doing")?;
-        let changed = tx.execute(
-            r#"UPDATE cards SET "column"='doing', owner=?, column_since=?, position=?, reviewer=NULL WHERE id=? AND "column"='todo'"#,
-            params![actor, now(), pos, target],
-        )?;
-        if changed != 1 {
-            return err(format!(
-                "card #{target} was taken by someone else — try 'tb next'"
-            ));
-        }
-        Self::log(&tx, target, actor, "taken", "")?;
-        let card = get_card(&tx, target)?;
-        tx.commit()?;
-        Ok(card)
+        Ok(target)
     }
 
     /// Log an event of any kind on a card (e.g. `github` auto-moves).
@@ -1428,37 +1420,80 @@ impl Store {
     }
 
     fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
-        let column = column.to_ascii_lowercase();
-        if !COLUMNS.contains(&column.as_str()) {
-            return err(format!(
-                "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
-            ));
-        }
-        let reason = reason.map(str::trim);
+        self.transition(Change::Move { id, column, reason }, actor, force)
+    }
+
+    /// EVERY column change goes through here — `next`/`take`, `move`/`done`/send-back (and the
+    /// GitHub sync, which calls `move_to`), and `drop` — from the CLI and the full-screen
+    /// board alike. One transaction (`BEGIN IMMEDIATE`), and one fixed order:
+    ///
+    /// 1. what is asked: the card, the column it goes to, and the refusals that belong to the
+    ///    request itself (unknown column, a send-back without its reason, nothing to take);
+    ///    a change that changes nothing ends here;
+    /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
+    ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
+    ///    `--force`, logged) → the WIP limit (entering DOING, except a send-back);
+    /// 3. the change, then its events.
+    ///
+    /// A new guard — and a hook on a change — belongs in step 2, after the ones that are there.
+    fn transition(&mut self, change: Change<'_>, actor: &str, force: bool) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let c = get_card(&tx, id)?;
-        let send_back = c.column == "review" && column == "doing";
-        if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
-            return err(format!(
-                "say why it goes back — 'tb move {id} doing \"what to fix\"'"
-            ));
-        }
-        if !send_back && reason.is_some() {
-            return err(format!(
-                "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
-            ));
-        }
-        if c.column == column {
-            // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
-            if column == "review" && c.reviewer.is_some() {
-                tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
-                Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
-                let c = get_card(&tx, id)?;
-                tx.commit()?;
-                return Ok(c);
+        // 1. what is asked
+        let (c, column, reason) = match change {
+            Change::Claim(id) => {
+                let target = Self::claim_target(&tx, id)?;
+                (get_card(&tx, target)?, "doing".to_string(), None)
             }
-            return Ok(c);
-        }
+            Change::Drop(id) => {
+                let c = get_card(&tx, id)?;
+                if c.column == "todo" && c.owner.is_none() {
+                    return Ok(c);
+                }
+                (c, "todo".to_string(), None)
+            }
+            Change::Move { id, column, reason } => {
+                let column = column.to_ascii_lowercase();
+                if !COLUMNS.contains(&column.as_str()) {
+                    return err(format!(
+                        "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
+                    ));
+                }
+                let reason = reason.map(str::trim);
+                let c = get_card(&tx, id)?;
+                let send_back = c.column == "review" && column == "doing";
+                if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
+                    return err(format!(
+                        "say why it goes back — 'tb move {id} doing \"what to fix\"'"
+                    ));
+                }
+                if !send_back && reason.is_some() {
+                    return err(format!(
+                        "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+                    ));
+                }
+                if c.column == column {
+                    // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
+                    if column == "review" && c.reviewer.is_some() {
+                        tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+                        Self::log(&tx, id, actor, "unclaimed", c.reviewer.as_deref().unwrap_or(""))?;
+                        let c = get_card(&tx, id)?;
+                        tx.commit()?;
+                        return Ok(c);
+                    }
+                    return Ok(c);
+                }
+                (c, column, reason)
+            }
+        };
+        let id = c.id;
+        let kind = match change {
+            Change::Claim(_) => Kind::Claim,
+            Change::Drop(_) => Kind::Drop,
+            Change::Move { .. } => Kind::Move,
+        };
+        let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
+
+        // 2. the guards
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
         // The `github` automation is exempt: its moves are evidence-driven and logged.
@@ -1466,13 +1501,17 @@ impl Store {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, &column)?);
+                        return Err(ownership_err(&tx, id, owner, actor, &format!("move it to {column}"))?);
                     }
-                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} to {column}"))?;
+                    let text = match kind {
+                        Kind::Drop => format!("moved #{id} held by {owner} back to todo"),
+                        _ => format!("moved #{id} held by {owner} to {column}"),
+                    };
+                    Self::log(&tx, id, actor, "force", &text)?;
                 }
             }
         }
-        if column == "done" && c.column == "review" {
+        if kind == Kind::Move && column == "done" && c.column == "review" {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
                     if !force {
@@ -1494,9 +1533,12 @@ impl Store {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
-        let owner = match column.as_str() {
-            "todo" => None,
-            "doing" => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
+
+        // 3. the change, then its events
+        let owner = match (kind, column.as_str()) {
+            (Kind::Claim, _) => Some(actor.to_string()),
+            (_, "todo") => None,
+            (_, "doing") => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
             _ => c.owner.clone(),
         };
         // a block set while in REVIEW must not survive into DONE (or it renders as a live
@@ -1508,17 +1550,27 @@ impl Store {
         // the reviewer stays on the card that reaches done (who approved it); any other move
         // ends the review, so the next round is claimed afresh
         let reviewer = if column == "done" { c.reviewer.clone() } else { None };
-        tx.execute(
+        // compare-and-swap on the column the card was read in: two callers never both win it
+        let changed = tx.execute(
             r#"UPDATE cards SET "column"=?, owner=?, column_since=?, position=?, reviewer=?,
-               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=?"#,
-            params![column, owner, now(), pos, reviewer, column, id],
+               blocked = CASE WHEN ?='done' THEN NULL ELSE blocked END WHERE id=? AND "column"=?"#,
+            params![column, owner, now(), pos, reviewer, column, id, c.column],
         )?;
-        if block_cleared {
-            Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+        if changed != 1 {
+            return err(format!("card #{id} was taken by someone else — try 'tb next'"));
         }
-        Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
-        if let (true, Some(r)) = (send_back, reason) {
-            Self::log(&tx, id, actor, "returned", r)?;
+        match kind {
+            Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
+            Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
+            Kind::Move => {
+                if block_cleared {
+                    Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
+                }
+                Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+                if let (true, Some(r)) = (send_back, reason) {
+                    Self::log(&tx, id, actor, "returned", r)?;
+                }
+            }
         }
         let c = get_card(&tx, id)?;
         tx.commit()?;
@@ -1678,31 +1730,26 @@ impl Store {
     /// it, see move_card) unless forced; the check, the `force` event and the drop are one
     /// transaction.
     fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let c = get_card(&tx, id)?;
-        if c.column == "todo" && c.owner.is_none() {
-            return Ok(c);
-        }
-        if c.column == "doing" && actor != "github" {
-            if let Some(owner) = c.owner.as_deref() {
-                if !owner.eq_ignore_ascii_case(actor) {
-                    if !force {
-                        return Err(ownership_err(&tx, id, owner, actor, "todo")?);
-                    }
-                    Self::log(&tx, id, actor, "force", &format!("moved #{id} held by {owner} back to todo"))?;
-                }
-            }
-        }
-        let pos = bottom_of(&tx, "todo")?;
-        tx.execute(
-            r#"UPDATE cards SET "column"='todo', owner=NULL, column_since=?, position=?, reviewer=NULL WHERE id=?"#,
-            params![now(), pos, id],
-        )?;
-        Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?;
-        let c = get_card(&tx, id)?;
-        tx.commit()?;
-        Ok(c)
+        self.transition(Change::Drop(id), actor, force)
     }
+}
+
+/// A column change, as asked for (see `Store::transition`).
+#[derive(Clone, Copy)]
+enum Change<'a> {
+    /// `next` (None: the top unblocked TODO card) / `take ID`: TODO → DOING, owned by the actor.
+    Claim(Option<i64>),
+    /// `move` / `done` / send-back / GitHub sync; `reason` only with REVIEW → DOING.
+    Move { id: i64, column: &'a str, reason: Option<&'a str> },
+    /// `drop`: back to TODO, unowned.
+    Drop(i64),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Claim,
+    Move,
+    Drop,
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.

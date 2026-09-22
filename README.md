@@ -214,7 +214,7 @@ Press `?` on the board to see all keys at any time.
 | arrows | select a card (←→ column, ↑↓ card) |
 | `a` | add a card (`tag: title`) |
 | `e` | edit the title and description |
-| `x` | delete the card (asks y/n) |
+| `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
 | `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
@@ -399,11 +399,12 @@ tb --version
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
-| `tb rm ID` | delete a card |
+| `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |
+| `tb list --archived` / `tb restore ID` | the archived cards / bring one back with its checklist and whole history |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
 | `tb boards` | list your boards |
-| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel) |
+| `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |

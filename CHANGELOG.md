@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Cards: the holder rule covers `rm`, `edit` and `block`; `rm` can archive instead of delete
+
+- **`rm`, `edit` and `block` follow the holder rule** that `done`/`drop`/`move` already
+  follow: a DOING card someone else holds is refused —
+  `#1 is held by bot-1 — your cards: none · to delete it anyway use --force (logged)` — and
+  `--force` (new on all three) goes through and is recorded as its own `force` event. Before,
+  `tb rm 7` with a stale id silently destroyed another agent's card and its whole history,
+  and `edit`/`block` rewrote or blocked it. The full-screen board's `x` names the holder
+  (`#1 is held by bot-1 — delete it anyway? y/n (logged)`), and `e` does not open a form on
+  someone else's held card. `note`, `check` and `prio` stay open by design: they add to a
+  card, they do not take it over. Cards nobody holds are unaffected.
+- **Soft delete: `tb config rm archive`.** On such a board `tb rm` (and `x`) archive the card
+  — with its checklist and every event — instead of destroying it. `tb list --archived`
+  shows them; `tb restore ID` brings one back under the same id, in the column it was in,
+  with its owner and its history event for event, plus an `archived` and a `restored` event.
+  `rm --json` adds `"archived": true`. The default stays the hard delete, and a board that
+  never asks for the archive keeps exactly the schema it had: the `archived_cards` table is
+  created on first use, and archived cards live outside `cards`, so no list, count, WIP
+  limit, `tb next`, sync or render can see them. `restore` is a command now, so it can no
+  longer be a board name.
+- **The name `github` is reserved** for tb's own GitHub sync. The store lets that name move a
+  card someone holds (sync moves follow evidence), so `--as github` was a way past the holder
+  rule. A write — or the full-screen board — under that name is now refused before anything
+  opens; reads are not.
+- Inside: `next`/`take`, `move`/`done`/send-back and `drop` each had their own transaction
+  and guards. They are one function now, with one fixed order — what is asked → the holder →
+  self-approval → the WIP limit → the change and its events — so a new guard has one place
+  to go. No message, event or ordering changed.
+
 ### A deadline queue: `tb config sort due`, and `tb next` takes the nearest due date
 
 A board is a priority queue by default — `tb next` takes the top card. `tb config sort due`
