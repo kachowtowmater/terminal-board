@@ -16,6 +16,7 @@ pub mod bulk;
 pub mod display;
 pub mod due;
 pub mod kinds;
+pub mod links;
 pub mod order;
 pub mod transfer;
 
@@ -212,6 +213,8 @@ pub struct CardDetail {
     pub approved_by: Vec<String>,
     /// The identities behind this card's events (`Event::actor_id`), in id order.
     pub actors: Vec<actors::Actor>,
+    /// Evidence attached with `tb link` (`store::links`), in the order they were added.
+    pub links: Vec<links::LinkItem>,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -401,6 +404,15 @@ CREATE TABLE IF NOT EXISTS events (
     text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_card ON events(card_id, id);
+CREATE TABLE IF NOT EXISTS links (
+    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT NOT NULL,
+    added_by TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (card_id, idx)
+);
 CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
@@ -589,6 +601,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     // migration: `blocked_on` / `blocked_until` (v2, `tb block --on … --until …`)
     blocks::migrate(conn)?;
+    // migration: `links` on an `archived_cards` table made before links existed (v2, `tb link`)
+    archive::migrate(conn)?;
     Ok(())
 }
 
@@ -843,10 +857,10 @@ impl Store {
         Ok(())
     }
 
-    /// Delete every card, checklist item and event (config is kept).
+    /// Delete every card, checklist item, link and event (config is kept).
     pub fn wipe(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM checklist; DELETE FROM events; DELETE FROM cards; DELETE FROM board_events;
+            "DELETE FROM checklist; DELETE FROM links; DELETE FROM events; DELETE FROM cards; DELETE FROM board_events;
              DELETE FROM sqlite_sequence WHERE name IN ('cards','events','board_events');",
         )?;
         Ok(())
@@ -1035,6 +1049,7 @@ impl Store {
         all.extend(self.display_settings()?);
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
+        all.extend(self.link_settings()?);
         all.extend(self.kind_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
@@ -1269,7 +1284,8 @@ impl Store {
         let round = round_of(&events);
         let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
         let approved_by = closing::approved_by(&events);
-        Ok(CardDetail { card, checklist, events, round, approved_by, actors })
+        let links = self.links_of(id)?;
+        Ok(CardDetail { card, checklist, events, round, approved_by, actors, links })
     }
 
     /// Every card's title, for an export that names a card without loading it again.
@@ -1767,6 +1783,22 @@ impl Store {
                 Self::log(&tx, id, actor, "force", &format!("closed #{id}, not on the done-by list"))?;
             }
         }
+        // evidence gate (`config done-needs-link`, store/links.rs): a card may not reach DONE
+        // without a link carrying that label. Same shape as `done-by` right above it — checked
+        // right after, so both DONE-entry gates (who may close it, what it must carry) apply
+        // before the WIP guard below ever runs; `--force` is open to everyone and logged, and
+        // `github` is exempt, as it is for the holder rule and `done-by`: a merged PR is
+        // already evidence, not a person claiming the card is done.
+        if column == "done" && c.column != "done" && actor != "github" {
+            if let Some(label) = links::required_label(&tx)? {
+                if !links::has_label(&tx, id, &label)? {
+                    if !force {
+                        return Err(links::missing_link_err(id, &label));
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("closed #{id} without a link labeled {label}"))?;
+                }
+            }
+        }
         // a returned card is its owner's existing work, not new work: WIP does not block it
         if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
@@ -1827,11 +1859,12 @@ impl Store {
         Ok(c)
     }
 
-    /// Hard-delete a card with its checklist and events; logged on the board.
+    /// Hard-delete a card with its checklist, links and events; logged on the board.
     pub fn delete_card(&mut self, id: i64, actor: &str) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
+        tx.execute("DELETE FROM links WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM cards WHERE id=?", [id])?;
         Self::log_board(&tx, actor, "delete", &format!("deleted #{id} \"{}\"", c.title))?;

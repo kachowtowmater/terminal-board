@@ -93,7 +93,8 @@ A bare `tb --json` (not a terminal) prints the same object.
   "events": [
     { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
     { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "", "actor_id": 4 }
-  ]
+  ],
+  "links": [ { "idx": 1, "label": "brief", "value": "docs/brief.md", "added_by": "bot-2", "added_at": 1789763036 } ]
 }
 ```
 
@@ -122,7 +123,8 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `approved_by` | string[] | everyone who recorded `tb done ID --approve` on this card, oldest first, each once. A record of who checked it — **not** a permission; `done-by` (which says who may close a card) is a separate, self-asserted setting, see README |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `link` (`tb link`; `text` is `+ LABEL: VALUE` or `- LABEL: VALUE`), `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `links[]` | `{idx, label, value, added_by, added_at}` | evidence attached with `tb link ID VALUE --label LABEL`, in the order added. `value` is a path, a sha or a URL as **plain text tb only stores** — never read, resolved or fetched (docs/SCHEMA.md, table `links`). `label` is free text (not a fixed set), lower-cased. `config done-needs-link LABEL` refuses `tb done` (or `tb move ID done`) while no link here has that `label`, case-insensitive; `github`'s own evidence-driven moves are exempt, same as `done-by` |
 
 ### identity
 
@@ -182,8 +184,8 @@ is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
-Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `move`, `done`,
-`block`, `drop`, `rm`, `prio`, `edit`.
+Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `link`, `move`,
+`done`, `block`, `drop`, `rm`, `prio`, `edit`.
 
 Success (exit 0) — the card after the change (for `rm`, the card as it was):
 
@@ -212,8 +214,9 @@ terminal on standard input (refused at once, never waited on). Text given twice 
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
 `prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
 tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
-`config sort --json`, `config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
-default included: `"value": "local"` / `"value": 3`. `config --json` lists them once set.
+`config sort --json`, `config tz --json`, `config due-warn --json` and `config done-needs-link --json` (no value) read
+one setting in the same shape, default included: `"value": "local"` / `"value": 3` / `"value": null` (off).
+`config --json` lists them once set.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
 Failure (non-zero exit), for any command run with `--json` — including **argument errors**
@@ -370,15 +373,15 @@ column and not a grouping is refused before the board is read.
 
 ```json
 { "ok": true, "from_board": "default", "to_board": "work", "old_id": 3, "id": 12,
-  "title": "docs: write the guide", "checklist": 2, "events": 7 }
+  "title": "docs: write the guide", "checklist": 2, "events": 7, "links": 1 }
 ```
 
 `id` is the card's number on the board it arrived at, and it is **not** `old_id`: ids belong to
-a board. The card, its checklist and its whole history travel, with each event's original
-actor and time, and a `moved-in` event records where it came from; the source board's log
-records where it went. The column and the owner do **not** travel — a moved card lands in
-`todo`, unowned. A `--on` that names a card is dropped (that number means a different card
-over there); the block's text is kept.
+a board. The card, its checklist, its links and its whole history travel, with each event's
+original actor and time (and each link's original `added_by`/`added_at`), and a `moved-in`
+event records where it came from; the source board's log records where it went. The column and
+the owner do **not** travel — a moved card lands in `todo`, unowned. A `--on` that names a card
+is dropped (that number means a different card over there); the block's text is kept.
 
 Refused (exit 1, the usual `{ok,error,hint}`): a destination that does not exist (tb never
 creates one), the board the card is already on, a card somebody else holds in DOING (add
@@ -427,7 +430,7 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 ## Other read commands
 
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
-- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
+- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `links` (`idx`, `label`, `value`, `added_by`, `added_at`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`; `default` is true on the board plain `tb` opens here.
 - `tb boards --default --json` — `{ok, default, source, setting, missing}`: `default` is the board plain `tb` opens
   in this environment, `source` says why (`"TB_DB"` | `"TB_BOARD"` | `"setting"` | `"builtin"`), `setting` is the

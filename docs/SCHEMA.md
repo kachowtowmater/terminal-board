@@ -45,6 +45,23 @@ tool owns the events log, positions and migrations, and a foreign writer skips t
 | `text` | TEXT | the item |
 | `done` | INTEGER | 0 / 1 |
 
+### links
+Evidence attached with `tb link ID VALUE --label LABEL` (`tb link ID --rm N` removes one, the
+rest renumber — same shape as `checklist`). `value` is a path, a git sha or a URL, as free
+text: **tb only stores it — it never reads a file there, never resolves a sha against a repo
+and never fetches a URL.** `label` is free text too (not a fixed set), lower-cased, so
+`config done-needs-link LABEL` (below) is a plain string match, case-insensitive, against
+whatever a caller typed with `--label`.
+
+| column | type | meaning |
+|---|---|---|
+| `card_id` | INTEGER FK → cards.id | on delete cascade |
+| `idx` | INTEGER | 1-based item number (with `card_id` forms the PK) |
+| `label` | TEXT | what kind of evidence it is, e.g. `brief`, `verdict`, `commit` — free text, lower-cased |
+| `value` | TEXT | the path, sha or URL, kept exactly as given (trimmed) — never parsed or validated as one of the three |
+| `added_by` | TEXT | who ran `tb link` |
+| `added_at` | INTEGER | unix seconds |
+
 ### events
 Every card change, oldest first per card (`ORDER BY ts, id`).
 
@@ -67,6 +84,7 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `moved` | `<from> -> <to>` (e.g. `doing -> review`) |
 | `note` | the note text |
 | `check` | the checklist item ticked/unticked |
+| `link` | `+ LABEL: VALUE` (added) or `- LABEL: VALUE` (removed) — `tb link` |
 | `blocked` | `by <what>`, plus ` · on <who>` and ` · until <date>` when `--on` / `--until` were given |
 | `unblocked` | — · `cleared on done` · `#<id> is done` (the card it waited on finished) |
 | `dropped` | — (owner cleared) |
@@ -131,7 +149,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-link`, `kind`) — a row exists only once the setting is set |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards
@@ -151,6 +169,7 @@ the row. An archived card is in NO other table, so nothing that reads `cards` ca
 | `card` | TEXT | its `cards` row as a JSON object, column name → value |
 | `checklist` | TEXT | its `checklist` rows, a JSON array of such objects |
 | `events` | TEXT | its `events` rows (ids included), a JSON array — the whole history |
+| `links` | TEXT | its `links` rows, a JSON array of such objects (`'[]'` on a table made before links existed) |
 
 ## Reading safely
 

@@ -2292,6 +2292,13 @@ fn draw_popup(f: &mut Frame, app: &App, d: &CardDetail, full_width: bool) {
             lines.push(Line::styled(text, st));
         }
     }
+    if !d.links.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("links:", dim()));
+        for l in &d.links {
+            lines.push(Line::raw(format!("  {} {}: {}", l.idx, l.label, l.value)));
+        }
+    }
     if let Some(n) = c.gh_ref {
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![

@@ -2,6 +2,7 @@
 //! `agents --json`). Field names here are pinned by golden tests; see docs/JSON.md.
 
 use crate::herdr::Agent;
+use crate::store::links::LinkItem;
 use crate::store::{Card, Result, Store, COLUMNS};
 use serde::Serialize;
 
@@ -79,6 +80,9 @@ pub struct CardJ {
     pub approved_by: Vec<String>,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
+    /// Evidence attached with `tb link ID VALUE --label LABEL` (`store::links`), in the order
+    /// they were added. tb only stores this text — see docs/JSON.md.
+    pub links: Vec<LinkItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +202,7 @@ pub fn card_with(
             .skip(skip)
             .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
             .collect(),
+        links: d.links.clone(),
     })
 }
 
