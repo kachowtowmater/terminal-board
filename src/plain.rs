@@ -375,6 +375,14 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
             line(&mut out, event_line(e));
         }
     }
+    // who the names above were: only when some event on the card carries an identity
+    if !d.actors.is_empty() {
+        out.push('\n');
+        line(&mut out, "actors:");
+        for a in &d.actors {
+            line(&mut out, format!("  {}", a.line()));
+        }
+    }
     out
 }
 

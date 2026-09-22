@@ -13,9 +13,12 @@ macro_rules! print {
 
 pub mod boards;
 pub mod contract;
+pub mod fsperm;
 pub mod github;
 pub mod herdr;
+pub mod notice;
 pub mod plain;
+pub mod roster;
 pub mod setup;
 pub mod store;
 pub mod text;

@@ -1,7 +1,7 @@
 //! The JSON contract for apps and agents (`board --json`, `watch --json`, write `--json`,
 //! `agents --json`). Field names here are pinned by golden tests; see docs/JSON.md.
 
-use crate::herdr::{self, Agent};
+use crate::herdr::Agent;
 use crate::store::{Card, Result, Store, COLUMNS};
 use serde::Serialize;
 
@@ -25,6 +25,9 @@ pub struct EventJ {
     pub actor: String,
     pub kind: String,
     pub text: String,
+    /// The identity behind `actor`: an `id` in the top-level `actors[]`; null when nothing but
+    /// the name is known.
+    pub actor_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,11 +90,15 @@ pub struct BoardJ {
     pub wip: i64,
     pub theme: String,
     pub layout: String,
+    /// `position` | `due`: what the `columns` arrays (and `tb next`) are ordered by.
+    pub sort: &'static str,
     /// Display names of the four columns (`config label`); the internal names in capitals
     /// unless the board set its own. Chrome: `columns` keys and `card.column` never change.
     pub labels: std::collections::BTreeMap<&'static str, String>,
     pub github: GithubJ,
     pub columns: ColumnsJ,
+    /// Every identity an event in `columns` points at (`actor_id`), in id order.
+    pub actors: Vec<crate::store::actors::Actor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +113,11 @@ pub struct AgentJ {
     pub last_note: Option<String>,
     /// Unix seconds of the held card's last event (any kind); the screen computes the age.
     pub last_event_at: Option<i64>,
+    /// True for an actor of THIS board (it owns an open card, reviews one, or wrote a card
+    /// event in the last hour); false for a herdr agent that is none of them.
+    pub on_board: bool,
+    /// What `card_id` is to it: `owner` | `reviewer`; null without a card.
+    pub card_role: Option<&'static str>,
 }
 
 /// A card with its checklist and last events.
@@ -146,7 +158,7 @@ fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &c
             .events
             .iter()
             .skip(skip)
-            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone() })
+            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
             .collect(),
     })
 }
@@ -170,45 +182,55 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         .unwrap_or(serde_json::Value::Null);
     let fetched_at = snapshot.get("fetched_at").and_then(|f| f.as_i64()).unwrap_or(0);
     debug_assert_eq!(COLUMNS.len(), 4);
+    let columns = ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? };
+    let seen: Vec<i64> = [&columns.todo, &columns.doing, &columns.review, &columns.done]
+        .into_iter()
+        .flatten()
+        .flat_map(|c| c.events.iter().filter_map(|e| e.actor_id))
+        .collect();
     Ok(BoardJ {
         v: SCHEMA_VERSION,
         board: store.name.clone(),
         wip: snap.wip,
         theme: snap.theme.clone(),
         layout: snap.layout.clone(),
+        sort: snap.sort.as_str(),
         labels: COLUMNS.iter().map(|c| (*c, look.column_label(c))).collect(),
         github: GithubJ { repo, snapshot, error, fails, fetched_at },
-        columns: ColumnsJ { todo: col("todo")?, doing: col("doing")?, review: col("review")?, done: col("done")? },
+        columns,
+        actors: store.actors_by_id(&seen)?,
     })
 }
 
-/// herdr agents merged with the board: the card each one holds (doing first), with that
-/// card's last note and the age of its last activity (what the agent is doing).
+/// Who is on this board (`roster`), then the herdr agents that are not. A board actor with
+/// no herdr pane of exactly its name has `harness` and `status` `-` and an empty `pane_id`.
 pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
-    list.iter()
-        .map(|a| {
-            let mine: Vec<&Card> = snap
-                .cards
-                .iter()
-                .filter(|c| c.column != "done" && herdr::find_owner(list, c).is_some_and(|o| o.pane_id == a.pane_id))
-                .collect();
-            let held = mine.iter().find(|c| c.column == "doing").or(mine.first());
-            let (last_note, last_event_at) = match held {
-                Some(c) => (snap.last_note.get(&c.id).cloned(), snap.last_event_at.get(&c.id).copied()),
-                None => (None, None),
-            };
-            AgentJ {
-                name: a.name.clone(),
-                harness: a.harness.clone(),
-                status: a.status.clone(),
-                pane_id: a.pane_id.clone(),
-                job: a.job.clone(),
-                card_id: held.map(|c| c.id),
-                last_note,
-                last_event_at,
-            }
-        })
-        .collect()
+    let r = crate::roster::roster(snap, list);
+    let here = r.here.iter().map(|row| AgentJ {
+        name: row.name.clone(),
+        harness: row.harness().to_string(),
+        status: row.status().to_string(),
+        pane_id: row.live.map(|a| a.pane_id.clone()).unwrap_or_default(),
+        job: row.live.and_then(|a| a.job.clone()),
+        card_id: row.card.map(|c| c.id),
+        last_note: row.card.and_then(|c| snap.last_note.get(&c.id).cloned()),
+        last_event_at: row.card.and_then(|c| snap.last_event_at.get(&c.id).copied()),
+        on_board: true,
+        card_role: row.role.map(crate::roster::CardRole::as_str),
+    });
+    let elsewhere = r.elsewhere.iter().map(|a| AgentJ {
+        name: a.name.clone(),
+        harness: a.harness.clone(),
+        status: a.status.clone(),
+        pane_id: a.pane_id.clone(),
+        job: a.job.clone(),
+        card_id: None,
+        last_note: None,
+        last_event_at: None,
+        on_board: false,
+        card_role: None,
+    });
+    here.chain(elsewhere).collect()
 }
 
 /// `{"ok":false,"error":…,"hint":…}` from an error message shaped "what — what to do".

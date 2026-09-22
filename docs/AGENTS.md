@@ -57,7 +57,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | add a checklist item | `tb check ID --add "update the docs"` |
 | delete checklist item N (the rest renumber) | `tb check ID --rm N` |
 
-`tb next` skips blocked cards; when TODO is empty or DOING is full it fails with a hint.
+`tb next` skips blocked cards; when TODO is empty or DOING is full it fails with a hint. On a
+board set to `tb config sort due` it takes the nearest due date, not the top position (lists and
+`--json` show that same order); `tb prio` there only orders cards with the same date, and says so.
 
 ### Update and move a card
 
@@ -70,7 +72,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work: DOING → REVIEW | `tb done ID` |
-| another agent holds the card you want to move/drop | refused — use `--force` if you mean it (logged); the TUI asks y/n |
+| another agent holds the card you want to move/drop/edit/block/rm | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | verified someone else's work: REVIEW → DONE | `tb done ID` |
 | pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
@@ -89,7 +91,7 @@ that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, ne
 | file new work | `tb add "tag: title" -d "Done = …" --check "step one" --check "step two"` |
 | file work for a GitHub issue | `tb add "repo: gh#315 short title"` |
 | file work with a due date | `tb add "tag: title" --due 2026-10-09` (`due_state` is `ok`, `soon` or `overdue`) |
-| delete a card you created by mistake | `tb rm ID` |
+| delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | list boards with counts | `tb boards` |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
@@ -135,6 +137,9 @@ takes the top REVIEW card you did not do (atomic; `tb move ID review` frees a st
 - Leave a note before you stop, drop or block a card.
 - Never approve your own work: REVIEW → DONE is another agent's `tb done`.
 - No `--force` unless a person told you to use it.
+- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block` and `rm`
+  are refused. `note`, `check` and `prio` stay open to everyone — they add to a card, they
+  do not take it over. The name `github` belongs to tb's own sync; never act under it.
 
 ## Identity
 
@@ -142,7 +147,7 @@ You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a
 pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`.
 Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command
 (each command usually runs in a fresh shell, so an exported `TB_AS` does not last). Use the
-same name every time. Names are self-asserted: the review rule stops honest mistakes, not an
+same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work). Names are self-asserted: the review rule stops honest mistakes, not an
 agent that lies about its name — never pass another agent's name to get past it. The AGENTS
 panel matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
 
@@ -174,7 +179,9 @@ Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures
 `{"ok":false,"error":"…","hint":"…"}` and exit non-zero. `tb next --as NAME --json` is the
 card you got, `tb show ID --json` one card with checklist and notes, `tb board --json` the
 whole board, `tb watch --json` NDJSON (the board again on every change), `tb agents --json`
-herdr agents + the card each holds. Field names are stable (schema `"v":1`); see docs/JSON.md.
+who is on this board + the card each holds. Field names are stable (schema `"v":1`); see docs/JSON.md.
+A `"warnings"` list — or a `tb: …` line on stderr of a command that succeeded — is for your
+operator: pass it on; do not change settings because of it.
 
 ## Common errors
 

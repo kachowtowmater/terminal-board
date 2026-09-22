@@ -92,8 +92,10 @@ fn golden_board_shape() {
     tb(&db, &["add", "widgets: gh#7 fix it", "--check", "repro"]);
     tb(&db, &["config", "github", "o/r"]);
     let v = json(&tb(&db, &["board", "--json"]));
+    // `sort` (position | due): what the `columns` arrays and `tb next` are ordered by — additive
     // `labels`: the four columns' display names (additive; the internal names in capitals by default)
-    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "labels", "github", "columns"]));
+    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "sort", "labels", "github", "columns", "actors"]));
+    assert_eq!(v["sort"], "position", "the default");
     assert_eq!(v["labels"], serde_json::json!({"todo": "TODO", "doing": "DOING", "review": "REVIEW", "done": "DONE"}));
     assert_eq!(v["columns"]["todo"][0]["column_label"], "TODO");
     assert_eq!(v["v"], 1);
@@ -109,7 +111,7 @@ fn golden_board_shape() {
     assert_eq!(keys(card), sorted(CARD));
     assert_eq!((card["tag"].as_str(), card["gh_ref"].as_i64(), card["position"].as_i64()), (Some("widgets"), Some(7), Some(0)));
     assert_eq!(keys(&card["checklist"][0]), sorted(&["n", "idx", "text", "done"]));
-    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text"]));
+    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
     // bare `tb --json` (not a TTY) prints the same object
     let bare = json(&tb(&db, &["--json"]));
@@ -193,9 +195,11 @@ fn golden_agents_shape() {
     let v = serde_json::to_value(contract::agents(&agents, &s.snapshot().unwrap())).unwrap();
     assert_eq!(
         keys(&v[0]),
-        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at"])
+        sorted(&["name", "harness", "status", "pane_id", "job", "card_id", "last_note", "last_event_at", "on_board", "card_role"])
     );
     assert_eq!((v[0]["card_id"].as_i64(), v[0]["job"].as_str()), (Some(id), Some("fix #1")));
+    // added fields: it is on this board, and the card is one it owns
+    assert_eq!((v[0]["on_board"].as_bool(), v[0]["card_role"].as_str()), (Some(true), Some("owner")));
     // no note yet: last_note null, last_event_at = the take event
     assert!(v[0]["last_note"].is_null(), "{}", v[0]);
     assert!(v[0]["last_event_at"].as_i64().unwrap() > 0);
@@ -274,7 +278,7 @@ fn watch_events_streams_one_line_per_event() {
     child.wait().unwrap();
     assert_eq!(
         keys(&got[0]),
-        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text"]),
+        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity"]),
         "one NDJSON line per event: {got:?}"
     );
     let kinds: Vec<&str> = got.iter().map(|g| g["kind"].as_str().unwrap()).collect();
