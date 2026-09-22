@@ -1,11 +1,11 @@
 //! The holder rule for changes that are not column moves, and soft delete.
 //!
 //! **The holder rule.** A card in DOING with an owner is HELD. `done`/`drop`/`move` already
-//! refuse to take a held card away from its holder (`Store::transition`); `rm`, `edit` and
-//! `block` follow the very same rule here — refused for anyone else, `--force` goes through
-//! and is logged as its own event. Card ids are small shared integers, and an off-by-one must
-//! not delete, rewrite or block someone else's work in progress. `check`, `prio` and `note`
-//! stay open on purpose: they add to a card, they do not take it over.
+//! refuse to take a held card away from its holder (`Store::transition`); `rm`, `edit`,
+//! `block`, `check` and `prio` follow the very same rule here — refused for anyone else,
+//! `--force` goes through and is logged as its own event. Card ids are small shared integers,
+//! and an off-by-one must not delete, rewrite, re-tick or reorder someone else's work in
+//! progress. `note` stays open on purpose: it adds to a card, it does not take it over.
 //!
 //! **Soft delete** (`tb config rm archive`). By default `tb rm` destroys a card with its
 //! checklist and history, as it always has. On an archive board it moves them, whole, into
@@ -190,10 +190,10 @@ impl Store {
         Ok(if self.rm_mode()? == RM_ARCHIVE { vec![("rm".to_string(), RM_ARCHIVE.to_string())] } else { Vec::new() })
     }
 
-    /// The holder rule for `edit` and `block` (and anything else that rewrites a card without
-    /// moving it): refused when someone else holds the card, unless forced. `what` finishes
-    /// "to … anyway" in the refusal (`edit it`). `Ok(Some(owner))`: forced past that holder —
-    /// once the change has gone through, record it with `log_forced`.
+    /// The holder rule for `edit` and `block` (and anything else that rewrites or reorders a
+    /// card without moving it): refused when someone else holds the card, unless forced.
+    /// `what` finishes "to … anyway" in the refusal (`edit it`, `tick it`). `Ok(Some(owner))`:
+    /// forced past that holder — once the change has gone through, record it with `log_forced`.
     pub fn holder_check(&self, id: i64, actor: &str, force: bool, what: &str) -> Result<Option<String>> {
         let c = get_card(&self.conn, id)?;
         holder_guard(&self.conn, &c, actor, force, what)

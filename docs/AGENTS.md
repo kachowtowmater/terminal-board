@@ -61,6 +61,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work (DOING → REVIEW), or verified someone else's (REVIEW → DONE) | `tb done ID` |
+| another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | pass a gh# card whose PR is not merged yet (stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
@@ -110,9 +111,10 @@ would miss it — copy it as printed. Leave settings alone unless a person asks 
 - Leave a note before you stop, drop or block a card.
 - Never approve your own work: REVIEW → DONE is another agent's `tb done`.
 - No `--force` unless a person told you to use it.
-- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block` and `rm`
-  are refused (`--force` overrides, and is logged; the full-screen board asks y/n); `note`,
-  `check` and `prio` stay open to everyone. `github` is tb's own sync: never act under it.
+- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`,
+  `check` and `prio` are refused (`--force` overrides, and is logged; the full-screen board asks
+  y/n). `note` stays open to everyone — a note adds to a card, it does not take it over.
+  `github` is tb's own sync: never act under it.
 
 ## Identity
 

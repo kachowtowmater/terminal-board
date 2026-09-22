@@ -379,6 +379,11 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 `tb config agents-panel shown|hidden`; print the same list with `tb agents`
 ([more](docs/HUMANS.md#watching-agents)).
 
+**Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
+`block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
+ahead anyway (each override is logged as its own `force` event). `tb note` stays open to
+everyone: a progress note adds to a card, it does not take it over.
+
 ## Command-line reference
 
 Every command prints a short answer and, when something is wrong, says what to run next.
@@ -419,7 +424,7 @@ tb --version
 | `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
-| `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
+| `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item (`--force` on someone else's held card, logged) |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb block ID "text" --on NAME\|#ID --until DATE` | say who you wait on and when to look again — see [Waiting on something](#waiting-on-something) |
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
@@ -428,7 +433,7 @@ tb --version
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb done ID --approve` | record your approval without moving the card |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
-| `tb prio ID top\|bottom\|up\|down` | reorder within the column |
+| `tb prio ID top\|bottom\|up\|down` | reorder within the column (`--force` on someone else's held card, logged; `note` is always open to everyone) |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
 | `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |

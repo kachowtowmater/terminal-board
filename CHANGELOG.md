@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Ownership: `check` and `prio` follow the holder rule; `note` stays open
+
+A DOING card someone else holds is theirs — and so are its checklist and its place in the
+column. `tb check ID N` (toggle), `tb check ID --add`, `tb check ID --rm` and
+`tb prio ID top|bottom|up|down` on a held card are refused for anyone else, worded exactly as
+`tb edit` refuses (`#1 is held by bot-1 — your cards: none · to tick it anyway use --force
+(logged)`), and `--force` (new on both commands) goes through and is logged as its own `force`
+event (`checked #1 held by bot-1`, `added a check to #1 held by bot-1`,
+`removed a check from #1 held by bot-1`, `reordered #1 held by bot-1`). The holder, cards
+nobody holds and REVIEW cards are unaffected. `tb note` stays open to everyone on purpose: a
+progress note adds to a card, it does not take it over. The full-screen board is unchanged —
+its checklist keys already act only on the card you have open, and reorder is the same
+`Store::reorder` call now guarded at the CLI.
+
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 
 `tb block ID "text"` is unchanged. It now also takes **`--on NAME|#ID`** (who you are waiting
