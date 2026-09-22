@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### The due date is in the board's edit form
+
+`e` on the full-screen board now opens three fields, not two: **Title, Due, Description**.
+Tab walks them (shift+tab walks back), the date is prefilled from the card, and an empty
+field clears it — the same thing `--due none` does.
+- The form uses the **same parser and the same refusal text** as `tb edit --due`: a date it
+  will not take is shown in the status line, the form stays open, and **nothing is written** —
+  not the date, and not a title typed beside it.
+- The **stale-form rule** covers the date: a date you changed that somebody else changed while
+  your form was open is refused rather than overwritten, and a date you did not touch is left
+  alone. That is what the title and description already did.
+- A board with no due dates renders exactly as before; the field exists only inside the form.
+
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 
 `tb block ID "text"` is unchanged. It now also takes **`--on NAME|#ID`** (who you are waiting

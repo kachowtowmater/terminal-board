@@ -36,7 +36,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 |---|---|---|
 | add a card | `a`, type `tag: title`, Enter | `tb add "home: water the plants"` |
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
-| edit title and description | `e` (Tab switches field, Enter saves) | `tb edit 3 --title "…" --desc "…"` |
+| edit title, due date and description | `e` (Tab moves to the next field, Enter saves) | `tb edit 3 --title "…" --due 2026-10-09 --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
 | keep deleted cards instead | — | `tb config rm archive`, then `tb list --archived` · `tb restore 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |

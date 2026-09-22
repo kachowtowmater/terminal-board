@@ -180,33 +180,51 @@ pub enum Confirm {
 pub struct EditForm {
     pub id: i64,
     pub title: String,
+    /// The due date as typed, `YYYY-MM-DD`; empty = no date (what `--due none` does).
+    pub due: String,
     pub desc: String,
     /// What the fields read when the form opened (the save-conflict baseline).
     pub open_title: String,
+    pub open_due: String,
     pub open_desc: String,
-    /// 0 = title, 1 = description
+    /// 0 = title, 1 = due, 2 = description
     pub field: u8,
     pub cursor: usize,
     pub from_popup: bool,
 }
 
+/// How many fields the form has, in tab order.
+pub const FORM_FIELDS: u8 = 3;
+
 impl EditForm {
     fn text(&mut self) -> &mut String {
-        if self.field == 0 {
-            &mut self.title
-        } else {
-            &mut self.desc
+        match self.field {
+            0 => &mut self.title,
+            1 => &mut self.due,
+            _ => &mut self.desc,
+        }
+    }
+
+    /// The field's text, for the cursor and the width maths.
+    pub fn field_text(&self) -> &str {
+        match self.field {
+            0 => &self.title,
+            1 => &self.due,
+            _ => &self.desc,
         }
     }
 
     /// Apply one editing key; returns false if the key isn't an edit key.
     pub fn key(&mut self, code: KeyCode) -> bool {
-        let len = if self.field == 0 { self.title.chars().count() } else { self.desc.chars().count() };
+        let len = self.field_text().chars().count();
         let cur = self.cursor.min(len);
         match code {
             KeyCode::Tab | KeyCode::BackTab => {
-                self.field = 1 - self.field;
-                self.cursor = if self.field == 0 { self.title.chars().count() } else { self.desc.chars().count() };
+                self.field = match code {
+                    KeyCode::BackTab => (self.field + FORM_FIELDS - 1) % FORM_FIELDS,
+                    _ => (self.field + 1) % FORM_FIELDS,
+                };
+                self.cursor = self.field_text().chars().count();
             }
             KeyCode::Left => self.cursor = cur.saturating_sub(1),
             KeyCode::Right => self.cursor = (cur + 1).min(len),
@@ -671,16 +689,60 @@ impl App {
                     self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
                 }
                 KeyCode::Enter => {
+                    let typed = form.due.trim().to_string();
+                    let due_changed = typed != form.open_due.trim();
+                    // the date is checked before anything is written, in the words the CLI
+                    // uses (store::due), so the form and `tb edit --due` refuse alike
+                    let date = if due_changed {
+                        let raw = if typed.is_empty() { "none".to_string() } else { typed.clone() };
+                        match crate::store::due::DueDate::parse(&raw, &format!("tb edit {} --due 2026-10-09", form.id)) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                self.status = Some((e.to_string(), true));
+                                self.mode = Mode::Edit(form);
+                                return false;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    // the same stale-form rule the title and description follow: a date the
+                    // person changed that someone else changed too is refused, not overwritten
+                    if due_changed {
+                        let now = store.card(form.id).ok().and_then(|c| c.due).unwrap_or_default();
+                        if now.trim() != form.open_due.trim() {
+                            self.status = Some((
+                                format!("#{} changed while you were editing — the due date has a newer value; reopen with e", form.id),
+                                true,
+                            ));
+                            self.mode = Mode::Edit(form);
+                            return false;
+                        }
+                    }
                     // only the fields the person changed are written; a field they left at
                     // its open-time value but that moved on since is refused, not overwritten
-                    let r = store.edit(
-                        form.id,
-                        (form.title != form.open_title).then_some(form.title.as_str()),
-                        (form.desc != form.open_desc).then_some(form.desc.as_str()),
-                        &actor,
-                        Some((form.open_title.as_str(), form.open_desc.as_str())),
-                    );
-                    if self.report(r, |c| format!("#{} saved", c.id)).is_some() {
+                    let text_changed = form.title != form.open_title || form.desc != form.open_desc;
+                    let r = if text_changed {
+                        store.edit(
+                            form.id,
+                            (form.title != form.open_title).then_some(form.title.as_str()),
+                            (form.desc != form.open_desc).then_some(form.desc.as_str()),
+                            &actor,
+                            Some((form.open_title.as_str(), form.open_desc.as_str())),
+                        )
+                    } else {
+                        store.card(form.id)
+                    };
+                    let saved = self.report(r, |c| format!("#{} saved", c.id)).is_some();
+                    if saved && due_changed {
+                        let r = store.set_due(form.id, date.as_ref().and_then(Option::as_ref), &actor).map(|_| ());
+                        if self.report(r, |()| format!("#{} saved", form.id)).is_none() {
+                            self.reload(store);
+                            self.mode = Mode::Edit(form);
+                            return false;
+                        }
+                    }
+                    if saved {
                         self.reload(store);
                         self.focus_card(form.id);
                         self.mode = if form.from_popup { Mode::Popup(form.id) } else { Mode::Normal };
@@ -803,11 +865,14 @@ impl App {
             }
             let title = crate::store::raw_title(c);
             let cursor = title.chars().count();
+            let due = c.due.clone().unwrap_or_default();
             self.mode = Mode::Edit(EditForm {
                 id,
                 open_title: title.clone(),
+                open_due: due.clone(),
                 open_desc: c.description.clone(),
                 title,
+                due,
                 desc: c.description.clone(),
                 field: 0,
                 cursor,
@@ -2623,7 +2688,9 @@ fn cursor_line(text: &str, cursor: usize, active: bool) -> Line<'static> {
 
 /// The `e` edit form: Title (one line) and Description (one logical line that wraps).
 fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
-    let area = centered(f.area(), 80, 14);
+    // three fields now (title, due, description); one row taller when the screen allows it
+    let want = if f.area().height >= 18 { 18 } else { 14 };
+    let area = centered(f.area(), 80, want);
     if area.width < 10 || area.height < 8 {
         return;
     }
@@ -2636,22 +2703,22 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
     f.render_widget(b, area);
     let pad = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let label = |active: bool, t: &str| Line::styled(t.to_string(), if active { bold() } else { dim() });
-    let title_active = form.field == 0;
-    f.render_widget(Paragraph::new(label(title_active, "Title  (tag: prefix sets the tag)")), Rect { height: 1, ..pad });
-    let tb = frame(title_active, None).padding(Padding::horizontal(1));
-    let title_rect = Rect { y: pad.y + 1, height: 3, ..pad };
-    // keep the cursor visible in a long title
-    let w = title_rect.width.saturating_sub(4) as usize;
-    let skip = if title_active { form.cursor.saturating_sub(w.saturating_sub(1)) } else { 0 };
-    let shown: String = form.title.chars().skip(skip).collect();
-    f.render_widget(Paragraph::new(cursor_line(&shown, form.cursor - skip.min(form.cursor), title_active)).block(tb), title_rect);
-    f.render_widget(Paragraph::new(label(!title_active, "Description")), Rect { y: pad.y + 4, height: 1, ..pad });
-    let db = frame(!title_active, None).padding(Padding::horizontal(1));
-    let desc_rect = Rect { y: pad.y + 5, height: pad.height.saturating_sub(5), ..pad };
-    f.render_widget(
-        Paragraph::new(cursor_line(&form.desc, form.cursor, !title_active)).block(db).wrap(Wrap { trim: false }),
-        desc_rect,
-    );
+    // one field: a label row, then a boxed line of text with the cursor in it
+    let mut field = |y: u16, height: u16, active: bool, name: &str, text: &str, wrap: bool| {
+        f.render_widget(Paragraph::new(label(active, name)), Rect { y: pad.y + y, height: 1, ..pad });
+        let block = frame(active, None).padding(Padding::horizontal(1));
+        let rect = Rect { y: pad.y + y + 1, height, ..pad };
+        // keep the cursor visible in a long line
+        let w = rect.width.saturating_sub(4) as usize;
+        let skip = if active && !wrap { form.cursor.saturating_sub(w.saturating_sub(1)) } else { 0 };
+        let shown: String = text.chars().skip(skip).collect();
+        let line = cursor_line(&shown, form.cursor - skip.min(form.cursor), active);
+        let p = Paragraph::new(line).block(block);
+        f.render_widget(if wrap { p.wrap(Wrap { trim: false }) } else { p }, rect);
+    };
+    field(0, 3, form.field == 0, "Title  (tag: prefix sets the tag)", &form.title, false);
+    field(4, 3, form.field == 1, "Due  (YYYY-MM-DD, empty for none)", &form.due, false);
+    field(8, pad.height.saturating_sub(9), form.field == 2, "Description", &form.desc, true);
 }
 
 /// Every key, grouped, plus the CLI verbs.

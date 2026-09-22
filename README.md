@@ -213,7 +213,7 @@ Press `?` on the board to see all keys at any time.
 |---|---|
 | arrows | select a card (←→ column, ↑↓ card) |
 | `a` | add a card (`tag: title`) |
-| `e` | edit the title and description |
+| `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
 | `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
 | `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
