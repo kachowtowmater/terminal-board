@@ -1,5 +1,6 @@
-//! The holder rule on `rm` / `edit` / `block` (and the delete key), the reserved `github`
-//! name, and soft delete: `tb config rm archive`, `tb list --archived`, `tb restore ID`.
+//! The holder rule on `rm` / `edit` / `block` / `check` / `prio` (and the delete key), the
+//! reserved `github` name, and soft delete: `tb config rm archive`, `tb list --archived`,
+//! `tb restore ID`.
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -93,10 +94,8 @@ fn rm_edit_and_block_refuse_a_card_someone_else_holds() {
     }
     assert_eq!(b.json("reader", &["show", "1", "--json"]), before, "every refusal left the card exactly as it was");
 
-    // open by design: adding to a held card is not taking it over
+    // open by design: a note on a held card is not taking it over
     b.ok("bot-2", &["note", "1", "evidence from someone else"]);
-    b.ok("bot-2", &["check", "1", "1"]);
-    b.ok("bot-2", &["prio", "1", "top"]);
     // a card nobody holds (TODO), and a REVIEW card, are open to anyone — the same rule moves follow
     b.ok("bot-2", &["edit", "2", "--title", "t: two, edited"]);
     b.ok("bot-2", &["block", "2", "waiting"]);
@@ -141,7 +140,7 @@ fn force_goes_through_and_is_logged_and_the_holder_needs_none() {
 fn the_name_github_is_not_a_way_past_the_holder_rule() {
     let b = held();
     for name in ["github", "GitHub"] {
-        for args in [vec!["move", "1", "review"], vec!["drop", "1"], vec!["rm", "1"], vec!["note", "1", "x"]] {
+        for args in [vec!["move", "1", "review"], vec!["drop", "1"], vec!["rm", "1"], vec!["note", "1", "x"], vec!["check", "1", "1"], vec!["prio", "1", "top"]] {
             let o = b.run(name, &args);
             assert!(!o.status.success(), "{args:?} as {name}");
             assert!(errs(&o).contains("'github' is the name tb's own GitHub sync acts under"), "{}", errs(&o));
@@ -291,6 +290,103 @@ fn a_hint_names_the_board_it_was_run_on() {
     // `restore` is a command now, so it cannot be mistaken for a board name
     let o = tb(&["restore", "add", "t: x"]);
     assert!(!o.status.success());
+}
+
+/// bot-1 holds #1 in DOING with a checklist; #2 is an unheld TODO card; #3 is bot-2's own
+/// DOING card. The three shapes of `tb check` and the four directions of `tb prio` are
+/// refused for a non-holder, write NOTHING, and name the holder exactly as `edit` does;
+/// the holder, a card nobody holds and a REVIEW card are untouched.
+#[test]
+fn check_and_prio_refuse_a_card_someone_else_holds() {
+    let b = held();
+    b.ok("lead", &["add", "t: three", "--check", "step"]);
+    b.ok("bot-2", &["take", "3"]);
+    let before = b.json("reader", &["show", "1", "--json"]);
+    let doing_before = b.json("reader", &["board", "--json"]);
+    for (args, what) in [
+        (vec!["check", "1", "1"], "tick it"),
+        (vec!["check", "1", "--add", "bob added a step"], "add to it"),
+        (vec!["check", "1", "--rm", "1"], "remove it"),
+        (vec!["prio", "1", "top"], "reorder it"),
+        (vec!["prio", "1", "bottom"], "reorder it"),
+        (vec!["prio", "1", "up"], "reorder it"),
+        (vec!["prio", "1", "down"], "reorder it"),
+    ] {
+        let o = b.run("bot-2", &args);
+        assert!(!o.status.success(), "{args:?} must be refused");
+        let e = errs(&o);
+        assert!(e.contains("#1 is held by bot-1 — your cards: #3"), "{args:?}: {e}");
+        assert!(e.contains(&format!("to {what} anyway use --force (logged)")), "{args:?}: {e}");
+        let mut j = args.clone();
+        j.push("--json");
+        let o = b.run("bot-2", &j);
+        assert!(!o.status.success());
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["ok"], false, "{args:?}");
+        assert_eq!(v["error"], "#1 is held by bot-1", "{args:?}");
+        assert!(v["hint"].as_str().unwrap().contains("--force"), "{args:?}: {v}");
+    }
+    assert_eq!(b.json("reader", &["show", "1", "--json"]), before, "every refusal left the card exactly as it was");
+    assert_eq!(b.json("reader", &["board", "--json"]), doing_before, "nothing moved anywhere on the board");
+
+    // the holder ticks, adds, removes and reorders their own card with no --force anywhere
+    b.ok("bot-1", &["check", "1", "1"]);
+    b.ok("bot-1", &["check", "1", "--add", "holder added a step"]);
+    b.ok("bot-1", &["check", "1", "--rm", "2"]);
+    b.ok("bot-1", &["prio", "1", "top"]);
+    b.ok("bot-2", &["check", "3", "1"]);
+    b.ok("bot-2", &["prio", "3", "top"]);
+    // an unheld TODO card is open to anyone — the same rule moves follow
+    b.ok("bot-2", &["check", "2", "--add", "anyone may add"]);
+    b.ok("bot-2", &["prio", "2", "top"]);
+    assert!(!b.kinds(1).iter().any(|(k, _)| k == "force"), "nothing so far was forced: {:?}", b.kinds(1));
+    // after the holder sends the card to REVIEW it is not held, so bot-2 works on it freely
+    b.ok("bot-1", &["done", "1"]);
+    b.ok("bot-2", &["check", "1", "1"]);
+    b.ok("bot-2", &["prio", "1", "bottom"]);
+    assert!(!b.kinds(1).iter().any(|(k, _)| k == "force"), "a REVIEW card is not held: {:?}", b.kinds(1));
+}
+
+/// On bot-1's held DOING card, `--force` on `check` and `prio` goes through and is logged as
+/// its own `force` event, worded like the other commands' (`<did> #1 held by bot-1`), and
+/// the card stays bot-1's.
+#[test]
+fn check_and_prio_force_is_allowed_and_logged_and_the_holder_needs_none() {
+    let b = held();
+    // the holder needs no --force and leaves no force event
+    b.ok("bot-1", &["check", "1", "1"]);
+    b.ok("bot-1", &["prio", "1", "top"]);
+    assert!(!b.kinds(1).iter().any(|(k, _)| k == "force"), "{:?}", b.kinds(1));
+
+    // someone else, forced: each change lands and is its own `force` event
+    b.ok("bot-2", &["check", "1", "1", "--force"]);
+    b.ok("bot-2", &["check", "1", "--add", "forced step", "--force"]);
+    b.ok("bot-2", &["check", "1", "--rm", "2", "--force"]);
+    b.ok("bot-2", &["prio", "1", "top", "--force"]);
+    b.ok("bot-2", &["prio", "1", "bottom", "--force"]);
+    let forced: Vec<String> = b.kinds(1).into_iter().filter(|(k, _)| k == "force").map(|(_, t)| t).collect();
+    assert_eq!(
+        forced,
+        [
+            "checked #1 held by bot-1",
+            "added a check to #1 held by bot-1",
+            "removed a check from #1 held by bot-1",
+            "reordered #1 held by bot-1",
+            "reordered #1 held by bot-1",
+        ]
+    );
+    // a forced change is not a takeover
+    let c = b.json("reader", &["show", "1", "--json"]);
+    assert_eq!((c["owner"].as_str(), c["column"].as_str()), (Some("bot-1"), Some("doing")));
+
+    // without --force the same command is refused and writes nothing: the checklist and the
+    // position are exactly what the forced pass left
+    let before = b.json("reader", &["show", "1", "--json"]);
+    for args in [vec!["check", "1", "2"], vec!["check", "1", "--rm", "1"], vec!["prio", "1", "up"]] {
+        let o = b.run("bot-2", &args);
+        assert!(!o.status.success(), "{args:?} must be refused: {}", errs(&o));
+    }
+    assert_eq!(b.json("reader", &["show", "1", "--json"]), before, "every refusal wrote nothing");
 }
 
 // ---------- the full-screen board ----------

@@ -165,6 +165,9 @@ enum Cmd {
         add: Option<String>,
         #[arg(long, value_name = "N", conflicts_with = "n")]
         rm: Option<i64>,
+        /// Change a DOING card's checklist when someone else holds it (logged as its own event).
+        #[arg(long)]
+        force: bool,
     },
     Move {
         id: i64,
@@ -212,7 +215,13 @@ enum Cmd {
     },
     /// Bring an archived card back (`tb list --archived` shows them).
     Restore { id: i64 },
-    Prio { id: i64, how: String },
+    Prio {
+        id: i64,
+        how: String,
+        /// Reorder a DOING card someone else holds (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
     Edit {
         // required — except with --from, which conflicts with it (a conflict with a present
         // argument lifts the requirement); this keeps every ID message exactly as it was
@@ -1250,7 +1259,20 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             store.note(id, &text.unwrap_or_default(), &actor)?;
             done_card(&store, j, id, format!("noted #{id}"))?;
         }
-        Cmd::Check { id, n, add, rm } => {
+        Cmd::Check { id, n, add, rm, force } => {
+            // the holder rule (store/archive.rs): the checklist on someone else's DOING card
+            // is not theirs to rewrite, unless forced — a note stays open to everyone
+            let (what, did) = match (n, &add, rm) {
+                (_, _, Some(_)) => ("remove it", "removed a check from"),
+                (_, Some(_), _) => ("add to it", "added a check to"),
+                (Some(_), _, _) => ("tick it", "checked"),
+                (None, None, None) => ("", ""),
+            };
+            let forced = if n.is_some() || add.is_some() || rm.is_some() {
+                store.holder_check(id, &actor, force, what)?
+            } else {
+                None
+            };
             let human = match (n, add, rm) {
                 (_, _, Some(r)) => {
                     store.remove_check(id, r, &actor)?;
@@ -1272,6 +1294,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     )))
                 }
             };
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, did, &owner)?;
+            }
             done_card(&store, j, id, human)?;
         }
         Cmd::Move { id, column, reason, force } => {
@@ -1405,7 +1430,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let c = store.restore(id, &actor)?;
             done_card(&store, j, id, format!("#{id} restored to {} with its history", c.column))?;
         }
-        Cmd::Prio { id, how } => {
+        Cmd::Prio { id, how, force } => {
+            // the holder rule (store/archive.rs): queue order is the holder's to set, unless
+            // forced — like `edit`, not like `note`
+            let forced = store.holder_check(id, &actor, force, "reorder it")?;
             let before = store.place(id).ok();
             let c = store.reorder(id, &how.to_ascii_lowercase(), &actor)?;
             let human = format!("#{id} is now at position {} in {}", c.position + 1, c.column);
@@ -1429,6 +1457,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             } else {
                 done_card(&store, j, id, human)?;
+            }
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, "reordered", &owner)?;
             }
         }
         Cmd::Edit { id, title, desc, force, .. } => {
