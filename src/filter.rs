@@ -164,6 +164,50 @@ impl Filter {
         true
     }
 
+    /// The filters an ARCHIVED card cannot answer. An archived row keeps its id, title, tag,
+    /// column and owner and nothing else — there is no due date and no block to test — so
+    /// these are refused BY NAME rather than quietly ignored, which would hand somebody a
+    /// list they would act on.
+    pub fn not_for_archived(&self) -> Option<&'static str> {
+        if self.blocked {
+            return Some("--blocked");
+        }
+        if self.blocked_on.is_some() {
+            return Some("--blocked-on");
+        }
+        if self.due_before.is_some() {
+            return Some("--due-before");
+        }
+        None
+    }
+
+    /// Does an archived card pass the filters that DO apply to it? (`not_for_archived` has
+    /// already refused the ones that cannot.)
+    pub fn keeps_archived(&self, tag: Option<&str>, owner: Option<&str>, column: &str) -> bool {
+        if let Some(want) = &self.tag {
+            let ok = if want == NONE { tag.is_none() } else { tag.unwrap_or_default().eq_ignore_ascii_case(want) };
+            if !ok {
+                return false;
+            }
+        }
+        if let Some(want) = &self.owner {
+            let ok = if want.eq_ignore_ascii_case(NONE) {
+                owner.is_none()
+            } else {
+                owner.is_some_and(|o| o.eq_ignore_ascii_case(want))
+            };
+            if !ok {
+                return false;
+            }
+        }
+        if let Some(want) = self.column {
+            if column != want {
+                return false;
+            }
+        }
+        true
+    }
+
     /// `cards` with everything that does not pass removed. The sequence handed in is already
     /// in the board's order, and this only takes rows out of it.
     pub fn apply<'a>(&self, cards: Vec<&'a Card>, blocks: &BlockCtx) -> Vec<&'a Card> {

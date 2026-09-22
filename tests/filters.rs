@@ -472,3 +472,104 @@ fn mv_force_exists_and_is_logged() {
     // the holder's own card is gone from their board, as a move means
     assert_eq!(ids(&h.ok(&["list"])), Vec::<i64>::new());
 }
+
+/// D7: a filter must never be accepted and silently ignored. `--done` honours every filter;
+/// `--archived` honours the ones an archived row can answer and REFUSES the others by name.
+#[test]
+fn done_and_archived_honour_the_filters() {
+    let h = Home::new();
+    h.ok(&["config", "rm", "archive"]);
+    h.ok(&["add", "docs: finished doc"]);
+    h.ok(&["add", "ops: finished op"]);
+    h.ok(&["add", "docs: still going"]);
+    h.ok(&["add", "ops: to be archived"]);
+    for id in ["1", "2"] {
+        for (verb, who) in [("take", "alice"), ("done", "alice"), ("done", "bob")] {
+            assert!(h.cmd(&[verb, id], who).output().unwrap().status.success());
+        }
+    }
+    h.ok(&["rm", "4"]);
+
+    // --done: the whole card is there, so every filter applies
+    assert_eq!(ids(&h.ok(&["list", "--done"])).len(), 2);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--tag", "docs"])), [1]);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--tag", "ops"])), [2]);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--owner", "alice"])).len(), 2);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--owner", "nobody"])), Vec::<i64>::new());
+    assert_eq!(ids(&h.ok(&["list", "--done", "--column", "done"])).len(), 2);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--column", "todo"])), Vec::<i64>::new());
+    assert_eq!(ids(&h.ok(&["list", "--done", "--blocked"])), Vec::<i64>::new());
+    let far_future = format!("{}-01-01", 2000 + 98);
+    assert_eq!(ids(&h.ok(&["list", "--done", "--due-before", &far_future])), Vec::<i64>::new(), "a card with no due date is never 'due before'");
+    // and with --since, and in --json
+    assert_eq!(ids(&h.ok(&["list", "--done", "--since", "1970-01-01", "--tag", "docs"])), [1]);
+    let v = h.json(&["list", "--done", "--tag", "docs", "--json"]);
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["id"], 1);
+    // a filter that matches nothing says what was asked for
+    assert!(h.ok(&["list", "--done", "--tag", "nope"]).contains("no cards finished matching tag nope today"));
+
+    // --archived: tag, owner and column apply
+    assert_eq!(h.ok(&["list", "--archived"]).lines().filter(|l| l.starts_with('#')).count(), 1);
+    assert!(h.ok(&["list", "--archived", "--tag", "ops"]).contains("to be archived"));
+    assert!(h.ok(&["list", "--archived", "--tag", "docs"]).contains("no archived cards match tag docs"));
+    assert!(h.ok(&["list", "--archived", "--owner", "none"]).contains("to be archived"));
+    assert!(h.ok(&["list", "--archived", "--column", "todo"]).contains("to be archived"));
+    assert!(h.ok(&["list", "--archived", "--column", "done"]).contains("no archived cards match"));
+    assert_eq!(h.json(&["list", "--archived", "--tag", "docs", "--json"]).as_array().unwrap().len(), 0);
+    assert_eq!(h.json(&["list", "--archived", "--tag", "ops", "--json"]).as_array().unwrap().len(), 1);
+
+    // the three an archived row cannot answer are REFUSED BY NAME, never ignored
+    for flag in [vec!["--blocked"], vec!["--blocked-on", "#1"], vec!["--due-before", "2026-10-09"]] {
+        let mut args = vec!["list", "--archived"];
+        args.extend(flag.iter().copied());
+        let e = h.refused(&args);
+        assert!(e.contains(flag[0]) && e.contains("does not apply to an archived card"), "{args:?}: {e}");
+    }
+
+    // --all-boards is refused with --done and with --archived, rather than ignored
+    for args in [&["list", "--all-boards", "--done"][..], &["list", "--all-boards", "--archived"][..]] {
+        let o = h.run(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?} should be a usage error: {}", text(&o.stdout));
+        assert!(text(&o.stderr).contains("cannot be used with"), "{args:?}: {}", text(&o.stderr));
+    }
+}
+
+/// THE GUARD. Every way `tb list` can be asked for a different SET of cards must respect a
+/// filter — or refuse it by name. The modes are read out of `tb list --help`, so a mode added
+/// later fails this test until somebody teaches it about filters.
+#[test]
+fn every_list_mode_handles_filters() {
+    let h = Home::new();
+    h.ok(&["add", "docs: a card"]);
+    let help = h.ok(&["list", "--help"]);
+    // the filters themselves, and the flags that are not about WHICH cards are shown
+    let not_a_mode = ["--tag", "--owner", "--blocked", "--blocked-on", "--due-before", "--column", "--group", "--json", "--as", "--board", "--help", "--version", "--since"];
+    let modes: Vec<String> = help
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|w| w.starts_with("--"))
+        .map(|w| w.trim_end_matches(',').to_string())
+        .filter(|w| !not_a_mode.contains(&w.as_str()))
+        .collect();
+    assert!(modes.contains(&"--archived".to_string()) && modes.contains(&"--done".to_string()) && modes.contains(&"--all-boards".to_string()), "the guard found no modes to check: {modes:?}");
+    for mode in &modes {
+        // a tag nothing can match: an honoured filter narrows to nothing, and anything else
+        // must be an explicit refusal naming a flag — never a full list
+        let o = h.run(&["list", mode, "--tag", "nothing-matches-this"]);
+        let out = text(&o.stdout);
+        let err = text(&o.stderr);
+        let shown = ids(&out);
+        assert!(
+            shown.is_empty(),
+            "`tb list {mode} --tag nothing-matches-this` listed {shown:?} — a filter was accepted and ignored. \
+             Teach that mode about filters (or refuse the combination by name) in the Cmd::List arms."
+        );
+        if !o.status.success() {
+            assert!(
+                err.contains("--tag") || err.contains("cannot be used with") || err.contains("does not apply"),
+                "{mode}: refused without saying which flag: {err}"
+            );
+        }
+    }
+}

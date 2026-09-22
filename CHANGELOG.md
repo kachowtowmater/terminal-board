@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### `tb new NAME --kind deadline`: a board's shape in one word
+
+Every setting the deadline lane added is still a setting you can change on its own. A **kind**
+names a combination that works together, so what tb documents and tests is one board, not the
+2^n a pile of switches can make.
+- `tb new NAME --kind deadline` writes `sort due`, `card-line due`, `due-warn 7`,
+  `waiting-lane shown`, `wip-counts-blocked no` and the column labels TO PREPARE / IN HAND /
+  WITH REVIEWER / FILED. `tb new NAME` (or `--kind default`) makes **exactly** the board tb
+  always made — nothing is written to it at all.
+- `tb new NAME --from BOARD` copies another board's **settings, not its cards**.
+- **The kind is recorded on the board, as a label and never a lock.** Nothing reads it to
+  decide behaviour: the settings always decide. `tb config` shows `kind deadline`, and
+  `kind deadline (changed)` once a setting it wrote has been changed, so the name never claims
+  more than it should. `tb config kind deadline` applies the bundle to a board that already
+  exists (its cards are untouched), and `tb config kind default` drops the name without
+  undoing a single setting.
+- `--from` never copies the three settings that belong to one board — `github` (a new board
+  must not start syncing to another board's issues), `done-by` (who may close a card) and
+  `file-mode` (the file's own permissions) — and says which it left behind.
+- `tb new` is refused under `TB_DB`, like every other command that names a board: a pinned
+  file is one board, and there is nothing to make or copy.
+- `new` is a command word, but still a valid **board name**: a board called `new` made by an
+  earlier version is listed by `tb boards` and opens with `tb -b new` or `TB_BOARD=new`.
+- `tb config --json` reports the kind as two fields, `kind` and `kind_changed`, instead of one
+  string to parse; the plain listing keeps `deadline (changed)`.
+- The deadline kind has its own golden render (`tests/golden/deadline_kind_126x41.txt`); the
+  goldens for a default board are untouched, down to the board event log.
 ### Who closes a card, who checked it, and tags you choose
 
 - **`tb config done-by anna,ben`** — only those names may move a card into DONE; anybody else

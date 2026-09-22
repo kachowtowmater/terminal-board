@@ -345,8 +345,12 @@ code, and its wording is for people: act on `ok` and the exit code, show `warnin
 ## Filters — `tb list` and `tb board --json`
 
 `--tag`, `--owner`, `--blocked`, `--blocked-on`, `--due-before`, `--column` and `--group tag`.
-They combine, and every one that is set has to pass. A filter **removes rows and nothing
-else**: the cards stay in the order the board defines (position, or `sort due`), so a filtered
+They combine, and every one that is set has to pass, and they apply to **every** way `tb list`
+picks cards: the ordinary list, `--done [--since]` and `--archived`. An archived card keeps
+only its title, tag, column and owner, so `--blocked`, `--blocked-on` and `--due-before` are
+**refused by name** there rather than ignored. `--all-boards` is refused with `--done` and
+`--archived`: "finished today" and "archived" are each one board's own question. A filter is
+never accepted and quietly dropped. A filter **removes rows and nothing else**: the cards stay in the order the board defines (position, or `sort due`), so a filtered
 result is always a subsequence of the unfiltered one, column by column. `--tag none` and
 `--owner none` are the cards without one. `--column` takes the internal name only — a display
 label is refused, and the refusal names the column to use. A value that is not a date, not a
