@@ -43,12 +43,13 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
 | say who you wait on, and when to look again | — | `tb block 3 "waiting for the fee" --on #5 --until 2026-10-09` |
 | give it a tag of your own | — | `tb edit 3 --tag "00-key 2"` · `tb edit 3 --tag none` |
+| give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
 
 `tb config done-by anna,ben` names who may close a card; anyone else is refused, with the
-people to ask. It catches an honest mistake — names in tb are self-asserted and `--force`
-gets past it (logged) — so it is not a lock. `tb done 3 --approve` records that you checked a
-card without closing it, on any card.
-| give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
+people to ask. It catches an honest mistake — names in tb are self-asserted, and `--force`
+gets past it (logged), as does answering `y` to the board's `approve your own work?` — so it
+is not a lock. `tb done 3 --approve` records that you checked a card without closing it, on
+any card.
 
 A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what

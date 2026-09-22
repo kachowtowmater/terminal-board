@@ -1609,7 +1609,7 @@ impl Store {
         // never security: names are self-asserted, and `--force` is open to everyone (logged).
         // It guards EVERY way into DONE, so moving a card out of review first is not a way
         // round it. `github` is exempt, as it is for the holder rule.
-        if kind != Kind::Drop && column == "done" && c.column != "done" {
+        if column == "done" && c.column != "done" {
             if let Some(names) = closing::may_close(&tx, actor)? {
                 if !force {
                     return Err(closing::not_allowed(id, actor, &names));

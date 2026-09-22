@@ -631,7 +631,8 @@ moving a card out of review first is not a way round it.
 **It is an honest-mistake stop, not security.** Names in tb are **self-asserted** — `--as` is
 whatever the caller types — so this catches the slip of the wrong person closing a card, and
 nothing more. `--force` gets past it and is open to everyone; it is recorded as its own event
-with the name that used it. A board that needs real authority needs it outside tb: file
+with the name that used it, and answering `y` to the full-screen board's `approve your own
+work?` is the same `--force` by another route. A board that needs real authority needs it outside tb: file
 permissions, a repository, a person. (`tb`'s older never-approve-your-own-work rule works the
 same way, and still applies: a name on the `done-by` list cannot close its own work either.)
 The GitHub sync is exempt — a merged PR closing its card is evidence, not a person.
