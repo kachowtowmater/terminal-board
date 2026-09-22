@@ -156,6 +156,114 @@ fn a_label_changes_what_people_read_and_nothing_a_command_or_json_says() {
     assert!(!b.ok(&["config"]).contains("label"), "cleared = no longer listed");
 }
 
+/// THE DEFECT (PR #105 review): a label that is a column's internal name used to shadow that
+/// column — `config label todo done` was accepted, and `tb move 1 done` was then refused with
+/// "the column is todo", sending a card to the wrong place and misdirecting the person.
+/// Both ends are closed: such a label is refused, and an internal name always wins anyway.
+#[test]
+fn a_label_can_never_shadow_a_column_that_a_command_takes() {
+    let cols = ["todo", "doing", "review", "done"];
+    // (a) every label/column pair: setting a label that IS a column name is refused
+    for on in cols {
+        for name in cols {
+            for typed in [name.to_string(), name.to_ascii_uppercase(), format!("  {name} ")] {
+                let b = Board::new();
+                b.ok(&["add", "permits: send the renewal"]);
+                let o = b.run(&["config", "label", on, &typed, "--json"]);
+                assert_eq!(o.status.code(), Some(1), "label {on} {typed:?} was accepted");
+                let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+                assert_eq!(v["ok"], false);
+                assert!(v["error"].as_str().unwrap().contains("is the name of a column, so it cannot be a label"), "{v}");
+                assert!(v["hint"].as_str().unwrap().contains(&format!("'tb config label {on} \"TEXT\"'")), "{v}");
+                assert_eq!(b.ok(&["config", "label", on]).trim(), on.to_ascii_uppercase(), "nothing was stored");
+                // and the column is still reachable
+                assert_eq!(b.json(&["board", "--json"])["labels"][on], on.to_ascii_uppercase());
+            }
+        }
+    }
+    // (b) a board file that ALREADY holds such a label (an older tb, or another writer):
+    // every command still reaches every column, and no answer misdirects
+    for on in cols {
+        for shadowed in cols {
+            let b = Board::new();
+            b.ok(&["add", "permits: send the renewal"]);
+            set(&b.db, &format!("label.{on}"), shadowed);
+            // the legal way round the whole board, every column named by its internal name
+            for step in [vec!["move", "1", "doing"], vec!["move", "1", "review"], vec!["move", "1", "done", "--as", "checker"], vec!["move", "1", "todo"]] {
+                let target = step[2];
+                let o = b.run(&step);
+                assert!(o.status.success(), "label.{on}={shadowed}: {step:?} was refused: {}", String::from_utf8_lossy(&o.stderr));
+                assert_eq!(b.json(&["show", "1", "--json"])["column"], target, "label.{on}={shadowed}: {step:?} went to the wrong column");
+            }
+        }
+    }
+    // a label that is NOT a column name still behaves as it should
+    let b = Board::new();
+    b.ok(&["add", "permits: send the renewal"]);
+    b.ok(&["config", "label", "review", "WITH REVIEWER"]);
+    assert!(b.refused(&["move", "1", "WITH REVIEWER"]).contains("is a display label, not a column — the column is review"));
+    assert!(b.run(&["move", "1", "review"]).status.success());
+}
+
+/// The other commands that take a column, checked for the same precedence bug. `tb move` is
+/// the only one that takes a typed column name; the full-screen board moves a card by column
+/// INDEX from a key, and `tb config label` resolves internal names only — so no label can
+/// reach any of them. This test fails if a future command starts taking one.
+#[test]
+fn no_other_command_takes_a_column_name_a_label_could_shadow() {
+    let b = Board::new();
+    b.ok(&["add", "permits: send the renewal"]);
+    set(&b.db, "label.todo", "done");
+    set(&b.db, "label.doing", "review");
+    // every command in the manual that names a column, run with a column word
+    for args in [
+        vec!["move", "1", "doing"],
+        vec!["move", "1", "review"],
+        vec!["move", "1", "done", "--as", "checker"],
+        vec!["move", "1", "todo"],
+        vec!["config", "label", "done"],
+        vec!["config", "label", "review"],
+        vec!["config", "label", "todo"],
+        vec!["config", "label", "doing"],
+    ] {
+        let o = b.run(&args);
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    // `config label COLUMN` reads the column named, never the one a label points at
+    assert_eq!(b.ok(&["config", "label", "todo"]).trim(), "done");
+    assert_eq!(b.ok(&["config", "label", "done"]).trim(), "DONE");
+    // and the help never offers a label where a column is expected
+    let help = b.ok(&["--help"]);
+    assert!(help.contains("move ID todo|doing|review|done"), "{help}");
+    // the full-screen board moves by column index, not by a typed name: a clashing label
+    // cannot reach it (it draws and moves the card one column right, as always)
+    let mut store = Store::open(&b.db).unwrap();
+    let mut app = App::new(store.snapshot().unwrap(), "tester");
+    app.handle_key(
+        ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Char('>'), ratatui::crossterm::event::KeyModifiers::NONE),
+        &mut store,
+    );
+    assert_eq!(store.card(1).unwrap().column, "doing");
+}
+
+#[test]
+fn tb_show_carries_the_same_due_mark_as_the_board() {
+    let b = dated();
+    // #1 is overdue, #3 is soon, #4 is far, #7 is done and late
+    assert!(b.ok(&["show", "1"]).contains(" - due 2026-09-28 - ! overdue 3d"), "{}", b.ok(&["show", "1"]));
+    assert!(b.ok(&["show", "2"]).contains("! due today"));
+    assert!(b.ok(&["show", "3"]).contains("! due in 2d"));
+    assert!(!b.ok(&["show", "4"]).contains('!'), "a date that is far off is not marked:\n{}", b.ok(&["show", "4"]));
+    assert!(!b.ok(&["show", "7"]).contains('!'), "a finished card is never marked:\n{}", b.ok(&["show", "7"]));
+    // next to a block, both are shown, in the board's order
+    b.ok(&["block", "1", "#3"]);
+    assert!(b.ok(&["show", "1"]).contains("! overdue 3d - x blocked by #3"), "{}", b.ok(&["show", "1"]));
+    // a board with no due dates prints exactly what it always did
+    let plain = Board::new();
+    plain.ok(&["add", "ops: rotate API tokens"]);
+    assert_eq!(plain.ok(&["show", "1"]), "#1 rotate API tokens\ntodo - ops - unowned - 0m\n\n12:00 added by tester\n");
+}
+
 #[test]
 fn a_label_is_sanitised_bounded_and_refused_with_the_command_to_run() {
     let b = Board::new();

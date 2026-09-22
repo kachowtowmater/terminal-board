@@ -659,7 +659,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if j {
                 println!("{}", pretty(&store.display()?.with(store.due_ctx()?.with(&d, &d.card), &d.card)));
             } else {
-                print_lines!("{}", plain::detail(&d, now));
+                print_lines!("{}", plain::detail_on(&d, now, &store.display()?));
             }
         }
         Cmd::Board => {
@@ -696,7 +696,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let card = store.next_review(&actor)?;
             let human = format!(
                 "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
-                plain::detail(&store.show(card.id)?, now).trim_end(),
+                plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 id = card.id
             );
             done_card(&store, j, card.id, human)?;
@@ -708,7 +708,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             let human = format!(
                 "{}\ntaken by {actor} — log progress with {}, finish with {}",
-                plain::detail(&store.show(card.id)?, now).trim_end(),
+                plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
                 cmd_hint(explicit, &format!("done {}", card.id))
             );
@@ -743,13 +743,18 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, human)?;
         }
         Cmd::Move { id, column, reason, force } => {
-            // labels are display only: someone who types one is told the name the command takes
-            if let Some(real) = store.display()?.column_of_label(&column) {
-                return Err(BoardError(format!(
-                    "'{}' is a display label, not a column — the column is {real}: {}",
-                    column.trim(),
-                    cmd_hint(explicit, &format!("move {id} {real}"))
-                )));
+            // An internal column name is resolved FIRST and always wins: a board that labels
+            // one column with another's name (an older tb allowed it; `config label` now
+            // refuses it) must never make the real column unreachable. Only a word that is no
+            // column at all is looked up as a label, to name the column the command takes.
+            if terminal_board::store::display::column_named(&column).is_err() {
+                if let Some(real) = store.display()?.column_of_label(&column) {
+                    return Err(BoardError(format!(
+                        "'{}' is a display label, not a column — the column is {real}: {}",
+                        column.trim(),
+                        cmd_hint(explicit, &format!("move {id} {real}"))
+                    )));
+                }
             }
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;

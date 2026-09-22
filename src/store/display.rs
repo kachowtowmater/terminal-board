@@ -56,6 +56,14 @@ pub fn column_named(typed: &str) -> Result<&'static str> {
 /// whitespace collapsed; refused when nothing is left or it is longer than `LABEL_MAX`.
 pub fn clean_label(column: &str, text: &str) -> Result<String> {
     let label = crate::text::sanitize(text).split_whitespace().collect::<Vec<_>>().join(" ");
+    // A label that IS a column name would put a second meaning on a word every command takes
+    // (`label todo "done"`, then `tb move 1 done`): refuse it rather than have two answers to
+    // one word. Internal names are the API; a label is chrome and must not look like one.
+    if let Some(clash) = COLUMNS.iter().find(|c| label.trim().eq_ignore_ascii_case(c)) {
+        return err(format!(
+            "'{label}' is the name of a column, so it cannot be a label — every command takes {clash}; pick another word: 'tb config label {column} \"TEXT\"'"
+        ));
+    }
     if label.is_empty() {
         return err(format!(
             "the label is empty — set one with 'tb config label {column} \"TEXT\"' or clear it with 'tb config label {column} --off'"
@@ -92,6 +100,18 @@ impl Display {
         Some(crate::text::sanitize(raw)).filter(|l| !l.trim().is_empty())
     }
 
+    /// Every column whose label is exactly another column's internal name (only a file an
+    /// older tb or another writer wrote can hold one — `config label` refuses them now).
+    pub fn clashing_labels(&self) -> Vec<(&'static str, String)> {
+        COLUMNS
+            .iter()
+            .filter_map(|c| {
+                let l = self.label(c)?;
+                COLUMNS.iter().any(|k| l.trim().eq_ignore_ascii_case(k)).then_some((*c, l))
+            })
+            .collect()
+    }
+
     /// What a person reads for `column`: its label, else the internal name in capitals.
     /// This is JSON's `column_label`. `column` itself never changes.
     pub fn column_label(&self, column: &str) -> String {
@@ -111,6 +131,11 @@ impl Display {
     /// typed a label which name the command wants.
     pub fn column_of_label(&self, typed: &str) -> Option<&'static str> {
         let t = typed.trim();
+        // a word that is an internal column name is that column, whatever any label says —
+        // the same rule the callers apply, kept here so no caller can get it wrong
+        if COLUMNS.iter().any(|c| t.eq_ignore_ascii_case(c)) {
+            return None;
+        }
         COLUMNS.iter().copied().find(|c| self.label(c).is_some_and(|l| l.eq_ignore_ascii_case(t)))
     }
 
@@ -226,6 +251,26 @@ mod tests {
         let e = clean_label("todo", &"x".repeat(25)).unwrap_err().to_string();
         assert_eq!(e, "that label is 25 characters, the limit is 24 — shorten it: 'tb config label todo \"TEXT\"'");
         assert!(clean_label("todo", &"x".repeat(24)).is_ok());
+    }
+
+    #[test]
+    fn a_label_can_never_be_a_column_name_and_never_shadows_one() {
+        // end (b): setting such a label is refused, whatever the case or padding
+        for text in ["done", "DONE", " Done ", "todo", "doing", "review"] {
+            let e = clean_label("todo", text).unwrap_err().to_string();
+            assert!(e.contains("is the name of a column, so it cannot be a label"), "{text:?}: {e}");
+            assert!(e.contains("'tb config label todo \"TEXT\"'"), "{text:?}: {e}");
+        }
+        assert!(clean_label("todo", "DONE DEALS").is_ok(), "only the whole label clashes");
+        // end (c): a file that already holds one (an older tb) never shadows the real column
+        let mut d = Display { labels: [Some("done".into()), Some("review".into()), None, None], ..Default::default() };
+        assert_eq!(d.clashing_labels(), [("todo", "done".to_string()), ("doing", "review".to_string())]);
+        for name in ["done", "DONE", " review ", "todo", "doing"] {
+            assert_eq!(d.column_of_label(name), None, "{name:?} is a column, not a label");
+        }
+        // a label that is not a column name still resolves
+        d.labels[2] = Some("WITH REVIEWER".into());
+        assert_eq!(d.column_of_label("with reviewer"), Some("review"));
     }
 
     #[test]

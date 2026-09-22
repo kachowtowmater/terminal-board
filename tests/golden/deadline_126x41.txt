@@ -1,4 +1,4 @@
- TERMINAL BOARD · default · 9 cards · 0 agents (0 working, 0 idle)                                         refreshed ##:##:##
+ TERMINAL BOARD · default · 9 cards · 4 agents (4 here, 0 elsewhere)                                       refreshed ##:##:##
 ┏ o INTAKE (4) by due ━━━━━━━━━┓┌ o DOING (2/4) ──────────────┐┌ o WITH THE REVIEWER (2) ─────┐┌ o FILED today (1) ──────────┐
 ┃┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓┃│┌───────────────────────────┐││┌────────────────────────────┐││┌───────────────────────────┐│
 ┃┃ #1 fire permit renewal     ┃┃││ #5 answer the letter      ││││ #7 final report            ││││ #9 september              ││

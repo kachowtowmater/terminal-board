@@ -547,7 +547,9 @@ and the count is never pushed off; when not even its first word fits, the plain 
 `tb config label review` prints it; `--off` clears it. A column that the board orders by due
 date says `by due` in its header.
 
-A board with no due dates and none of these settings looks and behaves exactly as it did before.
+A board whose cards carry **no due dates**, and which sets none of these settings, looks and
+behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows
+its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 
 ## Layouts and themes
 

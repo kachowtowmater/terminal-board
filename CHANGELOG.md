@@ -105,7 +105,10 @@ dates — keep their position order, so the order is always deterministic. `tb n
   midnight in its `tz`), so a watcher's `days_left` / `due_state` do not go stale; a stored `tz`
   this version does not know is reported on every command instead of silently falling back to
   the machine's zone; the docs now say that spaces around a `--due` value are dropped.
-- A board with no due dates and none of these settings renders byte for byte as before.
+- A board with **no dated cards** and none of these settings renders byte for byte as before
+  (proved against the previous version over every width from 30 to 200, all six layouts and
+  every card state). A card that carries a due date and is soon or overdue shows the mark even
+  when the board sets nothing: `--due` is the opt-in.
 
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)
 

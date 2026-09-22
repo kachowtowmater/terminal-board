@@ -86,7 +86,12 @@ pub fn meta_parts(card: &Card, snap: &Snapshot, width: usize) -> MetaParts {
 /// `due_state`), longest form first. Each shorter form drops whole words, never part of one;
 /// the last is a bare `!`, so the mark outlives everything else on a narrow card line.
 pub fn due_mark_forms(card: &Card, snap: &Snapshot) -> Vec<String> {
-    let info = snap.display.due_info(card);
+    due_mark_forms_on(card, &snap.display)
+}
+
+/// `due_mark_forms` against a board's look on its own (no snapshot) — for `tb show`.
+pub fn due_mark_forms_on(card: &Card, look: &crate::store::display::Display) -> Vec<String> {
+    let info = look.due_info(card);
     match (info.due_state, info.days_left) {
         (Some("overdue"), Some(d)) => vec![format!("! overdue {}d", -d), format!("! late {}d", -d), "! late".into(), "!".into()],
         (Some("soon"), Some(0)) => vec!["! due today".into(), "! today".into(), "!".into()],
@@ -334,6 +339,13 @@ pub fn list(snap: &Snapshot) -> String {
 }
 
 pub fn detail(d: &CardDetail, now: i64) -> String {
+    detail_on(d, now, &crate::store::display::Display::default())
+}
+
+/// `detail` on a board whose look is known: the due mark (`! overdue 3d`) goes on the meta
+/// line, next to the block warning, exactly as it does on the board and in `tb list`.
+/// A `Display::default()` (no today) marks nothing — what `tb show` printed before.
+pub fn detail_on(d: &CardDetail, now: i64, look: &crate::store::display::Display) -> String {
     let c = &d.card;
     let mut out = String::new();
     line(&mut out, card_head(c));
@@ -351,6 +363,11 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
     }
     if let Some(due) = &c.due {
         meta.push(format!("due {due}"));
+    }
+    // the same loud mark the board and `tb list` show, in its longest form (nothing is
+    // fitted here) — never on a DONE card, because it has no `due_state`
+    if let Some(mark) = due_mark_forms_on(c, look).first() {
+        meta.push(mark.clone());
     }
     if let Some(b) = &c.blocked {
         if c.column != "done" {
