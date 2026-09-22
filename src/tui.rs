@@ -1916,6 +1916,17 @@ pub(crate) fn column_height(app: &App, ci: usize, width: u16, dense: bool) -> u1
     2 + h.iter().map(|x| x - u16::from(dense)).sum::<u16>()
 }
 
+/// Rows column `ci` needs to show ONE card as a dense box, plus a `+N more` row when it has
+/// others. This is the least a column can be given and still show work rather than a bare
+/// header, and it is what every non-empty column is guaranteed before any column gets more.
+pub(crate) fn column_min_one(app: &App, ci: usize, width: u16) -> u16 {
+    let h = card_box_heights(app, ci, width);
+    match h.first() {
+        None => 1,
+        Some(first) => 2 + (first - 1) + u16::from(h.len() > 1),
+    }
+}
+
 /// Rows column `ci` needs to show its first two cards as dense boxes (+ a `+N more` row).
 pub(crate) fn column_min_boxed(app: &App, ci: usize, width: u16) -> u16 {
     let h = card_box_heights(app, ci, width);

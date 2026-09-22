@@ -612,15 +612,39 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     let order: Vec<usize> = std::iter::once(app.col).chain((0..4).filter(|c| *c != app.col)).collect();
     let mut heights = [1u16; 4];
     let mut left = area.height.saturating_sub(4);
-    // boxed minimum, selected section first; a section that can't get it stays a header
-    for &c in &order {
-        if counts[c] == 0 {
-            continue;
-        }
-        let add = column_min_boxed(app, c, w) - 1;
-        if add <= left {
-            heights[c] += add;
-            left -= add;
+    let claimants = || (0..4).filter(|c| counts[*c] > 0);
+
+    // ONE CARD EACH, FAIRLY, BEFORE ANYBODY GETS TWO.
+    //
+    // This pass used to be first-come and all-or-nothing, walking from the SELECTED column:
+    // a long selected column took its whole minimum and a later column, unable to afford
+    // its own, stayed a bare header — a short column showing nothing while a long one filled
+    // the pane, which is the bug this whole change is about. It is the selection that made it
+    // unpredictable: the same board looked different depending on where the cursor happened
+    // to be. Now nobody may take more than an equal share of what is left while another
+    // column still has nothing, so the outcome does not depend on the cursor at all.
+    for pass in [0u8, 1] {
+        for &c in &order {
+            if counts[c] == 0 {
+                continue;
+            }
+            let need = match pass {
+                // pass 0: one card each · pass 1: top up toward two, same fairness
+                0 if heights[c] > 1 => continue,
+                0 => column_min_one(app, c, w) - 1,
+                _ => column_min_boxed(app, c, w).saturating_sub(heights[c]),
+            };
+            if need == 0 {
+                continue;
+            }
+            let waiting = claimants().filter(|x| heights[*x] == 1).count().max(1) as u16;
+            let fair = if pass == 0 { left / waiting } else { left };
+            // a part-grant would be a frame with nothing in it: a column takes its minimum
+            // whole, or stays a header, where the count in the header tells the truth
+            if need <= fair {
+                heights[c] += need;
+                left -= need;
+            }
         }
     }
     // Then grow toward all dense boxes, then all 4-row boxes — but a FAIR SHARE at a time.
@@ -635,10 +659,21 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     for dense in [true, false] {
         for share in [area.height / sharers, u16::MAX] {
             for &c in &order {
-                if counts[c] == 0 || heights[c] == 1 {
+                if counts[c] == 0 {
                     continue;
                 }
-                let want = column_height(app, c, w, dense).min(share.max(heights[c]));
+                // A column the passes above could not afford is rescued here if room came
+                // free — to a whole minimum, never an empty frame, and never by taking what
+                // another column still waiting for its first card would need. Rescuing on a
+                // first-come basis is exactly the unfairness this change is about.
+                let floor = if heights[c] == 1 { column_min_one(app, c, w) } else { heights[c] };
+                if floor > heights[c] {
+                    let stuck = claimants().filter(|x| heights[*x] == 1).count().max(1) as u16;
+                    if floor - heights[c] > left / stuck {
+                        continue;
+                    }
+                }
+                let want = column_height(app, c, w, dense).max(floor).min(share.max(floor));
                 let add = want.saturating_sub(heights[c]).min(left);
                 heights[c] += add;
                 left -= add;

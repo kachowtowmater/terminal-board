@@ -32,6 +32,54 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 const LAYOUTS: [&str; 6] = ["auto", "focus", "third-h", "third-v", "half-h", "half-v"];
 
+/// A board with `todo` waiting cards and `done` finished ones.
+fn lopsided(todo: usize, done: usize) -> (tempfile::TempDir, Store) {
+    common::pin_clock();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    for i in 1..=todo {
+        s.add(&format!("todo: waiting {i}"), "", &[], "alice").unwrap();
+    }
+    for i in 1..=done {
+        let id = s.add(&format!("done: finished {i}"), "", &[], "alice").unwrap();
+        s.move_to(id, "done", "alice").unwrap();
+    }
+    (dir, s)
+}
+
+/// THE REPRODUCTION (review of #131): the min-boxed pre-pass walked from the SELECTED column
+/// and was all-or-nothing, so with the cursor on a long column a short one could still be
+/// left with nothing. The owner's own board: 10 TODO, 116 DONE, `third-v`, 60x20, cursor on
+/// DONE. Every layout, every size, every cursor position.
+#[test]
+fn a_short_column_shows_work_whichever_column_the_cursor_is_on() {
+    let (_d, s) = lopsided(10, 116);
+    for layout in LAYOUTS {
+        s.set_layout(layout).unwrap();
+        for col in 0..4usize {
+            let mut app = App::new(s.snapshot().unwrap(), "alice");
+            app.reload(&s);
+            app.agents = AgentsState::Unavailable("herdr not available".into());
+            app.col = col;
+            for (w, h) in [(60u16, 20u16), (60, 14), (80, 24), (100, 30), (126, 41), (160, 60)] {
+                let screen = render(&app, w, h);
+                if is_focus_view(&screen) {
+                    continue;
+                }
+                let (todo, done) = shown_per_column(&screen, 10, 116);
+                // if DONE got boxes, TODO must have got at least one too — a long column
+                // never leaves a short one with nothing, whoever the cursor is on
+                if done > 0 {
+                    assert!(
+                        todo > 0,
+                        "{layout} {w}x{h} cursor={col}: DONE boxed {done} cards while TODO got none:\n{screen}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The owner's board: a short TODO beside a DONE column with far more cards than fit.
 fn crowded(done: usize) -> (tempfile::TempDir, Store) {
     common::pin_clock();
@@ -82,6 +130,9 @@ fn a_long_done_column_never_starves_the_others() {
         app.agents = AgentsState::Unavailable("herdr not available".into());
         for h in [14u16, 20, 24, 30, 41, 60] {
             for w in [60u16, 80, 100, 126, 160] {
+                // the cursor decides which column the allocator walks first: sweep it, or the
+                // case where the LONG column goes first is never tested (review of #131)
+                app.col = (h as usize + w as usize) % 4;
                 let screen = render(&app, w, h);
                 if is_focus_view(&screen) {
                     continue; // one card by design, whatever the layout asked for
@@ -130,6 +181,7 @@ fn a_hidden_card_always_has_a_more_hint() {
         app.agents = AgentsState::Unavailable("herdr not available".into());
         for h in 6u16..=44 {
             for w in [40u16, 80, 126, 200] {
+                app.col = (h as usize) % 4;
                 let screen = render(&app, w, h);
                 assert_eq!(screen.lines().count(), h as usize, "{layout} {w}x{h}");
                 if is_focus_view(&screen) {
