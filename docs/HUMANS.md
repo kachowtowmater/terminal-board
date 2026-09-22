@@ -14,6 +14,12 @@ skip them. `tb setup` runs them again later.
 
 ## The columns
 
+```text
+TODO ──next/take──▶ DOING ──done──▶ REVIEW ──done──▶ DONE
+  ▲                   │
+  └──────drop─────────┘        (block = a flag on any card: "stuck on #N")
+```
+
 | column | means |
 |---|---|
 | **TODO** | waiting to be picked up; the top card is next |
