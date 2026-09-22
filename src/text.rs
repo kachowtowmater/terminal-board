@@ -1,5 +1,7 @@
 //! Displayed text is data: control characters and terminal escape sequences in it are removed
-//! before anything reaches the terminal. The store keeps text raw; JSON output is unchanged.
+//! before anything reaches the terminal. The store keeps text raw; JSON output shows the same
+//! cleaned text (`sanitize_json`), so piping `--json` output pastes control bytes the screen
+//! never would.
 
 /// Where a `Cleaner` is inside an escape sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -112,6 +114,20 @@ pub fn sanitize_lines(s: &str) -> String {
     clean(s, true)
 }
 
+/// `s` inside a JSON string, as JSON output shows stored text: escape sequences and control
+/// characters are removed exactly as on screen (`sanitize_lines`, so a description's newlines
+/// are kept as `\n`; tabs and CR become spaces), everything else is left for serde to escape
+/// as usual.
+///
+/// JSON already escapes `"`/`\` and C0 controls; it passes DEL (U+007F) and C1 (U+0080–U+009F)
+/// through raw. In UTF-8 those C1 bytes can act on a terminal (`U+009B` is a CSI), so an agent
+/// that prints `--json` output would run them — the screen paths never do. Escape-sequence
+/// state does not survive into `errors`/`warnings` entries: they carry whole texts, never
+/// fragments that could split a sequence.
+pub fn sanitize_json(s: &str) -> String {
+    clean(s, true)
+}
+
 /// Append `s` as one output line (leading blank lines kept): stored or remote text inside it
 /// can never start a line of its own.
 pub fn push_line(out: &mut String, s: &str) {
@@ -181,6 +197,25 @@ mod tests {
         assert_eq!(sanitize_lines("ok\x1b]0;cut\nnext"), "ok\nnext");
         // a CSI broken by a non-sequence char gives the char back
         assert_eq!(sanitize("a\x1b[12é"), "aé");
+    }
+
+    #[test]
+    fn json_output_is_cleaned_like_the_screen() {
+        // DEL and every C1 go; emoji, CJK and accents stay. A stray C1 opener eats what
+        // follows, exactly as on screen (`stray \u{85}\u{8d}c1` above shows the shape).
+        assert_eq!(sanitize_json("del\x7f é✅審査"), "del é✅審査");
+        // whole sequences removed, as on screen
+        assert_eq!(sanitize_json("a\x1b[31mred\x1b[0mb"), "aredb");
+        assert_eq!(sanitize_json("x\x1b]0;title\x07y"), "xy");
+        // newlines are kept (they become \n in the JSON string); tab and CR become spaces, as
+        // on screen
+        assert_eq!(
+            sanitize_json("one\ntwo\tthree\rfour"),
+            "one\ntwo three four"
+        );
+        // serde does the quoting; the cleaned text needs no escapes of its own
+        let v = serde_json::to_string(&sanitize_json("quote\" back\\slash\n")).unwrap();
+        assert_eq!(v, r#""quote\" back\\slash\n""#);
     }
 
     #[test]

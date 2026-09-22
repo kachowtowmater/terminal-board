@@ -3,7 +3,8 @@
 //!
 //! The point of the feature is that NOTHING touches the text on the way in — a shell eats
 //! backticks, `$`, quotes and backslashes in a long string; a file does not. Every test here
-//! drives the real binary and reads the result back through `--json` (which is raw).
+//! drives the real binary and reads the stored text back from SQLite (raw, byte for byte);
+//! the `--json` view shows the same text cleaned like the screen.
 #![cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -72,20 +73,23 @@ impl Board {
         std::fs::write(&p, bytes).unwrap();
         p.to_str().unwrap().to_string()
     }
+    /// Text as the STORE holds it — read from SQLite, not through the `--json` view (JSON
+    /// output shows text cleaned like the screen; the store keeps it raw, byte for byte).
+    fn stored(&self, sql: &str, id: i64) -> String {
+        let conn = rusqlite::Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        conn.query_row(sql, [id], |r| r.get(0)).unwrap()
+    }
     fn card(&self, id: i64) -> serde_json::Value {
         serde_json::from_str(&self.ok(&["show", &id.to_string(), "--json"])).unwrap()
     }
     fn description(&self, id: i64) -> String {
-        self.card(id)["description"].as_str().unwrap().to_string()
+        self.stored("SELECT description FROM cards WHERE id = ?", id)
     }
     fn notes(&self, id: i64) -> Vec<String> {
-        self.card(id)["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|e| e["kind"] == "note")
-            .map(|e| e["text"].as_str().unwrap().to_string())
-            .collect()
+        let conn = rusqlite::Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let mut stmt = conn.prepare("SELECT text FROM events WHERE card_id = ? AND kind = 'note' ORDER BY id").unwrap();
+        let rows = stmt.query_map([id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        rows
     }
     fn event_count(&self, id: i64) -> usize {
         self.card(id)["events"].as_array().unwrap().len()
@@ -146,12 +150,18 @@ fn standard_input_arrives_byte_for_byte() {
     let o = b.piped(&["edit", "2", "--desc-file", "-", "--json"], NASTY.as_bytes());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], true, "{v}");
-    assert_eq!(v["card"]["description"], want, "the --json answer carries the stored text");
+    // the --json answer shows the stored text cleaned (tab and CR became spaces); the words stay
+    let cleaned = v["card"]["description"].as_str().unwrap();
+    let norm = |s: &str| s.replace(['\t', '\r'], " ");
+    assert_eq!(norm(cleaned), norm(want), "the --json answer shows the stored text (cleaned)");
+    assert!(!cleaned.contains('\x1b') && !cleaned.contains('\r'), "JSON output is cleaned: {cleaned:?}");
 
     let o = b.piped(&["note", "2", "--file", "-", "--json"], NASTY.as_bytes());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["ok"], true, "{v}");
-    assert_eq!(v["card"]["events"].as_array().unwrap().last().unwrap()["text"], want);
+    let note_text = v["card"]["events"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap();
+    let norm = |s: &str| s.replace(['\t', '\r'], " ");
+    assert_eq!(norm(note_text), norm(want), "the --json answer shows the stored note (cleaned)");
 
     // through /bin/sh: a redirect and a pipe
     let f = b.file("brief.md", NASTY.as_bytes());
@@ -195,8 +205,9 @@ fn outer_blank_space_is_trimmed_the_same_way_everywhere() {
     assert_eq!(b.description(3), "typed with blank space around it");
 }
 
-/// The store keeps text raw (JSON shows it); every screen path still goes through the
-/// control-character sanitiser, so escape sequences in a file never reach a terminal.
+/// The store keeps text raw (read back from SQLite); every screen path and the JSON path go
+/// through the control-character sanitiser, so escape sequences in a file never reach a
+/// terminal, a log or another tool.
 #[test]
 fn the_display_sanitiser_still_applies() {
     let b = Board::new();
@@ -206,7 +217,7 @@ fn the_display_sanitiser_still_applies() {
     b.ok(&["note", "1", "--file", &f]);
     assert_eq!(b.description(1), raw, "stored raw, exactly as --desc stores it");
     assert_eq!(b.notes(1), [raw.to_string()]);
-    for args in [&["show", "1"][..], &["list"][..], &["board"][..], &[][..]] {
+    for args in [&["show", "1", "--json"][..], &["list", "--json"][..], &["board", "--json"][..], &["show", "1"][..], &["list"][..], &["board"][..], &[][..]] {
         let out = b.ok(args);
         let bad: Vec<String> = out
             .chars()

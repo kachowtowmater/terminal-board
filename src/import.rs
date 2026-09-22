@@ -501,7 +501,10 @@ pub fn run(
                 .map(|p| json!({"row": p.row, "id": p.id, "field": p.field, "problem": p.problem, "hint": hinted(&p.hint)}))
                 .collect();
             let v = json!({"ok": false, "error": error, "hint": hinted(hint), "command": mode.as_str(), "source": shown, "dry_run": dry_run, "problems": rows});
-            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::clean_json(&v)).unwrap_or_default()
+            );
             return Err(BoardError(REPORTED.to_string()));
         }
         for p in &problems {
@@ -511,7 +514,11 @@ pub fn run(
     }
     let warnings = ignored_warnings(&results, mode);
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&report_json(mode, &shown, dry_run, &results, &warnings)).unwrap_or_default());
+        let report = report_json(mode, &shown, dry_run, &results, &warnings);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::clean_json(&report)).unwrap_or_default()
+        );
         return Ok(());
     }
     for r in &results {

@@ -1,5 +1,6 @@
 //! Displayed text never carries control characters or escape sequences to the terminal:
-//! card fields, notes, owners, GitHub titles and agent labels are data. JSON stays raw.
+//! card fields, notes, owners, GitHub titles and agent labels are data. `--json` output shows
+//! the same cleaned text (see `json_output_is_cleaned_too`); the store keeps text raw.
 #![cfg(unix)]
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -219,16 +220,53 @@ fn agents_rows_are_clean() {
 }
 
 #[test]
-fn json_keeps_the_raw_text() {
+fn json_output_is_cleaned_too() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("b.db");
     noisy_board(&db);
-    let v: serde_json::Value = serde_json::from_slice(&tb(&db, &["show", "1", "--json"], &[]).stdout).unwrap();
-    // (title parsing already folds Unicode whitespace such as U+0085; the sequences stay raw)
-    let title = v["title"].as_str().unwrap();
-    assert!(title.contains(COLOUR) && title.contains(TITLE_SET) && title.contains(CLEAR), "{title:?}");
-    assert_eq!(v["owner"], noisy("owner"));
-    let raw = text(&tb(&db, &["board", "--json"], &[]).stdout);
-    assert!(!raw.contains('\x1b'), "JSON escapes control characters");
-    assert!(raw.contains("\\u001b[31m"), "and keeps them, escaped");
+    // every --json command that can carry user text: no control characters, no sequences —
+    // the same text the screen shows, still valid JSON that parses
+    for args in [
+        vec!["show", "1", "--json"],
+        vec!["show", "2", "--json"],
+        vec!["list", "--json"],
+        vec!["board", "--json"],
+        vec!["--json"],
+    ] {
+        let out = tb(&db, &args, &[]).stdout;
+        let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        assert_clean(&format!("{args:?} json stdout"), &text(&out));
+        let _ = parsed;
+    }
+    // the dangerous bytes are gone, the safe characters survive, byte for byte
+    let raw = text(&tb(&db, &["show", "1", "--json"], &[]).stdout);
+    assert!(!raw.contains('\x1b') && !raw.contains('\x7f'), "DEL and ESC gone:\n{raw}");
+    for c in ["\u{9b}", "\u{9d}", "\u{90}", "\u{85}", "\u{9c}", "\x07", "\x08", "\r"] {
+        assert!(!raw.contains(c), "C1/control {c:?} gone:\n{raw}");
+    }
+    assert!(raw.contains("cardtitle"), "ordinary text survives:\n{raw}");
+    let shown: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let title = shown["title"].as_str().unwrap();
+    // title parsing folds Unicode whitespace (U+0085 became a space when the card was added)
+    // and joins words; the words survive, every sequence and control is gone ("label" was
+    // INSIDE the title-setting sequence, so it is removed whole with it)
+    assert!(title.contains("cardtitle"), "the words stay: {title:?}");
+    assert!(!title.contains('\x1b') && !title.contains('\x07') && !title.contains('\x08'), "no ESC/BEL/BS: {title:?}");
+    assert!(!title.contains("label"), "a sequence's payload is removed whole with the sequence: {title:?}");
+    // the stored description is `line one\n{noisy("desc")}`: line breaks are kept (they were
+    // meaningful text from a file), every sequence and control is removed — exactly what the
+    // screen shows
+    let desc = shown["description"].as_str().unwrap();
+    let want = format!("line one\n{}", noisy_desc_cleaned());
+    assert_eq!(desc, want, "newlines kept as in the stored text; sequences gone:\n{desc:?}");
+    // the owner was `noisy("owner")`: cleaned like the screen (no raw bytes), words kept
+    let owner = shown["owner"].as_str().unwrap();
+    assert!(owner.contains("owner"), "{owner:?}");
+    assert!(!owner.chars().any(|c| { let u = c as u32; (u < 0x20 && c != '\n') || (0x7f..=0x9f).contains(&u) }), "{owner:?}");
+}
+
+/// The noisy description as the display sanitiser shows it (`sanitize_lines`): the words and
+/// the line break survive, every sequence and control character is gone.
+fn noisy_desc_cleaned() -> String {
+    terminal_board::text::sanitize_lines(&noisy("desc"))
 }

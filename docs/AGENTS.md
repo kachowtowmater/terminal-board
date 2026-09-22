@@ -81,8 +81,9 @@ board set to `tb config sort due` it takes the nearest due date, not the top pos
 
 `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move
 ID todo` clears the owner. Sending REVIEW back needs a reason, keeps the owner, skips the WIP limit.
-Text from a file arrives byte for byte (backticks, `$`, quotes, newlines — a quoted string cannot promise
-that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal.
+Text from a file arrives byte for byte into the store (backticks, `$`, quotes, newlines — a
+quoted string cannot promise that): UTF-8, at most 256 KiB, empty refused; `-` reads a pipe
+or a redirect, never a terminal. What `--json` shows is the cleaned view, like the screen.
 
 ### Create and delete cards, boards and settings
 

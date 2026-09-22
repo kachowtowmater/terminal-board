@@ -3,6 +3,10 @@
 Apps and agents drive Terminal Board through `tb … --json`. Every object below carries
 fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking change bumps
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
+Text values are shown **cleaned like the screen** (`text::sanitize_json`): terminal escape
+sequences and control characters (DEL U+007F, C1 U+0080–U+009F) are removed whole, line
+breaks are kept, tab and CR become spaces; every other character — letters, emoji, CJK —
+passes through untouched, and the JSON stays valid. The store keeps text raw.
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, the saved default board
 (`tb boards --default`, below), or `TB_DB=/path/file.db` — in the order `TB_DB` > a named board >
 `TB_BOARD` > the saved default board > `default`.
@@ -191,8 +195,10 @@ are where the card was, and returns to. Archived cards appear in no other output
 
 Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
 (`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
-note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
-trimmed). A file that cannot be used is a runtime failure (exit 1) in the usual shape: no such
+note's `text` carry the file's words exactly, and JSON output shows them **cleaned like the
+screen** (escape sequences and control characters removed whole, line breaks kept, tab and CR
+become spaces; the store keeps the bytes as written — see the top of this file). A file that
+cannot be used is a runtime failure (exit 1) in the usual shape: no such
 file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or `-` with a
 terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
 `--desc-file`, note text with `--file`) is an argument error (exit 2).

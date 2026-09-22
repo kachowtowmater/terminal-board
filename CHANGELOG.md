@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### JSON output is cleaned like the screen
+
+`--json` output was the one path that still passed DEL (U+007F) and the C1 controls
+(U+0080–U+009F) through raw: serde_json escapes only C0, so a card's text holding those
+bytes reached a terminal, a log or another tool with them — in UTF-8 a terminal that honours
+C1 would act on U+009B as a CSI. Every screen path was already clean.
+- Every text field in JSON output now goes through the same display sanitiser as the screen
+  (`text::sanitize_json` = `sanitize_lines`): escape sequences and control characters are
+  removed whole, line breaks are kept, tab and CR become spaces. One shared implementation —
+  no second sanitiser to drift. All non-ASCII letters, emoji and CJK pass through untouched,
+  and the JSON stays valid (serde still escapes `"`/`\` and C0 as before).
+- The store keeps text raw; this changes only what `--json` shows (`show`, `list`, `board`,
+  bare `tb --json`, every write's `{ok, card}`, `github --json`, `boards --json`,
+  `import`/`edit --from` reports, errors and warnings, `watch --json` and
+  `watch --events --json`).
+- A card whose text held control bytes can no longer round-trip through `board --json` →
+  `edit --from` byte for byte: the export is the cleaned view, so re-importing it normalizes
+  the bytes (documented in docs/JSON.md). Reading the store back directly is unchanged.
+
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 
 `tb block ID "text"` is unchanged. It now also takes **`--on NAME|#ID`** (who you are waiting
