@@ -47,6 +47,9 @@ pub struct CardJ {
     pub days_left: Option<i64>,
     /// `ok` | `soon` (within `due-warn` days) | `overdue`; null exactly when `days_left` is.
     pub due_state: Option<&'static str>,
+    /// What a person reads for `column`: the board's label, else the name in capitals.
+    /// Display only — `column` is the name every command takes, and it never changes.
+    pub column_label: String,
     pub gh_ref: Option<i64>,
     pub blocked: Option<String>,
     pub created_at: i64,
@@ -89,6 +92,9 @@ pub struct BoardJ {
     pub layout: String,
     /// `position` | `due`: what the `columns` arrays (and `tb next`) are ordered by.
     pub sort: &'static str,
+    /// Display names of the four columns (`config label`); the internal names in capitals
+    /// unless the board set its own. Chrome: `columns` keys and `card.column` never change.
+    pub labels: std::collections::BTreeMap<&'static str, String>,
     pub github: GithubJ,
     pub columns: ColumnsJ,
     /// Every identity an event in `columns` points at (`actor_id`), in id order.
@@ -121,6 +127,10 @@ pub fn card(store: &Store, c: &Card) -> Result<CardJ> {
 
 /// `card` with the board's today already worked out (once per board, not once per card).
 fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<CardJ> {
+    card_shown(store, c, due, &store.display()?)
+}
+
+fn card_shown(store: &Store, c: &Card, due: &crate::store::due::DueCtx, look: &crate::store::display::Display) -> Result<CardJ> {
     let d = store.show(c.id)?;
     let due = due.info(c);
     let skip = d.events.len().saturating_sub(CARD_EVENTS);
@@ -136,6 +146,7 @@ fn card_on(store: &Store, c: &Card, due: &crate::store::due::DueCtx) -> Result<C
         due: c.due.clone(),
         days_left: due.days_left,
         due_state: due.due_state,
+        column_label: look.column_label(&c.column),
         gh_ref: c.gh_ref,
         blocked: c.blocked.clone(),
         created_at: c.created_at,
@@ -161,7 +172,8 @@ pub fn card_by_id(store: &Store, id: i64) -> Result<CardJ> {
 pub fn board(store: &Store) -> Result<BoardJ> {
     let snap = store.snapshot()?;
     let due = store.due_ctx()?;
-    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_on(store, c, &due)).collect() };
+    let look = &snap.display;
+    let col = |name: &str| -> Result<Vec<CardJ>> { snap.in_column(name).into_iter().map(|c| card_shown(store, c, &due, look)).collect() };
     let (json, error, fails) = store.github_cache()?;
     let repo = store.github_repo()?;
     let snapshot = json
@@ -183,6 +195,7 @@ pub fn board(store: &Store) -> Result<BoardJ> {
         theme: snap.theme.clone(),
         layout: snap.layout.clone(),
         sort: snap.sort.as_str(),
+        labels: COLUMNS.iter().map(|c| (*c, look.column_label(c))).collect(),
         github: GithubJ { repo, snapshot, error, fails, fetched_at },
         columns,
         actors: store.actors_by_id(&seen)?,

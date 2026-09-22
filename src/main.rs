@@ -24,6 +24,7 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]...   edit ID [--title T] [--
         list [--archived] · restore ID · show ID · note ID \"text\" · block ID \"#7\" | --clear
         check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
 Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
+Look    config card-line age|due · config label todo|doing|review|done \"TEXT\" | --off   (display only: commands take the plain names)
 Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
         move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
         prio ID top|bottom|up|down
@@ -166,6 +167,8 @@ enum Cmd {
         value: Option<String>,
         #[arg(long)]
         off: bool,
+        /// The display text of `config label COLUMN "TEXT"`.
+        text: Option<String>,
     },
     Boards,
     Board,
@@ -399,9 +402,15 @@ fn watch(
         }
     }
     let mut last = None;
+    // `days_left` / `due_state` change when the board's day turns, not only on a write: a
+    // board with open due dates is sent again at local midnight in the board's zone
+    let mut day = None;
     loop {
         let v = store.data_version()?;
-        if last != Some(v) {
+        let today = store.due_ctx()?.today;
+        let turned = due::day_turned(day, today) && store.has_open_due_dates()?;
+        day = Some(today);
+        if last != Some(v) || turned {
             last = Some(v);
             let text = if jsonout {
                 serde_json::to_string(&contract::board(store)?).unwrap_or_default()
@@ -579,6 +588,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             || (c.writes() && name == boards::DEFAULT_BOARD)
     });
     let mut store = open_board(&name, creates)?;
+    // a stored `tz` this build does not know must not be ignored silently: today then comes
+    // from this machine's zone, and every command says so until the setting is fixed
+    if let Some(bad) = store.unknown_tz()? {
+        terminal_board::notice::push(format!(
+            "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
+        ));
+    }
     // before the full-screen board or `watch` takes over the terminal
     print_warnings();
     // hints carry the board name only when it was chosen explicitly in this shell
@@ -633,7 +649,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let snap = store.snapshot()?;
             if j {
                 let ctx = store.due_ctx()?;
-                println!("{}", pretty(&snap.listed().into_iter().map(|c| ctx.with(c, c)).collect::<Vec<_>>()));
+                println!("{}", pretty(&snap.listed().into_iter().map(|c| snap.display.with(ctx.with(c, c), c)).collect::<Vec<_>>()));
             } else {
                 print_lines!("{}", plain_hinted(plain::list(&snap), snap.cards.is_empty(), explicit));
             }
@@ -641,9 +657,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Show { id } => {
             let d = store.show(id)?;
             if j {
-                println!("{}", pretty(&store.due_ctx()?.with(&d, &d.card)));
+                println!("{}", pretty(&store.display()?.with(store.due_ctx()?.with(&d, &d.card), &d.card)));
             } else {
-                print_lines!("{}", plain::detail(&d, now));
+                print_lines!("{}", plain::detail_on(&d, now, &store.display()?));
             }
         }
         Cmd::Board => {
@@ -680,7 +696,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let card = store.next_review(&actor)?;
             let human = format!(
                 "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
-                plain::detail(&store.show(card.id)?, now).trim_end(),
+                plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 id = card.id
             );
             done_card(&store, j, card.id, human)?;
@@ -692,7 +708,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             let human = format!(
                 "{}\ntaken by {actor} — log progress with {}, finish with {}",
-                plain::detail(&store.show(card.id)?, now).trim_end(),
+                plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
                 cmd_hint(explicit, &format!("done {}", card.id))
             );
@@ -727,6 +743,19 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             done_card(&store, j, id, human)?;
         }
         Cmd::Move { id, column, reason, force } => {
+            // An internal column name is resolved FIRST and always wins: a board that labels
+            // one column with another's name (an older tb allowed it; `config label` now
+            // refuses it) must never make the real column unreachable. Only a word that is no
+            // column at all is looked up as a label, to name the column the command takes.
+            if terminal_board::store::display::column_named(&column).is_err() {
+                if let Some(real) = store.display()?.column_of_label(&column) {
+                    return Err(BoardError(format!(
+                        "'{}' is a display label, not a column — the column is {real}: {}",
+                        column.trim(),
+                        cmd_hint(explicit, &format!("move {id} {real}"))
+                    )));
+                }
+            }
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;
             }
@@ -738,7 +767,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     c.owner.as_deref().unwrap_or("its owner")
                 )
             } else {
-                format!("#{id} is now in {}", c.column)
+                format!("#{id} is now in {}", store.display()?.typed(&c.column))
             };
             done_card(&store, j, id, human)?;
         }
@@ -766,7 +795,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             let c = if force { store.done_forced(id, &actor)? } else { store.done(id, &actor)? };
             let human = if c.column == "review" {
-                format!("#{id} is now in review — close it with {} once verified", cmd_hint(explicit, &format!("done {id}")))
+                format!(
+                    "#{id} is now in {} — close it with {} once verified",
+                    store.display()?.typed("review"),
+                    cmd_hint(explicit, &format!("done {id}"))
+                )
             } else {
                 format!("#{id} is done")
             };
@@ -935,8 +968,56 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Config { key: Some(key), value, off } => {
+        Cmd::Config { key: Some(key), value, off, text } => {
+            if text.is_some() && key != "label" {
+                return Err(BoardError(format!(
+                    "'{key}' takes one value — only a label has two: 'tb config label review \"WITH REVIEWER\"'"
+                )));
+            }
             let (k, v): (String, serde_json::Value) = match (key.as_str(), value) {
+                // the board's look (store/display.rs): display only, never what a command accepts
+                ("label", None) => {
+                    return Err(BoardError(
+                        "say which column — 'tb config label review \"WITH REVIEWER\"', 'tb config label review' reads it, '--off' clears it".to_string(),
+                    ))
+                }
+                ("label", Some(column)) => {
+                    let column = terminal_board::store::display::column_named(&column)?;
+                    let label = match (&text, off) {
+                        (Some(_), true) => {
+                            return Err(BoardError(format!(
+                                "a label and --off together — set it with 'tb config label {column} \"TEXT\"' or clear it with 'tb config label {column} --off'"
+                            )))
+                        }
+                        (Some(t), false) => store.set_label(column, Some(t))?,
+                        (None, true) => store.set_label(column, None)?,
+                        (None, false) => store.label(column)?,
+                    };
+                    let shown = label.clone().unwrap_or_else(|| column.to_ascii_uppercase());
+                    if !j {
+                        match (&text, off) {
+                            (Some(_), _) => say!("{column} is now shown as {shown} — display only: commands and JSON still say {column}"),
+                            (None, true) => say!("{column} is shown as {shown} again"),
+                            (None, false) => say!("{shown}"),
+                        }
+                        return Ok(());
+                    }
+                    (format!("label.{column}"), json!(shown))
+                }
+                ("card-line", _) if off => {
+                    return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string()))
+                }
+                ("card-line", value) => {
+                    let line = match &value {
+                        Some(v) => store.set_card_line(v)?,
+                        None => store.card_line()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", line.as_str());
+                        return Ok(());
+                    }
+                    ("card-line".into(), json!(line.as_str()))
+                }
                 ("github", _) if off => {
                     store.set_github(None)?;
                     ("github".into(), serde_json::Value::Null)
@@ -1071,6 +1152,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("wip", n) => say!("wip limit is now {n}"),
                     ("tz", z) => say!("tz is now {} — it decides what 'today' is for due dates", z.as_str().unwrap_or("")),
                     ("due-warn", n) => say!("due-warn is now {n} — a card is 'soon' from {n} day(s) before its due date"),
+                    ("card-line", l) if l.as_str() == Some("due") => {
+                        say!("card-line is now due — a dated card shows its due date and the days left where its age was")
+                    }
+                    ("card-line", _) => say!("card-line is now age — every card shows its age in the column"),
                     ("sort", s) if s.as_str() == Some("due") => say!(
                         "sort is now due — TODO and REVIEW show the nearest due date first and 'tb next' takes it; cards without a date follow; equal dates keep their position"
                     ),

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 pub mod actors;
 pub mod archive;
+pub mod display;
 pub mod due;
 pub mod order;
 
@@ -230,6 +231,9 @@ pub struct Snapshot {
     pub actor_last: HashMap<String, Event>,
     /// The board's `sort` (`store::order`): what `in_column` orders by. Default = position.
     pub sort: order::Sort,
+    /// The board's look (`store::display`): card line, column labels, the due mark's today.
+    /// Default = the look tb always had.
+    pub display: display::Display,
 }
 
 /// The board's DONE column only shows cards finished in the last 24h.
@@ -898,6 +902,7 @@ impl Store {
         all.extend(self.due_settings()?);
         all.extend(self.rm_settings()?);
         all.extend(self.sort_settings()?);
+        all.extend(self.display_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1208,6 +1213,7 @@ impl Store {
             now: now(),
             actor_last,
             sort: self.sort()?,
+            display: self.display()?,
         })
     }
 

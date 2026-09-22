@@ -81,6 +81,8 @@ const CARD: &[&str] = &[
     "column_since", "last_event_at", "checklist", "round", "events",
     // due dates: derived from `due`, the board's `tz` and `due-warn` (additive; null without a date)
     "days_left", "due_state",
+    // the column's display name (`config label`): chrome — `column` stays the internal name
+    "column_label",
 ];
 
 #[test]
@@ -91,8 +93,11 @@ fn golden_board_shape() {
     tb(&db, &["config", "github", "o/r"]);
     let v = json(&tb(&db, &["board", "--json"]));
     // `sort` (position | due): what the `columns` arrays and `tb next` are ordered by — additive
-    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "sort", "github", "columns", "actors"]));
+    // `labels`: the four columns' display names (additive; the internal names in capitals by default)
+    assert_eq!(keys(&v), sorted(&["v", "board", "wip", "theme", "layout", "sort", "labels", "github", "columns", "actors"]));
     assert_eq!(v["sort"], "position", "the default");
+    assert_eq!(v["labels"], serde_json::json!({"todo": "TODO", "doing": "DOING", "review": "REVIEW", "done": "DONE"}));
+    assert_eq!(v["columns"]["todo"][0]["column_label"], "TODO");
     assert_eq!(v["v"], 1);
     assert_eq!((v["wip"].as_i64(), v["theme"].as_str(), v["layout"].as_str()), (Some(3), Some("dark"), Some("auto")));
     assert_eq!(keys(&v["github"]), sorted(&["repo", "snapshot", "error", "fails", "fetched_at"]));
