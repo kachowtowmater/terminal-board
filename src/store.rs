@@ -10,6 +10,7 @@ use std::time::Duration;
 
 pub mod actors;
 pub mod archive;
+pub mod blocks;
 pub mod bulk;
 pub mod display;
 pub mod due;
@@ -141,6 +142,12 @@ pub struct Card {
     pub column_since: i64,
     /// Why the card is blocked (e.g. `#7`); None when not blocked.
     pub blocked: Option<String>,
+    /// `--on`: who or what it waits for — `#7` or a name (`store::blocks`); None without one.
+    #[serde(default)]
+    pub blocked_on: Option<String>,
+    /// `--until`: a local calendar date to look again (`store::blocks`); None without one.
+    #[serde(default)]
+    pub blocked_until: Option<String>,
     /// Order within its column (0 = top).
     #[serde(default)]
     pub position: i64,
@@ -236,6 +243,10 @@ pub struct Snapshot {
     /// The board's look (`store::display`): card line, column labels, the due mark's today.
     /// Default = the look tb always had.
     pub display: display::Display,
+    /// What each card's block means today (`store::blocks`), and whether blocked cards get
+    /// their own WAITING section. Default = no block detail and no lane: today's board.
+    pub blocks: blocks::BlockCtx,
+    pub waiting_lane: bool,
 }
 
 /// The board's DONE column only shows cards finished in the last 24h.
@@ -371,7 +382,7 @@ CREATE TABLE IF NOT EXISTS config (
 "#;
 
 const CARD_COLS: &str =
-    r#"id, title, tag, description, "column", owner, due, gh_ref, created_at, column_since, blocked, position, reviewer"#;
+    r#"id, title, tag, description, "column", owner, due, gh_ref, created_at, column_since, blocked, position, reviewer, blocked_on, blocked_until"#;
 
 fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
     // `position` is tb's business (`docs/SCHEMA.md`), but a file written by something else can
@@ -406,6 +417,8 @@ fn row_card(r: &rusqlite::Row) -> rusqlite::Result<Card> {
         blocked: r.get(10)?,
         position: pos?,
         reviewer: r.get(12)?,
+        blocked_on: r.get(13)?,
+        blocked_until: r.get(14)?,
     })
 }
 
@@ -507,6 +520,8 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    // migration: `blocked_on` / `blocked_until` (v2, `tb block --on … --until …`)
+    blocks::migrate(conn)?;
     Ok(())
 }
 
@@ -948,6 +963,7 @@ impl Store {
         all.extend(self.rm_settings()?);
         all.extend(self.sort_settings()?);
         all.extend(self.display_settings()?);
+        all.extend(self.block_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1259,6 +1275,8 @@ impl Store {
             actor_last,
             sort: self.sort()?,
             display: self.display()?,
+            blocks: self.block_ctx()?,
+            waiting_lane: self.waiting_lane()?,
         })
     }
 
@@ -1604,12 +1622,11 @@ impl Store {
         // a returned card is its owner's existing work, not new work: WIP does not block it
         if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
-            let doing: i64 = tx.query_row(
-                r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#,
-                [],
-                |r| r.get(0),
-            )?;
-            if doing >= wip {
+            // `wip-counts-blocked no` (store/blocks.rs) discounts blocked DOING cards, up to
+            // `wip` of them, so waiting for someone else does not stall the board — and
+            // blocking everything can still never hand out unlimited work
+            let (counted, doing) = blocks::doing_counts(&tx, wip)?;
+            if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
@@ -1651,6 +1668,11 @@ impl Store {
                     Self::log(&tx, id, actor, "returned", r)?;
                 }
             }
+        }
+        // a card that reached DONE lifts the blocks that named it (store/blocks.rs) — in
+        // this transaction, so the move and the unblocks land together or not at all
+        if column == "done" && c.column != "done" {
+            blocks::on_done(&tx, id, actor)?;
         }
         let c = get_card(&tx, id)?;
         tx.commit()?;

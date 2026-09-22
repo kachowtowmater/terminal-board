@@ -14,6 +14,12 @@ skip them. `tb setup` runs them again later.
 
 ## The columns
 
+```text
+TODO ──next/take──▶ DOING ──done──▶ REVIEW ──done──▶ DONE
+  ▲                   │
+  └──────drop─────────┘        (block = a flag on any card: "stuck on #N")
+```
+
 | column | means |
 |---|---|
 | **TODO** | waiting to be picked up; the top card is next |
@@ -35,12 +41,18 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | keep deleted cards instead | — | `tb config rm archive`, then `tb list --archived` · `tb restore 3` |
 | add a note to its history | `n` | `tb note 3 "called the plumber"` |
 | mark it blocked | — | `tb block 3 "#5"` · `tb block 3 --clear` |
+| say who you wait on, and when to look again | — | `tb block 3 "waiting for the fee" --on #5 --until 2026-10-09` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
 
 A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
 "today" is for the whole board (default: your machine's); `tb config due-warn 5` sets how many
 days ahead a card counts as due soon (default 3). More in the README under *Due dates*.
+
+A card blocked `--on #5` unblocks itself when card 5 is done. When the `--until` date arrives
+the card is marked for a recheck (worked out as you read the board, in its time zone).
+`tb config waiting-lane shown` gathers blocked cards into their own WAITING section, and
+`tb config wip-counts-blocked no` stops a blocked card using up a work slot.
 
 `tb config sort due` turns the board into a deadline queue: TODO and REVIEW show the nearest due
 date first (overdue on top, cards without a date last, equal dates in the order you gave them),

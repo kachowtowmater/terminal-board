@@ -33,6 +33,12 @@ pub fn column_header_for(snap: &Snapshot, col: &str, n: usize) -> String {
     if snap.display.date_ordered(col) {
         h.push_str(" · by due");
     }
+    // with the lane on, the column keeps its true count and says how many of those cards are
+    // drawn in the WAITING section instead of here
+    let waiting = waiting(snap).iter().filter(|c| c.column == col).count();
+    if waiting > 0 {
+        h.push_str(&format!(" · {waiting} waiting"));
+    }
     h
 }
 
@@ -275,6 +281,38 @@ pub fn warnings(card: &Card) -> Vec<String> {
     }
 }
 
+/// What a card is waiting on, in words: `on #7 · recheck 2026-10-09` — the structured part
+/// of a block (`--on`, `--until`), shown after the block text. Empty without either, and on
+/// a DONE card. `recheck` marks a date that has arrived; `look again` one still ahead.
+pub fn waiting_for(card: &Card, snap: &Snapshot) -> String {
+    if card.column == "done" {
+        return String::new();
+    }
+    let b = snap.blocks.of(card);
+    let mut parts = Vec::new();
+    if let Some(on) = &b.blocked_on {
+        let state = match b.blocked_on_state {
+            Some("done") => " (done)",
+            Some("gone") => " (gone)",
+            _ => "",
+        };
+        parts.push(format!("on {on}{state}"));
+    }
+    if let Some(u) = &b.blocked_until {
+        parts.push(format!("{} {u}", if b.recheck { "recheck" } else { "look again" }));
+    }
+    parts.join(" · ")
+}
+
+/// The cards in their own WAITING section (`config waiting-lane shown`): every blocked card
+/// that is not done, in board order. Empty when the lane is off — then nothing moves.
+pub fn waiting(snap: &Snapshot) -> Vec<&Card> {
+    if !snap.waiting_lane {
+        return Vec::new();
+    }
+    COLUMNS.iter().flat_map(|col| snap.on_board(col)).filter(|c| c.blocked.is_some() && c.column != "done").collect()
+}
+
 pub fn card_head(card: &Card) -> String {
     match crate::store::shown_ref(card) {
         Some(n) => format!("#{} gh#{n} {}", card.id, card.title),
@@ -297,24 +335,42 @@ pub fn board(snap: &Snapshot) -> String {
             fmt_clock(snap.now)
         ),
     );
+    let lane = waiting(snap);
+    let card_block = |out: &mut String, c: &Card| {
+        line(out, format!("  {}", card_head(c)));
+        let m = meta(c, snap);
+        if !m.is_empty() {
+            line(out, format!("      {m}"));
+        }
+        let w = waiting_for(c, snap);
+        if !w.is_empty() {
+            line(out, format!("      {w}"));
+        }
+        if c.column == "doing" {
+            if let Some(n) = snap.last_note.get(&c.id) {
+                line(out, format!("      \"{n}\""));
+            }
+        }
+    };
     for col in COLUMNS {
-        let cards = snap.on_board(col);
+        let all = snap.on_board(col);
+        // with the lane on, a blocked card is drawn THERE and not here — never in both
+        // places. The header still counts every card, and says how many are waiting.
+        let cards: Vec<&Card> = all.iter().copied().filter(|c| !lane.iter().any(|w| w.id == c.id)).collect();
         out.push('\n');
-        line(&mut out, column_header_for(snap, col, cards.len()));
+        line(&mut out, column_header_for(snap, col, all.len()));
         if cards.is_empty() {
             line(&mut out, "  -");
         }
         for c in cards {
-            line(&mut out, format!("  {}", card_head(c)));
-            let m = meta(c, snap);
-            if !m.is_empty() {
-                line(&mut out, format!("      {m}"));
-            }
-            if c.column == "doing" {
-                if let Some(n) = snap.last_note.get(&c.id) {
-                    line(&mut out, format!("      \"{n}\""));
-                }
-            }
+            card_block(&mut out, c);
+        }
+    }
+    if !lane.is_empty() {
+        out.push('\n');
+        line(&mut out, format!("WAITING ({})", lane.len()));
+        for c in &lane {
+            card_block(&mut out, c);
         }
     }
     if snap.cards.is_empty() {
@@ -329,7 +385,13 @@ pub fn list(snap: &Snapshot) -> String {
     let mut out = String::new();
     for col in COLUMNS {
         for c in snap.in_column(col) {
-            line(&mut out, format!("{:<7} {}  [{}]", col, card_head(c), meta(c, snap)));
+            let w = waiting_for(c, snap);
+            let meta = match (meta(c, snap), w) {
+                (m, w) if w.is_empty() => m,
+                (m, w) if m.is_empty() => w,
+                (m, w) => format!("{m} · {w}"),
+            };
+            line(&mut out, format!("{:<7} {}  [{}]", col, card_head(c), meta));
         }
     }
     if out.is_empty() {
@@ -346,6 +408,11 @@ pub fn detail(d: &CardDetail, now: i64) -> String {
 /// line, next to the block warning, exactly as it does on the board and in `tb list`.
 /// A `Display::default()` (no today) marks nothing — what `tb show` printed before.
 pub fn detail_on(d: &CardDetail, now: i64, look: &crate::store::display::Display) -> String {
+    detail_all(d, now, look, None)
+}
+
+/// `detail_on` that also says what the card is waiting on (`waiting_for`), for `tb show`.
+pub fn detail_all(d: &CardDetail, now: i64, look: &crate::store::display::Display, waiting: Option<&str>) -> String {
     let c = &d.card;
     let mut out = String::new();
     line(&mut out, card_head(c));
@@ -373,6 +440,9 @@ pub fn detail_on(d: &CardDetail, now: i64, look: &crate::store::display::Display
         if c.column != "done" {
             meta.push(format!("x blocked by {b}"));
         }
+    }
+    if let Some(w) = waiting.filter(|w| !w.is_empty()) {
+        meta.push(w.to_string());
     }
     line(&mut out, meta.join(" - "));
     if !c.description.is_empty() {
@@ -433,6 +503,8 @@ mod tests {
             created_at: 0,
             column_since: 1_000_000 - 2 * 86400,
             blocked: None,
+            blocked_on: None,
+            blocked_until: None,
             position: 0,
             reviewer: None,
         }
