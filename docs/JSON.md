@@ -237,8 +237,6 @@ The name is left out only when a bare `tb` is certain to reach that board: it is
 plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
 picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
 
-## Warnings — `"warnings": ["…"]`
-
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
 A **row is the card object above**, so `tb board --json` or `tb show ID --json` output can be
@@ -335,7 +333,7 @@ array of card objects, the same shape as `tb list --json`.
 
 `tb export`, `tb log` and `tb list` never write to the board file.
 
-## `tb agents --json`
+## Warnings — `"warnings": ["…"]`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
 `TB_DB` pins a file; the board file can be opened by other users; the board was backed up
