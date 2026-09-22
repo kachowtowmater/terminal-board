@@ -60,11 +60,15 @@ fn is_contended(e: &rusqlite::Error) -> bool {
 
 /// The hint for a real path problem (cannot open, read-only, no such file/directory, …):
 /// TB_DB is worth naming, but only when `tb_db` says it is actually set — otherwise it was
-/// never the pin, and naming it points at the wrong thing (#105).
+/// never the pin, and naming it points at the wrong thing (#105). Never says "the board
+/// file": `position_error` already names the real file for a house message this same `From`
+/// impl also carries (`bad_position`'s FromSqlConversionFailure), and a second, vaguer file
+/// reference tacked onto that one is not just redundant — `position_guard.rs` pins that no
+/// refusal may print an unusable "the board file" placeholder in place of the real path.
 fn db_error_hint(tb_db: Option<&str>) -> String {
     match tb_db {
         Some(path) => format!("check TB_DB ({path}) points at a writable file"),
-        None => "check the board file is writable".to_string(),
+        None => "check it is writable".to_string(),
     }
 }
 
@@ -2225,10 +2229,12 @@ mod tests {
     }
 
     /// #105: TB_DB is named only when it is actually set — otherwise it was never the pin.
+    /// Never says "the board file": that placeholder is reserved for when the real file is
+    /// genuinely unknown (`position_guard.rs` pins it out of an actual refusal).
     #[test]
     fn the_tb_db_hint_names_it_only_when_set() {
-        assert_eq!(db_error_hint(None), "check the board file is writable");
-        assert!(!db_error_hint(None).contains("TB_DB"));
+        assert_eq!(db_error_hint(None), "check it is writable");
+        assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
         assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
     }
 
