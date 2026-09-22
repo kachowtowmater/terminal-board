@@ -18,13 +18,17 @@ serde = { version = "1", features = ["derive"] }
 # (a 30-digit integer must not come back as a float). A feature, not another crate.
 serde_json = { version = "1", features = ["raw_value"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# flock, for the one-writer-at-a-time lock on the settings file. Already in the tree (and in
-# Cargo.lock) through crossterm -> signal-hook/mio: naming it directly adds no new crate.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 # IANA zones for the per-board `tz` setting (what "today" is for due dates). Pure Rust, zone data
 # compiled in: no network, no system tzdata needed (the release binaries are static musl builds).
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+
+# Every ordinary dependency goes ABOVE this line: a `[target.…]` header swallows everything
+# after it, so a crate listed below would quietly become unix-only (chrono-tz did, and the
+# windows build broke). flock, for the one-writer-at-a-time lock on the settings file:
+# already in the tree (and in Cargo.lock) through crossterm -> signal-hook/mio, so naming it
+# directly adds no new crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

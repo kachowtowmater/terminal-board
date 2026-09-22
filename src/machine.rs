@@ -44,7 +44,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The file's top-level keys with their text exactly as written. `serde_json::Map` is always
 /// `Map<String, Value>`, so this is a plain `BTreeMap` — which iterates in key order, the same
@@ -401,7 +401,8 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 /// blocks anyone.
 #[cfg(unix)]
 mod lock {
-    use super::{create_private_dir, Duration, Instant, Path};
+    use super::{create_private_dir, Duration, Path};
+    use std::time::Instant;
     use crate::store::{BoardError, Result};
     use std::os::unix::io::AsRawFd;
 
