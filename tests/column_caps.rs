@@ -32,6 +32,87 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 const LAYOUTS: [&str; 6] = ["auto", "focus", "third-h", "third-v", "half-h", "half-v"];
 
+/// A board with `[todo, doing, review, done]` cards in those columns; the title says which
+/// column a card belongs to, so a screen can be read back to "which columns show work".
+fn board_of(counts: [usize; 4]) -> (tempfile::TempDir, Store) {
+    common::pin_clock();
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(99).unwrap();
+    for (ci, col) in ["todo", "doing", "review", "done"].iter().enumerate() {
+        for i in 1..=counts[ci] {
+            let id = s.add(&format!("{col}{i}"), "", &[], "alice").unwrap();
+            if *col != "todo" {
+                s.move_to(id, col, "alice").unwrap();
+            }
+        }
+    }
+    (dir, s)
+}
+
+/// Which columns have at least one of their own cards drawn. By card ID: a narrow column
+/// cuts the title but never the `#id`, and the ids are handed out column by column.
+fn columns_showing(screen: &str, counts: [usize; 4]) -> Vec<usize> {
+    let mut board = screen.to_string();
+    while let Some(at) = board.find("last moved #") {
+        let end = board[at..].find("  ").map(|i| at + i).unwrap_or(board.len());
+        board.replace_range(at..end.min(board.len()), "");
+    }
+    let mut first = 1usize;
+    let mut out = Vec::new();
+    for (ci, n) in counts.iter().enumerate() {
+        let ids = first..first + n;
+        if ids.clone().any(|id| board.contains(&format!("#{id} ")) || board.contains(&format!("#{id}\n"))) {
+            out.push(ci);
+        }
+        first += n;
+    }
+    out
+}
+
+/// THE SECOND REPRODUCTION (review of #131, round two): with THREE or more populated columns
+/// the "top up toward two cards" pass took the WHOLE remaining budget instead of a share, so
+/// the selected column got everything and the rest — including a DOING column with three
+/// cards — got none. The reviewer's case: 80 / 3 / 80 / 80.
+#[test]
+fn three_and_four_populated_columns_all_show_work() {
+    for counts in [[80usize, 0, 0, 80], [80, 3, 0, 80], [80, 3, 80, 80], [10, 3, 5, 116], [3, 3, 3, 3]] {
+        let live = (0..4).filter(|c| counts[*c] > 0).count();
+        let (_d, s) = board_of(counts);
+        for layout in LAYOUTS {
+            s.set_layout(layout).unwrap();
+            for col in 0..4usize {
+                let mut app = App::new(s.snapshot().unwrap(), "alice");
+                app.reload(&s);
+                app.agents = AgentsState::Unavailable("herdr not available".into());
+                app.col = col;
+                for (w, h) in [(60u16, 20u16), (80, 24), (100, 30), (126, 41)] {
+                    let screen = render(&app, w, h);
+                    if is_focus_view(&screen) {
+                        continue;
+                    }
+                    let showing = columns_showing(&screen, counts);
+                    // never ONE column taking the room while other populated columns show
+                    // nothing — unless the pane is too short for a second box at all, when
+                    // every other column is an honest header carrying its count
+                    if showing.len() == 1 && live > 1 && h >= 20 {
+                        let others_headered = (0..4)
+                            .filter(|c| counts[*c] > 0 && !showing.contains(c))
+                            .all(|c| screen.contains(&format!("o {} (", ["TODO", "DOING", "REVIEW", "DONE"][c])));
+                        assert!(
+                            others_headered,
+                            "{counts:?} {layout} {w}x{h} cursor={col}: column {} took the room and the rest are not even headers:\n{screen}",
+                            showing[0]
+                        );
+                        // and with real room, one column may not be the only one drawing
+                        assert!(h < 24 || w < 80, "{counts:?} {layout} {w}x{h} cursor={col}: only column {} shows work:\n{screen}", showing[0]);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A board with `todo` waiting cards and `done` finished ones.
 fn lopsided(todo: usize, done: usize) -> (tempfile::TempDir, Store) {
     common::pin_clock();
@@ -69,10 +150,16 @@ fn a_short_column_shows_work_whichever_column_the_cursor_is_on() {
                 let (todo, done) = shown_per_column(&screen, 10, 116);
                 // if DONE got boxes, TODO must have got at least one too — a long column
                 // never leaves a short one with nothing, whoever the cursor is on
-                if done > 0 {
+                // with room for two boxes both columns draw; with room for one, the other
+                // is an honest header carrying its count (the rule the review accepted)
+                if done > 0 && todo == 0 {
                     assert!(
-                        todo > 0,
-                        "{layout} {w}x{h} cursor={col}: DONE boxed {done} cards while TODO got none:\n{screen}"
+                        screen.contains("o TODO (10)"),
+                        "{layout} {w}x{h} cursor={col}: DONE boxed {done} cards and TODO is not even a header:\n{screen}"
+                    );
+                    assert!(
+                        h < 20 || w < 60,
+                        "{layout} {w}x{h} cursor={col}: room for two, but DONE boxed {done} while TODO got none:\n{screen}"
                     );
                 }
             }

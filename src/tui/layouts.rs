@@ -623,25 +623,49 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     // unpredictable: the same board looked different depending on where the cursor happened
     // to be. Now nobody may take more than an equal share of what is left while another
     // column still has nothing, so the outcome does not depend on the cursor at all.
+    // What one column may take while others are still waiting for the same thing. EVERY
+    // stage of this allocation divides: giving one stage the whole remaining budget is what
+    // let the selected column take it all, twice — once when two columns were populated, and
+    // again, in the very next loop, when three were.
+    let want_of = |pass: u8, c: usize, heights: &[u16; 4]| -> u16 {
+        match pass {
+            0 if heights[c] > 1 => 0,
+            0 => column_min_one(app, c, w) - 1,
+            _ => column_min_boxed(app, c, w).saturating_sub(heights[c]),
+        }
+    };
     for pass in [0u8, 1] {
         for &c in &order {
             if counts[c] == 0 {
                 continue;
             }
-            let need = match pass {
-                // pass 0: one card each · pass 1: top up toward two, same fairness
-                0 if heights[c] > 1 => continue,
-                0 => column_min_one(app, c, w) - 1,
-                _ => column_min_boxed(app, c, w).saturating_sub(heights[c]),
-            };
+            let need = want_of(pass, c, &heights);
             if need == 0 {
                 continue;
             }
-            let waiting = claimants().filter(|x| heights[*x] == 1).count().max(1) as u16;
-            let fair = if pass == 0 { left / waiting } else { left };
+            // a share of what is left, divided by everyone who still wants this same step —
+            // never the whole budget, whichever column the cursor happens to be on
+            let waiting = claimants().filter(|x| want_of(pass, *x, &heights) > 0).count().max(1) as u16;
+            let fair = left / waiting;
             // a part-grant would be a frame with nothing in it: a column takes its minimum
             // whole, or stays a header, where the count in the header tells the truth
             if need <= fair {
+                heights[c] += need;
+                left -= need;
+            }
+        }
+    }
+    // FAIRNESS IS NOT EVERYBODY STARVING. When the pane is so short that an equal share buys
+    // nobody even one card, the columns that CAN afford one take it in turn — the cursor's
+    // column first, because that is the one being read. The rest stay headers, and a header
+    // carries its true count, so nothing is hidden with nothing to say so.
+    if claimants().all(|c| heights[c] == 1) {
+        for &c in &order {
+            if counts[c] == 0 {
+                continue;
+            }
+            let need = column_min_one(app, c, w) - 1;
+            if need <= left {
                 heights[c] += need;
                 left -= need;
             }
