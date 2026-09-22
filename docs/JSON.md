@@ -3,6 +3,13 @@
 Apps and agents drive Terminal Board through `tb … --json`. Every object below carries
 fixed field names, pinned by golden tests (`tests/contract.rs`). A breaking change bumps
 `"v"`; new fields may be added without a bump. All timestamps are **unix seconds**.
+Text values are **cleaned** (`text::sanitize_json`, the same cleaner the screen uses):
+terminal escape sequences are removed whole — a sequence's payload goes with it — and so is
+every control character, **except line breaks and tabs, which are text and are kept**
+(`\n` and `\t` in the JSON string). CR becomes a space: it is cursor motion, never text.
+Removed: U+0000–U+0008, U+000B–U+000C, U+000E–U+001F, DEL U+007F and the C1 range
+U+0080–U+009F. Kept: everything at U+00A0 and above — letters, accents, emoji, CJK. The JSON
+stays valid, and no byte in it can move a terminal's cursor. The store keeps text raw.
 Board selection works as usual: `tb [BOARD] …`, `-b NAME`, `TB_BOARD`, the saved default board
 (`tb boards --default`, below), or `TB_DB=/path/file.db` — in the order `TB_DB` > a named board >
 `TB_BOARD` > the saved default board > `default`.
@@ -193,8 +200,11 @@ are where the card was, and returns to. Archived cards appear in no other output
 
 Text from a file — `add … --desc-file PATH|-`, `edit ID --desc-file PATH|-`, `note ID --file PATH|-`
 (`-` = standard input) — answers the same `{ "ok": true, "card": … }`; `description` and the
-note's `text` carry the file's text exactly (JSON is raw; only blank space around it is
-trimmed). A file that cannot be used is a runtime failure (exit 1) in the usual shape: no such
+note's `text` carry the file's text, **cleaned** as every text value is (see the top of this
+file); the store keeps the bytes as written. Line breaks and tabs survive, so a description
+written from a file goes out through `export --json` and back in through `import` or
+`edit --from` unchanged. A file that
+cannot be used is a runtime failure (exit 1) in the usual shape: no such
 file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or `-` with a
 terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
 `--desc-file`, note text with `--file`) is an argument error (exit 2).
@@ -430,3 +440,14 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
   names another file), never in a board file.
 - `tb github --json` — the GitHub snapshot: `{repo, fetched_at, issues_open, prs[], issues[] (+state, who), merged_today[], main_ci}` plus the sync state: `error` (the full text of the last fetch error, null after a good fetch) and `fails` (consecutive failed refreshes — the board header says `synced HH:MM · offline, retrying` or `· gh error`, in red only after 3 in a row, and never adds a row to the panel).
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.
+
+## Environment variables
+
+`TB_NOW` (legacy `TTYBOARD_NOW`) pins the clock to a unix second so a test or a replay sees
+stable timestamps. It changes what tb **writes**, so it validates: unset or empty = the real
+clock; anything else must be an integer from `946684800` (2000) up to `4102444800` (one past
+the last accepted, `4102444799`) —
+a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
+`{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
+The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
+`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.

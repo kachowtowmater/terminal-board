@@ -371,11 +371,19 @@ macro_rules! warn {
     ($($a:tt)*) => { eprintln!("{}", terminal_board::text::sanitize_lines(&format!($($a)*))) };
 }
 
-/// Pretty JSON for stdout. Warnings raised so far ride along as `"warnings": […]` on
-/// object-shaped output (additive; absent when there are none — see `notice`).
+/// Pretty JSON for stdout. Stored text is cleaned through the display sanitiser before it is
+/// serialized (see `text::sanitize_json`), so DEL, C1 and terminal escape sequences never
+/// reach a terminal, a log or another tool — whatever wrote them to the board; line breaks
+/// are kept. Warnings raised so far ride along as `"warnings": […]` on object-shaped output
+/// (additive; absent when there are none — see `notice`).
 fn pretty<T: serde::Serialize>(v: &T) -> String {
-    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| "null".into());
-    terminal_board::notice::splice(&text, &terminal_board::notice::all())
+    let text = serde_json::to_string_pretty(&terminal_board::clean_json(v))
+        .unwrap_or_else(|_| "null".into());
+    // a warning quotes what it is about — a `TB_BOARD` from the environment, a path, the
+    // board's own `tz` setting — so it goes through the same cleaner the body does
+    let warnings: Vec<String> =
+        terminal_board::notice::all().iter().map(|w| terminal_board::text::sanitize_json(w)).collect();
+    terminal_board::notice::splice(&text, &warnings)
 }
 
 /// Print each warning nobody has printed yet, once, on stderr: `tb: …`.
@@ -538,7 +546,8 @@ fn watch(
                     None => None,
                 };
                 let line = EventLine::of(&e.event, identity);
-                let text = serde_json::to_string(&line).unwrap_or_default();
+                let text =
+                    serde_json::to_string(&terminal_board::clean_json(&line)).unwrap_or_default();
                 if writeln!(out, "{text}").and_then(|_| out.flush()).is_err() {
                     return Ok(()); // reader went away
                 }
@@ -558,7 +567,8 @@ fn watch(
         if last != Some(v) || turned {
             last = Some(v);
             let text = if jsonout {
-                serde_json::to_string(&contract::board(store)?).unwrap_or_default()
+                serde_json::to_string(&terminal_board::clean_json(&contract::board(store)?))
+                    .unwrap_or_default()
             } else {
                 let snap = store.snapshot()?;
                 format!("{}\n", plain_hinted(plain::board(&snap), snap.cards.is_empty(), explicit))
@@ -917,6 +927,12 @@ fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> 
 }
 
 fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
+    // `TB_NOW` changes what tb WRITES to the durable store, so it is validated HERE: the
+    // first statement of `run()`, before any command is dispatched and before anything can
+    // open a board. Every other placement leaks — the full-screen board, `tb setup` and the
+    // bulk `import` / `edit --from` path all return before the command match below, and each
+    // of them writes. One gate, at the top; `store::now()` stays a plain library read.
+    let pinned = terminal_board::store::pinned_now()?;
     // an explicit but blank `--as` (e.g. `--as "$NAME"` with NAME unset) must never
     // silently lose to the fallback chain — refuse before anything is written
     if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
@@ -1055,7 +1071,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if let Some(request) = bulk {
         return import::run(&mut store, request, &actor, j, &|text| with_board(text, explicit));
     }
-    let now = terminal_board::store::now();
+    // the pin was validated at the top of `run()`, before any of the early returns above
+    let now = pinned.unwrap_or_else(terminal_board::store::now);
     match cmd {
         Cmd::Add { title, desc, checks, .. } => {
             let id = store.add_tagged(&title, &desc, &checks, &actor, tag_arg.as_ref().map(|t| t.as_deref()))?;
