@@ -94,7 +94,7 @@ fn set_show_and_clear() {
     assert_eq!(h.reaches(&[], &[]), "default");
     assert_eq!(h.ok(&["boards", "--default"], &[]).trim(), "default — the built-in default; choose another with 'tb boards --default NAME'");
     let v = h.json(&["boards", "--default", "--json"], &[]);
-    assert_eq!(sorted_keys(&v), ["default", "ok", "setting", "source"]);
+    assert_eq!(sorted_keys(&v), ["default", "missing", "ok", "setting", "source"]);
     assert_eq!((&v["ok"], &v["default"], &v["source"], &v["setting"]), (&true.into(), &"default".into(), &"builtin".into(), &serde_json::Value::Null));
     assert!(!h.config().exists() && !h.config().parent().unwrap().exists(), "reading the setting created a settings file");
 
@@ -354,8 +354,9 @@ fn the_settings_file_is_private_shared_and_never_clobbered() {
     assert_eq!(std::fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(elsewhere.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
 
-    // a file tb cannot read as settings: plain tb refuses (it cannot know which board was
-    // meant), a named board still works, and NOTHING overwrites the file
+    // a file tb READ but cannot understand: plain tb refuses (a setting may be in there and
+    // opening the wrong board without a word is worse), a named board still works, and
+    // NOTHING overwrites the file
     for bad in ["{ \"default_board\": \"work\", ", "[\"work\"]", "{\"default_board\": 7}"] {
         std::fs::write(h.config(), bad).unwrap();
         let e = h.refused(&["list"], &[]);
@@ -399,4 +400,155 @@ fn the_manuals_state_the_precedence() {
     let readme = include_str!("../README.md");
     assert!(readme.contains("`TB_DB` > a board named on the command line > `TB_BOARD` > the saved default board > `default`"), "README states the precedence");
     assert!(include_str!("../docs/AGENTS.md").lines().count() <= 250, "the agent manual is over its line cap");
+}
+
+/// A settings file tb cannot READ at all is "nothing is set" for a command that did not ask
+/// about a setting — a machine that never saved anything works exactly as it did before this
+/// file existed — and is an error only when the user asks to show or set the default.
+#[test]
+fn an_unreadable_settings_file_is_nothing_set_for_reads() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Home::new();
+    let shut = h.path().join(".config");
+    std::fs::create_dir_all(&shut).unwrap();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (running as root reads anything: only assert where the permission actually bites)
+    if std::fs::read_dir(&shut).is_ok() {
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    for args in [&["list"][..], &["add", "x: still works"][..], &["next"][..], &["boards"][..], &[][..]] {
+        let o = h.run(args, &[]);
+        assert!(o.status.success(), "{args:?} refused where main works: {}", text(&o.stderr));
+    }
+    // said once, and it says tb carried on
+    let o = h.run(&["list"], &[]);
+    let said = text(&o.stderr);
+    assert_eq!(said.lines().filter(|l| l.contains("settings file")).count(), 1, "said more than once: {said}");
+    assert!(said.contains("carried on as if nothing were set") && said.contains("Permission denied"), "{said}");
+    assert_eq!(h.reaches(&[], &[]), "default", "reads fall back to the built-in default");
+
+    // asking about the setting, or setting it, is a refusal — tb will not guess or clobber
+    for args in [&["boards", "--default"][..], &["boards", "--default", "home"][..], &["boards", "--default", "--clear"][..]] {
+        let e = h.refused(args, &[]);
+        assert!(e.contains("cannot read the settings file"), "{args:?}: {e}");
+    }
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// A settings path that is not a regular file is refused before it is opened, so nothing can
+/// hang on a pipe or read a device for ever; a file over the limit is refused by its size.
+#[test]
+fn a_pipe_a_device_and_a_huge_file_are_refused_not_read() {
+    let h = Home::new();
+    let fifo = h.path().join("fifo.json");
+    let made = Command::new("mkfifo").arg(&fifo).status().map(|s| s.success()).unwrap_or(false);
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if made {
+        paths.push(fifo);
+    }
+    if Path::new("/dev/zero").exists() {
+        paths.push(PathBuf::from("/dev/zero"));
+    }
+    let huge = h.path().join("huge.json");
+    std::fs::write(&huge, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    paths.push(huge);
+    for p in paths {
+        let env = [("TB_CONFIG", p.to_str().unwrap())];
+        // a read carries on (nothing is set), and it comes back — no hang, no growth
+        let o = h.run(&["list"], &env);
+        assert!(o.status.success(), "{}: {}", p.display(), text(&o.stderr));
+        assert!(text(&o.stderr).contains("carried on as if nothing were set"), "{}: {}", p.display(), text(&o.stderr));
+        // and asking about the setting says exactly what is wrong
+        let e = h.refused(&["boards", "--default"], &env);
+        assert!(e.contains("cannot read the settings file"), "{}: {e}", p.display());
+    }
+}
+
+/// A saved default whose board is gone must not claim that plain `tb` opens it — plain `tb`
+/// refuses — and `tb boards` must say why no row is marked.
+#[test]
+fn a_disappeared_default_is_reported_honestly() {
+    let h = Home::new();
+    h.save("work");
+    for ext in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", h.board_file("work").display()));
+    }
+    let said = h.ok(&["boards", "--default"], &[]);
+    assert!(!said.contains("plain 'tb' opens it"), "it still claims plain tb opens a board that is gone: {said}");
+    assert_eq!(
+        said.trim(),
+        "work is the saved default board, but there is no board 'work' — plain 'tb' refuses until you choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'"
+    );
+    let v = h.json(&["boards", "--default", "--json"], &[]);
+    assert_eq!((&v["setting"], &v["missing"]), (&"work".into(), &true.into()), "{v}");
+    // `tb boards` lists, marks nothing, and says why
+    let o = h.run(&["boards"], &[]);
+    assert!(o.status.success());
+    assert!(!text(&o.stdout).lines().any(|l| l.starts_with("* ") && !l.starts_with("* =")), "a row is marked: {}", text(&o.stdout));
+    assert!(text(&o.stderr).contains("no row is marked") && text(&o.stderr).contains("--default --clear"), "{}", text(&o.stderr));
+    // naming the board that is gone is still refused
+    assert!(h.refused(&["boards", "--default", "work"], &[]).contains("no board 'work'"));
+    // a healthy answer carries the same shape, so one reader handles both
+    h.ok(&["boards", "--default", "home"], &[]);
+    let v = h.json(&["boards", "--default", "--json"], &[]);
+    assert_eq!((&v["missing"], &v["setting"]), (&false.into(), &"home".into()), "{v}");
+    assert!(h.ok(&["boards", "--default"], &[]).contains("plain 'tb' opens it"));
+    // and clearing still fixes a board that went away
+    h.ok(&["boards", "--default", "--clear"], &[]);
+    assert_eq!(h.reaches(&[], &[]), "default");
+}
+
+/// A dangling symbolic link — the natural dotfiles setup for a new tool — is FOLLOWED: the
+/// link stays a link and tb creates the file it points at.
+#[test]
+fn a_dangling_symlink_is_followed_not_replaced() {
+    let h = Home::new();
+    let dots = h.path().join("dotfiles");
+    std::fs::create_dir_all(&dots).unwrap();
+    let real = dots.join("tb.json");
+    let link = h.path().join("link.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let env = [("TB_CONFIG", link.to_str().unwrap())];
+    h.ok(&["boards", "--default", "work"], &env);
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced by a regular file");
+    assert!(real.is_file(), "the link's target was never created");
+    assert_eq!(h.reaches(&[], &env), "work");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // a link into a directory that does not exist: refused, and no directory is made for it
+    let nowhere = h.path().join("nowhere.json");
+    std::os::unix::fs::symlink(h.path().join("no/such/dir/c.json"), &nowhere).unwrap();
+    let e = h.refused(&["boards", "--default", "work"], &[("TB_CONFIG", nowhere.to_str().unwrap())]);
+    assert!(e.contains("symbolic link into a directory that does not exist"), "{e}");
+    assert!(!h.path().join("no").exists(), "tb made directories through a link");
+    // a loop: refused, nothing created
+    let (a, b) = (h.path().join("a.json"), h.path().join("b.json"));
+    std::os::unix::fs::symlink(&b, &a).unwrap();
+    std::os::unix::fs::symlink(&a, &b).unwrap();
+    let e = h.refused(&["boards", "--default", "work"], &[("TB_CONFIG", a.to_str().unwrap())]);
+    assert!(e.contains("never ends") || e.contains("cannot follow"), "{e}");
+}
+
+/// A number in another feature's key is written back digit for digit, whatever tb writes.
+#[test]
+fn another_owners_numbers_survive_every_write() {
+    let h = Home::new();
+    let f = h.config();
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    let theirs = r#"{"hooks":{"big":123456789012345678901234567890,"exp":1.2345678901234567e-300,"esc":"é🚀","deep":{"a":[{"b":[1.0,2e0]}]}}}"#;
+    std::fs::write(&f, theirs).unwrap();
+    for (i, board) in ["work", "home", "default", "work", "home", "default"].iter().enumerate() {
+        if *board == "default" {
+            h.ok(&["boards", "--default", "--clear"], &[]);
+        } else {
+            h.ok(&["boards", "--default", board], &[]);
+        }
+        let text = std::fs::read_to_string(&f).unwrap();
+        for exact in ["123456789012345678901234567890", "1.2345678901234567e-300", r#""é🚀""#, r#"[1.0,2e0]"#] {
+            assert!(text.contains(exact), "write {}: {exact} was rewritten:\n{text}", i + 1);
+        }
+    }
 }

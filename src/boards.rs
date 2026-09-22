@@ -49,7 +49,7 @@ pub fn select(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) -
 pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) -> Result<String> {
     let ambient = env.filter(|e| !e.trim().is_empty());
     if positional.is_none() && flag.is_none() && ambient.is_none() {
-        if let Some(saved) = saved_default()? {
+        if let Some(saved) = saved_default_for_read()? {
             if !path_for(&saved).exists() {
                 let names = list();
                 let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
@@ -68,7 +68,7 @@ pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) 
 /// the command that actually opens a board refuses instead, see `saved_default`.)
 pub fn default_name() -> String {
     crate::env("BOARD")
-        .or_else(|| saved_default().ok().flatten())
+        .or_else(|| saved_default_for_read().ok().flatten())
         .unwrap_or_else(|| DEFAULT_BOARD.into())
 }
 
@@ -81,11 +81,27 @@ pub const DEFAULT_BOARD_KEY: &str = "default_board";
 /// file: there is nothing to choose, and the settings are not even read.
 /// Errors: the settings file cannot be used, or holds something that is not a board name.
 pub fn saved_default() -> Result<Option<String>> {
+    saved_from(crate::machine::load()?)
+}
+
+/// The saved default board for a command that did NOT ask about it: a settings file tb cannot
+/// read is "nothing is saved" (said once on stderr), so a machine that never saved anything
+/// behaves exactly as it did before this file existed. A file that reads fine but is not a
+/// settings object is still an error — the setting may be in there, and opening the wrong
+/// board without a word is worse than refusing.
+pub fn saved_default_for_read() -> Result<Option<String>> {
+    if db_pinned() {
+        return Ok(None);
+    }
+    saved_from(crate::machine::load_for_read()?)
+}
+
+fn saved_from(settings: serde_json::Map<String, serde_json::Value>) -> Result<Option<String>> {
     if db_pinned() {
         return Ok(None);
     }
     let fix = "set it again with 'tb boards --default NAME' or go back with 'tb boards --default --clear'";
-    match crate::machine::load()?.get(DEFAULT_BOARD_KEY) {
+    match settings.get(DEFAULT_BOARD_KEY) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(name)) if validate(name).is_ok() => Ok(Some(name.clone())),
         Some(other) => Err(BoardError(format!(

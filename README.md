@@ -266,7 +266,11 @@ tb boards --default --clear  # back to the board called "default"
 The board has to exist — an unknown or archived board is refused — and if it disappears
 later, plain `tb` says so instead of quietly making an empty one. It is your choice on this
 machine, so it is kept in `~/.config/terminal-board/config.json` (or the file `TB_CONFIG`
-names), never inside a board file that someone might copy.
+names), never inside a board file that someone might copy. That file is yours alone (mode
+`0600`), it is written whole or not at all, and two `tb` commands writing it at the same moment
+take turns, so neither loses the other's setting. If it is a symbolic link, tb writes the file
+the link points at. If tb cannot read it at all, commands that did not ask about a setting say
+so once and carry on as if nothing were set.
 
 **Which board a command uses**, first match wins:
 `TB_DB` > a board named on the command line > `TB_BOARD` > the saved default board > `default`.

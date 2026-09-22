@@ -422,9 +422,13 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
     let def = boards::default_name();
-    // the `*` below cannot follow a saved default board that cannot be read: say why
-    if let Err(e) = boards::saved_default() {
-        warn!("tb: {e}");
+    // the `*` below cannot follow a saved default board that is unusable or gone: say why
+    match boards::saved_default_for_read() {
+        Err(e) => warn!("tb: {e}"),
+        Ok(Some(n)) if !boards::db_pinned() && !boards::path_for(&n).exists() => warn!(
+            "tb: the saved default board is '{n}', but there is no board '{n}' — no row is marked; choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'"
+        ),
+        Ok(_) => {}
     }
     // the same rows the board picker (B) shows inside the TUI
     let rows = boards::rows()?;
@@ -478,10 +482,23 @@ fn default_board_cmd(name: Option<&str>, clear: bool, json_out: bool) -> Result<
     let (opens, source) = boards::plain_board()?;
     // what is saved, whatever beats it in this shell (never read under TB_DB)
     let saved = if source == boards::DefaultSource::Pinned { None } else { boards::saved_default()? };
+    // a saved board whose file is gone: plain `tb` refuses, so saying it opens it is a lie
+    let gone = saved.as_deref().filter(|n| !boards::db_pinned() && !boards::path_for(n).exists());
+    if let Some(n) = gone {
+        let fix = format!("there is no board '{n}' — plain 'tb' refuses until you choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'");
+        if json_out {
+            println!("{}", pretty(&json!({"ok": true, "default": opens, "source": source.as_str(), "setting": saved, "missing": true})));
+        } else if changed {
+            say!("default board is now '{n}', but {fix}");
+        } else {
+            say!("{n} is the saved default board, but {fix}");
+        }
+        return Ok(());
+    }
     if json_out {
         println!(
             "{}",
-            pretty(&json!({"ok": true, "default": opens, "source": source.as_str(), "setting": saved}))
+            pretty(&json!({"ok": true, "default": opens, "source": source.as_str(), "setting": saved, "missing": false}))
         );
         return Ok(());
     }

@@ -22,10 +22,24 @@ and the `B` picker mark the chosen board with `*`.
   that is not a JSON object is refused by name and never overwritten. No board file changes.
 - `--json`: `{ok, default, source, setting}`; see docs/JSON.md.
 - **Hints keep naming the right board.** The command in a hint drops a typed board name only
-  when a bare `tb` is certain to reach that board. With a saved default of `work`,
-  `tb default add …` now hints `'tb default take 1'`. This also fixes an old slip: with
-  `TB_BOARD=work` set, `tb default add …` used to hint a bare `'tb take 1'`, which acts on
-  `work`; it now names `default`.
+  when a bare `tb` is certain to reach that board: it is the board plain `tb` opens, and no
+  `TB_BOARD` is set. With a saved default of `work`, `tb default add …` now hints
+  `'tb default take 1'`.
+  **This is the one change a board that saves nothing can see, and it is a bug fix.** With
+  `TB_BOARD=work` set, EVERY hint printed by `tb default <command>` used to drop the name —
+  `'tb take 1'`, `'tb note 1 "…"'`, `'tb done 1'`, `see 'tb list' for ids` — and each of those,
+  copied into the same shell, acted on `work` instead of `default` (on a populated board, that
+  takes or finishes somebody else's card). The `hint` VALUE in a `--json` failure is the same
+  rule and changes with them. Every hint now names the board it acted on. Nothing changes
+  unless `TB_BOARD` is set or a default board is saved.
+- The machine-local settings file is written under an advisory lock (`flock`) held across
+  read → change → write, and is re-read inside it, so two `tb` commands writing different
+  settings at the same moment cannot revert each other. Values tb does not recognise keep
+  their exact text, digit for digit. A settings file tb cannot READ (no permission, a pipe, a
+  device, over 1 MiB) is treated as "nothing is set" by commands that did not ask about a
+  setting — with one line on stderr — so a machine that saved nothing keeps working; asking to
+  show or set the default still refuses. A settings path that is a symbolic link is followed:
+  tb writes the file the link points at, creating it if it is not there yet.
 A machine that saves nothing behaves exactly as before, and no settings file is created.
 
 ### Due dates that never shift a day (`--due`, `tz`, `due-warn`)

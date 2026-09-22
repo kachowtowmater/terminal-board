@@ -197,11 +197,12 @@ herdr agent panes merged with the board (empty array when herdr is not available
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`).
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round` and all `events`.
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`; `default` is true on the board plain `tb` opens here.
-- `tb boards --default --json` — `{ok, default, source, setting}`: `default` is the board plain `tb` opens
+- `tb boards --default --json` — `{ok, default, source, setting, missing}`: `default` is the board plain `tb` opens
   in this environment, `source` says why (`"TB_DB"` | `"TB_BOARD"` | `"setting"` | `"builtin"`), `setting` is the
   saved default board (string, or null when none is saved — and always null under `TB_DB`, where it is not
-  read). `tb boards --default NAME --json` and `--default --clear --json` answer the same object after the
-  change. Refusals (exit 1, the usual `{ok:false,error,hint}`): an unknown or archived board, a name that is
+  read). `missing` is true when a board is saved but its file is gone — plain `tb` then refuses, and the
+  text answer says so instead of claiming it opens it. `tb boards --default NAME --json` and
+  `--default --clear --json` answer the same object after the change. Refusals (exit 1, the usual `{ok:false,error,hint}`): an unknown or archived board, a name that is
   not a board name, a name together with `--clear`, any change under `TB_DB`, a settings file that is not a
   JSON object (never overwritten). The setting lives in `~/.config/terminal-board/config.json` (`TB_CONFIG`
   names another file), never in a board file.
