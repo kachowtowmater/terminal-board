@@ -93,7 +93,7 @@ respects the WIP limit and makes you the owner of an unowned card; `tb move ID t
 owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a
 file arrives byte for byte into the store, which a quoted string cannot promise, once blank space
 around it is trimmed and a leading byte-order mark is dropped: UTF-8, at most 256 KiB, empty
-refused; `-` reads a pipe or a redirect, never a terminal. `--json` shows text cleaned of control
+refused; `-` reads a pipe or a redirect, never a terminal, and waits for it to close (`TB_STDIN_TIMEOUT` bounds the wait for its first byte only). `--json` shows text cleaned of control
 characters and escape sequences, keeping line breaks and tabs, so an `export --json` still imports
 back unchanged. Board order: `TB_DB` > a name on the
 command line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb`
@@ -153,6 +153,7 @@ your name to your herdr pane; an idle agent holding a DOING card is a warning.
 | `TB_NO_HERDR` | set to anything: tb does not ask herdr for agents | test hook |
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
 | `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
+| `TB_STDIN_TIMEOUT` | seconds to wait for `-`'s first byte before refusing; unset or `0` = wait forever | knob |
 
 A variable that changes what tb **writes** must validate its value and refuse; one that only
 changes what tb reads or executes may stay lenient — today that binds `TB_NOW` only: a value

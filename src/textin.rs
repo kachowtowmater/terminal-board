@@ -47,9 +47,62 @@ pub fn read_up_to(source: &Path, usage: &str, max: usize) -> Result<String, Boar
     if source.as_os_str() == "-" {
         let stdin = std::io::stdin();
         let tty = stdin.is_terminal();
+        if !tty {
+            // #79: a pipe nobody ever closes (some agent harnesses, `ssh host tb …` without
+            // `-n`) otherwise hangs here forever. Opt in only — see `stdin_timeout`.
+            if let Some(timeout) = stdin_timeout() {
+                wait_for_first_byte(timeout, usage)?;
+            }
+        }
         return from_stdin(tty, &mut stdin.lock(), usage, max);
     }
     from_file(source, usage, max)
+}
+
+/// `TB_STDIN_TIMEOUT`: whole seconds to wait for `-`'s FIRST byte before refusing. Unset or
+/// `0` = wait forever, exactly today's behaviour — the default stays unbounded on purpose.
+///
+/// #79's decision: a hang is bad, but a wrong timeout that truncates a producer that is
+/// merely slow to start is bad too (an LLM piping its output may buffer 60s before writing
+/// anything), and tb cannot tell the two apart by looking at the pipe. Rather than guess a
+/// default, this is opt-in: a harness that wants a bound (an unattended agent loop, where a
+/// hang is the worse failure) sets it; nothing after the first byte is ever timed, so a slow
+/// starter that does eventually write is never cut off once it has begun. Leniently parsed —
+/// this only changes what tb WAITS for, never what it writes (docs/AGENTS.md's env var rule).
+fn stdin_timeout() -> Option<std::time::Duration> {
+    let secs: u64 = crate::env("STDIN_TIMEOUT")?.trim().parse().ok()?;
+    (secs > 0).then_some(std::time::Duration::from_secs(secs))
+}
+
+/// Waits up to `timeout` for standard input to have a byte ready (or reach EOF); refuses if
+/// nothing happens in time. Never consumes a byte — the real read still follows this.
+#[cfg(unix)]
+fn wait_for_first_byte(timeout: std::time::Duration, usage: &str) -> Result<(), BoardError> {
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+    if r < 0 {
+        // a poll failure is not evidence of a hang — fall through to the real read and let
+        // that fail on its own terms if something is genuinely wrong
+        return Ok(());
+    }
+    if r == 0 {
+        return Err(BoardError(format!(
+            "'-' waited {}s for a first byte on standard input (TB_STDIN_TIMEOUT) and nothing arrived — \
+             a pipe nobody writes to or closes would otherwise hang tb forever: check what is supposed \
+             to feed it, or unset TB_STDIN_TIMEOUT to wait as long as it takes: 'tb {usage} -'",
+            timeout.as_secs()
+        )));
+    }
+    Ok(())
+}
+
+/// No `poll` on this platform: `TB_STDIN_TIMEOUT` is a no-op, same as leaving it unset.
+#[cfg(not(unix))]
+fn wait_for_first_byte(_timeout: std::time::Duration, _usage: &str) -> Result<(), BoardError> {
+    Ok(())
 }
 
 /// Standard input, unless it is a terminal (checked before a single byte is read).
@@ -82,6 +135,14 @@ fn terminal_refusal(usage: &str) -> BoardError {
 fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError> {
     let shown = format!("'{}'", path.display());
     let again = format!("'tb {usage} PATH', or pipe the text: 'tb {usage} -'");
+    // #79: opening a FIFO with nobody writing to it blocks inside open(), before any guard
+    // below runs — `stat` (unlike `open`) never blocks on a FIFO, so this is checked first.
+    if is_fifo(path) {
+        return Err(BoardError(format!(
+            "{shown} is a named pipe — tb cannot tell whether a writer will ever open it, so opening it can hang \
+             forever with no guard against it: pipe the text instead: 'tb {usage} -'"
+        )));
+    }
     let refuse = |e: &std::io::Error| match e.kind() {
         std::io::ErrorKind::NotFound => {
             BoardError(format!("no file {shown} — check the path (it is relative to where tb runs): {again}"))
@@ -117,6 +178,21 @@ fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError>
         return Err(too_big(format!("over {max} bytes")));
     }
     text_of(bytes, &shown, usage)
+}
+
+/// Is `path` a named pipe? `stat`, unlike `open`, never blocks on one — safe to check before
+/// `File::open` would.
+#[cfg(unix)]
+fn is_fifo(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::metadata(path).map(|m| m.file_type().is_fifo()).unwrap_or(false)
+}
+
+/// No FIFO concept worth guarding here: this platform's named pipes do not block `open` the
+/// same way, and `File::open` below reports whatever really goes wrong.
+#[cfg(not(unix))]
+fn is_fifo(_path: &Path) -> bool {
+    false
 }
 
 /// `bytes` as text: UTF-8, no NUL, not blank; a leading byte-order mark is dropped.
@@ -156,6 +232,21 @@ mod tests {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
             panic!("standard input was read although it is a terminal");
         }
+    }
+
+    /// #79: unset, empty or `0` never applies a bound (today's behaviour, unchanged); an
+    /// unparsable value is lenient rather than refused, like tb's other read-only knobs.
+    #[test]
+    fn stdin_timeout_is_seconds_unset_or_zero_means_forever() {
+        std::env::remove_var("TB_STDIN_TIMEOUT");
+        assert_eq!(stdin_timeout(), None);
+        std::env::set_var("TB_STDIN_TIMEOUT", "0");
+        assert_eq!(stdin_timeout(), None);
+        std::env::set_var("TB_STDIN_TIMEOUT", "5");
+        assert_eq!(stdin_timeout(), Some(std::time::Duration::from_secs(5)));
+        std::env::set_var("TB_STDIN_TIMEOUT", "not-a-number");
+        assert_eq!(stdin_timeout(), None, "unparsable is lenient, not a refusal");
+        std::env::remove_var("TB_STDIN_TIMEOUT");
     }
 
     #[test]

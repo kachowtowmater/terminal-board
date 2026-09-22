@@ -448,6 +448,61 @@ fn an_open_pipe_on_stdin_never_stalls_a_command_that_did_not_ask_for_it() {
     }
 }
 
+/// #79: `--file -` on a pipe nobody ever closes hangs forever by default — never let that
+/// stall an unattended agent loop with no way out. `TB_STDIN_TIMEOUT` is the opt-in: set, it
+/// bounds the wait for `-`'s FIRST byte and refuses instead of hanging.
+#[test]
+fn tb_stdin_timeout_refuses_a_pipe_nobody_closes_instead_of_hanging() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let mut cmd = b.cmd(&["note", "1", "--file", "-"]);
+    cmd.env("TB_STDIN_TIMEOUT", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let held_open = child.stdin.take().unwrap(); // never written to, never closed — the reproducer
+    let out = wait_at_most(child, Duration::from_secs(10));
+    drop(held_open);
+    let out = out.unwrap_or_else(|| panic!("TB_STDIN_TIMEOUT=1 did not bound a pipe nobody closes"));
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("TB_STDIN_TIMEOUT") && err.contains("waited 1s"), "{err}");
+    assert!(b.notes(1).is_empty(), "nothing was stored from a refused read");
+}
+
+/// #79: unset (the default), `TB_STDIN_TIMEOUT` never applies — a producer that is merely
+/// slow to write its first byte is not mistaken for a hung one, however long it takes. This
+/// is the failure mode the decision explicitly avoids: a wrong default would truncate this.
+#[test]
+fn without_tb_stdin_timeout_a_slow_starting_producer_is_never_truncated() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let mut child = b.cmd(&["note", "1", "--file", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // slower than the timeout the test above uses, on purpose: proves the default is unbounded
+    std::thread::sleep(Duration::from_millis(1500));
+    stdin.write_all(b"arrived late, on purpose").unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "a slow starter was refused although TB_STDIN_TIMEOUT is unset: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(b.notes(1), ["arrived late, on purpose"]);
+}
+
+/// #79 (found reviewing PR #95): a FIFO with no writer hangs inside `open()`, before any
+/// guard the pipe timeout above could apply — `stat` (unlike `open`) never blocks on one, so
+/// tb checks the file's TYPE first and refuses a FIFO outright, no timeout heuristics needed.
+#[test]
+fn a_fifo_with_no_writer_is_refused_at_once_not_hung_on_open() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("nobody-writes-here");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let start = Instant::now();
+    let o = b.run(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    assert!(start.elapsed() < Duration::from_secs(5), "a FIFO with no writer was opened instead of refused: took {:?}", start.elapsed());
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("named pipe"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(b.notes(1).is_empty());
+}
+
 /// `script` runs a command with a real terminal on its standard input (its own pty).
 fn under_a_terminal(tb_args: &[&str], db: &Path) -> Command {
     let tb = env!("CARGO_BIN_EXE_tb");

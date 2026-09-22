@@ -530,7 +530,12 @@ The text must be UTF-8 and at most 256 KiB (262144 bytes). Blank space around it
 everything between is kept exactly — tabs, blank lines, Windows line ends (a leading
 byte-order mark is dropped). An empty file is refused, so a forgotten pipe can never blank a
 description; `--desc ""` still clears one on purpose. With `-`, standard input has to be a
-pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing. Give the
+pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing, and it
+otherwise waits for that pipe to close, however long that takes — a harness whose pipe never
+closes hangs there, so `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only
+(unset, the default: wait forever; nothing after that first byte is ever timed, so a producer
+that is merely slow to start is never cut off). A path that is a FIFO with no writer is
+refused outright rather than risk the same hang inside opening it. Give the
 text once — `--desc` with `--desc-file`, or note text with `--file`, is an argument error.
 Control characters are stored as they are and removed whenever the text is shown, like any
 other card text.

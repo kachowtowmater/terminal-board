@@ -456,4 +456,5 @@ the last accepted, `4102444799`) —
 a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
 `{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
 The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
-`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.
+`TB_NO_SETUP`, `TB_STDIN_TIMEOUT`) may stay lenient: a wrong value fails visibly where it is
+used, or — `TB_STDIN_TIMEOUT` — is simply not applied.
