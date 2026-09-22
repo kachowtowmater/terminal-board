@@ -604,6 +604,139 @@ fn tui_asks_before_moving_another_agents_doing_card() {
 }
 
 #[test]
+fn tui_asks_before_reordering_or_checking_another_agents_doing_card() {
+    // `check` and `prio` follow the holder rule at the CLI (main.rs' holder_check); the
+    // full-screen board's own keys for the same two changes must too: a y/n Confirm, not a
+    // silent write, exactly like shift-arrow already does for a column move.
+    common::pin_clock();
+
+    // prio: K, J, shift+Up, shift+Down all ask first, then reorder + log a `force` event on y
+    for press in [key(KeyCode::Char('K')), key(KeyCode::Char('J')), shift(KeyCode::Up), shift(KeyCode::Down)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("plain: theirs", "", &[], "lead").unwrap();
+        s.add("plain: filler", "", &[], "lead").unwrap(); // something for K/J to reorder past
+        s.take(id, "bot-1").unwrap();
+        let mut app = App::new(s.snapshot().unwrap(), "bot-2");
+        app.agents = AgentsState::Unavailable("x".into());
+        app.reload(&s);
+        app.focus_card(id);
+        let before = s.card(id).unwrap().position;
+        app.handle_key(press, &mut s);
+        let Mode::Confirm { prompt, .. } = app.mode.clone() else {
+            panic!("{press:?}: reorders instead of asking: {:?}, position {}", app.mode, s.card(id).unwrap().position)
+        };
+        assert!(prompt.contains("held by bot-1") && prompt.contains("reorder it") && prompt.contains("y/n"), "{prompt}");
+        assert_eq!(s.card(id).unwrap().position, before, "{press:?}: nothing moves before y");
+        // n leaves it
+        app.handle_key(key(KeyCode::Char('n')), &mut s);
+        assert_eq!(s.card(id).unwrap().position, before);
+        // y reorders it, logged
+        app.focus_card(id);
+        app.handle_key(press, &mut s);
+        app.handle_key(key(KeyCode::Char('y')), &mut s);
+        let ev = s.show(id).unwrap().events;
+        assert!(
+            ev.iter().any(|e| e.kind == "force" && e.actor == "bot-2" && e.text.contains("reordered") && e.text.contains("held by bot-1")),
+            "{press:?}: {ev:?}"
+        );
+    }
+
+    // check (toggle): open the popup, then Enter on item 1 — asks first, checked + logged on y
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("plain: theirs", "", &["step one".to_string()], "lead").unwrap();
+        s.take(id, "bot-1").unwrap();
+        let mut app = App::new(s.snapshot().unwrap(), "bot-2");
+        app.agents = AgentsState::Unavailable("x".into());
+        app.reload(&s);
+        app.focus_card(id);
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        assert!(matches!(app.mode, Mode::Popup(_)), "did not open the popup: {:?}", app.mode);
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        let Mode::Confirm { prompt, .. } = app.mode.clone() else {
+            panic!("checks instead of asking: {:?}", app.mode)
+        };
+        assert!(prompt.contains("held by bot-1") && prompt.contains("tick it") && prompt.contains("y/n"), "{prompt}");
+        assert!(!s.show(id).unwrap().checklist[0].done, "nothing checked before y");
+        app.handle_key(key(KeyCode::Char('y')), &mut s);
+        assert!(s.show(id).unwrap().checklist[0].done, "checked after y");
+        let ev = s.show(id).unwrap().events;
+        assert!(ev.iter().any(|e| e.kind == "force" && e.actor == "bot-2" && e.text.contains("checked #")), "{ev:?}");
+    }
+
+    // check --add: 'a' from the popup, type text, Enter — asks first, added + logged on y
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("plain: theirs", "", &[], "lead").unwrap();
+        s.take(id, "bot-1").unwrap();
+        let mut app = App::new(s.snapshot().unwrap(), "bot-2");
+        app.agents = AgentsState::Unavailable("x".into());
+        app.reload(&s);
+        app.focus_card(id);
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        app.handle_key(key(KeyCode::Char('a')), &mut s);
+        assert!(matches!(app.mode, Mode::AddCheck { .. }), "{:?}", app.mode);
+        for c in "new step".chars() {
+            app.handle_key(key(KeyCode::Char(c)), &mut s);
+        }
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        let Mode::Confirm { prompt, .. } = app.mode.clone() else {
+            panic!("adds instead of asking: {:?}", app.mode)
+        };
+        assert!(prompt.contains("held by bot-1") && prompt.contains("add to it") && prompt.contains("y/n"), "{prompt}");
+        assert!(s.show(id).unwrap().checklist.is_empty(), "nothing added before y");
+        app.handle_key(key(KeyCode::Char('y')), &mut s);
+        assert_eq!(s.show(id).unwrap().checklist.len(), 1, "added after y");
+        let ev = s.show(id).unwrap().events;
+        assert!(ev.iter().any(|e| e.kind == "force" && e.actor == "bot-2" && e.text.contains("added a check to #")), "{ev:?}");
+    }
+
+    // check --rm: 'd' in the popup — asks first, removed + logged on y
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("plain: theirs", "", &["step one".to_string()], "lead").unwrap();
+        s.take(id, "bot-1").unwrap();
+        let mut app = App::new(s.snapshot().unwrap(), "bot-2");
+        app.agents = AgentsState::Unavailable("x".into());
+        app.reload(&s);
+        app.focus_card(id);
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        app.handle_key(key(KeyCode::Char('d')), &mut s);
+        let Mode::Confirm { prompt, .. } = app.mode.clone() else {
+            panic!("removes instead of asking: {:?}", app.mode)
+        };
+        assert!(prompt.contains("held by bot-1") && prompt.contains("remove it") && prompt.contains("y/n"), "{prompt}");
+        assert_eq!(s.show(id).unwrap().checklist.len(), 1, "nothing removed before y");
+        app.handle_key(key(KeyCode::Char('y')), &mut s);
+        assert!(s.show(id).unwrap().checklist.is_empty(), "removed after y");
+        let ev = s.show(id).unwrap().events;
+        assert!(ev.iter().any(|e| e.kind == "force" && e.actor == "bot-2" && e.text.contains("removed a check from #")), "{ev:?}");
+    }
+
+    // the holder's own keys never ask, for either change
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("plain: mine", "", &["step one".to_string()], "lead").unwrap();
+    s.add("plain: filler", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "bot-1");
+    app.agents = AgentsState::Unavailable("x".into());
+    app.reload(&s);
+    app.focus_card(id);
+    app.handle_key(key(KeyCode::Char('J')), &mut s);
+    assert!(matches!(app.mode, Mode::Normal), "prio: {:?}", app.mode);
+    app.focus_card(id);
+    app.handle_key(key(KeyCode::Enter), &mut s);
+    app.handle_key(key(KeyCode::Enter), &mut s);
+    assert!(matches!(app.mode, Mode::Popup(_)), "check: {:?}", app.mode);
+    assert!(s.show(id).unwrap().checklist[0].done, "the holder's own check goes straight through");
+}
+
+#[test]
 fn auto_move_event_text_carries_no_repeated_source() {
     common::pin_clock();
     // the actor is `github` and the kind is `github`; the text must not repeat "github:"

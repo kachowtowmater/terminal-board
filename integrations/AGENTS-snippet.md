@@ -23,5 +23,7 @@ under the same name: `--as <your-name>` or `TB_AS=<your-name>`.
 | machine-readable | add `--json` to any command |
 
 Rules: one card at a time; `doing is full` = finish or drop first; a note before you stop,
-drop or block; tick only what is done; no `--force` unless a person says so. Every error says
-what to run next. Full manual: `tb guide`.
+drop or block; tick only what is done; no `--force` unless a person says so. A card someone
+else holds in DOING is theirs — `move`, `done`, `drop`, `edit`, `block`, `rm`, `check` and
+`prio` are refused (`--force` overrides, logged); `tb note` stays open to everyone. Every
+error says what to run next. Full manual: `tb guide`.

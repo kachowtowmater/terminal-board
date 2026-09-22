@@ -89,6 +89,7 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column_since": 1789763036,
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
   "round": 1,
+  "escalate": false,
   "approved_by": [],
   "events": [
     { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
@@ -122,6 +123,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `approved_by` | string[] | everyone who recorded `tb done ID --approve` on this card, oldest first, each once. A record of who checked it — **not** a permission; `done-by` (which says who may close a card) is a separate, self-asserted setting, see README |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
+| `escalate` | bool | sent back more times than `config max-rounds` allows — **derived at read time**, never stored, and always `false` on a `done` card. `false` on every board that has not set `max-rounds` (the default). Skipped by `tb next` / `tb next --review`'s automatic pick; never removed from `tb list`, `tb board` or `tb show` — see README |
 | `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
 
 ### identity
@@ -252,7 +254,7 @@ edited and fed back. Documents: an array of cards, `{"cards": […]}`, a whole b
 | `due` | `YYYY-MM-DD` or `null` — the strict date rule | the same; `null` clears |
 | `blocked` | text or `null` (`by #7` = `#7`, as `tb block`) | the same; `null` unblocks |
 | `checklist` | texts, or `{text, done}` (`n`/`idx` ignored) | ignored |
-| everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `days_left`, `due_state`, `events`, unknown fields | the same |
+| everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `escalate`, `days_left`, `due_state`, `events`, unknown fields | the same |
 
 In `edit --from` an absent field is left alone and a value the card already has is no change
 (no event), so a file can be run twice. It follows **the holder rule**, exactly as a single

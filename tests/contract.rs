@@ -87,6 +87,8 @@ const CARD: &[&str] = &[
     "blocked_on", "blocked_until", "recheck", "blocked_on_state",
     // who checked this card (`tb done ID --approve`), a record and not a permission
     "approved_by",
+    // sent back more times than `config max-rounds` allows (derived; false without a cap)
+    "escalate",
 ];
 
 #[test]
