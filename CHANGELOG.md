@@ -17,6 +17,24 @@ rule with its own keys: `Enter`/`a`/`d` on the checklist popup and `K`/`J`/shift
 queue order ask "… anyway? y/n (logged)" on someone else's DOING card, exactly like the
 existing prompt for a column move or delete, and `y` takes the forced, logged path.
 
+### Boards: a corrupt `position` is refused with the fix, never a database error
+
+A board file written by something other than tb can hold anything in `cards.position` (a
+string, a blob, nothing). On such a file every read (`tb next`, `tb list`, `tb board`,
+`tb show`, `tb boards`, the full-screen board, plain and `--json`) failed with tb's raw
+database error — or worse, `tb next` handed out a LATER card when the unreadable one was
+blocked, so an agent took work that was not what the board showed on top.
+- Every read now refuses the same way: `card #1 has a position that is not a number (abc) —
+  <file> was written by something other than tb; give card #1 a whole-number position again
+  with: sqlite3 "<file>" "UPDATE cards SET position=0 WHERE id=1"`. The card, the value, the
+  file and the ONE fix, on every path and in the JSON `error`/`hint` object.
+- A NULL reads as 0 (the schema default) and a foreign REAL orders by its whole part, so a
+  board a foreign tool touched halfway still works; tb's next renumbering write (`prio`,
+  `move`, `add`) makes the row a whole integer again.
+- `tb next` reads the whole TODO queue, blocks included: a row it cannot read refuses the
+  claim instead of being silently skipped.
+- A normal board renders exactly as before (a full command battery is byte-identical).
+
 ### `tb new NAME --kind deadline`: a board's shape in one word
 
 Every setting the deadline lane added is still a setting you can change on its own. A **kind**
@@ -81,6 +99,32 @@ field clears it — the same thing `--due none` does.
   dropped.
 - A board that sets nothing and passes no flag is unchanged: the same tags are guessed, the
   same people may close, and `approved_by` is an empty list.
+
+### JSON output is cleaned like the screen
+
+`--json` output was the one path that still passed DEL (U+007F) and the C1 controls
+(U+0080–U+009F) through raw: serde_json escapes only C0, so a card's text holding those
+bytes reached a terminal, a log or another tool with them — in UTF-8 a terminal that honours
+C1 would act on U+009B as a CSI. Every screen path was already clean.
+- Every text field in JSON output now goes through the **same cleaner as the screen**
+  (`text::sanitize_json`): escape sequences are removed whole, and so is every control
+  character. One shared implementation — no second sanitiser to drift. All non-ASCII letters,
+  emoji and CJK pass through untouched, and the JSON stays valid (serde still escapes `"`/`\`
+  and C0 as before).
+- **Line breaks and tabs are text, and are kept.** They are the same cleaner with a different
+  answer to one question — which whitespace is content here. A screen has fixed columns, so a
+  tab (jump to the next tab stop) is layout and becomes a space there; JSON is data for a
+  parser, where serde writes a tab as `\t` and the reader gets U+0009 back. So a description
+  written from a file still goes out through `export --json` and back in through `import` or
+  `edit --from` **unchanged** — the round trip tb has always promised.
+- **CR becomes a space in both views.** It is the one whitespace that moves the cursor
+  backwards, over what is already printed: a description holding `real text` + CR + `spoofed`
+  would print as `spoofed` in any log or pager that shows a decoded value. It carries no text
+  of its own — a CRLF file's line break is the newline beside it.
+- The store keeps text raw; this changes only what `--json` shows (`show`, `list`, `board`,
+  bare `tb --json`, every write's `{ok, card}`, `github --json`, `boards --json`, `export`,
+  `import`/`edit --from` reports, errors and warnings, `watch --json` and
+  `watch --events --json`). Reading the store back directly is unchanged.
 
 ### Waiting on something: `--on`, `--until`, auto-unblock and the waiting lane
 
@@ -391,6 +435,21 @@ fit, so an 80-column terminal with DOING selected showed `a add  enter open  ? h
 `a add`), the way the focus view's footer already did. `shift+arrows move` — the only board
 action that is not discoverable anywhere else on screen — and `?`, where every dropped hint
 is documented, are never dropped. Widths that already showed the whole footer are unchanged.
+
+### `TB_NOW` refuses a value outside a sane range
+
+The test clock override `TB_NOW` (legacy `TTYBOARD_NOW`) accepted any integer — `0`, a
+negative number, `i64::MAX` — and wrote it verbatim as a card timestamp into a real board,
+while unparsable text silently fell back to the real clock. It now validates: unset or empty
+means the real clock, and anything else must be an integer between 946684800
+(2000-01-01) and 4102444800 (one past the last accepted, 4102444799). A bad value exits non-zero, names the variable and
+the accepted range, and writes nothing (with `--json`, the usual
+`{ok, error, hint}` object). The check runs before any command is dispatched, so the
+full-screen board, `tb setup` and `tb import` refuse it too — none of them opens a board.
+The rule documented once: an environment variable that changes
+what tb writes must validate its value and refuse; one that only changes what tb reads or
+executes may stay lenient.
+
 ### Fixed
 - **Who "did the work" on a card is now its owner, not whoever last moved it to REVIEW.**
   The never-self-approve rule used to key on the actor of the `doing -> review` move, which

@@ -619,7 +619,11 @@ fn imported_text_goes_through_the_display_sanitiser() {
     }
     let bad: Vec<String> = seen.chars().filter(|c| (*c as u32) < 0x20 && *c != '\n' || (0x7f..=0x9f).contains(&(*c as u32))).map(|c| format!("U+{:04X}", c as u32)).collect();
     assert!(bad.is_empty(), "control characters reached the terminal: {bad:?}\n{seen}");
-    assert!(b.card(1)["title"].as_str().unwrap().contains('\u{1b}'), "the store keeps the text as written");
+    // the store keeps the text as written, but JSON shows it cleaned like the screen: the
+    // title still carries its words, and no ESC anywhere
+    let title = b.card(1)["title"].as_str().unwrap().to_string();
+    assert!(title.contains("red") && title.contains("alert") && title.contains("now"), "{title:?}");
+    assert!(!title.contains('\u{1b}') && !title.contains('\u{7}'), "JSON output is cleaned: {title:?}");
 }
 
 /// The manuals teach it, and the agent manual stays under its cap.

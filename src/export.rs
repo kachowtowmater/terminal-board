@@ -7,6 +7,10 @@
 //! edited and fed back (there is a test for that round trip, because it is the reason both
 //! exist). **CSV** is for a person opening the file in a spreadsheet, and is one-way.
 //!
+//! Both JSON streams go through `clean_json`, the cleaner every `--json` path uses: an export
+//! is a document somebody pipes, so it never carries a control byte a terminal could act on.
+//! Line breaks and tabs are text and survive, which is what keeps the round trip exact.
+//!
 //! Nothing here writes. Every query is a read, the board file is never opened for writing, and
 //! a test checksums the file before and after.
 //!
@@ -189,7 +193,7 @@ fn json(store: &Store, out: &mut dyn Write) -> Result<()> {
         "exported_at": crate::store::now(),
         "tz": store.tz()?.map(|z| z.name().to_string()),
     });
-    let head = serde_json::to_string_pretty(&head).unwrap_or_else(|_| "{}".into());
+    let head = serde_json::to_string_pretty(&crate::clean_json(&head)).unwrap_or_else(|_| "{}".into());
     // open the object by hand so the cards can be streamed into it one at a time
     let head = head.trim_end().trim_end_matches('}').trim_end();
     wrote(out.write_all(head.as_bytes()))?;
@@ -199,7 +203,7 @@ fn json(store: &Store, out: &mut dyn Write) -> Result<()> {
         let mut c = contract::card_with(store, &card, &due, &display, &blocks)?;
         // the WHOLE history, not the last ten a live reader gets
         c.events = store.all_events_of(card.id)?;
-        let text = serde_json::to_string_pretty(&c).unwrap_or_else(|_| "null".into());
+        let text = serde_json::to_string_pretty(&crate::clean_json(&c)).unwrap_or_else(|_| "null".into());
         let indented: String = text.lines().map(|l| format!("    {l}\n")).collect();
         wrote(out.write_all(if first { b"" } else { b",\n" }))?;
         first = false;
@@ -226,7 +230,7 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
                 "kind": e.kind,
                 "text": e.text,
             });
-            let text = serde_json::to_string(&line).unwrap_or_else(|_| "null".into());
+            let text = serde_json::to_string(&crate::clean_json(&line)).unwrap_or_else(|_| "null".into());
             let r = out.write_all(if first { b"  " } else { b",\n  " }).and_then(|()| out.write_all(text.as_bytes()));
             first = false;
             wrote(r)

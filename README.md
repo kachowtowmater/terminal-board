@@ -47,6 +47,7 @@ Is this healthy? No. Is it faster? Absolutely.
 - [Command-line reference](#command-line-reference)
 - [Layouts and themes](#layouts-and-themes)
 - [Where your data lives](#where-your-data-lives)
+- [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [For app developers (JSON)](#for-app-developers-json)
@@ -893,6 +894,16 @@ and `tb config theme dark|light`.
   one however many `tb` processes open the board at that moment. If the copy cannot be
   written, nothing is upgraded and the command fails. Going back to an older version:
   [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb).
+
+## Testing
+
+Tests and scripted replays can pin the clock: `TB_NOW=<unix seconds>` (legacy name
+`TTYBOARD_NOW`) makes every card timestamp and event use that second instead of the real
+one, so fixtures are stable whatever the time of day. Because the value is written into a
+real board, it is validated: unset or empty means the real clock, and anything else must be
+an integer between `946684800` (2000-01-01) and `4102444800` (one past the last accepted,
+`4102444799`) — anything else
+exits non-zero, names the variable and the range, and writes nothing.
 
 ## Troubleshooting
 
