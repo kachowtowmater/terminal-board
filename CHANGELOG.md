@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### One long column no longer squeezes the others out
+
+Reported from using the board: *"the todo when on full does not display all the things done.
+most likely cause is that the done has too many and it pushes everyone."*
+
+Two things were wrong, and both are fixed.
+- In the stacked views (`third-h`, `half-h`, and `auto` when it picks them) the four columns
+  share one height, and each was grown to everything it wanted in turn — so the first long
+  column took the lot and the others were left as one-row headers. Every column now reaches a
+  **fair share** of the room before any column takes a second helping; what no column wants is
+  handed out afterwards, so no space is wasted.
+- A column drew as many cards as its space allowed, however many that was. It now draws at
+  most **ten at a time**, and the rest are counted by the `+N more` hint that a column running
+  out of room already showed. Arrow keys still reach every card: the cap is a window that
+  follows the selection, not a wall.
+- The unboxed (compact) column list, used in short panes, scrolled past cards **without saying
+  so**. It now carries the same `+N more`, and at a single row it shows that hint rather than
+  half a card — because a hidden card with nothing to say it is there is the one thing this
+  must never do. The hint itself shortens in whole words (`+12 more`, `+12`, `+`) like every
+  other hint on the board.
+- Column header counts are unchanged and always the real total.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a

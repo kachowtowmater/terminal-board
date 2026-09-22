@@ -623,15 +623,26 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             left -= add;
         }
     }
-    // then grow toward all dense boxes, then all 4-row boxes
+    // Then grow toward all dense boxes, then all 4-row boxes — but a FAIR SHARE at a time.
+    //
+    // This is the fix for "the done has too many and it pushes everyone": these four sections
+    // share one height, and growing each to everything it wanted in turn let the first long
+    // column take the lot, leaving the others as one-row headers. Each column may now reach
+    // its share of the room before any column takes a second helping; what no column wants is
+    // handed out afterwards, so nothing is wasted. Cards that do not fit say `+N more`.
+    let wants = |c: usize| counts[c] > 0;
+    let sharers = (0..4).filter(|c| wants(*c)).count().max(1) as u16;
     for dense in [true, false] {
-        for &c in &order {
-            if counts[c] == 0 || heights[c] == 1 {
-                continue;
+        for share in [area.height / sharers, u16::MAX] {
+            for &c in &order {
+                if counts[c] == 0 || heights[c] == 1 {
+                    continue;
+                }
+                let want = column_height(app, c, w, dense).min(share.max(heights[c]));
+                let add = want.saturating_sub(heights[c]).min(left);
+                heights[c] += add;
+                left -= add;
             }
-            let add = column_height(app, c, w, dense).saturating_sub(heights[c]).min(left);
-            heights[c] += add;
-            left -= add;
         }
     }
     // spare height must not sit as a blank band between sections and the panels

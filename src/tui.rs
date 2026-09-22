@@ -1871,11 +1871,40 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     }
 }
 
+/// The most cards one column ever draws, however tall the pane is. Past this it shows
+/// `+N more`, the same hint a column that runs out of room already shows.
+///
+/// A board is read column by column, and a column of forty finished cards is not read at
+/// all — it is scrolled past. Ten is enough to see what is going on and short enough that
+/// no column can crowd out its neighbours in the stacked layouts, where the four columns
+/// share one height. (Reported by the owner: "the done has too many and it pushes everyone".)
+pub const MAX_VISIBLE_CARDS: usize = 10;
+
+/// The `+N more` hint, in the longest form that fits `width` cells: `+10 more`, then `+10`,
+/// then `+`. It shortens in WHOLE words like every other hint on the board — a cut `+10 mor`
+/// reads like a defect, and this is the line that promises nothing is hidden silently.
+pub fn more_hint(n: usize, width: usize) -> String {
+    for form in [format!(" +{n} more"), format!(" +{n}"), format!("+{n}"), "+".to_string()] {
+        if form.chars().count() <= width {
+            return form;
+        }
+    }
+    String::new()
+}
+
+/// The cards column `ci` draws: its first `MAX_VISIBLE_CARDS`, in the board's own order —
+/// so under `sort due` these are the nearest-due cards, not just the first by position.
+/// The rest are counted by the `+N more` hint; the header keeps the true total.
+pub(crate) fn visible_cards(app: &App, ci: usize) -> Vec<&Card> {
+    app.col_cards(ci).into_iter().take(MAX_VISIBLE_CARDS).collect()
+}
+
 /// Box heights (4-row style) of column `ci`'s cards in a column `width` wide; a dense box
 /// is one row shorter.
 pub(crate) fn card_box_heights(app: &App, ci: usize, width: u16) -> Vec<u16> {
     let text_w = width.saturating_sub(6) as usize; // column frame + card frame + padding
-    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
+    // only the cards the column would draw: a column never ASKS for height it will not use
+    visible_cards(app, ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
 }
 
 /// Rows column `ci` needs to show every card boxed (frame included; 3 when empty).
@@ -1900,16 +1929,46 @@ pub(crate) fn column_min_boxed(app: &App, ci: usize, width: u16) -> u16 {
 pub const BOXED_MIN_ROWS: usize = 12;
 
 fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect) {
+    // the same cap the boxed column keeps: a window of MAX_VISIBLE_CARDS that follows the
+    // selection, so one long column cannot crowd out its neighbours in either style
+    let first = sel.unwrap_or(0).saturating_sub(MAX_VISIBLE_CARDS - 1);
+    let last = (first + MAX_VISIBLE_CARDS).min(cards.len());
+    let window = &cards[first..last];
     let mut lines = Vec::new();
     let mut sel_end = 0;
-    for (i, c) in cards.iter().enumerate() {
-        lines.extend(card_lines(app, c, sel == Some(i), inner.width as usize, false));
-        if sel == Some(i) {
+    let mut ends = Vec::new();
+    for (i, c) in window.iter().enumerate() {
+        lines.extend(card_lines(app, c, sel == Some(first + i), inner.width as usize, false));
+        ends.push(lines.len());
+        if sel == Some(first + i) {
             sel_end = lines.len();
         }
     }
-    let offset = sel_end.saturating_sub(inner.height as usize) as u16;
-    f.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
+    let offset = sel_end.saturating_sub(inner.height as usize);
+    // this list scrolls too, so it owes the same `+N more` a boxed column gives: a card
+    // nobody can see, with nothing saying it is there, is the one thing that must not happen
+    let last_row = offset + inner.height as usize;
+    let shown = ends.iter().filter(|e| **e <= last_row).count();
+    let hidden = cards.len() - (first + shown.max(usize::from(!window.is_empty())));
+    if hidden > 0 && inner.height == 1 {
+        // one row and something hidden: the row says so. A card fragment with nothing to say
+        // the others exist is exactly what must not happen, and the header keeps the count.
+        f.render_widget(Paragraph::new(Line::styled(more_hint(cards.len(), inner.width as usize), dim())), inner);
+        return;
+    }
+    if hidden > 0 && inner.height >= 2 {
+        let rows = inner.height as usize - 1;
+        f.render_widget(
+            Paragraph::new(lines).scroll((offset.min(sel_end.saturating_sub(rows)) as u16, 0)),
+            Rect { height: rows as u16, ..inner },
+        );
+        f.render_widget(
+            Paragraph::new(Line::styled(more_hint(hidden, inner.width as usize), dim())),
+            Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+        );
+        return;
+    }
+    f.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), inner);
 }
 
 /// Trello-style: each card in its own box in the column colour; the selected one thick.
@@ -1948,12 +2007,16 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
     if start > 0 {
-        let hint = Line::styled(format!(" +{start} more"), dim());
+        let hint = Line::styled(more_hint(start, inner.width as usize), dim());
         f.render_widget(Paragraph::new(hint), Rect { y, height: 1, ..inner });
         y += 1;
     }
     let mut i = start;
-    while i < cards.len() {
+    // at most MAX_VISIBLE_CARDS at a time: a column of forty finished cards must not crowd
+    // out its neighbours. Scrolling still reaches every card, because the window follows the
+    // selection, and both hints count what is outside it.
+    let stop = (start + MAX_VISIBLE_CARDS).min(cards.len());
+    while i < stop {
         let more_after = cards.len() - i - 1;
         let reserve = u16::from(more_after > 0);
         let room = bottom.saturating_sub(y + reserve) as usize;
@@ -1965,7 +2028,6 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         } else if room >= 1 && i == target {
             // not even a small box fits: bare title line
             f.render_widget(Paragraph::new(bodies[i][0].clone()), Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 });
-            y += 1;
             i += 1;
             break;
         } else {
@@ -1984,8 +2046,12 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         y += rect.height;
         i += 1;
     }
-    if i < cards.len() && y < bottom {
-        let hint = Line::styled(format!(" +{} more", cards.len() - i), dim());
+    // a card that is not on screen ALWAYS has a `+N more` saying so — at the bottom if there
+    // is a row for it, and otherwise in place of the last card drawn, because a hidden card
+    // with nothing to say it is the one thing this must never do
+    let left = cards.len() - i;
+    if left > 0 {
+        let hint = Line::styled(more_hint(left, inner.width as usize), dim());
         f.render_widget(Paragraph::new(hint), Rect { y: bottom - 1, height: 1, ..inner });
     }
     dense
