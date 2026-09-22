@@ -74,29 +74,36 @@ fn stdin_timeout() -> Option<std::time::Duration> {
     (secs > 0).then_some(std::time::Duration::from_secs(secs))
 }
 
-/// Waits up to `timeout` for standard input to have a byte ready (or reach EOF); refuses if
-/// nothing happens in time. Never consumes a byte — the real read still follows this.
+/// Is `fd` readable (or at EOF/HUP) within `timeout`? `Ok(false)` is a real timeout —
+/// nothing arrived and nothing closed. `Err` only for a genuine `poll` failure, which is not
+/// evidence of a hang — the caller falls through to the real read and lets THAT fail on its
+/// own terms if something is genuinely wrong. Never consumes a byte.
 #[cfg(unix)]
-fn wait_for_first_byte(timeout: std::time::Duration, usage: &str) -> Result<(), BoardError> {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
+fn poll_readable(fd: std::os::unix::io::RawFd, timeout: std::time::Duration) -> std::io::Result<bool> {
     let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
     let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
     let r = unsafe { libc::poll(&mut pfd, 1, ms) };
     if r < 0 {
-        // a poll failure is not evidence of a hang — fall through to the real read and let
-        // that fail on its own terms if something is genuinely wrong
-        return Ok(());
+        return Err(std::io::Error::last_os_error());
     }
-    if r == 0 {
-        return Err(BoardError(format!(
+    Ok(r > 0)
+}
+
+/// Waits up to `timeout` for standard input to have a byte ready; refuses if nothing happens
+/// in time.
+#[cfg(unix)]
+fn wait_for_first_byte(timeout: std::time::Duration, usage: &str) -> Result<(), BoardError> {
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    match poll_readable(fd, timeout) {
+        Ok(true) | Err(_) => Ok(()),
+        Ok(false) => Err(BoardError(format!(
             "'-' waited {}s for a first byte on standard input (TB_STDIN_TIMEOUT) and nothing arrived — \
              a pipe nobody writes to or closes would otherwise hang tb forever: check what is supposed \
              to feed it, or unset TB_STDIN_TIMEOUT to wait as long as it takes: 'tb {usage} -'",
             timeout.as_secs()
-        )));
+        ))),
     }
-    Ok(())
 }
 
 /// No `poll` on this platform: `TB_STDIN_TIMEOUT` is a no-op, same as leaving it unset.
@@ -135,14 +142,6 @@ fn terminal_refusal(usage: &str) -> BoardError {
 fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError> {
     let shown = format!("'{}'", path.display());
     let again = format!("'tb {usage} PATH', or pipe the text: 'tb {usage} -'");
-    // #79: opening a FIFO with nobody writing to it blocks inside open(), before any guard
-    // below runs — `stat` (unlike `open`) never blocks on a FIFO, so this is checked first.
-    if is_fifo(path) {
-        return Err(BoardError(format!(
-            "{shown} is a named pipe — tb cannot tell whether a writer will ever open it, so opening it can hang \
-             forever with no guard against it: pipe the text instead: 'tb {usage} -'"
-        )));
-    }
     let refuse = |e: &std::io::Error| match e.kind() {
         std::io::ErrorKind::NotFound => {
             BoardError(format!("no file {shown} — check the path (it is relative to where tb runs): {again}"))
@@ -152,7 +151,12 @@ fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError>
         }
         _ => BoardError(format!("cannot read {shown}: {e} — check the path: {again}")),
     };
-    let mut file = std::fs::File::open(path).map_err(|e| refuse(&e))?;
+    // #79: `File::open` on a FIFO already does exactly the right thing by default — it waits
+    // for a writer to attach, however long that takes, same as `-` waits for a producer. The
+    // only gap is a FIFO nobody is EVER feeding, with no way to bound the wait; `open_fifo`
+    // covers that the same way `-` is covered (TB_STDIN_TIMEOUT), never by refusing every
+    // FIFO outright regardless of whether it has a writer.
+    let mut file = if is_fifo(path) { open_fifo(path, &shown, usage, &refuse)? } else { std::fs::File::open(path).map_err(|e| refuse(&e))? };
     let meta = file.metadata().map_err(|e| refuse(&e))?;
     if meta.is_dir() {
         return Err(BoardError(format!("{shown} is a directory, not a text file — name a file: {again}")));
@@ -193,6 +197,53 @@ fn is_fifo(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_fifo(_path: &Path) -> bool {
     false
+}
+
+/// Opens a FIFO for reading. Unset `TB_STDIN_TIMEOUT`: a plain blocking `open()` — that
+/// already has exactly the semantics wanted, waiting for a writer to attach however long that
+/// takes (a writer that attaches a moment later still works, precisely as it always has), so
+/// nothing special is needed and nothing here changes that default.
+///
+/// A first attempt at bounding this instead opened non-blocking and then switched the fd to
+/// blocking mode before reading (SENT BACK: it does not work). A FIFO's read-open with
+/// `O_NONBLOCK` always succeeds at once, whether or not a writer exists, which is exactly why
+/// it cannot hang — but a `read()` on it, even after switching back to blocking mode, does
+/// NOT wait for a writer that has not attached yet: with zero writers CURRENTLY attached it
+/// returns EOF immediately, because from the kernel's point of view a read only blocks while
+/// at least one writer already holds the pipe open. Whether a writer is attached is therefore
+/// only knowable by actually trying to `open()` for real — there is no non-blocking substitute.
+/// So a bounded wait instead puts the ordinary blocking `open()` on its own thread and waits
+/// on a channel with a deadline: on timeout the thread is simply left blocked (harmless — it
+/// is reclaimed when this process exits, which happens right after refusing).
+#[cfg(unix)]
+fn open_fifo(path: &Path, shown: &str, usage: &str, refuse: &dyn Fn(&std::io::Error) -> BoardError) -> Result<std::fs::File, BoardError> {
+    let Some(timeout) = stdin_timeout() else {
+        return std::fs::File::open(path).map_err(|e| refuse(&e));
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::File::open(&owned));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(file)) => Ok(file),
+        Ok(Err(e)) => Err(refuse(&e)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(BoardError(format!(
+            "{shown} waited {}s for a writer to open it (TB_STDIN_TIMEOUT) and none did — check what is supposed \
+             to feed it, or unset TB_STDIN_TIMEOUT to wait as long as it takes: 'tb {usage} PATH'",
+            timeout.as_secs()
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(BoardError(format!("cannot read {shown}: the thread opening it vanished without a trace — try again")))
+        }
+    }
+}
+
+/// Unreachable on this platform (`is_fifo` above is always `false` here), kept only so
+/// `from_file`'s call site type-checks on every target, including `x86_64-pc-windows-gnu`.
+#[cfg(not(unix))]
+fn open_fifo(path: &Path, _shown: &str, _usage: &str, refuse: &dyn Fn(&std::io::Error) -> BoardError) -> Result<std::fs::File, BoardError> {
+    std::fs::File::open(path).map_err(|e| refuse(&e))
 }
 
 /// `bytes` as text: UTF-8, no NUL, not blank; a leading byte-order mark is dropped.

@@ -486,21 +486,89 @@ fn without_tb_stdin_timeout_a_slow_starting_producer_is_never_truncated() {
     assert_eq!(b.notes(1), ["arrived late, on purpose"]);
 }
 
-/// #79 (found reviewing PR #95): a FIFO with no writer hangs inside `open()`, before any
-/// guard the pipe timeout above could apply — `stat` (unlike `open`) never blocks on one, so
-/// tb checks the file's TYPE first and refuses a FIFO outright, no timeout heuristics needed.
+/// #79 (found reviewing PR #95): a FIFO with no writer used to hang inside `open()`, before
+/// any guard could run. Fixed the wrong way at first (SENT BACK): refusing every FIFO on file
+/// type alone also refused one that DOES have a writer — a previously-working use case
+/// (`mkfifo f; (echo hi > f &); tb note 1 --file f`). A second wrong fix (also caught before
+/// landing): opening non-blocking and switching to blocking mode before reading LOOKS right
+/// but is not — a FIFO read `open()` with `O_NONBLOCK` always succeeds at once whether or not
+/// a writer exists, but a subsequent `read()`, even back in blocking mode, does NOT wait for
+/// a writer that has not attached yet: with zero writers it returns EOF immediately, because
+/// the kernel only blocks a read while a writer already holds the pipe open. The real fix
+/// keeps the ordinary blocking `open()` (which DOES correctly wait for a writer, however long
+/// that takes — unset `TB_STDIN_TIMEOUT`, nothing changes) and, only when `TB_STDIN_TIMEOUT`
+/// is set, bounds that open with a deadline via a background thread + channel, since `open()`
+/// itself takes no timeout parameter.
+///
+/// A writer, ready immediately: succeeds, default settings, no timeout needed.
 #[test]
-fn a_fifo_with_no_writer_is_refused_at_once_not_hung_on_open() {
+fn a_fifo_with_a_writer_still_succeeds() {
     let b = Board::new();
     b.ok(&["add", "docs: target"]);
-    let fifo = b.dir.path().join("nobody-writes-here");
+    let fifo = b.dir.path().join("a-writer-is-here");
     assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let mut writer = Command::new("sh").arg("-c").arg(format!("printf '%s' 'from the fifo' > '{}'", fifo.display())).spawn().unwrap();
+    let o = b.run(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    assert!(writer.wait().unwrap().success());
+    assert!(o.status.success(), "a FIFO with a writer was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.notes(1), ["from the fifo"]);
+}
+
+/// A writer that attaches a moment later (not present when tb opens the FIFO): tb waits for
+/// it rather than refusing immediately, the same way `-` waits for a slow-to-start producer.
+#[test]
+fn a_fifo_whose_writer_attaches_a_moment_later_still_succeeds() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("writer-attaches-late");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let mut writer = Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 0.8 && printf '%s' 'arrived late, on purpose' > '{}'", fifo.display()))
+        .spawn()
+        .unwrap();
     let start = Instant::now();
     let o = b.run(&["note", "1", "--file", fifo.to_str().unwrap()]);
-    assert!(start.elapsed() < Duration::from_secs(5), "a FIFO with no writer was opened instead of refused: took {:?}", start.elapsed());
+    assert!(writer.wait().unwrap().success());
+    assert!(o.status.success(), "a writer that attaches a moment later was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(start.elapsed() >= Duration::from_millis(750), "returned before the writer could plausibly have attached: {:?}", start.elapsed());
+    assert_eq!(b.notes(1), ["arrived late, on purpose"]);
+}
+
+/// No writer, ever, and `TB_STDIN_TIMEOUT` set: refused promptly, not hung.
+#[test]
+fn a_fifo_with_no_writer_is_refused_promptly_under_tb_stdin_timeout() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("nobody-ever-writes-here");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let start = Instant::now();
+    let mut cmd = b.cmd(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    cmd.env("TB_STDIN_TIMEOUT", "1");
+    let o = cmd.output().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(5), "TB_STDIN_TIMEOUT did not bound a FIFO with no writer: took {:?}", start.elapsed());
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("named pipe"), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("TB_STDIN_TIMEOUT") && err.contains("waited 1s") && err.contains("writer") && err.contains("none did"), "{err}");
     assert!(b.notes(1).is_empty());
+}
+
+/// No writer, ever, and `TB_STDIN_TIMEOUT` UNSET: tb waits (today's, and always tb's,
+/// default) rather than refusing on file type alone — the exact regression the FIFO fix was
+/// sent back for. Bounded by `wait_at_most` so a regression here fails fast, not by hanging.
+#[test]
+fn without_tb_stdin_timeout_a_fifo_with_no_writer_waits_rather_than_refusing() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("nobody-ever-writes-here-either");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let child = b.cmd(&["note", "1", "--file", fifo.to_str().unwrap()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let out = wait_at_most(child, Duration::from_secs(3));
+    assert!(
+        out.is_none(),
+        "a FIFO with no writer and no TB_STDIN_TIMEOUT returned instead of waiting: {:?}",
+        out.map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+    );
 }
 
 /// `script` runs a command with a real terminal on its standard input (its own pty).
