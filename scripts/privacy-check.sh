@@ -15,7 +15,7 @@ WORDS_FILE="${PRIVACY_WORDS:-.privacy-words}"
 
 files() {
     find . -type f \
-        -not -path './target/*' -not -path './.git/*' \
+        -not -path './target/*' -not -path './.git/*' -not -name '.git' \
         -not -path './scripts/privacy-check.sh' -not -name '.privacy-words' -print0
 }
 
