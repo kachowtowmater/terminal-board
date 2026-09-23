@@ -52,13 +52,20 @@ impl Agent {
     }
 }
 
-/// The agent owning `card`: an exact herdr agent-name match wins over label/title aliases.
-pub fn find_owner<'a>(agents: &'a [Agent], card: &Card) -> Option<&'a Agent> {
+/// The agent owning `card` by an EXACT herdr agent-name match (ASCII case aside, trimmed) —
+/// no pane label, first word or terminal title. The same rule the AGENTS panel roster uses
+/// (`roster::live_for`); anything that styles a card as another pane's must use it too, or a
+/// near miss risks showing someone else's working/blocked as this card's own (card #93).
+pub fn exact_owner<'a>(agents: &'a [Agent], card: &Card) -> Option<&'a Agent> {
     let owner = card.owner.as_deref()?;
-    agents
-        .iter()
-        .find(|a| a.agent_name.as_deref().is_some_and(|n| eq_ci(n, owner)))
-        .or_else(|| agents.iter().find(|a| a.owns(card)))
+    agents.iter().find(|a| a.agent_name.as_deref().is_some_and(|n| eq_ci(n, owner)))
+}
+
+/// The agent owning `card`: an exact herdr agent-name match wins over label/title aliases.
+/// The older, looser matcher — kept for `Agent::owns` callers that still want the fallback;
+/// new callers that only mean "the live status of exactly this actor" want `exact_owner`.
+pub fn find_owner<'a>(agents: &'a [Agent], card: &Card) -> Option<&'a Agent> {
+    exact_owner(agents, card).or_else(|| agents.iter().find(|a| a.owns(card)))
 }
 
 /// `lead (claude)` -> `lead`

@@ -1905,8 +1905,11 @@ pub(crate) fn date_order_note(snap: &Snapshot, col: &str, room: usize) -> &'stat
     }
 }
 
+/// The live agent behind a card's owner TEXT — same exact-name rule the AGENTS panel roster
+/// uses (`herdr::exact_owner`), so a card is never coloured as if a near-miss pane held it
+/// (card #93).
 fn owner_agent<'a>(app: &'a App, card: &Card) -> Option<&'a Agent> {
-    herdr::find_owner(agent_list(app), card)
+    herdr::exact_owner(agent_list(app), card)
 }
 
 /// Does column `ci` in `area` need the dense (title-in-border) card style to fit?
