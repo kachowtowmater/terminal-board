@@ -14,6 +14,23 @@ one of them waiting out the 10s busy timeout. Measured: a storm of 20 rounds × 
   statement so the busy timeout actually applies. An ordinary, uncontended write is unaffected
   — there was never anything to wait for either way.
 
+### Two residual self-approval bypasses closed (#55)
+
+The never-approve-your-own-work rule keyed the self-approval check on the FROM column being
+REVIEW, and on the card's current owner or (once unowned) whoever last moved it into review.
+Two sequences got past that:
+- **Laundering**: the owner of a REVIEW card moved it back to TODO first (clearing the owner)
+  and closed it with a plain `tb done` — TODO → DONE skipped the check entirely. The guard now
+  fires on entering DONE from any column, the same shape `done-by` already uses.
+- **Dropped work**: an agent that held a card in DOING, dropped it (clearing the owner), and
+  let someone else move the now-unowned card into review was no longer recognized as the
+  author. A new signal — who most recently claimed the card with `tb next` / `tb take` — closes
+  this without weakening a genuine third-party approval: a fresh claim by a different agent
+  still supersedes the dropped one.
+- Two further sequences from the same review (a stray space around `--as` smuggling the same
+  actor past the guard; a hand-run impersonating `github`) were already closed by #103 and by
+  the CLI's existing `github`-actor refusal — locked in with regression tests here.
+
 ### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
 
 `--file -` (and `--desc-file -`) waited for standard input to close however long that took,

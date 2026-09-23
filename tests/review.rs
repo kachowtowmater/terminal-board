@@ -259,6 +259,100 @@ fn cli_refuses_on_done_and_move_and_force_is_logged() {
     assert!(!kinds(&s, id).contains(&"force".to_string()));
 }
 
+/// #55, LAUNDERING: the owner of a REVIEW card moves it back to TODO first (which clears
+/// the owner) and then closes it with a plain `tb done` — todo -> done used to skip the
+/// self-approval check entirely, because it only fired when the card was leaving REVIEW.
+#[test]
+fn case5_review_to_todo_to_done_is_still_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = in_review(&mut s, "bot-1");
+    // bot-1 (the owner) sends its own card back to todo, clearing the owner
+    assert_eq!(s.move_to(id, "todo", "bot-1").unwrap().column, "todo");
+    assert_eq!(s.card(id).unwrap().owner, None);
+    // ... but bot-1 is still the recorded author — the "-> review" event survives the move
+    assert_eq!(s.author(id).unwrap().as_deref(), Some("bot-1"));
+    let r = s.done(id, "bot-1");
+    assert!(r.is_err(), "todo -> done must not launder self-approval: {r:?}");
+    assert!(r.unwrap_err().to_string().contains(REFUSED));
+    assert_eq!(s.card(id).unwrap().column, "todo", "the card did not reach done");
+    let r = s.move_to(id, "done", "bot-1");
+    assert!(r.is_err(), "the same rule on the move path: {r:?}");
+    assert!(r.unwrap_err().to_string().contains(REFUSED));
+    // a genuinely different agent still closes it fine, no --force needed
+    assert_eq!(s.done(id, "bot-2").unwrap().column, "done");
+    assert!(!kinds(&s, id).contains(&"force".to_string()));
+}
+
+/// #55, DROPPED WORK: the worker drops its own card (clearing the owner), a third party
+/// moves the now-unowned card into review, and the worker — no longer the owner, and not the
+/// one who moved it either, so `author_of` alone does not name it — must still be refused.
+#[test]
+fn case6_dropped_then_moved_by_someone_else_still_refuses_the_original_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    // bot-1 drops its own card: back to todo, unowned
+    assert_eq!(s.drop_card(id, "bot-1").unwrap().column, "todo");
+    assert_eq!(s.card(id).unwrap().owner, None);
+    // a third party — not bot-1 — moves the orphaned card into review
+    s.move_to(id, "review", "mover").unwrap();
+    // `author_of` alone would say "mover" (the last actor into review), not bot-1
+    assert_eq!(s.author(id).unwrap().as_deref(), Some("mover"));
+    // bot-1 still did the real work in DOING and must still be refused
+    let r = s.done(id, "bot-1");
+    assert!(r.is_err(), "the original worker must not launder self-approval via drop: {r:?}");
+    assert!(r.unwrap_err().to_string().contains(REFUSED));
+    assert_eq!(s.card(id).unwrap().column, "review", "the card did not reach done");
+    // a genuinely uninvolved third party — never took it, never moved it — approves fine
+    assert_eq!(s.done(id, "rev").unwrap().column, "done");
+    // a fresh claim by someone else supersedes the dropped claim: the new holder is the
+    // author now, and the ORIGINAL dropper is free to approve — a drop-and-reassign must
+    // never turn into a false refusal for a genuine third party
+    let id = s.add("widgets: reassigned", "", &[], "lead").unwrap();
+    s.take(id, "bot-1").unwrap();
+    s.drop_card(id, "bot-1").unwrap();
+    s.take(id, "bot-3").unwrap();
+    assert_eq!(s.done(id, "bot-3").unwrap().column, "review");
+    assert_eq!(s.done(id, "bot-1").unwrap().column, "done", "bot-1's dropped claim must not block a later, unrelated approval");
+}
+
+/// #55, WHITESPACE: already closed by #103 (`resolve_actor` trims once, at the boundary, so
+/// `--as anna ` matches `--as anna` everywhere). Locked in here from the self-approval angle:
+/// before #103 a stray space around `--as` smuggled the same actor past `eq_ignore_ascii_case`
+/// undetected, since a leading/trailing space is a real character difference, not something
+/// ASCII case-folding touches.
+#[test]
+fn case7_whitespace_around_as_does_not_smuggle_self_approval_past_the_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    let id = in_review(&mut s, "bot-1");
+    let o = tb(&db, "  bot-1  ", &["done", &id.to_string()]);
+    assert!(!o.status.success(), "whitespace around the actor name must not bypass self-approval");
+    assert!(stderr(&o).contains(REFUSED), "{}", stderr(&o));
+    assert_eq!(s.card(id).unwrap().column, "review");
+}
+
+/// #55, MANUAL 'github' ACTOR: already closed by main.rs's actor guard ("'github' is the
+/// name tb's own GitHub sync acts under") — a hand-run cannot impersonate the sync through
+/// the CLI. Locked in here from the self-approval angle specifically: without this refusal, a
+/// hand-run could move an unowned card to review "as github" and leave it with no recorded
+/// author at all (`author_of` excludes `github` on purpose, since real sync moves are
+/// automation, not work) — and then anyone at all could approve it.
+#[test]
+fn case8_cli_refuses_to_act_as_github() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let s = Store::open(&db).unwrap();
+    let id = s.add("widgets: x", "", &[], "lead").unwrap();
+    let o = tb(&db, "github", &["move", &id.to_string(), "review"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("is the name tb's own GitHub sync acts under"), "{}", stderr(&o));
+    assert_eq!(s.card(id).unwrap().column, "todo", "the impersonation attempt must not move the card");
+}
+
 #[test]
 fn tui_asks_the_author_before_approving_own_work() {
     let dir = tempfile::tempdir().unwrap();

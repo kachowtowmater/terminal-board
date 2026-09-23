@@ -160,6 +160,20 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
+/// Who most recently claimed this card with `tb next` / `tb take` (a `taken` event) —
+/// unlike `author_of`, dropping the card does not erase this: a drop logs a `dropped` event,
+/// not a `taken` one, so the last claimant stays on record until someone else claims it. Used
+/// alongside `author_of` by the self-approval guard in `transition` to close the drop-then-
+/// reassign hole (#55): `author_of` alone forgets who held the card once it is dropped and
+/// unowned, and credits whoever happens to move the orphaned card into review instead.
+fn last_taken_by(conn: &Connection, id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT actor FROM events WHERE card_id=? AND kind='taken' ORDER BY id DESC LIMIT 1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
 pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(BoardError(msg.into()))
 }
@@ -1832,7 +1846,8 @@ impl Store {
     ///    request itself (unknown column, a send-back without its reason, nothing to take);
     ///    a change that changes nothing ends here;
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
-    ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
+    ///    or `--force`, logged) → self-approval (entering DONE from any column, by the card's
+    ///    author, or
     ///    `--force`, logged) → `done-by` (entering DONE needs to be one of the named closers,
     ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
@@ -1933,14 +1948,31 @@ impl Store {
                 }
             }
         }
-        if kind == Kind::Move && column == "done" && c.column == "review" {
-            if let Some(author) = author_of(&tx, &c)? {
-                if author.eq_ignore_ascii_case(actor) {
-                    if !force {
-                        return err("you did this work — ask another person or agent to review it");
-                    }
-                    Self::log(&tx, id, actor, "force", "approved own work")?;
+        // Every way into DONE is guarded, not just REVIEW -> DONE (#55, the LAUNDERING hole):
+        // the owner of a REVIEW card could move it back to TODO first — which clears the
+        // owner — and then close it with a plain `tb done`, which used to see `c.column ==
+        // "todo"` and skip this check entirely. `column == "done" && c.column != "done"` is
+        // the same shape `done-by` below already uses, for the same reason its comment gives:
+        // moving the card out of REVIEW first must not be a way round the guard.
+        //
+        // A second question closes the DROPPED-WORK hole (#55): `author_of` only sees the
+        // CURRENT owner, or — once unowned — whoever last moved the card into review. A drop
+        // clears the owner, so an agent that held the card in DOING, dropped it, and then let
+        // someone else move the now-unowned card into review stops being "the author" by that
+        // reading, even though it did the work. `last_taken_by` answers "who most recently
+        // claimed this card with `tb next` / `tb take`" instead — a drop logs a `dropped`
+        // event, not a `taken` one, so it does not erase this — and a fresh claim by a
+        // DIFFERENT actor since (a genuinely new author) still supersedes it. `tb assign` is
+        // not covered: its event records who assigned the card, not who now holds it, so
+        // reusing this signal for `assign` would name the wrong person.
+        if column == "done" && c.column != "done" {
+            let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
+                || last_taken_by(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
+            if self_approving {
+                if !force {
+                    return err("you did this work — ask another person or agent to review it");
                 }
+                Self::log(&tx, id, actor, "force", "approved own work")?;
             }
         }
         // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
