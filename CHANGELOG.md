@@ -11,6 +11,10 @@
   an assign-then-drop-then-force-move path. Existing `assigned` rows keep their prose as a
   fallback; every `assigned` event written from here on sets the structured field, and the
   guard never looks at `text` once it is set (#111).
+- **Identity**: `OMPCODE` (checked before `CLAUDECODE`, which omp also sets as a compatibility
+  flag) now names `omp` as the harness in `Identity::resolve`, the same way Claude Code names
+  itself. omp exports no session id or model via the environment today, so those stay unknown
+  until it does (#90).
 
 ### `tb boards archive` / `restore`: retire a board without moving files by hand (#80)
 
