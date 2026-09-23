@@ -579,7 +579,7 @@ fn sync_reports_unknown_refs_once_per_ref_and_never_guesses() {
     s.add("web: gh#995 fine", "", &[], "lead").unwrap();
     drop(s);
     let mut s = Store::open(&env.db()).unwrap();
-    s.move_to(old, "done", "lead").unwrap();
+    s.move_to_forced(old, "done", "lead").unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     drop(s);
     let log = || std::fs::read_to_string(d.join("calls.log")).unwrap_or_default();
     let o = env.run(&["sync", "--json"], &gh);

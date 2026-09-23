@@ -356,10 +356,11 @@ fn tb_sync_is_exempt_from_the_hook_by_origin_not_by_actor_name() {
     assert!(e.contains("hook refused") || e.contains("gate"), "{e}");
     assert_eq!(h.column(id), "todo");
     // `tb sync`, same board, same hook trusted and still refusing: the closed issue's card
-    // still reaches done — an internal ORIGIN, not the actor `sync` runs the CLI as
+    // still moves — an internal ORIGIN, not the actor `sync` runs the CLI as — to review, where
+    // a verifier closes it (sync never moves a card to done)
     let o = gh_run(&["sync", "--json"]);
     assert!(o.status.success(), "sync: {}", text(&o.stderr));
-    assert_eq!(h.column(id), "done");
+    assert_eq!(h.column(id), "review");
 }
 
 // ---------------------------------------------------------------- nested calls: never forgeable, never silent

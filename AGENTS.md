@@ -18,6 +18,10 @@ tb drop ID                    # stopping: back to TODO
 tb block ID "#N"              # stuck
 ```
 
+Only an independent verifier (`TB_ROLE=verifier`, a name a person put on `tb config verifiers`, or a person)
+moves a card from REVIEW to DONE, and nothing reaches DONE any other way — see "Who moves a card"
+in the manual.
+
 To give every agent in YOUR project these instructions, run `tb setup --agents-md AGENTS.md`
 there (it adds a marked block you can re-run safely), or paste
 [integrations/AGENTS-snippet.md](integrations/AGENTS-snippet.md).

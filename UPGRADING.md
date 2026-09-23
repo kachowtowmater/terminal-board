@@ -3,10 +3,13 @@
 Boards made by 2.x open unchanged. The JSON contract is still `"v": 1`: new fields were added
 and none were renamed or removed. The SQLite schema only gained tables and nullable columns.
 
-3.0.0 is a major version because **commands that used to succeed are now refused**. Each
-refusal replaces a silent wrong answer, and each has a way through. The table lists every
-change. If none of them appear in your scripts, the upgrade needs nothing except the
-one-time `file-mode` choice in [section 7](#7-board-files-are-private-yours-are-reported-not-changed).
+The biggest change is **who may move a card into DONE**. Nothing reaches DONE except from
+REVIEW, only a verifier moves it there (on by default), and the GitHub sync stops at REVIEW.
+That change, and several others, **refuse commands that used to succeed**, which is why this
+is a major version. Each refusal replaces a silent wrong answer, and each has a way through.
+The table lists every change. If none of them appear in your scripts, the upgrade needs
+nothing except the one-time `file-mode` choice in
+[section 10](#10-board-files-are-private-yours-are-reported-not-changed).
 
 A quick way to find out: run your automation once and look for exit codes you did not expect.
 Every refusal exits non-zero and prints what to run instead. With `--json` you get
@@ -15,21 +18,79 @@ table in [docs/JSON.md](docs/JSON.md)).
 
 | # | change | who notices | what to do |
 |---|---|---|---|
-| 1 | `rm`, `edit`, `block`, `check`, `prio` on someone else's DOING card are refused | agents that touch cards by id | hold the card, or `--force` (logged) |
-| 2 | two more ways to approve your own work are refused | a builder closing its own card | let someone else close it, or `--force` (logged) |
-| 3 | `--as github` cannot write | scripts that borrowed the sync's name | use your own name |
-| 4 | `assign`, `restore`, `import`, `export`, `log`, `mv`, `link`, `trust` are commands, not board names | anyone with a board of that name | rename the file once |
-| 5 | `tb add -d` trims blank space around the text | scripts that relied on it | put the space inside the text |
-| 6 | JSON text fields lose control characters | consumers that read raw escape bytes | nothing, usually |
-| 7 | older board files (`0644`) print a warning until you choose | everyone upgrading | `tb config file-mode private` or `shared`, once per board |
-| 8 | a backup is written before a board's schema is upgraded | everyone upgrading | delete the `.bak` files once you are sure |
-| 9 | `TB_NOW` must be a plausible time | test harnesses | fix the fixture |
-| 10 | hooks: a board can ask this machine for a gate on every move | only boards that set `tb config hook` | `tb trust` the command on each machine |
-| 11 | `TB_DB` with `TB_BOARD` set now works (it was refused) | test harnesses | nothing |
+| 1 | nothing reaches DONE except from REVIEW (`not_from_review`) | anyone who closed cards straight from TODO or DOING | take it, `tb done` it into REVIEW, let a verifier close it; or `--force` (logged) |
+| 2 | REVIEW → DONE only by a verifier, on by default (`not_verifier`) | agents that closed review work without a verifier role | start the verifier with `TB_ROLE=verifier`, or a person runs `tb config verifiers NAME` or `tb config verifier-only off` |
+| 3 | GitHub sync moves a merged PR / closed issue to REVIEW, not DONE | boards linked to GitHub | a verifier closes the card |
+| 4 | `rm`, `edit`, `block`, `check`, `prio` on someone else's DOING card are refused | agents that touch cards by id | hold the card, or `--force` (logged) |
+| 5 | two more ways to approve your own work are refused | a builder closing its own card | let someone else close it, or `--force` (logged) |
+| 6 | `--as github` cannot write | scripts that borrowed the sync's name | use your own name |
+| 7 | `assign`, `restore`, `import`, `export`, `log`, `mv`, `link`, `trust` are commands, not board names | anyone with a board of that name | rename the file once |
+| 8 | `tb add -d` trims blank space around the text | scripts that relied on it | put the space inside the text |
+| 9 | JSON text fields lose control characters | consumers that read raw escape bytes | nothing, usually |
+| 10 | older board files (`0644`) print a warning until you choose | everyone upgrading | `tb config file-mode private` or `shared`, once per board |
+| 11 | a backup is written before a board's schema is upgraded | everyone upgrading | delete the `.bak` files once you are sure |
+| 12 | `TB_NOW` must be a plausible time | test harnesses | fix the fixture |
+| 13 | hooks: a board can ask this machine for a gate on every move | only boards that set `tb config hook` | `tb trust` the command on each machine |
+| 14 | `TB_DB` with `TB_BOARD` set now works (it was refused) | test harnesses | nothing |
 
 ---
 
-## 1. `rm`, `edit`, `block`, `check` and `prio` on a card someone else holds
+## 1. Nothing reaches DONE except from REVIEW
+
+**Before.** `tb done ID` on a TODO card, and `tb move ID done` from TODO or DOING, moved it
+straight to DONE.
+
+**Now.** Refused, for everyone, with code `not_from_review`:
+`#3 is in todo — nothing reaches done except from review: take it first ('tb take 3'), then
+'tb done 3' moves it to review; a verifier moves it to done (or --force, logged)`.
+
+**Escape hatch.** `--force`, logged as a `force` event on the card. Better: take the card,
+`tb done` it into REVIEW, and let a verifier close it.
+
+## 2. REVIEW -> DONE only by a verifier (default ON)
+
+**Before.** Anyone who had not done the work could move a REVIEW card to DONE — including the
+orchestrator that dispatched it, or a builder agent.
+
+**Now.** An **agent** — an actor whose recorded identity has a harness (Claude Code, omp, …;
+`TB_HARNESS` sets it explicitly) — is refused with code `not_verifier` unless:
+
+- it runs with `TB_ROLE=verifier` (or `reviewer`), or
+- its name is on the board's list: `tb config verifiers rv-1,rv-2`.
+
+A **person** (a plain terminal, no harness) always qualifies. The never-approve-your-own-work
+rule still applies on top of both. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT`
+(Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr
+pane's record; a harness that exports none of these counts as a person.
+
+Only a person changes `tb config verifiers` and `tb config verifier-only`: an agent is refused
+with code `person_only`, so an agent refused `not_verifier` cannot list itself or switch the
+rule off. Scripts that set these from inside an agent session must run them from a plain shell.
+
+**The default is ON.** To keep the 2.x behaviour on a board, a person runs `tb config verifier-only off`
+(logged in the board's own log; `on` turns it back). The switch covers only this rule —
+section 1 stays. `--force` also gets past it, logged (`closed #N with no verifier role`).
+
+```sh
+TB_ROLE=verifier tb next --review --as rv-1   # a verifier claims and closes review work
+tb config verifiers rv-1,rv-2                  # or name them on the board
+tb config verifier-only off                    # or turn the rule off for this board
+```
+
+`tb done ID --approve` is unchanged: anyone who did not do the work may record a check, and
+the card stays in REVIEW.
+
+## 3. GitHub sync moves a closed issue or merged PR to REVIEW, not DONE
+
+**Before.** `tb sync` (and the board's refresh) moved a card to DONE when its PR merged or its
+issue closed — with no verifier.
+
+**Now.** It moves the card to REVIEW with an event saying why
+(`issue gh#21 closed → review (a verifier moves it to done)`), and leaves a card already in
+REVIEW alone; a verifier moves it to DONE. `sync --json` never reports a move `to: "done"`.
+A card a reviewer sent back stays in DOING for its owner.
+
+## 4. `rm`, `edit`, `block`, `check` and `prio` on a card someone else holds
 
 **Before.** `done`, `drop` and `move` refused to take a DOING card away from its holder, but
 `tb rm`, `tb edit`, `tb block`, `tb check` and `tb prio` did not look. A stale or off-by-one id
@@ -55,7 +116,7 @@ tb rm 3 --as bot-2 --force    # goes through, and is logged
 If you would rather never lose a card: `tb config rm archive` makes `tb rm` archive instead
 (`tb list --archived`, `tb restore ID`). The default is unchanged.
 
-## 2. Approving your own work: two more ways are closed
+## 5. Approving your own work: two more ways are closed
 
 **Before.** The never-approve-your-own-work rule looked only at a card entering DONE *from
 REVIEW*, and at whoever last moved it into REVIEW. So an agent could get past it by moving its
@@ -74,7 +135,7 @@ approval is never refused. The refusal is
 **The way through.** Another person or agent closes it (`tb next --review --as NAME`). Or use
 `--force`, which is recorded as `approved own work`.
 
-## 3. The name `github`
+## 6. The name `github`
 
 **Before.** Any command could run `--as github`, and because tb's own sync acts under that
 name, it was let past the holder rule.
@@ -83,7 +144,7 @@ name, it was let past the holder rule.
 `'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1`.
 `tb sync` itself is unchanged, and reads under that name still work.
 
-## 4. New command names: a board called `assign`, `restore`, `import`, `export`, `log`, `mv`, `link` or `trust`
+## 7. New command names: a board called `assign`, `restore`, `import`, `export`, `log`, `mv`, `link` or `trust`
 
 **Before.** None of these were commands, so for example `tb import list` opened a board called
 `import`.
@@ -101,7 +162,7 @@ another name in the same folder:
 cd ~/.local/state/terminal-board/boards && for f in import.db*; do mv "$f" "intake${f#import}"; done
 ```
 
-## 5. `tb add -d` trims the blank space around a description
+## 8. `tb add -d` trims the blank space around a description
 
 **Before.** `tb add "x: title" -d "  Done = …  "` stored the spaces and the newlines around
 the text exactly as given, while `tb edit --desc`, `tb note` and (since 2.0) `--desc-file`
@@ -120,7 +181,7 @@ tb add "x: title" -d "  Done = …  " --json   # before: "  Done = …  "   now:
 back inside the text (for example as a blank line, which is kept). A description that had no
 blank space around it is unaffected, and so is every stored card.
 
-## 6. JSON text fields lose control characters
+## 9. JSON text fields lose control characters
 
 **Before.** The screen removed escape sequences and control characters from card text, but
 `--json` output passed them through. A title holding a terminal escape reached every log and
@@ -136,7 +197,7 @@ is stored in the board is not changed.
 `--json`. For those, the board file itself still has the text exactly as it was written
 ([docs/SCHEMA.md](docs/SCHEMA.md)).
 
-## 7. Board files are private; yours are reported, not changed
+## 10. Board files are private; yours are reported, not changed
 
 **Before.** tb created board files (and so their `-wal`/`-shm` sidecars) mode `0644`: any
 user of the machine could read every card.
@@ -158,7 +219,7 @@ Run one of the two, once per board, and the line is gone. `private` changes the 
 its live sidecars and is logged on the board; `shared` records that the mode is deliberate.
 Commands, exit codes and stdout are otherwise unchanged.
 
-## 8. A backup before every schema upgrade
+## 11. A backup before every schema upgrade
 
 3.0.0 adds tables and nullable columns to the board file (see [docs/SCHEMA.md](docs/SCHEMA.md)),
 so the first time 3.0.0 opens a board written by 2.x, it upgrades that board.
@@ -180,7 +241,7 @@ upgraded** and the command fails with `cannot back up … — nothing was change
 that is already current is never copied. tb does not delete backups; remove them when you
 no longer want the way back.
 
-## 9. `TB_NOW` must be a plausible date
+## 12. `TB_NOW` must be a plausible date
 
 **Before.** `TB_NOW` (the fixed clock for tests and scripted replays) took any integer, and
 whatever it said was written into a real board as card and event times.
@@ -192,7 +253,7 @@ variable and the range, and writes nothing.
 **The way through:** fix the fixture that set it (a common cause is milliseconds instead of
 seconds).
 
-## 10. Hooks: what a board asks for, and what this machine trusts
+## 13. Hooks: what a board asks for, and what this machine trusts
 
 Nothing changes for a board that does not ask for a hook: it is byte-for-byte what it was.
 
@@ -220,7 +281,7 @@ request from the board. The README has the full contract, including the JSON on 
 timeout and nested calls:
 [Hooks](README.md#hooks-this-machines-own-gate-on-a-move).
 
-## 11. `TB_DB` together with `TB_BOARD`
+## 14. `TB_DB` together with `TB_BOARD`
 
 **Before (2.0.0).** With both set, every command was refused — a test harness that pinned
 `TB_DB` broke as soon as the environment also named a board.
@@ -228,7 +289,8 @@ timeout and nested calls:
 **Now.** `TB_DB` wins. The pinned file opens, `--json` reports the board as `default`, and tb
 prints one warning line (`TB_DB is set, so TB_BOARD=work is ignored …`; `warnings` in
 `--json`). A board name **typed on the command line** (`tb work …`, `-b work`) under `TB_DB`
-is still refused, exactly as in section 2 above: that is the mistake the refusal exists for.
+is still refused, exactly as in section 2 of the [2.0.0 notes](#upgrading-to-200): that is the
+mistake the refusal exists for.
 
 ## Things you will see
 

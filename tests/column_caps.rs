@@ -47,7 +47,7 @@ fn board_of(counts: [usize; 4]) -> (tempfile::TempDir, Store) {
         for i in 1..=counts[ci] {
             let id = s.add(&format!("{col}{i}"), "", &[], "alice").unwrap();
             if *col != "todo" {
-                s.move_to(id, col, "alice").unwrap();
+                if *col == "done" { s.move_to_forced(id, col, "alice") } else { s.move_to(id, col, "alice") }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
             }
         }
     }
@@ -180,7 +180,7 @@ fn lopsided(todo: usize, done: usize) -> (tempfile::TempDir, Store) {
     }
     for i in 1..=done {
         let id = s.add(&format!("done: finished {i}"), "", &[], "alice").unwrap();
-        s.move_to(id, "done", "alice").unwrap();
+        s.move_to_forced(id, "done", "alice").unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     }
     (dir, s)
 }
@@ -234,7 +234,7 @@ fn crowded(done: usize) -> (tempfile::TempDir, Store) {
     }
     for i in 1..=done {
         let id = s.add(&format!("done: finished {i}"), "", &[], "alice").unwrap();
-        s.move_to(id, "done", "alice").unwrap();
+        s.move_to_forced(id, "done", "alice").unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     }
     (dir, s)
 }

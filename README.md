@@ -20,8 +20,8 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
-**New in 3.0.0:** only the holder touches a DOING card, and every change records the agent
-session behind it. A board can ask this machine for a hook that gates every move, and the
+**New in 3.0.0:** only a verifier moves a card to DONE, and only from REVIEW. Only the holder
+touches a DOING card, and every change records the agent session behind it. A board can ask this machine for a hook that gates every move, and the
 machine decides whether to trust it. The full-screen board splits its space evenly. There are
 deadline boards, board archiving, and bulk import and export.
 [CHANGELOG](CHANGELOG.md#300--2026-09-23) · [upgrading from 2.x](UPGRADING.md#upgrading-to-300)
@@ -49,9 +49,10 @@ Each item links to its full section.
 - **The board.** Four columns: TODO → DOING → REVIEW → DONE. `tb` opens it full screen and
   `tb list` prints it. Cards have a `tag: title`, a description, a checklist, notes and a
   history. See [your first 5 minutes](#your-first-5-minutes) and [Keys](#keys).
-- **Sharing it.** People and agents take work with `tb next`. Only the holder of a DOING card
-  may change it, and nobody closes their own work
-  (see [Who closes a card](#who-closes-a-card)). `tb assign ID NAME` hands a card to someone,
+- **Sharing it.** Anyone files work, the workers take it with `tb next`, and only an
+  independent verifier moves a card from REVIEW to DONE. Nothing skips review. Only the holder
+  of a DOING card may change it, and nobody closes their own work (see
+  [Who moves a card](#who-moves-a-card)). `tb assign ID NAME` hands a card to someone,
   and `wip-per-owner` stops one agent from taking every slot.
 - **Knowing who did it.** Each change records a name, plus the harness, model, role and
   session behind it. Claude Code, omp and pi are read automatically. See
@@ -95,6 +96,7 @@ Each item links to its full section.
 - [Command-line reference](#command-line-reference)
   - [A deadline board in one command](#a-deadline-board-in-one-command)
   - [Due dates](#due-dates)
+  - [Who moves a card](#who-moves-a-card)
   - [Who closes a card](#who-closes-a-card)
   - [Evidence links](#evidence-links)
   - [Hooks: this machine's own gate on a move](#hooks-this-machines-own-gate-on-a-move)
@@ -271,7 +273,8 @@ tb setup --dry-run --yes
 5. **Checklist.** In the open card, press `a` to add a checklist item ("kitchen"), Enter to
    save. Use ↑/↓ to pick an item and Enter to tick it. `esc` closes the card.
 6. **Done.** Press `d`: DOING goes to REVIEW (someone checks it), and `d` again moves it to
-   DONE. Because the card is your work, the board first asks `approve your own work? y/n`
+   DONE. Because the card is your work, the board first asks
+   `this is your work — close it anyway, skipping: never approve your own work? y/n (logged)`
    — press `y` (on a shared board, someone else does this step). Press `q` to quit.
 
 Everything you did can also be done from the command line — this is how scripts and AI
@@ -303,7 +306,7 @@ Press `?` on the board to see all keys at any time.
 | `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
 | `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
-| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
+| `d` | done: DOING → REVIEW, REVIEW → DONE by a verifier (on your own REVIEW card it asks to close it anyway, naming every rule that skips — never offered to an agent without a verifier role) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
 | Shift+↑ / Shift+↓ (or `K` `J`) | move the card up / down in its column |
 | `n` | add a note to the card's history |
@@ -477,7 +480,8 @@ failure: a failing check (`FAIL`), a blocked card, or an idle agent holding a ca
 linked to issue or pull request N:
 
 - an open pull request for it → the card moves to **REVIEW**;
-- the pull request is merged, or the issue is closed → the card moves to **DONE**;
+- the pull request is merged, or the issue is closed → the card moves to **REVIEW** too — never
+  to DONE: a verifier closes it (see [Who closes a card](#who-closes-a-card));
 - cards never move backwards on their own. This happens on every refresh (every minute)
   and whenever you run `tb sync`. A card a reviewer sent back stays in DOING until its pull
   request is updated after that.
@@ -541,6 +545,11 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 `tb config agents-panel shown|hidden`; print the same list with `tb agents`
 ([more](docs/HUMANS.md#watching-agents)).
 
+**Who moves what.** TODO: any agent files work. DOING: the workers. REVIEW → DONE: only an
+independent verifier (`TB_ROLE=verifier`, a name on `tb config verifiers`, or a person). A
+builder or orchestrator that runs `tb done` on a REVIEW card is refused (`not_verifier`) and
+should leave it for the verifier. See [Who moves a card](#who-moves-a-card).
+
 **Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
 `block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
 ahead anyway (each override is logged as its own `force` event). `tb note` stays open to
@@ -595,7 +604,8 @@ tb --version
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
-| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
+| `tb done ID [--force]` | DOING → REVIEW, REVIEW → DONE (only a verifier, never whoever did the work; TODO → DONE is refused) |
+| `tb config verifiers NAME,NAME` / `--off` · `tb config verifier-only on\|off` | names that may verify whatever their role · the verifier rule (on by default); a person only — see [Who closes a card](#who-closes-a-card) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
@@ -900,6 +910,43 @@ the column is review: 'tb move 5 review'`. In a narrow header a label gives way 
 and the count is never pushed off; when not even its first word fits, the plain name is shown.
 `tb config label review` prints it; `--off` clears it. A column that the board orders by due
 date says `by due` in its header.
+
+### Who moves a card
+
+Every card follows the same path, and each step belongs to someone:
+
+| column | who moves a card there |
+|---|---|
+| **TODO** | anyone: people and agents file work (`tb add`) |
+| **DOING** | the workers, one agent session or many (`tb next`, `tb take`, `tb assign`) |
+| **REVIEW** | the worker, when finished (`tb done`), or the GitHub sync when its PR merges |
+| **DONE** | **only an independent verifier**, and only from REVIEW |
+
+A verifier is a person (no agent harness in the identity), an agent started with
+`TB_ROLE=verifier` (or `reviewer`), or a name on `tb config verifiers`. It is never the card's
+owner or its last holder. Nothing skips review: `tb move ID done` from TODO or DOING, the `d`
+key and the GitHub sync all stop at REVIEW.
+
+<!-- no-test -->
+```sh
+TB_ROLE=verifier tb next --review --as rv-1   # a verifier claims the top REVIEW card
+tb done 7 --as rv-1                            # ... and closes it; the move records the whole identity
+tb config verifiers rv-1,rv-2                  # a person names verifiers on the board
+tb config verifier-only off                    # a person turns the verifier rule off for this board
+```
+
+Any other agent is refused (`not_verifier`). Only a person changes `tb config verifiers` or
+`verifier-only`; an agent is refused (`person_only`), so an agent that was refused cannot add
+itself to the list. tb recognises an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude
+Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's
+record. A harness that exports none of these is not seen, and counts as a person.
+
+Every move into DONE records who made it and the identity behind the name (harness, model,
+role, session, machine). `tb show` shows it, `tb log` shows it on the line that moved the
+card into DONE, and every `tb log --json` row has it as `identity`. `--force` gets past both
+rules and is logged. `tb config verifier-only off` turns the verifier rule off for a board;
+the change is logged, and review-first still applies. A role is self-asserted, like a name,
+so this catches an honest mistake, not an attacker.
 
 ### Who closes a card
 

@@ -44,7 +44,7 @@ fn owners_board() -> (tempfile::TempDir, Store) {
                 s.block(id, Some("waiting on the other team"), "alice").unwrap();
             }
             if col != "todo" {
-                s.move_to(id, col, "alice").unwrap();
+                if col == "done" { s.move_to_forced(id, col, "alice") } else { s.move_to(id, col, "alice") }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
             }
         }
     }

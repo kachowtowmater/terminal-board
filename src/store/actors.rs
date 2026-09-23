@@ -114,6 +114,10 @@ impl Identity {
         let mut harness = tb("HARNESS")
             .or_else(|| var("AI_AGENT").and_then(|v| harness_of(&v)))
             .or_else(|| var("OMPCODE").map(|_| "omp".to_string()))
+            // codex exports none of the above to its shell, only its own `CODEX_*` names
+            // (`CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_CI`) — any one of
+            // them names the harness. Before `CLAUDECODE`, for the same reason as `OMPCODE`.
+            .or_else(|| CODEX_MARKERS.iter().find_map(|k| var(k)).map(|_| "codex".to_string()))
             .or_else(|| var("CLAUDECODE").map(|_| "claude-code".to_string()));
         // pi exports its session id and live model name (`PI_SESSION_ID`, `PI_MODEL`) next to
         // `AI_AGENT=pi`. They are only trusted once the harness is pi: another tool could set
@@ -124,6 +128,9 @@ impl Identity {
         // id belongs to the Claude session, not to this one.
         let exported_session = if is_pi {
             var("PI_SESSION_ID")
+        } else if harness.as_deref() == Some("codex") {
+            // the same reasoning as pi: only codex's own ids, only once codex is the harness
+            var("CODEX_SESSION_ID").or_else(|| var("CODEX_THREAD_ID"))
         } else {
             var("CLAUDE_CODE_SESSION_ID")
         };
@@ -157,6 +164,9 @@ impl Identity {
         })
     }
 }
+
+/// The variables codex hands its shell; any one of them means codex is the harness.
+const CODEX_MARKERS: [&str; 4] = ["CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_CI"];
 
 /// The harness named by an `AI_AGENT` value: `claude-code_2-1-278_agent` -> `claude-code`.
 /// The version is left out on purpose: the key would otherwise change with every update.
@@ -338,6 +348,16 @@ pub fn use_environment() {
     FROM_ENVIRONMENT.store(true, Ordering::Relaxed);
 }
 
+/// This process's identity as the guards see it: exactly what `stamp` records with every
+/// event, or nothing at all when identity recording is off (a program linking the crate that
+/// never called `use_environment`, which then reads as a person).
+pub(super) fn current() -> Identity {
+    if !FROM_ENVIRONMENT.load(Ordering::Relaxed) {
+        return Identity::default();
+    }
+    WHO.get_or_init(Identity::from_env).clone()
+}
+
 /// The `actor_id` for an event `actor` writes now: the ONE place an identity reaches the
 /// board — both event inserts (`Store::log`, `Store::log_board`) call it, and every write goes
 /// through those. None when nothing is known beyond the name.
@@ -410,6 +430,20 @@ mod tests {
         assert_eq!(resolve(&[("CLAUDECODE", "1")], None).harness.as_deref(), Some("claude-code"));
         assert_eq!(harness_of("some-tool"), Some("some-tool".into()));
         assert_eq!(harness_of("_agent"), None);
+    }
+
+    #[test]
+    fn codex_is_read_from_its_own_variables_with_its_session() {
+        // what `codex exec` hands its shell: none of AI_AGENT, CLAUDECODE or OMPCODE
+        let who = resolve(&[("CODEX_SESSION_ID", UUID), ("CODEX_THREAD_ID", "thread-9"), ("CODEX_SANDBOX", "seatbelt"), ("CODEX_CI", "1")], None);
+        assert_eq!((who.harness.as_deref(), who.session.as_deref()), (Some("codex"), Some(UUID)));
+        assert_eq!(resolve(&[("CODEX_THREAD_ID", "thread-9")], None).session.as_deref(), Some("thread-9"));
+        // a marker alone still names the harness, even with no id to record
+        let who = resolve(&[("CODEX_SANDBOX", "seatbelt")], None);
+        assert_eq!((who.harness.as_deref(), who.session), (Some("codex"), None));
+        // an explicit value still wins, and a Claude Code session id is not codex's
+        assert_eq!(resolve(&[("CODEX_CI", "1"), ("TB_HARNESS", "mine")], None).harness.as_deref(), Some("mine"));
+        assert_eq!(resolve(&[("CODEX_CI", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)], None).session, None);
     }
 
     #[test]

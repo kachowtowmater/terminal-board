@@ -12,15 +12,21 @@ Boards made by 2.x open unchanged. The JSON contract is still `"v": 1` (new fiel
 
 ### Highlights
 
+- **Only a verifier moves a card to DONE, and only from REVIEW.** TODO: anyone files work.
+  DOING: the workers. REVIEW → DONE: an independent verifier, meaning a person, an agent
+  started with `TB_ROLE=verifier`, or a name on `tb config verifiers`, and never whoever did
+  the work. Nothing skips review, including `tb move ID done` and the full-screen board. The
+  GitHub sync now stops at REVIEW. The rule is on by default, and a person can turn it off
+  per board with `tb config verifier-only off`.
 - **A pre-change hook, trusted by the machine and not by the board.** A board can ask for a
   gate on every move by NAME. `tb trust NAME -- COMMAND` records what that name runs on this
   machine, and nothing runs until you confirm its sha256 (`tb trust NAME --sha256 HEX`). A
   refused, untrusted, changed or missing hook stops the move and nothing is written. Only
   `--break-glass "why"` skips it, and that is logged.
 - **Who moved it, and as whom.** Every change records the name plus the identity behind it:
-  harness, model, role, session and machine. Claude Code, omp and pi are read automatically.
-  `tb show`, `tb log` and `--json` show it, so a bad batch of work can be traced back to the
-  session that wrote it.
+  harness, model, role, session and machine. Every move into DONE carries that whole trace.
+  Claude Code, omp and pi are read automatically. `tb show`, `tb log` and `--json` show it,
+  so a bad batch of work can be traced back to the session that wrote it.
 - **Only the holder touches a DOING card.** `rm`, `edit`, `block`, `check` and `prio` now
   follow the same holder rule as `done`, `drop` and `move`. Two ways to approve your own work
   were closed. `tb assign ID NAME` hands a card to someone, and `tb config wip-per-owner`,
@@ -47,6 +53,17 @@ Boards made by 2.x open unchanged. The JSON contract is still `"v": 1` (new fiel
 
 Each item is one line here and has a full section in [UPGRADING.md](https://github.com/kachowtowmater/terminal-board/blob/main/UPGRADING.md#upgrading-to-300).
 
+- **Nothing reaches DONE except from REVIEW.** `tb done` on a TODO card, and `tb move ID
+  done` from TODO or DOING, are refused (code `not_from_review`). *Do:* take the card and
+  `tb done` it into REVIEW so a verifier can close it, or use `--force` (logged).
+- **REVIEW → DONE only by a verifier, on by default.** An agent, meaning an actor whose
+  identity has a harness, is refused (`not_verifier`) unless it runs with
+  `TB_ROLE=verifier` (or `reviewer`) or its name is on `tb config verifiers`. A person always
+  qualifies. Only a person may change `verifiers` or `verifier-only` (`person_only`).
+  *Do:* start verifiers with `TB_ROLE=verifier`, or have a person run
+  `tb config verifier-only off` to keep the 2.x behaviour on a board.
+- **The GitHub sync moves a merged PR or a closed issue to REVIEW, not DONE.** *Do:* have a
+  verifier close the card.
 - **Another agent's DOING card: `rm`, `edit`, `block`, `check` and `prio` are refused**
   unless you hold it (they used to go through silently). *Do:* hold the card, or add
   `--force` (logged). `tb note` stays open to everyone.
@@ -75,7 +92,8 @@ Each item is one line here and has a full section in [UPGRADING.md](https://gith
 
 ### What's new at a glance
 
-- **Rules and trust:** pre/post-change hooks with `tb trust`, and `--break-glass`.
+- **Rules and trust:** only a verifier closes a card (`tb config verifiers`,
+  `verifier-only`), pre/post-change hooks with `tb trust`, and `--break-glass`.
   `tb config done-by`, `done-needs-link`, `done-needs-note` and `max-rounds` (`escalate`).
   `tb config rules` sets a board's own conventions. `wip-per-owner`, `actors`,
   `TB_READONLY` / `--read-only`.
@@ -117,6 +135,44 @@ The sections below give each change in full.
   leaves it where it is, so it removes nothing it did not put there. It also removes its own
   record of agent snippets when no board was ever made.
 - `tests/install_test.sh` has a scenario for each of these.
+
+### Only a verifier moves REVIEW to DONE, enforced by tb (breaking — see UPGRADING.md)
+
+An audit of real boards found cards moved `todo -> done` and `doing -> done` directly, builders
+and orchestrators moving their own REVIEW cards to DONE, and the GitHub sync closing cards with
+no verifier at all. The role flow is now enforced in `Store::transition`, the one function every
+column change goes through (CLI, full-screen board, GitHub sync):
+
+- **Nothing reaches DONE except from REVIEW.** `tb done` on a TODO card and `tb move ID done`
+  from TODO or DOING are refused with the new stable `--json` code `not_from_review` and the
+  command to run instead. `--force` gets past it, logged as a `force` event
+  (`closed #N from todo, skipping review`).
+- **REVIEW -> DONE only by a verifier.** An agent (a harness in its recorded identity) needs
+  `TB_ROLE=verifier` or `reviewer`, or its name on the new `tb config verifiers NAME,NAME`;
+  a person (no harness) always qualifies. Anyone else is refused with the new code
+  `not_verifier`, naming `TB_ROLE=verifier` and `tb config verifiers`. The self-approval rule
+  still applies on top: a verifier never closes its own work. On by default;
+  `tb config verifier-only off` turns it off per board, logged in the board's own log
+  (`verifier-only on -> off`). `tb config verifiers` changes are logged the same way. Both
+  are a person's settings: an agent changing either is refused with the new code `person_only`,
+  so a refused agent cannot list itself or switch the rule off.
+- **Agents tb recognises.** codex is now detected (`CODEX_SESSION_ID`, `CODEX_THREAD_ID`,
+  `CODEX_SANDBOX`, `CODEX_CI`; its session id is recorded), next to `TB_HARNESS`, `AI_AGENT`,
+  `OMPCODE`, `CLAUDECODE` and a herdr pane. A harness that exports none of these counts as a
+  person — the docs say so.
+- **GitHub sync lands in REVIEW, never DONE.** A merged PR or a closed issue moves its card
+  to REVIEW with an event saying so (`PR gh#20 merged → review (a verifier moves it to done)`);
+  a card already in REVIEW is left for its verifier, and a card a reviewer sent back stays in
+  DOING for its owner.
+- **The trace.** Every move into DONE carries the actor and the full identity (harness, model,
+  role, session, host) in `tb show` / `show --json` `actors[]`; `tb log` prints it on the line
+  that moved a card into DONE, and every `tb log --json` row gains `identity` (additive) —
+  pinned by a test.
+- `tb done ID --approve` is unchanged: it records a check by anyone who did not do the work,
+  leaves the card in REVIEW, and is not a way into DONE.
+- Docs: a "Who moves a card" section in docs/AGENTS.md (`tb guide`), the AGENTS.md snippet,
+  the Claude Code skill, docs/HUMANS.md and the README, so an agent told "read it and follow
+  it" learns the structure.
 
 ### A pre/post-change hook: this machine's own gate on a move (A1)
 

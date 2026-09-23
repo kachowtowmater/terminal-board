@@ -317,7 +317,7 @@ fn dated() -> Board {
             None => b.ok(&["add", title]),
         };
     }
-    b.ok(&["move", "7", "done"]);
+    b.ok(&["move", "7", "done", "--force"]); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     b
 }
 
@@ -417,7 +417,7 @@ fn deadline_board() -> (tempfile::TempDir, Store) {
             s.set_due(id, date.as_ref(), "alice").unwrap();
         }
         if col != "todo" {
-            s.move_to(id, col, owner.unwrap_or("alice")).unwrap();
+            if col == "done" { s.move_to_forced(id, col, owner.unwrap_or("alice")) } else { s.move_to(id, col, owner.unwrap_or("alice")) }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
         }
     }
     s.block(7, Some("#5"), "alice").unwrap();

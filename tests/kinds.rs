@@ -390,7 +390,11 @@ fn deadline_kind_126x41_golden() {
             None => h.ok(&["filings", "add", title]),
         };
         if *col != "todo" {
-            h.ok(&["filings", "move", &id, col, "--as", owner.unwrap_or("alice")]);
+            let mut args = vec!["filings", "move", id.as_str(), *col, "--as", owner.unwrap_or("alice")];
+            if *col == "done" {
+                args.push("--force"); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
+            }
+            h.ok(&args);
         }
     }
     h.ok(&["filings", "block", "7", "waiting for the signed copy", "--on", "#5", "--until", "2026-10-06", "--as", "bot-3"]);

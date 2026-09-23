@@ -75,7 +75,7 @@ fn board(counts: [usize; 4], costs: [Cost; 4]) -> (tempfile::TempDir, Store) {
         for i in 1..=counts[ci] {
             let id = s.add(&format!("{col}{i}"), "", &[], "alice").unwrap();
             if *col != "todo" {
-                s.move_to(id, col, "alice").unwrap();
+                if *col == "done" { s.move_to_forced(id, col, "alice") } else { s.move_to(id, col, "alice") }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
             }
             let cost = costs[ci];
             if matches!(cost, Cost::Note | Cost::Everything) {

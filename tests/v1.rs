@@ -263,13 +263,14 @@ fn auto_move_matrix() {
     let mk = |s: &mut Store, t: &str, col: &str| {
         let id = s.add(t, "", &[], "me").unwrap();
         if col != "todo" {
-            s.move_to(id, col, "me").unwrap();
+            if col == "done" { s.move_to_forced(id, col, "me") } else { s.move_to(id, col, "me") }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
         }
         id
     };
     s.set_wip(99).unwrap();
     // TODO cards have no owner: an open PR leaves them in TODO, a closed issue still moves
-    // them to DONE; DOING cards (owned by 'me') move on an open PR as before
+    // them — to REVIEW, never DONE (only a verifier closes a card); DOING cards (owned by
+    // 'me') move on an open PR as before
     let linked = mk(&mut s, "gh#10 linked by closes", "todo");
     let branch = mk(&mut s, "gh#12 linked by branch", "doing");
     let merged = mk(&mut s, "gh#20 a merged pr", "doing");
@@ -300,8 +301,8 @@ fn auto_move_matrix() {
         got,
         [
             (branch, "review", "PR gh#31 open → review"),
-            (merged, "done", "PR gh#20 merged → done"),
-            (closed, "done", "issue gh#21 closed → done"),
+            (merged, "review", "PR gh#20 merged → review (a verifier moves it to done)"),
+            (closed, "review", "issue gh#21 closed → review (a verifier moves it to done)"),
             (linked_owned, "review", "PR gh#32 open → review"),
         ]
     );
@@ -309,10 +310,11 @@ fn auto_move_matrix() {
     let untouched = [linked, open_rev, unmerged, done_open, plain];
     assert!(moves.iter().all(|m| !untouched.contains(&m.card_id)), "no backwards, no evidence, no move");
     terminal_board::github::apply_moves(&mut s, &moves).unwrap();
-    assert_eq!(s.card(merged).unwrap().column, "done");
+    assert_eq!(s.card(merged).unwrap().column, "review");
     let ev = s.show(merged).unwrap().events;
-    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "PR gh#20 merged → done"));
-    // a second pass moves nothing (review never goes back to review, done stays done)
+    assert!(ev.iter().any(|e| e.actor == "github" && e.text == "PR gh#20 merged → review (a verifier moves it to done)"));
+    // a second pass moves nothing (review never goes back to review, done stays done — and a
+    // merged/closed card already in review is left for its verifier)
     let moves = plan_moves(&snap, &s.list().unwrap(), &states, &HashMap::new());
     assert!(moves.is_empty(), "{moves:?}");
 }
@@ -368,7 +370,8 @@ esac
     for t in ["gh#10 linked", "gh#20 merged", "gh#21 closed"] {
         tb(&db, &gh, &["add", t]);
     }
-    // an open PR moves only work someone took; merged/closed move unowned TODO cards too
+    // an open PR moves only work someone took; merged/closed move unowned TODO cards too —
+    // to REVIEW, never DONE
     tb(&db, &gh, &["take", "1"]);
     tb(&db, &gh, &["config", "github", "o/r"]);
     let o = tb(&db, &gh, &["sync", "--json"]);
@@ -377,7 +380,7 @@ esac
     assert_eq!(v["ok"], true);
     let moves: Vec<(i64, String)> =
         v["moves"].as_array().unwrap().iter().map(|m| (m["card_id"].as_i64().unwrap(), m["to"].as_str().unwrap().into())).collect();
-    assert_eq!(moves, [(1, "review".to_string()), (2, "done".into()), (3, "done".into())]);
+    assert_eq!(moves, [(1, "review".to_string()), (2, "review".into()), (3, "review".into())]);
     let o = tb(&db, &gh, &["sync"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("nothing to move"));
 }
@@ -392,15 +395,21 @@ fn forced_done_prompt_and_cli_force() {
     s.add("plain card", "", &[], "me").unwrap();
     s.set_github(Some("o/r")).unwrap();
     s.save_github(&Ok(GhSnapshot { repo: "o/r".into(), issues: vec![issue(11)], fetched_at: terminal_board::store::now(), ..Default::default() })).unwrap();
+    // nothing reaches done except from review (verifier rule): someone else did the work first
+    for id in [1, 2] {
+        s.take(id, "bot").unwrap();
+        s.done(id, "bot").unwrap();
+    }
     let mut app = App::new(s.snapshot().unwrap(), "me");
     app.agents = AgentsState::Unavailable("x".into());
     app.reload(&s);
-    // TUI: d on a todo gh card whose issue is open asks first
+    // TUI: d on a review gh card whose issue is open asks first
+    app.focus_card(1);
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     assert!(matches!(app.mode, Mode::Confirm { action: Confirm::ForceDone(1), .. }));
     assert!(render(&app, 140, 40).contains("issue gh#11 still open on GitHub — mark done anyway? y/n"));
     app.handle_key(key(KeyCode::Char('n')), &mut s);
-    assert_eq!(s.card(1).unwrap().column, "todo");
+    assert_eq!(s.card(1).unwrap().column, "review");
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     app.handle_key(key(KeyCode::Char('y')), &mut s);
     assert_eq!(s.card(1).unwrap().column, "done");

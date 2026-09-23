@@ -110,7 +110,8 @@ fn done_by_refuses_anyone_else_and_says_how_to_get_past_it() {
     let two = b.in_review("tax: return", "bob");
     assert!(b.refused("carol", &["move", &two.to_string(), "done"]).contains("only anna or ben may close"));
     b.ok_as("carol", &["move", &two.to_string(), "todo"]);
-    assert!(b.refused("carol", &["done", &two.to_string()]).contains("only anna or ben may close"), "todo -> done is closing too");
+    // todo -> done is refused before done-by is even asked: nothing reaches done except from review
+    assert!(b.refused("carol", &["done", &two.to_string()]).contains("nothing reaches done except from review"), "todo -> done is closing too");
     assert_eq!(b.column(two), "todo");
     // `--force` is open to everyone, and logged as its own event: that is the honest-mistake bargain
     b.ok_as("carol", &["done", &two.to_string(), "--force"]);
@@ -122,7 +123,8 @@ fn done_by_refuses_anyone_else_and_says_how_to_get_past_it() {
         .filter(|e| e["kind"] == "force")
         .map(|e| format!("{}: {}", e["actor"].as_str().unwrap(), e["text"].as_str().unwrap()))
         .collect();
-    assert_eq!(forced, [format!("carol: closed #{two}, not on the done-by list")]);
+    // one `force` event per guard it got past: review-first (todo -> done), then done-by
+    assert_eq!(forced, [format!("carol: closed #{two} from todo, skipping review"), format!("carol: closed #{two}, not on the done-by list")]);
 
     // clearing it lets anyone close again
     assert_eq!(b.ok(&["config", "done-by", "--off"]).trim(), "done-by is off — anyone may close a card");
