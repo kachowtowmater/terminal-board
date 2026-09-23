@@ -2044,6 +2044,174 @@ pub(crate) fn column_height_for(app: &App, ci: usize, width: u16, dense: bool, k
     2 + h[..k].iter().map(|x| x - u16::from(dense)).sum::<u16>() + u16::from(k < h.len())
 }
 
+/// ROUND-ROBIN GROWTH — the invariant `draw_sections` states in full at its own top: no
+/// column shows its Nth card while a populated column that still has more to give is
+/// showing fewer than N-1. This is the ONE implementation of it, called at both COLUMN
+/// granularity (`draw_sections`: one column per group) and ROW granularity (`draw_grid`:
+/// two columns sharing one row's height per group), so the tie rule cannot drift between
+/// the two allocators the way it did across the rounds of review on card #113.
+///
+/// Grows `group_heights` in place over columns `0..n`, spending from `*budget`. `group_of`
+/// maps a column to which entry of `group_heights` it draws from (identity for columns,
+/// `c / 2` for grid rows); `cap` is how many cards a column will ever show; `want(c, k)` is
+/// the absolute group height column `c` needs to show `k` cards.
+///
+/// A level at a time: the group(s) holding the current FLOOR (the lowest shown level among
+/// columns still wanting more) are served first, cheapest first — the same rule used for
+/// first cards. A TIE (equal price) is never a verdict: a loser here is simply left at the
+/// floor and re-judged fresh next iteration, once the winner has moved past the floor and
+/// the tie no longer applies. Growth stops only once the cheapest floor group, tried first
+/// against the FULL untouched budget, still cannot afford it — the budget only shrinks from
+/// here, so nothing behind it ever could either.
+///
+/// `shown` is the level each column is CREDITED with, and it is the caller's — this
+/// function only ever increments it, never re-derives it from `want`/height. Both callers
+/// run this twice, dense first then non-dense (dense is cheaper, so it buys the most levels
+/// for the least height; the non-dense pass then only spends what dense growth left over,
+/// on the SAME `shown` state carried forward). Re-deriving `shown` fresh from height at the
+/// start of the non-dense pass — comparing `want(c, k) <= height` against non-dense's
+/// pricier `want` — was the bug: a column costs less than the group's actual current
+/// height whenever the dense pass happened to leave it more slack than a same-cost peer,
+/// and that INCIDENTAL slack, not any real difference in the cards, made it look cheaper to
+/// advance in the non-dense pass, letting it monopolise the level exactly the way a rank-tie
+/// loser being written off did at the column level (found in review, `draw_grid`, half-v,
+/// card #113, one round after the column-level fix landed).
+///
+/// A column already at its own `cap` still counts as WANTING if its group's current height
+/// does not yet cover `want(c, cap)` under the pass now running — the non-dense pass, with
+/// nothing left to grow, asks the SAME already-shown cards to be drawn in the roomier
+/// style, and that ask is priced and queued exactly like a new card would be, at floor
+/// `shown[c]` (its own level), never above it. It is simply never counted as a NEW card:
+/// `shown` only advances while the level it is asking for is still ahead of it.
+pub(crate) fn round_robin_grow(
+    n: usize,
+    group_of: impl Fn(usize) -> usize,
+    group_heights: &mut [u16],
+    shown: &mut [usize],
+    budget: &mut u16,
+    cap: impl Fn(usize) -> usize,
+    want: impl Fn(usize, usize) -> u16,
+) {
+    // the level column `c` is asking for right now: its next card if it still wants one,
+    // or its own current (already fully shown) level again, so it can still ask for more
+    // room to show those SAME cards without ever being credited with a card it does not
+    // have.
+    let target = |shown: &[usize], c: usize| (shown[c] + 1).min(cap(c).max(1));
+    loop {
+        let hungry: Vec<usize> =
+            (0..n).filter(|&c| cap(c) > 0 && want(c, target(shown, c)) > group_heights[group_of(c)]).collect();
+        if hungry.is_empty() {
+            break;
+        }
+        let floor = hungry.iter().map(|&c| shown[c]).min().unwrap();
+        // the groups holding a column at the floor, cheapest first — same rule as first
+        // cards. A TIE (equal price) is decided only by which group this pass happens to
+        // reach first with budget still in hand, which is not a verdict: the loser is left
+        // at the floor, not written off, and is re-judged fresh next iteration once the
+        // winner has moved past the floor and the tie no longer applies. A group's price
+        // accounts for EVERY hungry column it holds, not only the one setting its floor —
+        // a shared height must satisfy both columns of a row at once.
+        let mut asks: Vec<(u16, usize)> = (0..group_heights.len())
+            .filter(|&g| hungry.iter().any(|&c| group_of(c) == g && shown[c] == floor))
+            .map(|g| {
+                let need = hungry.iter().copied().filter(|&c| group_of(c) == g).map(|c| want(c, target(shown, c))).max().unwrap();
+                (need.saturating_sub(group_heights[g]), g)
+            })
+            .collect();
+        asks.sort_unstable();
+        let mut moved = false;
+        for (cost, g) in asks {
+            if cost <= *budget {
+                group_heights[g] += cost;
+                *budget -= cost;
+                let bumped: Vec<usize> = hungry.iter().copied().filter(|&c| group_of(c) == g && target(shown, c) > shown[c]).collect();
+                for c in bumped {
+                    shown[c] += 1;
+                }
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+}
+
+/// The level column `c` is credited with, derived FRESH from its group's current height —
+/// used only to SEED `shown` before the first `round_robin_grow` call (there is no earlier
+/// state yet to carry forward) and by `pad_most_behind`'s own read-only measurement. Never
+/// called again mid-growth: see `round_robin_grow`'s doc for why re-deriving it against a
+/// different `want` mid-sequence is exactly the bug this file had.
+pub(crate) fn shown_level(
+    c: usize,
+    group_of: &impl Fn(usize) -> usize,
+    group_heights: &[u16],
+    cap: &impl Fn(usize) -> usize,
+    want: &impl Fn(usize, usize) -> u16,
+) -> usize {
+    let h = group_heights[group_of(c)];
+    let mut lvl = 0;
+    for k in 1..=cap(c) {
+        if want(c, k) <= h {
+            lvl = k;
+        } else {
+            break;
+        }
+    }
+    lvl
+}
+
+/// The leftover after `round_robin_grow` (so no blank band sits between the sections/grid
+/// and the panels) goes ENTIRELY to whichever group is still furthest behind — never split.
+/// A card whose box does not quite fit is drawn title-only rather than hidden (the one
+/// thing a hidden card must never do), and the TRUE last card of a column needs no `+N
+/// more` reserve row, which makes crossing "nothing left to show" disproportionately cheap
+/// right at that boundary. Splitting a small leftover evenly can land two same-cost,
+/// equal-total groups on opposite sides of that boundary by sheer chance — the group behind
+/// still short of it, the group already close enough to it crossing for free — a bigger gap
+/// than the growth loop above would ever allow on its own (found in review, `draw_grid`,
+/// half-v, card #113: `[5,5,5,5]` at 75x35 split 2 leftover rows 1-and-1, letting TODO/DOING
+/// squeeze in a title-only 5th card while REVIEW/DONE, one row short of the very same trick,
+/// got nothing). Handing the whole remainder to whichever group needs it most is what a
+/// person evening out a board by hand would do.
+///
+/// Reads `shown` — the SAME state `round_robin_grow` left it in — rather than re-deriving a
+/// level from height, for the same reason `round_robin_grow` itself no longer does: a
+/// freshly re-derived level does not agree with the level growth actually credited a column
+/// with once the cost basis (dense vs non-dense) has changed.
+pub(crate) fn pad_most_behind(
+    n: usize,
+    group_of: impl Fn(usize) -> usize,
+    group_heights: &mut [u16],
+    shown: &[usize],
+    budget: &mut u16,
+    cap: impl Fn(usize) -> usize,
+) {
+    if *budget == 0 {
+        return;
+    }
+    // A group with a column still WANTING more (shown < its own cap) is preferred over one
+    // where every column is already fully shown — padding there can still reveal another
+    // card via the boundary discount above. Among wanting groups, the one furthest behind
+    // (lowest shown level on its wanting column) goes first: comparing shown counts across
+    // columns with wildly different totals is meaningless once one of them is DONE — a
+    // 1-card column fully shown at 1 is not "behind" a 30-card column still at 5 just
+    // because 1 < 5 (found in review: this reading of "behind" sent the leftover to a row
+    // that could not use it, while the actually-growing row next to it got nothing). Once
+    // EVERY populated column everywhere is already fully shown, the choice is purely
+    // cosmetic and any populated group will do.
+    let behind = (0..group_heights.len())
+        .filter(|&g| (0..n).any(|c| group_of(c) == g && cap(c) > 0))
+        .min_by_key(|&g| {
+            let wanting = (0..n).filter(|&c| group_of(c) == g && cap(c) > 0 && shown[c] < cap(c)).map(|c| shown[c]).min();
+            (wanting.is_none(), wanting.unwrap_or(usize::MAX))
+        });
+    if let Some(g) = behind {
+        group_heights[g] += *budget;
+        *budget = 0;
+    }
+}
+
 /// Rows column `ci` needs to show ONE card as a dense box, plus a `+N more` row when it has
 /// others. This is the least a column can be given and still show work rather than a bare
 /// header, and it is what every non-empty column is guaranteed before any column gets more.

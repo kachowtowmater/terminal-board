@@ -414,26 +414,36 @@ fn the_half_v_grid_grows_evenly() {
 }
 
 // ---------------------------------------------------------------------------------------
-// THE TIE REGRESSION (card #113, round 2 of the rework) — a rank-tie loser must lose only
-// THIS round, not be written off. The first round-robin draft marked a floor column
-// permanently `stuck` the moment it failed to afford a level, even when the ONLY reason it
-// failed was that a same-cost peer, tied with it and processed first, had already spent the
-// shared budget — an artifact of iteration order, not a real incapacity. That let the peer
-// monopolise every later level while the "loser" sat frozen at its first card, which is
-// WORSE than `main`'s un-fixed behaviour for this exact shape (TODO=0, DOING=3, REVIEW=3,
-// DONE=3, `third-v`, 75x28, cursor on TODO): this branch gave DOING 3/3 while REVIEW and
-// DONE both sat at 1/3 — a monopoly — where `main` gave a strictly more even 2/2/1.
+// THE TIE REGRESSION (card #113, rounds 2 and 3 of the rework). Two instances of the same
+// class of bug, found one level apart:
 //
-// `check_evenness` above is an aggregate bound (pairwise, "2+ ahead of a column with cards
-// still hidden") and DOES catch this shape once it is in the sweep — it just was not,
-// because the general cartesian only tries counts in {0, 1, 2, 30}, and a tie only bites at
-// 3+, when a level's cost is shared by more than one same-cost column. This is a second,
-// more DIRECT check on top: among columns that all cost the same AND all hold the same
-// total, nothing distinguishes one from another, so the spread between the most- and
-// least-shown must never exceed one card, full stop — no "it has nothing left hidden"
-// exemption needed, because with equal totals nobody reaches their own cap before a sibling
-// does. A fix that happened to satisfy the pairwise bound by some other accident still has
-// to pass this — it is a different measurement of the same failure, not a restatement of it.
+// - COLUMN granularity (`draw_sections`): a rank-tie loser was marked permanently `stuck`
+//   the moment it failed to afford a level, even when the only reason was that a same-cost
+//   peer, tied with it and processed first, had already spent the shared budget this pass.
+// - ROW granularity (`draw_grid`): round 2 itself was never the problem — a trace of
+//   `[5,5,5,5]` at 75x35 shows it correctly bounds the gap to one level (`[4,4,3,3]`).
+//   Round 3 (spending whatever is left so no blank band sits between the grid and the
+//   panels) is: it SPLIT the leftover evenly between the two rows. A card whose box does
+//   not quite fit is still drawn title-only rather than hidden (the one thing a hidden card
+//   must never do) — and the truly LAST card of a column needs no `+N more` reserve row,
+//   which makes reaching "everything shown" disproportionately cheap right at that boundary.
+//   An even split happened to land TODO/DOING exactly one row short of that boundary and
+//   REVIEW/DONE two rows short, so the identical 1-row-each split let TODO/DOING cross it
+//   (5/5, title-only last card) while REVIEW/DONE, just as entitled, got nothing (3/5).
+//
+// Neither round writes off a loser for good any more: `round_robin_grow` (src/tui.rs) is
+// the ONE implementation of "serve the floor, re-judge a tie fresh, and hand any leftover
+// to whoever is still furthest behind" — called at both column and row granularity, so the
+// tie rule cannot drift between the two allocators again.
+//
+// Both `check_evenness`/`assert_no_monopoly` above already cover this ONCE the shape is
+// actually swept — the reason round 1 of this rework missed the column case is that the
+// general cartesian jumps straight from 2 to 30 (a tie needs 3+ to bite); the reason it
+// missed the row case is the same gap one band wider: `the_half_v_grid_grows_evenly`'s own
+// fixtures never used counts of 4-8 together (evenly, on every column), which is exactly
+// where a level's Round-3 leftover is small enough to land unevenly. This section closes
+// BOTH gaps: it sweeps 4-8 explicitly, at both granularities, in both layouts that share a
+// real height budget.
 
 /// DIRECT: among POPULATED columns of equal cost and equal total, the most-shown and the
 /// least-shown are never more than one card apart.
@@ -444,7 +454,7 @@ fn assert_no_monopoly(screen: &str, map: &[(i64, usize)], counts: [usize; 4], wh
     let Some(&min_c) = populated.iter().min_by_key(|&&c| shown[c]) else { return };
     assert!(
         shown[max_c] <= shown[min_c] + 1,
-        "{what}: column {max_c} shows {} while equal-cost, equal-total column {min_c} shows only {} — one column is monopolising growth instead of the two rotating a tie: shown={shown:?} counts={counts:?}\n{screen}",
+        "{what}: column {max_c} shows {} while equal-cost, equal-total column {min_c} shows only {} — one column (or row) is monopolising growth instead of the two rotating a tie: shown={shown:?} counts={counts:?}\n{screen}",
         shown[max_c],
         shown[min_c]
     );
@@ -475,10 +485,9 @@ fn sweep_no_monopoly(counts: [usize; 4], layouts: &[&str], sizes: &[(u16, u16)])
     }
 }
 
-/// The named regression: the owner's rework repro, pinned directly, plus the same shape at
-/// a spread of heights around 75x28 — a level's budget runs out mid-level at different
-/// heights depending on layout and width, and a tie only shows itself exactly there, so a
-/// single fixed size is not enough to trust the fix generalises.
+/// The column-granularity repro, pinned directly, plus a spread of heights around it — a
+/// level's budget runs out mid-level at different heights depending on width, and a tie
+/// only shows itself exactly there.
 #[test]
 fn a_same_cost_tie_does_not_let_one_column_monopolise_growth() {
     let heights: Vec<u16> = (18u16..=40).collect();
@@ -489,4 +498,28 @@ fn a_same_cost_tie_does_not_let_one_column_monopolise_growth() {
     // the exact reported repro, named on its own so a regression here fails legibly without
     // needing to read a generated `what` string out of the sweep above.
     sweep_no_monopoly([0, 3, 3, 3], &["third-v"], &[(75, 28)]);
+}
+
+/// The row-granularity repro: counts of 4-8 (the band the earlier sweeps skipped, jumping
+/// from 2/3 straight to 30/40/80), swept over a spread of heights around where a level's
+/// leftover is small — the same band where Round 3's even split let one row cross the
+/// "nothing more to hint about" boundary for free.
+#[test]
+fn a_same_cost_tie_does_not_let_one_row_monopolise_growth() {
+    let heights: Vec<u16> = (20u16..=45).collect();
+    let sizes: Vec<(u16, u16)> = heights.iter().flat_map(|&h| [(60u16, h), (75, h), (100, h), (126, h)]).collect();
+    for n in 4usize..=8 {
+        sweep_no_monopoly([n, n, n, n], &["third-v", "half-v"], &sizes);
+    }
+    // every populated column the SAME total (5): `assert_no_monopoly` has no "nothing left
+    // hidden" exemption on purpose, so a shape that lets one column legitimately finish
+    // with fewer total cards than another (that column is just DONE, not "behind") does not
+    // belong in this sweep — `check_evenness`/`sweep_evenness` above already cover mixed
+    // totals, with that exemption.
+    for counts in [[0usize, 5, 5, 5], [5, 5, 0, 0], [0, 0, 5, 5], [5, 0, 5, 0], [0, 5, 0, 5]] {
+        sweep_no_monopoly(counts, &["third-v", "half-v"], &sizes);
+    }
+    // the exact reported repros, named on their own.
+    sweep_no_monopoly([5, 5, 5, 5], &["half-v"], &[(75, 35)]);
+    sweep_no_monopoly([6, 6, 6, 6], &["half-v"], &[(126, 41)]);
 }

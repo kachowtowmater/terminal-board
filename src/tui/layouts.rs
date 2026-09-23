@@ -701,16 +701,16 @@ const STACK_GH_ROWS: u16 = 8;
 /// rather than holding it: PR #131 made every column start even; this is what keeps them
 /// even as they grow.
 ///
-/// Round 2 enforces it a level at a time: at each level it grows every column currently at
-/// the FLOOR (the lowest shown count among columns still wanting more) that can afford the
-/// next card, cheapest first — the same rule round 1 uses for first cards. Growth STOPS for
-/// this level only once the cheapest floor column, evaluated first and against the full
-/// remaining budget, still cannot afford it — the budget only shrinks from here, so nothing
-/// behind it ever will either. A column that loses only because a same-cost peer happened to
-/// spend the shared budget first is NOT written off: it is left at the floor and re-judged
-/// on the next pass, once that peer has moved on and the tie no longer applies. Card #113's
-/// own rework found the earlier draft did the opposite — permanently excluding a rank-tie
-/// loser let the winner monopolise every later level instead of the two rotating fairly.
+/// Round 2 and round 3 (the "no blank band" padding after it) are `round_robin_grow` /
+/// `pad_most_behind` (src/tui.rs) — the ONE implementation of this rule, shared with
+/// `draw_grid`'s row growth, so the two allocators cannot drift the way they did across the
+/// rounds of review on card #113: first a rank-tie loser was written off for good instead
+/// of being re-judged next iteration (found at column granularity, fixed by sharing round
+/// 2's logic), then an even 50/50 split of the round-3 leftover let one row cross the
+/// "nothing left to show" boundary — cheap right there, because the true last card of a
+/// column needs no `+N more` reserve row — while its equally-entitled sibling got nothing
+/// (found at row granularity; fixed by handing the whole leftover to whichever group is
+/// furthest behind, never splitting it).
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     let w = area.width;
     let order: Vec<usize> = std::iter::once(app.col).chain((0..4).filter(|c| *c != app.col)).collect();
@@ -742,71 +742,31 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     // can be served has been. Two passes over the card style, dense first: dense is cheaper,
     // so it buys the most LEVELS for the least height, and the non-dense pass only spends
     // what dense growth left over — never at the cost of a level dense growth already gave.
+    // `shown` is seeded from round 1's dense (cheapest) sizing, then carried forward — see
+    // `round_robin_grow`'s doc for why it is never re-derived from height again.
+    let cap_of = |c: usize| column_card_cap(app, c, w);
+    let mut shown: [usize; 4] =
+        std::array::from_fn(|c| if counts[c] > 0 { shown_level(c, &|c| c, &heights, &cap_of, &|c, k| column_height_for(app, c, w, true, k)) } else { 0 });
     if all_served {
-        let caps: [usize; 4] = std::array::from_fn(|c| column_card_cap(app, c, w));
         for dense in [true, false] {
-            loop {
-                // how many cards column `c` shows at its CURRENT height, in this style — read
-                // back from `heights`, never tracked separately, so a column that grew in the
-                // dense pass is re-measured honestly once the non-dense pass re-prices it.
-                let shown: [usize; 4] = std::array::from_fn(|c| {
-                    let mut lvl = 0;
-                    for k in 1..=caps[c] {
-                        if column_height_for(app, c, w, dense, k) <= heights[c] {
-                            lvl = k;
-                        } else {
-                            break;
-                        }
-                    }
-                    lvl
-                });
-                let wanting: Vec<usize> = claimants().filter(|&c| shown[c] < caps[c]).collect();
-                if wanting.is_empty() {
-                    break;
-                }
-                let floor = wanting.iter().map(|&c| shown[c]).min().unwrap();
-                let mut asks: Vec<(u16, usize, usize)> = wanting
-                    .iter()
-                    .copied()
-                    .filter(|&c| shown[c] == floor)
-                    .map(|c| (column_height_for(app, c, w, dense, floor + 1).saturating_sub(heights[c]), rank(c), c))
-                    .collect();
-                // cheapest first, same as round 1: whoever is cheapest at the floor gets the
-                // best possible shot at this level. A TIE (equal cost) is not a verdict — it
-                // is only decided by whichever `left` this one pass happens to have when it
-                // is this column's turn, so a tied loser here is NOT marked out for good; it
-                // is simply left at the floor and re-judged fresh next iteration, once the
-                // winner has moved on and is no longer the one it is tied against. Only when
-                // NOBODY at the floor advances this pass — the cheapest of them shown unable
-                // to afford it even first in line, with nothing yet spent against it — does
-                // growth stop, because the budget only shrinks from here and nothing behind
-                // the floor can ever be let ahead of it.
-                asks.sort_unstable();
-                let mut moved = false;
-                for (cost, _, c) in asks {
-                    if cost <= left {
-                        heights[c] += cost;
-                        left -= cost;
-                        moved = true;
-                    }
-                }
-                if !moved {
-                    break;
-                }
-            }
+            round_robin_grow(4, |c| c, &mut heights, &mut shown, &mut left, cap_of, |c, k| column_height_for(app, c, w, dense, k));
         }
     }
 
     // ROUND 3 — spare height must not sit as a blank band between sections and the panels
-    // (issue #4): stretch the LAST boxed section to absorb what is left. While a column is
-    // still waiting for its first card the surplus may only go to a section already showing
-    // EVERY card it has, where more rows can pad a box but can never conjure an Nth card in
-    // front of a column with none.
+    // (issue #4): the whole of it goes to whichever section is still furthest behind (never
+    // split — see `pad_most_behind`). While a column is still waiting for its first card the
+    // surplus may only go to a section already showing EVERY card it has, where more rows
+    // can pad a box but can never conjure an Nth card in front of a column with none.
     if left > 0 {
-        let padding_only = |c: usize| heights[c] >= column_height(app, c, w, true);
-        let room = |&&c: &&usize| counts[c] > 0 && heights[c] > 1 && (all_served || padding_only(c));
-        if let Some(&c) = order.iter().rev().find(room) {
-            heights[c] += left;
+        if all_served {
+            pad_most_behind(4, |c| c, &mut heights, &shown, &mut left, cap_of);
+        } else {
+            let padding_only = |c: usize| heights[c] >= column_height(app, c, w, true);
+            let room = |&&c: &&usize| counts[c] > 0 && heights[c] > 1 && padding_only(c);
+            if let Some(&c) = order.iter().rev().find(room) {
+                heights[c] += left;
+            }
         }
     }
     let boxed = |c: usize| counts[c] > 0 && heights[c] > 1;
@@ -1041,71 +1001,28 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     let all_served = (0..2).all(|r| !row_live(r) || grid[r] >= row_one(r));
 
     // ROUND 2 — round-robin growth, a level at a time (see above): every populated COLUMN's
-    // Kth card before any column's (K+1)th, cheapest ROW first when a row's price is what
-    // decides who is served — the same rule round 1 used for first cards.
+    // Kth card before any column's (K+1)th. `round_robin_grow` (src/tui.rs) is the same
+    // implementation `draw_sections` calls, with two COLUMNS grouped per ROW instead of one
+    // column per group — see its doc for why a tied row is re-judged next iteration rather
+    // than written off, and for why `shown` is carried forward rather than re-derived when
+    // the cost basis switches from dense to non-dense.
     let mut grow = [0usize, 1];
     if (row_need(1, false), row_live(1)) > (row_need(0, false), row_live(0)) {
         grow.swap(0, 1);
     }
+    let cap_of = |ci: usize| if live(ci) { column_card_cap(app, ci, cw[ci % 2]) } else { 0 };
     if all_served {
-        // how many cards column `ci` will ever draw, capped as `column_height` already is
-        let caps: [usize; 4] = std::array::from_fn(|ci| if live(ci) { column_card_cap(app, ci, cw[ci % 2]) } else { 0 });
+        let mut shown: [usize; 4] = std::array::from_fn(|ci| {
+            if live(ci) { shown_level(ci, &|ci: usize| ci / 2, &grid, &cap_of, &|ci, k| column_height_for(app, ci, cw[ci % 2], true, k)) } else { 0 }
+        });
         for dense in [true, false] {
-            loop {
-                // cards column `ci` shows at its row's CURRENT height, in this style — read
-                // back from `grid`, never tracked separately.
-                let shown: [usize; 4] = std::array::from_fn(|ci| {
-                    let mut lvl = 0;
-                    for k in 1..=caps[ci] {
-                        if column_height_for(app, ci, cw[ci % 2], dense, k) <= grid[ci / 2] {
-                            lvl = k;
-                        } else {
-                            break;
-                        }
-                    }
-                    lvl
-                });
-                let wanting: Vec<usize> = (0..4).filter(|&ci| shown[ci] < caps[ci]).collect();
-                if wanting.is_empty() {
-                    break;
-                }
-                let floor = wanting.iter().map(|&ci| shown[ci]).min().unwrap();
-                // the rows holding a floor column, cheapest first: a row's price is whatever
-                // height its floor column(s) need for their next card (a row-mate not itself
-                // at the floor already fits in the row's current height, so it costs nothing
-                // extra here — growing the row for its floor column is never denied on its
-                // row-mate's account). A TIE between two rows (equal price) is not a verdict
-                // — see `draw_sections`' round 2 for why a tied loser is re-judged next
-                // iteration rather than written off; only a row that is cheapest here and
-                // still cannot be afforded, with nothing yet spent against it, stops growth.
-                let mut asks: Vec<(u16, usize)> = [0usize, 1]
-                    .into_iter()
-                    .filter_map(|r| {
-                        let want = (0..2)
-                            .map(|k| 2 * r + k)
-                            .filter(|ci| wanting.contains(ci) && shown[*ci] == floor)
-                            .map(|ci| column_height_for(app, ci, cw[ci % 2], dense, floor + 1))
-                            .max()?;
-                        Some((want.saturating_sub(grid[r]), r))
-                    })
-                    .collect();
-                asks.sort_unstable();
-                let mut moved = false;
-                for (cost, r) in asks {
-                    if cost <= budget {
-                        grid[r] += cost;
-                        budget -= cost;
-                        moved = true;
-                    }
-                }
-                if !moved {
-                    break;
-                }
-            }
+            round_robin_grow(4, |ci| ci / 2, &mut grid, &mut shown, &mut budget, cap_of, |ci, k| column_height_for(app, ci, cw[ci % 2], dense, k));
         }
-        // ROUND 3 — no blank band between the grid and the panels.
-        grid[0] += budget / 2;
-        grid[1] += budget - budget / 2;
+        // ROUND 3 — no blank band between the grid and the panels: the whole leftover goes
+        // to whichever row is still furthest behind (never split — see `pad_most_behind`,
+        // and why an even split is exactly what let one row cross the "nothing left to
+        // show" boundary for free while its sibling, just as entitled, got nothing).
+        pad_most_behind(4, |ci| ci / 2, &mut grid, &shown, &mut budget, cap_of);
     } else if let Some(r) = grow.into_iter().find(|&r| row_live(r) && grid[r] >= row_need(r, true)) {
         // a row still short of its first card leaves the spare rows to a row that is
         // already showing every card it has: padding, never an extra card
