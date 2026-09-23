@@ -459,6 +459,18 @@ impl App {
         if let Some(d) = &self.popup {
             self.popup = store.show(d.card.id).ok();
         }
+        // warnings raised opening (or, mid-session, re-opening) the board — a wide board
+        // file, a backup made before a schema upgrade — are shown here rather than only on
+        // stderr after the board exits, since the alternate screen hides stderr while it
+        // runs (card #83). Only when the line is free: an unread one is never silently
+        // replaced by a later one, and anything still queued when the board exits is left
+        // for `main`'s own stderr print to catch, so a warning is never lost outright.
+        if self.status.is_none() {
+            let pending = crate::notice::take_unprinted();
+            if !pending.is_empty() {
+                self.status = Some((pending.join(" · "), true));
+            }
+        }
     }
 
     fn report<T>(&mut self, r: crate::store::Result<T>, ok: impl FnOnce(&T) -> String) -> Option<T> {
@@ -1277,9 +1289,16 @@ impl App {
                 self.repos = RepoState::Idle;
                 self.repos_rx = None;
                 self.picker_msg = None;
+                // cleared first, so `reload` can surface a warning this open just raised (a
+                // wide file, a backup made upgrading an older board) instead of it sitting
+                // queued behind whatever the old board was last showing (card #83)
+                self.status = None;
+                self.status_until = None;
                 self.reload(store);
-                self.status = Some((format!("board: {}", row.name), false));
-                self.status_until = Some(Instant::now() + Duration::from_secs(3));
+                if self.status.is_none() {
+                    self.status = Some((format!("board: {}", row.name), false));
+                    self.status_until = Some(Instant::now() + Duration::from_secs(3));
+                }
             }
         }
     }
@@ -3742,5 +3761,51 @@ mod look_tests {
         assert_eq!(date_order_note(&s, "todo", 6), "", "it is the first thing a narrow header gives up");
         assert_eq!(date_order_note(&s, "doing", 30), "");
         assert_eq!(date_order_note(&snap([None; 4], false), "todo", 30), "");
+    }
+}
+
+// A separate `mod` (not `look_tests`, above) so the doc comment on the module is about what
+// it actually covers; both compile into the same `--lib` test binary either way. Kept as its
+// own module deliberately: `crate::notice` is a process-wide static, and every test that
+// touches it lives HERE, in one function, run on one thread in sequence — never spread across
+// several `#[test]` fns that cargo's default test harness could interleave on different
+// threads, which would make them flaky against each other for no reason a reader could see.
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    /// Warnings the board raises opening (or, mid-session, re-opening) its file must reach
+    /// the status line while it is open — not only stderr after it exits, which the
+    /// alternate screen hides while it runs (card #83).
+    #[test]
+    fn a_pending_warning_reaches_the_status_line_and_survives_a_board_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&dir.path().join("old.db")).unwrap();
+        let mut app = App::new(store.snapshot().unwrap(), "alice");
+        assert!(app.status.is_none());
+
+        // a notice already pending when the board opens reaches the status line on the next
+        // reload (the same reload the run loop already calls every couple of seconds)
+        crate::notice::push("card-83-test-1: the board file is open to other users");
+        app.reload(&store);
+        let (msg, is_err) = app.status.clone().expect("a pending warning must reach the status line, not only stderr after exit");
+        assert!(is_err, "a warning carries the weight of an error, not a quiet aside: {msg}");
+        assert!(msg.contains("card-83-test-1"), "{msg}");
+        // it is shown once: a second reload with nothing new pending leaves it exactly as it
+        // was — an unread warning is never silently replaced
+        app.reload(&store);
+        assert_eq!(app.status.as_ref().unwrap().0, msg);
+
+        // switching board must not let its own "board: NAME" confirmation silently swallow a
+        // warning the new open just raised, before the next frame ever draws it
+        app.status = None;
+        let new_path = dir.path().join("new.db");
+        let _ = crate::store::Store::open(&new_path).unwrap();
+        crate::notice::push("card-83-test-2: a warning raised opening the new board");
+        let row = crate::boards::BoardRow { name: "new".into(), is_default: false, counts: [0; 4], path: new_path };
+        app.switch_board(&row, &mut store);
+        let (msg2, is_err2) = app.status.clone().expect("the warning must win over the plain confirmation");
+        assert!(is_err2, "{msg2}");
+        assert!(msg2.contains("card-83-test-2"), "{msg2}");
     }
 }

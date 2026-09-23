@@ -1106,12 +1106,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
         ));
     }
-    // before the full-screen board or `watch` takes over the terminal
-    print_warnings();
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
     let j = cli.json;
+    // before `watch` or plain/json output takes over the terminal. The one exception is the
+    // full-screen board: printing here would flash on the real screen for an instant and then
+    // be hidden behind the alternate screen it switches to, so it shows its own warnings in
+    // the status line as they arrive instead (see `tui::run`'s use of `App::reload`).
+    if !(cmd.is_none() && tty) {
+        print_warnings();
+    }
     let Some(cmd) = cmd else {
         if tty {
             return tui::run(store, &actor)
