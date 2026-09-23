@@ -252,8 +252,8 @@ Where each part comes from:
 
 | part | from |
 |---|---|
-| harness, session | picked up by itself: from what the harness exports (Claude Code does; omp names itself but exports no session id or model), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
-| model, role | **only** from `TB_MODEL` and `TB_ROLE`. No harness tells its child processes which model it runs, and tb does not guess: a wrong model written down as fact is worse than none |
+| harness, session | picked up by itself: from what the harness exports (Claude Code and `pi` both do; omp names itself but exports no session id or model), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
+| model, role | from `TB_MODEL` and `TB_ROLE`. A `pi` session is covered automatically: pi exports its model (`PI_MODEL`) and session (`PI_SESSION_ID`), and tb reads them only when the harness is pi. No other harness tells its child processes which model it runs, and none tells the role; tb does not guess, since a wrong model written down as fact is worse than none |
 | machine | the first part of the host name, or `TB_HOST` |
 
 So put the two explicit ones in whatever starts the agent — its launch script, or the
