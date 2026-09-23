@@ -89,11 +89,13 @@ A bare `tb --json` (not a terminal) prints the same object.
   "column_since": 1789763036,
   "checklist": [ { "n": 1, "idx": 1, "text": "repro", "done": false } ],
   "round": 1,
+  "escalate": false,
   "approved_by": [],
   "events": [
     { "ts": 1789763036, "actor": "bot-2", "kind": "created", "text": "", "actor_id": 4 },
     { "ts": 1789763036, "actor": "bot-2", "kind": "taken", "text": "", "actor_id": 4 }
-  ]
+  ],
+  "links": [ { "idx": 1, "label": "brief", "value": "docs/brief.md", "added_by": "bot-2", "added_at": 1789763036 } ]
 }
 ```
 
@@ -122,7 +124,9 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `checklist[]` | `{n, idx, text, done}` | `n` is 1-based and canonical; `idx` is a deprecated alias with the same value (kept so older readers of `tb show --json` don't break; removed no earlier than the next major version) |
 | `approved_by` | string[] | everyone who recorded `tb done ID --approve` on this card, oldest first, each once. A record of who checked it — **not** a permission; `done-by` (which says who may close a card) is a separate, self-asserted setting, see README |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
-| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `escalate` | bool | sent back more times than `config max-rounds` allows — **derived at read time**, never stored, and always `false` on a `done` card. `false` on every board that has not set `max-rounds` (the default). Skipped by `tb next` / `tb next --review`'s automatic pick; never removed from `tb list`, `tb board` or `tb show` — see README |
+| `events[]` | `{ts, actor, kind, text, actor_id}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `link` (`tb link`; `text` is `+ LABEL: VALUE` or `- LABEL: VALUE`), `blocked`, `unblocked`, `dropped`, `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released); the set is open — see the forward-compatibility rule above |
+| `links[]` | `{idx, label, value, added_by, added_at}` | evidence attached with `tb link ID VALUE --label LABEL`, in the order added. `value` is a path, a sha or a URL as **plain text tb only stores** — never read, resolved or fetched (docs/SCHEMA.md, table `links`). `label` is free text (not a fixed set), lower-cased. `config done-needs-link LABEL` refuses `tb done` (or `tb move ID done`) while no link here has that `label`, case-insensitive; `github`'s own evidence-driven moves are exempt, same as `done-by` |
 
 ### identity
 
@@ -182,8 +186,8 @@ is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
-Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `move`, `done`,
-`block`, `drop`, `rm`, `prio`, `edit`.
+Every write command takes `--json`: `add`, `next`, `take`, `assign`, `note`, `check`, `link`,
+`move`, `done`, `block`, `drop`, `rm`, `prio`, `edit`.
 
 Success (exit 0) — the card after the change (for `rm`, the card as it was):
 
@@ -209,11 +213,22 @@ file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or
 terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
 `--desc-file`, note text with `--file`) is an argument error (exit 2).
 
+`assign ID NAME --json` answers the same `{ "ok": true, "card": … }` shape as `take` — `card.owner`
+is `NAME`, never the identity behind `--as`; who ran the assign is only in the event log (`kind:
+"assigned"`, `actor` is the assigner, `text` is `"assigned to NAME"`), not in this response.
+
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
+`config rules "TEXT"|--file PATH --json` returns `{ "ok": true, "config": { "key": "rules",
+"value": "TEXT" } }`; `--off` answers `"value": null`; `config rules --json` (no value) reads it
+the same way, `null` when unset. `tb next --json` (either form) adds one more field, **only the
+first time an agent is shown a board's current rules text**: `"rules": "TEXT"` alongside `"card"`
+— absent every other time, including every `--json` response from every other write command, so
+existing consumers see no new field until they ask `tb next` on a board that sets `rules`.
 `prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
 tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
-`config sort --json`, `config tz --json` and `config due-warn --json` (no value) read one setting in the same shape,
-default included: `"value": "local"` / `"value": 3`. `config --json` lists them once set.
+`config sort --json`, `config tz --json`, `config due-warn --json` and `config done-needs-link --json` (no value) read
+one setting in the same shape, default included: `"value": "local"` / `"value": 3` / `"value": null` (off).
+`config --json` lists them once set.
 `sync --json` returns `{ "ok": true, "moves": [ { "card_id": 3, "gh_ref": 20, "from": "doing", "to": "done", "text": "PR gh#20 merged → done" } ] }`.
 
 Failure (non-zero exit), for any command run with `--json` — including **argument errors**
@@ -222,12 +237,12 @@ object; parse failures answer on stdout with the same shape and exit **2** (usag
 of 1 (runtime):
 
 ```json
-{ "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids" }
+{ "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids", "code": "no_card" }
 ```
 
 An argument error names what is missing and gives the usage line, e.g. `tb note 1 --json` →
 `"error": "argument error: the following required arguments were not provided: <TEXT>"`,
-`"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"` (exit 2).
+`"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"`, `"code": "usage"` (exit 2).
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue gh#11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
@@ -237,7 +252,60 @@ The name is left out only when a bare `tb` is certain to reach that board: it is
 plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
 picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
 
-## Warnings — `"warnings": ["…"]`
+### `code` — a stable symbol to branch on, never `error`'s prose
+
+`error` and `hint` are prose for a person: rewording either is not a breaking change, and has
+happened before (#25 changed argument errors from plain text to this JSON shape without
+bumping `"v"`). Before `code` existed, an agent that needed to tell "the card is held by
+someone else" from "no card #N" from "doing is full" apart had no choice but to substring-match
+that prose — freezing it into a de-facto contract. `code` is the real, stable contract: a
+lowercase snake_case symbol, present and non-empty on **every** `--json` failure object, runtime
+or argument error, on every command that can fail. It is carried on the error type itself
+(`store::BoardError`'s second field, `store::Code`), not re-derived from the message text, so
+adding a new failure path without a code is a compile error, not a runtime gap.
+
+**The vocabulary is OPEN.** New codes are added as tb grows; a consumer that meets one it does
+not recognize falls back to `error`'s text and the exit status — exactly as it must for any
+future addition. Once shipped, a code's spelling and meaning are a contract: never renamed,
+never reused for a different failure. `unknown` is the explicit catch-all — carried today by
+error paths that predate this vocabulary or that do not yet warrant their own symbol — and
+means exactly the same thing to a consumer as a code it has never seen: read `error`/`hint`.
+
+The five 2.0.0 refusals, pinned by golden tests:
+
+| code | refusal |
+|---|---|
+| `not_owner` | changing a DOING card held by another actor without `--force` (the holder rule) |
+| `db_pinned` | a board name given while `TB_DB` pins one file |
+| `no_board` | the named board does not exist |
+| `empty_actor` | `--as ""` |
+| `reason_required` | sending a REVIEW card back to DOING with no reason |
+
+Everyday failures:
+
+| code | refusal |
+|---|---|
+| `no_card` | no card with that id, on the board or in the archive |
+| `wip_full` | DOING is at the board's `wip` limit |
+| `invalid_board_name` | a board name that is not `[a-z0-9_-]{1,32}` |
+| `board_name_is_command` | a board name that collides with a command word |
+| `gh_issue_open` | `tb done` refused: the linked GitHub issue is still open |
+| `github_off` | a GitHub-only command run on a board with no `github` repo configured |
+| `github_error` | a GitHub API/network call failed |
+| `not_in_review` | an approval (`tb done --approve`) outside REVIEW |
+| `self_approve` | the actor who did the work tried to approve or review their own card (never-approve-your-own-work) |
+| `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
+| `done_needs_note` | `config done-needs-note` requires a fresh note before DONE |
+| `done_needs_link` | `config done-needs-link` requires a link with that label before DONE |
+| `arg_required` | a required argument or value was not given |
+| `unknown_command` | an unrecognized subcommand or command word |
+| `unknown_setting` | an unrecognized `tb config` key |
+| `invalid_value` | a value given for a recognized field/setting/flag is not one it accepts |
+| `db_error` | the database could not be opened, read or written (including "locked, try again") |
+| `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
+| `terminal_error` | the interactive TUI failed to start or run |
+| `usage` | a command-line argument failed to parse (clap): missing/extra/malformed flags, an unrecognized subcommand caught at the parser level, wrong arity |
+| `unknown` | the open-ended catch-all above |
 
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
@@ -254,7 +322,7 @@ edited and fed back. Documents: an array of cards, `{"cards": […]}`, a whole b
 | `due` | `YYYY-MM-DD` or `null` — the strict date rule | the same; `null` clears |
 | `blocked` | text or `null` (`by #7` = `#7`, as `tb block`) | the same; `null` unblocks |
 | `checklist` | texts, or `{text, done}` (`n`/`idx` ignored) | ignored |
-| everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `days_left`, `due_state`, `events`, unknown fields | the same |
+| everything else | **ignored, with one warning**: `column`, `position`, `owner`, `reviewer`, timestamps, `round`, `escalate`, `days_left`, `due_state`, `events`, unknown fields | the same |
 
 In `edit --from` an absent field is left alone and a value the card already has is no change
 (no event), so a file can be run twice. It follows **the holder rule**, exactly as a single
@@ -279,14 +347,14 @@ Success (exit 0; `--dry-run` answers the same object with `"dry_run": true` and 
 
 ```json
 { "ok": false, "error": "2 problems in dates.json", "hint": "nothing was written; fix them and check again with 'tb edit --from dates.json --dry-run'",
-  "command": "edit", "source": "dates.json", "dry_run": false,
+  "code": "invalid_value", "command": "edit", "source": "dates.json", "dry_run": false,
   "problems": [ { "row": 250, "id": 41, "field": "due", "problem": "'2026-02-30' is not a real calendar date", "hint": "use YYYY-MM-DD, …" },
                 { "row": 251, "id": 97, "field": "id", "problem": "no card #97", "hint": "see 'tb list' for ids" } ] }
 ```
 
 A file that cannot be read at all (missing, not JSON, not cards, empty, too big, a terminal
-on `-`) is the usual `{ok:false,error,hint}`. One write transaction: a second import at the
-same moment waits, then runs whole.
+on `-`) is the usual `{ok:false,error,hint,code}`. One write transaction: a second import at
+the same moment waits, then runs whole.
 
 ## `tb export` — the whole board, with its history
 
@@ -327,6 +395,14 @@ same event fields `tb watch --events` streams, without the live stream's `from`/
 second; events are selected by their timestamp, so a history written out of order still
 answers "everything since Tuesday" correctly.
 
+Interleaved with the card events, oldest first by the same clock, are the board's own —
+`mv` leaving a `moved-out` behind on the board a card left (the moved-in half is a card
+event, and `tb show` on the new id prints it; the moved-out half has no card of its own to
+attach to), a WIP change, a file-mode change, a soft-delete: `card_id` is **`null`** on these
+rows, never a card's id repurposed to mean "the board" (`actor_id` is whatever it always is —
+null when nothing but the name is known). Plain text marks the same row `board` where a card
+row shows `#ID`. Previously nothing printed this half of a move's trail (#106).
+
 ## `tb list --done [--since DATE]`
 
 The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —
@@ -335,7 +411,7 @@ array of card objects, the same shape as `tb list --json`.
 
 `tb export`, `tb log` and `tb list` never write to the board file.
 
-## `tb agents --json`
+## Warnings — `"warnings": ["…"]`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
 `TB_DB` pins a file; the board file can be opened by other users; the board was backed up
@@ -392,15 +468,15 @@ column and not a grouping is refused before the board is read.
 
 ```json
 { "ok": true, "from_board": "default", "to_board": "work", "old_id": 3, "id": 12,
-  "title": "docs: write the guide", "checklist": 2, "events": 7 }
+  "title": "docs: write the guide", "checklist": 2, "events": 7, "links": 1 }
 ```
 
 `id` is the card's number on the board it arrived at, and it is **not** `old_id`: ids belong to
-a board. The card, its checklist and its whole history travel, with each event's original
-actor and time, and a `moved-in` event records where it came from; the source board's log
-records where it went. The column and the owner do **not** travel — a moved card lands in
-`todo`, unowned. A `--on` that names a card is dropped (that number means a different card
-over there); the block's text is kept.
+a board. The card, its checklist, its links and its whole history travel, with each event's
+original actor and time (and each link's original `added_by`/`added_at`), and a `moved-in`
+event records where it came from; the source board's log records where it went. The column and
+the owner do **not** travel — a moved card lands in `todo`, unowned. A `--on` that names a card
+is dropped (that number means a different card over there); the block's text is kept.
 
 Refused (exit 1, the usual `{ok,error,hint}`): a destination that does not exist (tb never
 creates one), the board the card is already on, a card somebody else holds in DOING (add
@@ -449,7 +525,7 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 ## Other read commands
 
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
-- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
+- `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `links` (`idx`, `label`, `value`, `added_by`, `added_at`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
 - `tb boards --json` — `[{name, default, todo, doing, review, done}]`; `default` is true on the board plain `tb` opens here.
 - `tb boards --default --json` — `{ok, default, source, setting, missing}`: `default` is the board plain `tb` opens
   in this environment, `source` says why (`"TB_DB"` | `"TB_BOARD"` | `"setting"` | `"builtin"`), `setting` is the
@@ -472,4 +548,5 @@ the last accepted, `4102444799`) —
 a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
 `{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
 The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
-`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.
+`TB_NO_SETUP`, `TB_STDIN_TIMEOUT`) may stay lenient: a wrong value fails visibly where it is
+used, or — `TB_STDIN_TIMEOUT` — is simply not applied.

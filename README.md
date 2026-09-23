@@ -42,6 +42,8 @@ Is this healthy? No. Is it faster? Absolutely.
 - [Your first 5 minutes](#your-first-5-minutes)
 - [Keys](#keys)
 - [Boards](#boards)
+- [Assigning a card](#assigning-a-card)
+- [A board's own rules](#a-boards-own-rules)
 - [GitHub](#github)
 - [Agents](#agents)
 - [Command-line reference](#command-line-reference)
@@ -304,6 +306,44 @@ On the board, `B` opens the board picker: the same rows as `tb boards` — name,
 and the default board marked — and `enter` switches to the one you choose without quitting
 `tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
+## Assigning a card
+
+`tb next` and `tb take ID` both make the CALLER the owner — an orchestrator can only tell an
+agent to run one of them, which means the agent picks. `tb assign ID NAME` hands a specific
+card straight to NAME instead:
+
+<!-- no-test -->
+```sh
+tb add "ops: rotate API tokens"
+tb assign 3 alice
+```
+
+It is `tb take` for someone else: `alice` becomes the owner and the card moves to DOING, but
+the event log keeps the two facts apart — its `actor` is whoever ran `tb assign` (who
+assigned it), the card's `owner` is `alice` (who now holds it). Like `take`, it only reaches a
+card in TODO — there is no `--force` to pull a card away from whoever already holds it, so
+`tb assign` can never take someone's work out from under them. It counts against the
+board-wide WIP limit exactly as `take` does.
+
+## A board's own rules
+
+A board can carry its own conventions — house style, how to name a branch, who to ping —
+printed by `tb guide` and shown automatically to each agent once, the first `tb next` after
+the text is set or changed:
+
+<!-- no-test -->
+```sh
+tb config rules "branch names: fix/<issue>-<slug>; note before every stop"
+tb config rules                      # read it back
+tb config rules --file rules.md      # from a file, byte for byte (- = stdin)
+tb config rules --off                # clear it
+```
+
+Nothing is shown twice for the same text: an agent that has already seen the current wording
+is not shown it again on its next `tb next`, but editing the rules makes them new again for
+everyone, including agents who saw the old wording. A board that sets no rules behaves exactly
+as it always has — `tb guide` and `tb next` are unchanged.
+
 ## GitHub
 
 Terminal Board can show one GitHub repository per board: open pull requests with their CI
@@ -399,10 +439,16 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 `tb config agents-panel shown|hidden`; print the same list with `tb agents`
 ([more](docs/HUMANS.md#watching-agents)).
 
+**Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
+`block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
+ahead anyway (each override is logged as its own `force` event). `tb note` stays open to
+everyone: a progress note adds to a card, it does not take it over.
+
 ## Command-line reference
 
 Every command prints a short answer and, when something is wrong, says what to run next.
-Add `--json` to any command for machine-readable output.
+Add `--json` to any command for machine-readable output. `tb --help` prints a one-screen
+summary, one line per group, pointing here for the full flag reference.
 
 ```sh
 tb add "docs: fix typo in README"
@@ -438,8 +484,10 @@ tb --version
 | `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
 | `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
+| `tb assign ID NAME` | hand a specific TODO card to NAME, without taking it yourself — see [Assigning a card](#assigning-a-card) |
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
-| `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item |
+| `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item (`--force` on someone else's held card, logged) |
+| `tb link ID VALUE --label LABEL` / `tb link ID --rm N` | attach evidence (a path, sha or URL) under a label, or remove one — see [Evidence links](#evidence-links) |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb block ID "text" --on NAME\|#ID --until DATE` | say who you wait on and when to look again — see [Waiting on something](#waiting-on-something) |
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
@@ -448,9 +496,12 @@ tb --version
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
+| `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
+| `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
+| `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
-| `tb prio ID top\|bottom\|up\|down` | reorder within the column |
+| `tb prio ID top\|bottom\|up\|down` | reorder within the column (`--force` on someone else's held card, logged; `note` is always open to everyone) |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
 | `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |
@@ -465,6 +516,7 @@ tb --version
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb config card-line age\|due` | what a card line shows where the age is: the age (default), or the due date and the days left |
 | `tb config label COLUMN "TEXT"` / `--off` | a display name for `todo`, `doing`, `review` or `done` — **display only**; see [Due dates](#due-dates) |
+| `tb config rules "TEXT"` / `--file PATH` / `--off` | a board's own conventions — see [A board's own rules](#a-boards-own-rules) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | who is on this board and the card each holds or reviews, then the other herdr agents |
 | `tb guide` | the manual for AI agents |
@@ -548,7 +600,12 @@ The text must be UTF-8 and at most 256 KiB (262144 bytes). Blank space around it
 everything between is kept exactly — tabs, blank lines, Windows line ends (a leading
 byte-order mark is dropped). An empty file is refused, so a forgotten pipe can never blank a
 description; `--desc ""` still clears one on purpose. With `-`, standard input has to be a
-pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing. Give the
+pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing, and it
+otherwise waits for that pipe to close, however long that takes — a harness whose pipe never
+closes hangs there, so `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only
+(unset, the default: wait forever; nothing after that first byte is ever timed, so a producer
+that is merely slow to start is never cut off). A path that is a FIFO with no writer is
+refused outright rather than risk the same hang inside opening it. Give the
 text once — `--desc` with `--desc-file`, or note text with `--file`, is an argument error.
 Control characters are stored as they are and removed whenever the text is shown, like any
 other card text.
@@ -768,6 +825,58 @@ The GitHub sync is exempt — a merged PR closing its card is evidence, not a pe
 works on every card, not only one linked to an issue, and `done-by` does not gate it: noting
 "I looked at this" is not closing it. Each checker is listed once in JSON as `approved_by`.
 
+### Evidence links
+
+```sh
+tb evidence add "release: cut v2"
+tb evidence link 1 docs/release-notes.md --label brief
+tb evidence link 1 https://ci.example/run/42 --label verdict
+tb evidence show 1
+tb evidence config done-needs-link verdict
+tb evidence take 1
+tb evidence done 1
+tb evidence done 1 --as bob
+tb evidence config done-needs-link --off
+```
+
+A link is evidence for a card — a path, a git sha or a URL — under a label you choose
+(`brief`, `verdict`, `commit`, or anything else): `tb link ID VALUE --label LABEL` attaches
+one, `tb link ID --rm N` removes it and renumbers the rest, and `tb show ID` lists them all.
+**tb only stores and displays the text — it never reads a file there, never resolves a sha
+against a repository and never fetches a URL.**
+
+`tb config done-needs-link LABEL` refuses to move a card into DONE until it carries a link
+with that label, the same honest-mistake shape `done-by` already has: names and labels are
+**self-asserted**, `--force` gets past it and is logged, and the GitHub sync is exempt (a
+merged PR closing its card is already evidence, not a person). `--off` turns it off again.
+
+### Rework rounds and a closing note
+
+```sh
+tb office config done-needs-note on
+tb office config max-rounds 5
+tb office move 1 doing "add the rollback step"        # round 2 — shows r2
+tb office done 1 --as anna                             # doing -> review; column_since resets
+tb office note 1 "checked the rollback step, looks right"
+tb office done 1                                       # closes: a note was written this stay
+```
+
+**`tb config done-needs-note on`** refuses to move a card into DONE until somebody has written
+a note (`tb note`) **during the stay it is leaving** — a note kept from an earlier round does
+not count, so a note from round 1 cannot silently stand in for round 3's close (running `tb
+done 1` again right after the send-back above, before the `tb note`, is refused with exactly
+that reason and what to run next). Off is the default: a board that sets nothing checks
+nothing. `--force` gets past it, logged, the same bargain `done-by` makes; the GitHub sync is
+exempt — a merged PR is its own trace.
+
+**`tb config max-rounds 5`** marks a card **`escalate`** (JSON) once it has been sent back more
+than 5 times, so a loop between a worker and a reviewer cannot run forever unnoticed.
+`escalate` is **derived**, like `recheck` and `due_state` — nothing is stored, and it is
+`false` again the moment the card reaches DONE. `tb next` and `tb next --review` skip an
+escalated card in their automatic pick; it is never hidden from `tb list`, `tb board` or
+`tb show`, and `tb take ID` / `tb move` / `tb done` still work on it directly — only being
+handed it by accident is what stops.
+
 ### Tags you choose
 
 ```sh
@@ -820,6 +929,14 @@ only: JSON, the columns, the counts, `tb next` and every command are unaffected.
 A board whose cards carry **no due dates**, and which sets none of these settings, looks and
 behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows
 its mark when it is close, with `due-warn` (3 days) deciding how close that is.
+
+### Long columns
+
+Each column draws at most ten cards at a time and counts the rest as `+N more` at its foot —
+and in the stacked views, where the four columns share one height, every column gets a fair
+share of the room before any column takes more. One long column can no longer squeeze the
+others out. Arrow keys still reach every card, and the count in a column header is always the
+real total, whatever is hidden.
 
 ## Layouts and themes
 

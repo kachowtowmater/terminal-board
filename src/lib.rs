@@ -108,13 +108,22 @@ pub fn env(name: &str) -> Option<String> {
 
 /// Actor identity: `--as`, else `TB_AS`, else `HERDR_AGENT_NAME`, else the herdr agent name
 /// of this pane (`HERDR_PANE_ID`, asked from herdr), else `USER`.
+///
+/// Trimmed once, here, whichever source wins: every place tb later compares this actor
+/// against a stored name (the card holder, `done-by`, the self-approval guard, the
+/// reviewer-claim guard) then works with the same clean value, so `--as "anna "` matches
+/// `--as anna` everywhere instead of only where someone remembered to trim (#103). An
+/// empty-after-trim value never reaches here — the caller refuses `--as " "` up front, same
+/// as `--as ""` — so trimming can never turn a real name into `""`.
 pub fn resolve_actor(flag: Option<&str>) -> String {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    flag.map(str::to_string)
+    let raw = flag
+        .map(str::to_string)
         .filter(|v| !v.trim().is_empty())
         .or_else(|| crate::env("AS"))
         .or_else(|| env("HERDR_AGENT_NAME"))
         .or_else(|| env("HERDR_PANE_ID").and_then(|p| herdr::agent_name_for_pane(p.trim())))
         .or_else(|| env("USER"))
-        .unwrap_or_else(|| "someone".into())
+        .unwrap_or_else(|| "someone".into());
+    raw.trim().to_string()
 }

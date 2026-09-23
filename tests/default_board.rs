@@ -222,9 +222,11 @@ fn unknown_and_archived_boards_are_refused() {
     let o = h.run(&["boards", "--default", "wrok", "--json"], &[]);
     assert_eq!(o.status.code(), Some(1));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(sorted_keys(&v), ["error", "hint", "ok"]);
+    assert_eq!(sorted_keys(&v), ["code", "error", "hint", "ok"]);
     assert_eq!((&v["ok"], &v["error"]), (&false.into(), &"no board 'wrok'".into()));
     assert!(v["hint"].as_str().unwrap().contains("'tb boards --default NAME'"), "{v}");
+    // #81: the stable code for "the named board does not exist"
+    assert_eq!(v["code"], "no_board");
 
     // an archived board is a file moved out of the boards directory: not a board to open
     let archive = h.path().join(".local/state/terminal-board/archive");

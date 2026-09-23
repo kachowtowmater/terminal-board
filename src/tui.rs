@@ -173,6 +173,47 @@ pub enum Confirm {
     /// Delete (or archive) someone else's DOING card: the prompt named the holder, so `y` is
     /// the forced, logged path.
     DeleteHeld(i64),
+    /// A queue-order or checklist change on someone else's DOING card: the prompt named the
+    /// holder, so `y` is the forced, logged path — like `NotMine`, but for `check`/`prio`
+    /// instead of a column move.
+    NotMineWrite(i64, HeldWrite),
+}
+
+/// A queue-order or checklist write the store applies no guard to itself (like `note`, `check`
+/// and `prio` are open to everyone at the store layer — the CLI guards them in `main.rs` with
+/// `holder_check`/`log_forced`; this is the TUI's copy of the same rule for its own keys).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeldWrite {
+    /// `prio` — `how` is `up`, `down`, `top` or `bottom`.
+    Reorder(String),
+    /// Toggle checklist item `n`.
+    Check(i64),
+    /// Add a checklist item with this text.
+    AddCheck(String),
+    /// Remove checklist item `n`.
+    RemoveCheck(i64),
+}
+
+impl HeldWrite {
+    /// Finishes "held by OWNER — … anyway?" — the same tokens `main.rs` uses for `--force`.
+    fn what(&self) -> &'static str {
+        match self {
+            HeldWrite::Reorder(_) => "reorder it",
+            HeldWrite::Check(_) => "tick it",
+            HeldWrite::AddCheck(_) => "add to it",
+            HeldWrite::RemoveCheck(_) => "remove it",
+        }
+    }
+
+    /// The `force` event's verb — matches `main.rs`'s `did` for the same change.
+    fn did(&self) -> &'static str {
+        match self {
+            HeldWrite::Reorder(_) => "reordered",
+            HeldWrite::Check(_) => "checked",
+            HeldWrite::AddCheck(_) => "added a check to",
+            HeldWrite::RemoveCheck(_) => "removed a check from",
+        }
+    }
 }
 
 /// Title + description edit form (`e`). `cursor` is a char index into the active field.
@@ -512,11 +553,10 @@ impl App {
                 KeyCode::Esc => self.mode = Mode::Popup(id),
                 KeyCode::Enter => {
                     if !buf.trim().is_empty() {
-                        let r = store.add_check(id, &buf, &actor);
-                        if let Some(n) = self.report(r, |n| format!("#{id} item {n} added")) {
-                            self.reload(store);
-                            self.cursor = (n as usize).saturating_sub(1);
+                        if self.guard_write(id, HeldWrite::AddCheck(buf.clone())) {
+                            return false;
                         }
+                        self.commit_add_check(id, &buf, store);
                     }
                     self.mode = Mode::Popup(id);
                 }
@@ -544,11 +584,10 @@ impl App {
                     KeyCode::Enter => {
                         if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                             let n = item.idx;
-                            let r = store.check(id, n, &actor);
-                            self.report(r, |d| {
-                                format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" })
-                            });
-                            self.reload(store);
+                            if self.guard_write(id, HeldWrite::Check(n)) {
+                                return false;
+                            }
+                            self.commit_check(id, n, store);
                         }
                     }
                     KeyCode::Char('n') => {
@@ -560,11 +599,10 @@ impl App {
                     KeyCode::Char('d') => {
                         if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                             let n = item.idx;
-                            let r = store.remove_check(id, n, &actor);
-                            if self.report(r, |_| format!("#{id} item {n} deleted")).is_some() {
-                                self.reload(store);
-                                self.cursor = self.cursor.min(items.len().saturating_sub(2));
+                            if self.guard_write(id, HeldWrite::RemoveCheck(n)) {
+                                return false;
                             }
+                            self.commit_remove_check(id, n, store);
                         }
                     }
                     _ => {}
@@ -679,6 +717,7 @@ impl App {
                                 self.focus_card(id);
                             }
                         }
+                        Confirm::NotMineWrite(id, write) => self.commit_forced_write(id, write, store),
                     }
                 } else {
                     self.status = Some(("cancelled".into(), false));
@@ -957,6 +996,13 @@ impl App {
         if self.col == 3 {
             return; // DONE is ordered by time
         }
+        if self.guard_write(id, HeldWrite::Reorder(how.to_string())) {
+            return;
+        }
+        self.commit_reorder(id, how, store);
+    }
+
+    fn commit_reorder(&mut self, id: i64, how: &str, store: &mut Store) {
         let actor = self.actor.clone();
         let r = store.reorder(id, how, &actor);
         // on a due-sorted column position is only the tie-break: say so instead of seeming
@@ -970,6 +1016,68 @@ impl App {
         if self.report(r, |_| said).is_some() {
             self.reload(store);
             self.focus_card(id);
+        }
+    }
+
+    /// Someone else's DOING card: queue this change through a y/n Confirm (like `x`/shift-arrow
+    /// already do for delete/move) instead of writing it — returns `true` if a prompt was shown
+    /// (the caller stops there). `check`/`prio` have no guard of their own at the store layer
+    /// (only `edit`, `block`, `rm` and a column move go through `holder_check`), so the TUI
+    /// applies the same rule here that `main.rs` applies at the CLI.
+    fn guard_write(&mut self, id: i64, write: HeldWrite) -> bool {
+        let Some(c) = self.snap.cards.iter().find(|c| c.id == id) else { return false };
+        if c.column != "doing" || self.actor == "github" {
+            return false;
+        }
+        let Some(owner) = c.owner.as_deref().filter(|o| !o.eq_ignore_ascii_case(&self.actor)) else {
+            return false;
+        };
+        self.mode = Mode::Confirm {
+            prompt: format!("#{id} is held by {owner} — {} anyway? y/n (logged)", write.what()),
+            action: Confirm::NotMineWrite(id, write),
+        };
+        true
+    }
+
+    /// `y` on a `guard_write` prompt: the change goes through forced, then a `force` event is
+    /// logged — the same two steps `main.rs` does for `check --force` / `prio --force`.
+    fn commit_forced_write(&mut self, id: i64, write: HeldWrite, store: &mut Store) {
+        let actor = self.actor.clone();
+        let forced = store.holder_check(id, &actor, true, write.what());
+        match &write {
+            HeldWrite::Reorder(how) => self.commit_reorder(id, how, store),
+            HeldWrite::Check(n) => self.commit_check(id, *n, store),
+            HeldWrite::AddCheck(text) => self.commit_add_check(id, text, store),
+            HeldWrite::RemoveCheck(n) => self.commit_remove_check(id, *n, store),
+        }
+        if let Ok(Some(owner)) = forced {
+            let _ = store.log_forced(id, &actor, write.did(), &owner);
+        }
+    }
+
+    fn commit_check(&mut self, id: i64, n: i64, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.check(id, n, &actor);
+        self.report(r, |d| format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" }));
+        self.reload(store);
+    }
+
+    fn commit_add_check(&mut self, id: i64, text: &str, store: &mut Store) {
+        let actor = self.actor.clone();
+        let r = store.add_check(id, text, &actor);
+        if let Some(n) = self.report(r, |n| format!("#{id} item {n} added")) {
+            self.reload(store);
+            self.cursor = (n as usize).saturating_sub(1);
+        }
+    }
+
+    fn commit_remove_check(&mut self, id: i64, n: i64, store: &mut Store) {
+        let actor = self.actor.clone();
+        let pre_len = self.popup.as_ref().map(|d| d.checklist.len()).unwrap_or(0);
+        let r = store.remove_check(id, n, &actor);
+        if self.report(r, |_| format!("#{id} item {n} deleted")).is_some() {
+            self.reload(store);
+            self.cursor = self.cursor.min(pre_len.saturating_sub(2));
         }
     }
 
@@ -1417,10 +1525,10 @@ impl App {
                 let items = store.show(id).map(|d| d.checklist).unwrap_or_default();
                 if let Some(item) = items.get(self.cursor.min(items.len().saturating_sub(1))) {
                     let n = item.idx;
-                    let actor = self.actor.clone();
-                    let r = store.check(id, n, &actor);
-                    self.report(r, |d| format!("#{id} item {n} {}", if *d { "checked" } else { "unchecked" }));
-                    self.reload(store);
+                    if self.guard_write(id, HeldWrite::Check(n)) {
+                        return Some(false);
+                    }
+                    self.commit_check(id, n, store);
                     self.cursor = self.focus_first_open(store, id);
                 }
             }
@@ -1871,11 +1979,40 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
     }
 }
 
+/// The most cards one column ever draws, however tall the pane is. Past this it shows
+/// `+N more`, the same hint a column that runs out of room already shows.
+///
+/// A board is read column by column, and a column of forty finished cards is not read at
+/// all — it is scrolled past. Ten is enough to see what is going on and short enough that
+/// no column can crowd out its neighbours in the stacked layouts, where the four columns
+/// share one height. (Reported by the owner: "the done has too many and it pushes everyone".)
+pub const MAX_VISIBLE_CARDS: usize = 10;
+
+/// The `+N more` hint, in the longest form that fits `width` cells: `+10 more`, then `+10`,
+/// then `+`. It shortens in WHOLE words like every other hint on the board — a cut `+10 mor`
+/// reads like a defect, and this is the line that promises nothing is hidden silently.
+pub fn more_hint(n: usize, width: usize) -> String {
+    for form in [format!(" +{n} more"), format!(" +{n}"), format!("+{n}"), "+".to_string()] {
+        if form.chars().count() <= width {
+            return form;
+        }
+    }
+    String::new()
+}
+
+/// The cards column `ci` draws: its first `MAX_VISIBLE_CARDS`, in the board's own order —
+/// so under `sort due` these are the nearest-due cards, not just the first by position.
+/// The rest are counted by the `+N more` hint; the header keeps the true total.
+pub(crate) fn visible_cards(app: &App, ci: usize) -> Vec<&Card> {
+    app.col_cards(ci).into_iter().take(MAX_VISIBLE_CARDS).collect()
+}
+
 /// Box heights (4-row style) of column `ci`'s cards in a column `width` wide; a dense box
 /// is one row shorter.
 pub(crate) fn card_box_heights(app: &App, ci: usize, width: u16) -> Vec<u16> {
     let text_w = width.saturating_sub(6) as usize; // column frame + card frame + padding
-    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
+    // only the cards the column would draw: a column never ASKS for height it will not use
+    visible_cards(app, ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
 }
 
 /// Rows column `ci` needs to show every card boxed (frame included; 3 when empty).
@@ -1885,6 +2022,17 @@ pub(crate) fn column_height(app: &App, ci: usize, width: u16, dense: bool) -> u1
         return 3;
     }
     2 + h.iter().map(|x| x - u16::from(dense)).sum::<u16>()
+}
+
+/// Rows column `ci` needs to show ONE card as a dense box, plus a `+N more` row when it has
+/// others. This is the least a column can be given and still show work rather than a bare
+/// header, and it is what every non-empty column is guaranteed before any column gets more.
+pub(crate) fn column_min_one(app: &App, ci: usize, width: u16) -> u16 {
+    let h = card_box_heights(app, ci, width);
+    match h.first() {
+        None => 1,
+        Some(first) => 2 + (first - 1) + u16::from(h.len() > 1),
+    }
 }
 
 /// Rows column `ci` needs to show its first two cards as dense boxes (+ a `+N more` row).
@@ -1900,16 +2048,53 @@ pub(crate) fn column_min_boxed(app: &App, ci: usize, width: u16) -> u16 {
 pub const BOXED_MIN_ROWS: usize = 12;
 
 fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect) {
+    // the same cap the boxed column keeps: a window of MAX_VISIBLE_CARDS that follows the
+    // selection, so one long column cannot crowd out its neighbours in either style
+    let first = sel.unwrap_or(0).saturating_sub(MAX_VISIBLE_CARDS - 1);
+    let last = (first + MAX_VISIBLE_CARDS).min(cards.len());
+    let window = &cards[first..last];
     let mut lines = Vec::new();
-    let mut sel_end = 0;
-    for (i, c) in cards.iter().enumerate() {
-        lines.extend(card_lines(app, c, sel == Some(i), inner.width as usize, false));
-        if sel == Some(i) {
+    let (mut sel_start, mut sel_end) = (0, 0);
+    let mut ends = Vec::new();
+    for (i, c) in window.iter().enumerate() {
+        if sel == Some(first + i) {
+            sel_start = lines.len();
+        }
+        lines.extend(card_lines(app, c, sel == Some(first + i), inner.width as usize, false));
+        ends.push(lines.len());
+        if sel == Some(first + i) {
             sel_end = lines.len();
         }
     }
-    let offset = sel_end.saturating_sub(inner.height as usize) as u16;
-    f.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
+    // Scroll to the end of the selection — but never PAST ITS FIRST LINE, which is the one
+    // carrying `#id` and the title. A selected card taller than the rows it has used to
+    // scroll to its last line, so a one-row column showed the bare meta (`  0m`) and the
+    // card had no identity on screen at all: a card drawn is a card you can name.
+    let offset = sel_end.saturating_sub(inner.height as usize).min(sel_start);
+    // this list scrolls too, so it owes the same `+N more` a boxed column gives: a card
+    // nobody can see, with nothing saying it is there, is the one thing that must not happen
+    let last_row = offset + inner.height as usize;
+    let shown = ends.iter().filter(|e| **e <= last_row).count();
+    let hidden = cards.len() - (first + shown.max(usize::from(!window.is_empty())));
+    if hidden > 0 && inner.height == 1 {
+        // one row and something hidden: the row says so. A card fragment with nothing to say
+        // the others exist is exactly what must not happen, and the header keeps the count.
+        f.render_widget(Paragraph::new(Line::styled(more_hint(cards.len(), inner.width as usize), dim())), inner);
+        return;
+    }
+    if hidden > 0 && inner.height >= 2 {
+        let rows = inner.height as usize - 1;
+        f.render_widget(
+            Paragraph::new(lines).scroll((offset.min(sel_end.saturating_sub(rows)) as u16, 0)),
+            Rect { height: rows as u16, ..inner },
+        );
+        f.render_widget(
+            Paragraph::new(Line::styled(more_hint(hidden, inner.width as usize), dim())),
+            Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+        );
+        return;
+    }
+    f.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), inner);
 }
 
 /// Trello-style: each card in its own box in the column colour; the selected one thick.
@@ -1948,12 +2133,16 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
     let mut y = inner.y;
     let bottom = inner.y + inner.height;
     if start > 0 {
-        let hint = Line::styled(format!(" +{start} more"), dim());
+        let hint = Line::styled(more_hint(start, inner.width as usize), dim());
         f.render_widget(Paragraph::new(hint), Rect { y, height: 1, ..inner });
         y += 1;
     }
     let mut i = start;
-    while i < cards.len() {
+    // at most MAX_VISIBLE_CARDS at a time: a column of forty finished cards must not crowd
+    // out its neighbours. Scrolling still reaches every card, because the window follows the
+    // selection, and both hints count what is outside it.
+    let stop = (start + MAX_VISIBLE_CARDS).min(cards.len());
+    while i < stop {
         let more_after = cards.len() - i - 1;
         let reserve = u16::from(more_after > 0);
         let room = bottom.saturating_sub(y + reserve) as usize;
@@ -1965,7 +2154,6 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         } else if room >= 1 && i == target {
             // not even a small box fits: bare title line
             f.render_widget(Paragraph::new(bodies[i][0].clone()), Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 });
-            y += 1;
             i += 1;
             break;
         } else {
@@ -1984,8 +2172,12 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         y += rect.height;
         i += 1;
     }
-    if i < cards.len() && y < bottom {
-        let hint = Line::styled(format!(" +{} more", cards.len() - i), dim());
+    // a card that is not on screen ALWAYS has a `+N more` saying so — at the bottom if there
+    // is a row for it, and otherwise in place of the last card drawn, because a hidden card
+    // with nothing to say it is the one thing this must never do
+    let left = cards.len() - i;
+    if left > 0 {
+        let hint = Line::styled(more_hint(left, inner.width as usize), dim());
         f.render_widget(Paragraph::new(hint), Rect { y: bottom - 1, height: 1, ..inner });
     }
     dense
@@ -2290,6 +2482,13 @@ fn draw_popup(f: &mut Frame, app: &App, d: &CardDetail, full_width: bool) {
             let st = if k == cur { bold().add_modifier(Modifier::REVERSED) } else { Style::default() };
             let text = format!("[{}] {} {}", if i.done { "x" } else { " " }, i.idx, i.text);
             lines.push(Line::styled(text, st));
+        }
+    }
+    if !d.links.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("links:", dim()));
+        for l in &d.links {
+            lines.push(Line::raw(format!("  {} {}: {}", l.idx, l.label, l.value)));
         }
     }
     if let Some(n) = c.gh_ref {

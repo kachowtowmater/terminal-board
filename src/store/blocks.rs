@@ -18,7 +18,7 @@
 //! card's history, and re-blocking behind the user's back would fight them.
 
 use super::due::{self, DueCtx};
-use super::{err, Card, Connection, Result, Store};
+use super::{Code, err, Card, Connection, Result, Store};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
@@ -36,18 +36,18 @@ pub fn clean_on(id: i64, on: &str) -> Result<String> {
     let text = crate::text::sanitize(on).split_whitespace().collect::<Vec<_>>().join(" ");
     if let Some(n) = on_card(&text) {
         if n == id {
-            return err(format!("#{id} cannot wait for itself — name the other card: 'tb block {id} \"…\" --on #7'"));
+            return err(format!("#{id} cannot wait for itself — name the other card: 'tb block {id} \"…\" --on #7'"), Code::InvalidValue);
         }
         return Ok(format!("#{n}"));
     }
     if text.is_empty() {
-        return err(format!("say who you are waiting on — 'tb block {id} \"…\" --on \"the other side\"' or '--on #7'"));
+        return err(format!("say who you are waiting on — 'tb block {id} \"…\" --on \"the other side\"' or '--on #7'"), Code::ArgRequired);
     }
     let n = text.chars().count();
     if n > ON_MAX {
         return err(format!(
             "'--on' is {n} characters, the limit is {ON_MAX} — that is who you wait for, the detail goes in the text: 'tb block {id} \"detail\" --on NAME'"
-        ));
+        ), Code::InvalidValue);
     }
     Ok(text)
 }
@@ -184,21 +184,25 @@ impl Store {
         self.card(id)?;
         let text = text.map(|r| r.trim().trim_start_matches("by ").trim().to_string());
         if text.as_deref() == Some("") {
-            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"));
+            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"), Code::ArgRequired);
         }
         // waiting for a card that is already finished would wait for ever: the move that
         // would clear it has happened. Say so instead of storing a block nothing can lift.
         if let Some(n) = on.and_then(on_card) {
             let other = self.card(n).map_err(|_| {
-                super::BoardError(format!("no card #{n} to wait for — see 'tb list' for ids, or name who you wait on: 'tb block {id} \"…\" --on NAME'"))
+                super::BoardError(format!("no card #{n} to wait for — see 'tb list' for ids, or name who you wait on: 'tb block {id} \"…\" --on NAME'"), Code::NoCard)
             })?;
             if other.column == "done" {
                 return err(format!(
                     "#{n} is already done, so nothing would lift that block — block #{id} on something open, or leave it unblocked"
-                ));
+                ), Code::InvalidValue);
             }
         }
+        // a write transaction from the start, consistent with every other write path (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick
+        // (`transaction_with_behavior` needs `&mut Connection`) — see `store.rs::add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute(
             "UPDATE cards SET blocked=?, blocked_on=?, blocked_until=? WHERE id=?",
             params![text, on, until, id],
@@ -243,7 +247,7 @@ impl Store {
                 return err(format!(
                     "'{}' is not yes|no — 'tb config wip-counts-blocked no' frees a work slot while a card is blocked",
                     value.trim()
-                ))
+                ), Code::InvalidValue)
             }
         };
         self.set_config("wip-counts-blocked", if yes { "yes" } else { "no" })?;
@@ -268,7 +272,7 @@ impl Store {
                 return err(format!(
                     "'{}' is not shown|hidden — 'tb config waiting-lane shown' gives blocked cards their own section",
                     value.trim()
-                ))
+                ), Code::InvalidValue)
             }
         };
         self.set_config("waiting-lane", if shown { "shown" } else { "hidden" })?;

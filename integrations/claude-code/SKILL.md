@@ -33,7 +33,9 @@ tb add "tag: title" -d "Done = …" --check "step"   # file follow-up work
 ```
 
 Rules: one card at a time. `doing is full` means finish or drop a card first. Leave a note
-before you stop, drop or block. Do not use `--force` unless the user asks. Errors always say
-what to run next. Add `--json` to any command for machine-readable output.
+before you stop, drop or block. Do not use `--force` unless the user asks. A card someone
+else holds in DOING is theirs — `move`, `done`, `drop`, `edit`, `block`, `rm`, `check` and
+`prio` on it are refused (`--force` overrides, logged); `tb note` stays open to everyone.
+Errors always say what to run next. Add `--json` to any command for machine-readable output.
 
 Run `tb guide` for the full agent manual (every command, recipes, GitHub, JSON).

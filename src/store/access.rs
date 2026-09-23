@@ -20,7 +20,7 @@
 //! Both must pass. Each discounts blocked cards the same way, under the same setting, capped
 //! by its own limit — see `room_for`.
 
-use super::{blocks, err, BoardError, Result, Store};
+use super::{blocks, err, BoardError, Code, Result, Store};
 use rusqlite::{Connection, OptionalExtension};
 
 /// The highest per-owner cap, as for the board-wide limit.
@@ -40,7 +40,9 @@ pub fn readonly_env() -> bool {
 pub fn refusal(what: &str) -> BoardError {
     BoardError(format!(
         "read-only mode: '{what}' would change the board — unset TB_READONLY (or drop --read-only) to make changes; reads like 'tb list', 'tb board --json' and 'tb watch --json' work as usual"
-    ))
+        ),
+        Code::ReadOnly,
+    )
 }
 
 /// Did SQLite refuse this because the database was opened read-only? Those come back as
@@ -77,6 +79,19 @@ pub fn known(names: &[String], actor: &str) -> bool {
     names.is_empty() || a.eq_ignore_ascii_case(SYNC_ACTOR) || names.iter().any(|n| n.eq_ignore_ascii_case(a))
 }
 
+/// Refuse a write by a name this board does not know. Called from `Store::log`, which every
+/// card change goes through, so there is no path that skips it — and from the two writers
+/// that build their events by hand (`store::transfer`).
+///
+/// A board with no list lets everyone in, so this is one config read on an untouched board.
+pub(crate) fn guard_actor(conn: &Connection, actor: &str) -> Result<()> {
+    let names = actors_of(conn)?;
+    if known(&names, actor) {
+        return Ok(());
+    }
+    Err(unknown_actor(actor, &names))
+}
+
 /// The refusal for a name the board does not know.
 pub fn unknown_actor(actor: &str, names: &[String]) -> BoardError {
     BoardError(format!(
@@ -85,7 +100,9 @@ pub fn unknown_actor(actor: &str, names: &[String]) -> BoardError {
         names.join(", "),
         names.join(","),
         actor.trim()
-    ))
+        ),
+        Code::UnknownActor,
+    )
 }
 
 impl Store {
@@ -119,10 +136,12 @@ impl Store {
                 actor.trim(),
                 names.join(","),
                 actor.trim()
-            ));
+                ),
+                Code::InvalidValue,
+            );
         }
         let old = self.actors_allowed()?;
-        self.write_config("actors", &names.join(","))?;
+        self.set_config("actors", &names.join(","))?;
         if old != names {
             let said = |v: &[String]| if v.is_empty() { "anyone".to_string() } else { v.join(", ") };
             Self::log_board(&self.conn, actor, "actors", &format!("actors {} -> {}", said(&old), said(&names)))?;
@@ -148,10 +167,12 @@ impl Store {
         if !(0..=MAX_PER_OWNER).contains(&n) {
             return err(format!(
                 "wip-per-owner must be 0-{MAX_PER_OWNER} (0 = no per-owner limit) — try 'tb config wip-per-owner 1'"
-            ));
+                ),
+                Code::InvalidValue,
+            );
         }
         let old = self.wip_per_owner()?;
-        self.write_config("wip-per-owner", &n.to_string())?;
+        self.set_config("wip-per-owner", &n.to_string())?;
         if old != n {
             let said = |v: i64| if v == 0 { "off".to_string() } else { v.to_string() };
             Self::log_board(&self.conn, actor, "wip-per-owner", &format!("wip-per-owner {} -> {}", said(old), said(n)))?;
@@ -220,7 +241,9 @@ pub(super) fn room_for(tx: &Connection, actor: &str) -> Result<()> {
         "you already hold {counted} of {cap} ({}){waiting} — {finish}, or ask for the limit to be raised with 'tb config wip-per-owner {}'",
         mine.join(", "),
         cap + 1
-    )))
+        ),
+        Code::WipOwnerFull,
+    ))
 }
 
 #[cfg(test)]

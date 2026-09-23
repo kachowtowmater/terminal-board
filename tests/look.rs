@@ -362,7 +362,7 @@ fn the_due_mark_is_loud_in_tb_list_for_soon_and_overdue_and_never_on_done() {
 fn the_due_mark_outlives_the_age_on_a_narrow_card_line() {
     let b = dated();
     b.ok(&["take", "1", "--as", "alice"]);
-    b.ok(&["check", "1", "--add", "fee paid"]);
+    b.ok(&["check", "1", "--add", "fee paid", "--as", "alice"]);
     let store = Store::open(&b.db).unwrap();
     let snap = store.snapshot().unwrap();
     let card = store.card(1).unwrap();

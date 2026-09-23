@@ -13,34 +13,25 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
-use terminal_board::store::{BoardError, Store, COLUMNS};
+use terminal_board::store::{BoardError, Code, Store, COLUMNS};
 use terminal_board::{boards, contract, export, filter, github, import, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
 Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open the board (? = keys)
 
-Cards   add \"tag: title\" [-d DESC] [--check ITEM]... [--tag KEY]   edit ID [--title T] [--desc D] [--tag KEY]   rm ID [--force]
-        list [--archived] [--done [--since DATE]] [filters] · restore ID · show ID · note ID \"text\" · block ID \"#7\" [--on NAME|#ID] [--until DATE] | --clear
-        check ID N (toggle) | --add \"text\" | --rm N · long text from a file: --desc-file PATH · note ID --file PATH (- = stdin)
-Due     add|edit … --due YYYY-MM-DD|none (a calendar date)   config tz ZONE|local · due-warn DAYS · sort position|due
-Look    config card-line age|due · label COLUMN \"TEXT\"|--off · waiting-lane shown|hidden · wip-counts-blocked yes|no · done-by NAMES|--off
-In/out  import FILE.json|- · edit --from FILE.json|- [--dry-run] (all or nothing) · export --json|--csv [--history] · log [--since DATE]
-Flow    next (take the top todo) · next --review (claim a card to review) · take ID · done ID [--force] · drop ID
-        move ID todo|doing|review|done [--force] · move ID doing \"why\" (send back from review)
-        prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] · new NAME [--kind default|deadline | --from BOARD] · mv ID --to BOARD · board · watch --json
-Config  config [wip N | theme dark|light | layout L | github OWNER/REPO|--off | github-panel|agents-panel shown|hidden | rm delete|archive]
-        config file-mode [private|shared] (who may open the board file; tb creates it 0600)
-GitHub  github [--refresh] · github repos · sync (move gh cards on PR/merge/close evidence)
-Agents  agents (who is on this board + the card each holds or reviews; herdr adds the live status)
-Setup   setup [--yes] [--github R | --no-github] [--agents | --no-agents] [--agents-md PATH] [--dry-run]
+Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | restore ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
+Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
+Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|rules
+In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
+Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
+Boards  boards [--default [NAME|--clear]] | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
+Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
+GitHub  github [--refresh] | github repos | sync
+Agents  agents
+Setup   setup [--yes] [--github R|--no-github] [--agents-md PATH] [--dry-run]
 
-Options
-  --json         machine-readable output; every write prints {\"ok\":…}   (docs/JSON.md)
-  --as NAME      act as NAME (else $TB_AS, $HERDR_AGENT_NAME, $USER); $TB_MODEL, $TB_ROLE: recorded with it
-  -b NAME        board (else a first-arg name, $TB_BOARD, 'boards --default', default); $TB_DB = file
-  -h, -V         help, version
+Options --json (docs/JSON.md) | --as NAME ($TB_AS) | -b NAME ($TB_BOARD; $TB_DB = file) | -h, -V | full reference: README.md
 agents: run 'tb guide' for the full agent manual
 ";
 
@@ -153,6 +144,10 @@ enum Cmd {
         review: bool,
     },
     Take { id: i64 },
+    /// Hand a specific TODO card straight to NAME, without taking it yourself: `take` done on
+    /// someone else's behalf. Only a TODO card is a valid target — same restriction `take`
+    /// has, and like `take` there is no `--force` to pull a card away from its current holder.
+    Assign { id: i64, name: String },
     Note {
         id: i64,
         #[arg(required_unless_present = "file")]
@@ -168,6 +163,9 @@ enum Cmd {
         add: Option<String>,
         #[arg(long, value_name = "N", conflicts_with = "n")]
         rm: Option<i64>,
+        /// Change a DOING card's checklist when someone else holds it (logged as its own event).
+        #[arg(long)]
+        force: bool,
     },
     Move {
         id: i64,
@@ -215,7 +213,13 @@ enum Cmd {
     },
     /// Bring an archived card back (`tb list --archived` shows them).
     Restore { id: i64 },
-    Prio { id: i64, how: String },
+    Prio {
+        id: i64,
+        how: String,
+        /// Reorder a DOING card someone else holds (logged as its own event).
+        #[arg(long)]
+        force: bool,
+    },
     Edit {
         // required — except with --from, which conflicts with it (a conflict with a present
         // argument lifts the requirement); this keeps every ID message exactly as it was
@@ -252,6 +256,22 @@ enum Cmd {
         off: bool,
         /// The display text of `config label COLUMN "TEXT"`.
         text: Option<String>,
+        /// Read `rules` from a file, byte for byte (`-` = standard input):
+        /// `tb config rules --file PATH`.
+        #[arg(long = "file", value_name = "PATH", conflicts_with_all = ["value", "text"])]
+        file: Option<std::path::PathBuf>,
+    },
+    /// Attach evidence to a card: a path, a sha or a URL, under a label (`tb show ID` lists
+    /// them). tb only stores the text — it never reads, follows or fetches a link.
+    Link {
+        id: i64,
+        value: Option<String>,
+        /// What kind of evidence it is — free text, e.g. brief, verdict, commit.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
+        /// Remove link N instead of adding one.
+        #[arg(long, value_name = "N", conflicts_with_all = ["value", "label"])]
+        rm: Option<i64>,
     },
     /// List boards. `--default` alone shows the board plain `tb` opens; `--default NAME`
     /// saves it; `--default --clear` goes back to the built-in `default`.
@@ -498,12 +518,46 @@ fn plain_hinted(text: String, empty: bool, explicit: Option<&str>) -> String {
 
 /// `{"ok":true,"card":…}` for --json, else the human line.
 fn done_card(store: &Store, jsonout: bool, id: i64, human: String) -> Result<(), BoardError> {
+    done_card_extra(store, jsonout, id, human, None)
+}
+
+/// `done_card`, with one more top-level JSON field when `extra` is given — additive, never a
+/// rename (docs/JSON.md). Used for `tb next`'s once-per-agent rules banner: `--json` must
+/// carry it too, or an agent that only reads JSON would never actually receive it, yet the
+/// "seen" mark (set by the caller before this runs) would already say it had.
+fn done_card_extra(
+    store: &Store,
+    jsonout: bool,
+    id: i64,
+    human: String,
+    extra: Option<(&str, serde_json::Value)>,
+) -> Result<(), BoardError> {
     if jsonout {
-        println!("{}", pretty(&json!({"ok": true, "card": contract::card_by_id(store, id)?})));
+        let mut v = json!({"ok": true, "card": contract::card_by_id(store, id)?});
+        if let Some((k, val)) = extra {
+            v[k] = val;
+        }
+        println!("{}", pretty(&v));
     } else {
         say_lines!("{human}");
     }
     Ok(())
+}
+
+/// This board's rules text, the first time `actor` is shown it — else `None`. Marks it seen
+/// (store::rules) as a side effect, so the SAME text is not shown to them again; changing the
+/// text with `tb config rules` makes it new again for everyone. Scoped to `tb next` only (both
+/// forms): an orchestrator's `tb assign` does not call this, because the agent it names never
+/// ran the command that would deliver the banner to them.
+fn first_time_rules(store: &Store, actor: &str) -> Result<Option<String>, BoardError> {
+    let Some(text) = store.rules()? else {
+        return Ok(None);
+    };
+    if store.rules_seen(actor, &text)? {
+        return Ok(None);
+    }
+    store.mark_rules_seen(actor, &text)?;
+    Ok(Some(text))
 }
 
 /// Decision 14: a gh card only reaches done on evidence unless forced.
@@ -516,7 +570,7 @@ fn guard_done(store: &Store, id: i64, force: bool, cmd: &str) -> Result<(), Boar
     if github::still_open(&snap, n) {
         return Err(BoardError(format!(
             "issue gh#{n} still open on GitHub — close it there, or 'tb {cmd} --force' to mark it done anyway"
-        )));
+        ), Code::GhIssueOpen));
     }
     Ok(())
 }
@@ -666,7 +720,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     // would open the pinned file and rewrite the settings of a board that holds real work.
     // Refused exactly like every other command that names a board.
     if terminal_board::env("DB").is_some() {
-        return Err(BoardError("TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string()));
+        return Err(BoardError("TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string(), Code::DbPinned));
     }
     boards::validate(name)?;
     // the kind and the source board are checked before anything is created
@@ -677,14 +731,14 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     let source = match from {
         Some(other) => {
             if other == name {
-                return Err(BoardError(format!("'{name}' cannot copy itself — name another board: 'tb boards'")));
+                return Err(BoardError(format!("'{name}' cannot copy itself — name another board: 'tb boards'"), Code::InvalidValue));
             }
             boards::validate(other)?;
             let path = boards::path_for(other);
             if !path.exists() {
                 let all = boards::list();
                 let all = if all.is_empty() { "none yet".to_string() } else { all.join(", ") };
-                return Err(BoardError(format!("no board '{other}' to copy — boards: {all}")));
+                return Err(BoardError(format!("no board '{other}' to copy — boards: {all}"), Code::NoBoard));
             }
             Some(Store::open(&path)?.named(other))
         }
@@ -694,7 +748,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     if path.exists() {
         return Err(BoardError(format!(
             "board '{name}' already exists — open it with 'tb {name}', or give its settings to a new one with 'tb new other-name --from {name}'"
-        )));
+        ), Code::InvalidValue));
     }
     let store = Store::open(&path)?.named(name);
     let what = match &source {
@@ -745,7 +799,7 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
             let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
             return Err(BoardError(format!(
                 "no board '{name}' — boards: {all} · create it with 'tb {name} add \"…\"'"
-            )));
+            ), Code::NoBoard));
         }
         // the default board keeps today's behaviour: reads show it empty, writes create it
         return Ok(Store::open(Path::new(":memory:"))?.named(name));
@@ -799,7 +853,7 @@ fn default_board_cmd(name: Option<&str>, clear: bool, json_out: bool) -> Result<
     let changed = match (name, clear) {
         (Some(_), true) => {
             return Err(BoardError(
-                "give a board name or --clear, not both — 'tb boards --default NAME' or 'tb boards --default --clear'".into(),
+                "give a board name or --clear, not both — 'tb boards --default NAME' or 'tb boards --default --clear'".into(), Code::InvalidValue,
             ))
         }
         (Some(n), false) => {
@@ -882,6 +936,9 @@ fn text_from_files(cmd: &mut Cmd) -> Result<(), BoardError> {
         Cmd::Note { id, text, file: Some(path) } => {
             *text = Some(textin::read(path, &format!("note {id} --file"))?);
         }
+        Cmd::Config { key, value, file: Some(path), .. } if key.as_deref() == Some("rules") => {
+            *value = Some(textin::read(path, "config rules --file")?);
+        }
         _ => {}
     }
     Ok(())
@@ -900,14 +957,14 @@ fn move_card(
 ) -> Result<terminal_board::store::transfer::Moved, BoardError> {
     if terminal_board::env("DB").is_some() {
         return Err(BoardError(
-            "TB_DB pins one board file, so there is no other board to move a card to — unset TB_DB to use boards".into(),
+            "TB_DB pins one board file, so there is no other board to move a card to — unset TB_DB to use boards".into(), Code::DbPinned,
         ));
     }
     boards::validate(to)?;
     if to == store.name {
         return Err(BoardError(format!(
             "#{id} is already on '{to}' — name the board it should go to, e.g. 'tb mv {id} --to home'"
-        )));
+        ), Code::InvalidValue));
     }
     if !boards::path_for(to).exists() {
         let names = boards::list();
@@ -917,7 +974,7 @@ fn move_card(
         // would turn this into a command for the wrong board
         return Err(BoardError(format!(
             "no board '{to}' — boards: {all} · a card only moves to a board that exists: make it first with  tb {to} add \"…\""
-        )));
+        ), Code::NoBoard));
     }
     // the holder rule, exactly as `tb rm` and `tb edit` apply it: a card somebody else holds
     // in DOING is not taken off their board by someone walking past. `--force` is offered
@@ -934,7 +991,7 @@ fn move_card(
 fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> Result<(), BoardError> {
     if terminal_board::env("DB").is_some() {
         return Err(BoardError(
-            "TB_DB pins one board file, so there is only one board to look at — unset TB_DB to use boards".into(),
+            "TB_DB pins one board file, so there is only one board to look at — unset TB_DB to use boards".into(), Code::DbPinned,
         ));
     }
     let names = boards::list();
@@ -992,7 +1049,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // silently lose to the fallback chain — refuse before anything is written
     if cli.actor.as_deref().is_some_and(|a| a.trim().is_empty()) {
         return Err(BoardError(
-            "--as is empty — pass your agent name, e.g. --as bot-1 (or drop the flag to use TB_AS/the pane's agent)".to_string(),
+            "--as is empty — pass your agent name, e.g. --as bot-1 (or drop the flag to use TB_AS/the pane's agent)".to_string(), Code::EmptyActor,
         ));
     }
     // `--read-only` is the same switch as TB_READONLY, set for this process before any board
@@ -1018,7 +1075,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     };
     if acts && actor.trim().eq_ignore_ascii_case("github") {
         return Err(BoardError(
-            "'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1".to_string(),
+            "'github' is the name tb's own GitHub sync acts under — pass your own name, e.g. --as bot-1".to_string(), Code::InvalidValue,
         ));
     }
     // every event this process writes also records who `actor` is (store::actors)
@@ -1051,7 +1108,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             return Err(BoardError(format!(
                 "say what to call the board — 'tb new filings --kind deadline'{hint}"
-            )));
+            ), Code::ArgRequired));
         };
         return new_board(name, kind.as_deref(), from.as_deref(), &actor, cli.json);
     }
@@ -1067,7 +1124,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // file while JSON/header claim the typed name). Refuse the mix; bare/default still works.
     if terminal_board::env("DB").is_some() && name != boards::DEFAULT_BOARD {
         return Err(BoardError(
-            "TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string(),
+            "TB_DB is set — board names are ignored; unset TB_DB to use boards".to_string(), Code::DbPinned,
         ));
     }
     if let Some(Cmd::Setup { yes, github, no_github, agents, no_agents, agents_md, dry_run }) = cli.cmd {
@@ -1103,7 +1160,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         // (the parser cannot say this: --from conflicts with ID, which switches its own rule off)
         Some(Cmd::Edit { from: None, dry_run: true, .. }) => {
             return Err(BoardError(
-                "--dry-run goes with --from; a single edit has no dry run — drop it, or 'tb edit --from FILE.json --dry-run'".into(),
+                "--dry-run goes with --from; a single edit has no dry run — drop it, or 'tb edit --from FILE.json --dry-run'".into(), Code::InvalidValue,
             ))
         }
         _ => None,
@@ -1112,14 +1169,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let mut store = open_board(&name, creates)?;
     // a stored `tz` this build does not know must not be ignored silently: today then comes
     // from this machine's zone, and every command says so until the setting is fixed
-    // config actors NAME,...  (store/access.rs): an unknown --as is refused before any write,
-    // so a typo cannot invent an agent. tb config itself is never gated - otherwise a list
-    // that names nobody present would lock the board for good - and reads are never gated.
-    if let Some(cmd) = cli.cmd.as_ref() {
-        if changes_the_board(cmd) && !matches!(cmd, Cmd::Config { .. }) {
-            store.check_actor(&actor)?;
-        }
-    }
+    // `config actors` is NOT checked here. It is enforced in `Store::log`, which every card
+    // change goes through — the full-screen board calls the store directly and would walk
+    // past a check at this layer. `tb config` stays ungated because it writes no card event,
+    // which is what lets a list nobody satisfies be corrected.
     if let Some(bad) = store.unknown_tz()? {
         terminal_board::notice::push(format!(
             "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
@@ -1135,11 +1188,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         if tty && readonly {
             return Err(BoardError(
                 "read-only mode: the full-screen board changes cards as you use it — watch with 'tb board', 'tb list' or 'tb watch --json' instead".to_string(),
+                terminal_board::store::Code::ReadOnly,
             ));
         }
         if tty {
             return tui::run(store, &actor)
-                .map_err(|e| BoardError(format!("terminal error: {e} — try 'tb list'")));
+                .map_err(|e| BoardError(format!("terminal error: {e} — try 'tb list'"), Code::TerminalError));
         }
         if j {
             println!("{}", pretty(&contract::board(&store)?));
@@ -1168,7 +1222,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 return Err(BoardError(format!(
                     "{flag} does not apply to an archived card — an archived card keeps only its title, tag, column and owner; drop it, or ask the live board with {}",
                     cmd_hint(explicit, "list")
-                )));
+                ), Code::InvalidValue));
             }
             let all = store.archived()?;
             let cards: Vec<_> = all
@@ -1307,20 +1361,38 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         }
         Cmd::Next { review: true } => {
             let card = store.next_review(&actor)?;
+            let rules = first_time_rules(&store, &actor)?;
+            let banner = rules.as_deref().map(|r| format!("this board's rules:\n{r}\n\n")).unwrap_or_default();
             let human = format!(
-                "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
+                "{banner}{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
                 plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 id = card.id
             );
-            done_card(&store, j, card.id, human)?;
+            done_card_extra(&store, j, card.id, human, rules.map(|r| ("rules", json!(r))))?;
         }
         Cmd::Next { .. } | Cmd::Take { .. } => {
+            let is_next = matches!(cmd, Cmd::Next { .. });
             let card = match cmd {
                 Cmd::Take { id } => store.take(id, &actor)?,
                 _ => store.next(&actor)?,
             };
+            // `tb take ID` is a deliberate, targeted pick — not the "first tb next" moment a
+            // board's rules are meant to greet, so only `tb next` (either form) shows them.
+            let rules = if is_next { first_time_rules(&store, &actor)? } else { None };
+            let banner = rules.as_deref().map(|r| format!("this board's rules:\n{r}\n\n")).unwrap_or_default();
             let human = format!(
-                "{}\ntaken by {actor} — log progress with {}, finish with {}",
+                "{banner}{}\ntaken by {actor} — log progress with {}, finish with {}",
+                plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
+                cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
+                cmd_hint(explicit, &format!("done {}", card.id))
+            );
+            done_card_extra(&store, j, card.id, human, rules.map(|r| ("rules", json!(r))))?;
+        }
+        Cmd::Assign { id, name } => {
+            let card = store.assign(id, &name, &actor)?;
+            let name = card.owner.clone().unwrap_or(name);
+            let human = format!(
+                "{}\nassigned to {name} by {actor} — {name} logs progress with {}, finishes with {}",
                 plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 cmd_hint(explicit, &format!("note {} \"...\"", card.id)),
                 cmd_hint(explicit, &format!("done {}", card.id))
@@ -1331,7 +1403,20 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             store.note(id, &text.unwrap_or_default(), &actor)?;
             done_card(&store, j, id, format!("noted #{id}"))?;
         }
-        Cmd::Check { id, n, add, rm } => {
+        Cmd::Check { id, n, add, rm, force } => {
+            // the holder rule (store/archive.rs): the checklist on someone else's DOING card
+            // is not theirs to rewrite, unless forced — a note stays open to everyone
+            let (what, did) = match (n, &add, rm) {
+                (_, _, Some(_)) => ("remove it", "removed a check from"),
+                (_, Some(_), _) => ("add to it", "added a check to"),
+                (Some(_), _, _) => ("tick it", "checked"),
+                (None, None, None) => ("", ""),
+            };
+            let forced = if n.is_some() || add.is_some() || rm.is_some() {
+                store.holder_check(id, &actor, force, what)?
+            } else {
+                None
+            };
             let human = match (n, add, rm) {
                 (_, _, Some(r)) => {
                     store.remove_check(id, r, &actor)?;
@@ -1350,7 +1435,36 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "give an item number, --add or --rm — {}, {}",
                         cmd_hint(explicit, &format!("check {id} 1")),
                         cmd_hint(explicit, &format!("check {id} --add \"text\""))
-                    )))
+                    ), Code::ArgRequired))
+                }
+            };
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, did, &owner)?;
+            }
+            done_card(&store, j, id, human)?;
+        }
+        Cmd::Link { id, value, label, rm } => {
+            let human = match (value, label, rm) {
+                (_, _, Some(n)) => {
+                    store.remove_link(id, n, &actor)?;
+                    format!("#{id} link {n} deleted, the rest renumbered — see {}", cmd_hint(explicit, &format!("show {id}")))
+                }
+                (Some(v), Some(label), None) => {
+                    let item = store.add_link(id, &v, &label, &actor)?;
+                    format!("#{id} link {} added ({label}) — see {}", item.idx, cmd_hint(explicit, &format!("show {id}")))
+                }
+                (None, _, None) => {
+                    return Err(BoardError(format!(
+                        "give a value and --label, or --rm N — {}, {}",
+                        cmd_hint(explicit, &format!("link {id} PATH|SHA|URL --label brief")),
+                        cmd_hint(explicit, &format!("link {id} --rm 1"))
+                    ), Code::ArgRequired))
+                }
+                (Some(_), None, None) => {
+                    return Err(BoardError(format!(
+                        "say what it is — {}",
+                        cmd_hint(explicit, &format!("link {id} PATH|SHA|URL --label brief"))
+                    ), Code::ArgRequired))
                 }
             };
             done_card(&store, j, id, human)?;
@@ -1366,7 +1480,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "'{}' is a display label, not a column — the column is {real}: {}",
                         column.trim(),
                         cmd_hint(explicit, &format!("move {id} {real}"))
-                    )));
+                    ), Code::InvalidValue));
                 }
             }
             if column.eq_ignore_ascii_case("done") {
@@ -1422,7 +1536,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             let until = match &until {
                 Some(u) => DueDate::parse(u, &format!("tb block {id} \"…\" --until 2026-10-09"))?
-                    .ok_or_else(|| BoardError(format!("'--until none' says nothing — give a date, or clear the block: 'tb block {id} --clear'")))?
+                    .ok_or_else(|| BoardError(format!("'--until none' says nothing — give a date, or clear the block: 'tb block {id} --clear'"), Code::InvalidValue))?
                     .as_str()
                     .to_string()
                     .into(),
@@ -1452,7 +1566,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "say what blocks it — {} or {}",
                         cmd_hint(explicit, &format!("block {id} \"#7\"")),
                         cmd_hint(explicit, &format!("block {id} --clear"))
-                    )))
+                    ), Code::ArgRequired))
                 }
             };
             if let Some(owner) = forced {
@@ -1486,7 +1600,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let c = store.restore(id, &actor)?;
             done_card(&store, j, id, format!("#{id} restored to {} with its history", c.column))?;
         }
-        Cmd::Prio { id, how } => {
+        Cmd::Prio { id, how, force } => {
+            // the holder rule (store/archive.rs): queue order is the holder's to set, unless
+            // forced — like `edit`, not like `note`
+            let forced = store.holder_check(id, &actor, force, "reorder it")?;
             let before = store.place(id).ok();
             let c = store.reorder(id, &how.to_ascii_lowercase(), &actor)?;
             let human = format!("#{id} is now at position {} in {}", c.position + 1, c.column);
@@ -1511,6 +1628,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             } else {
                 done_card(&store, j, id, human)?;
             }
+            if let Some(owner) = forced {
+                store.log_forced(id, &actor, "reordered", &owner)?;
+            }
         }
         Cmd::Edit { id, title, desc, force, .. } => {
             let id = id.expect("the parser requires ID unless --from is given, and --from is handled above");
@@ -1534,11 +1654,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 BoardError(format!(
                     "github is off for board '{}' — turn it on with 'tb config github owner/repo'",
                     store.name
-                ))
+                ), Code::GithubOff)
             })?;
             let r = github::fetch(&repo, now);
             store.save_github(&r)?;
-            let snap = r.map_err(|e| BoardError(format!("github: {e} — {}", github::fetch_hint(&e, "tb sync"))))?;
+            let snap = r.map_err(|e| BoardError(format!("github: {e} — {}", github::fetch_hint(&e, "tb sync")), Code::GithubError))?;
             let cards = store.list()?;
             // one lookup per not-done ref the open lists can't vouch for: its state, or a 404
             // (no such issue or PR), or a failed call (nothing known — never reported as missing)
@@ -1586,7 +1706,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Guide => print!("{GUIDE}"),
+        Cmd::Guide => {
+            print!("{GUIDE}");
+            // a board that sets nothing prints exactly the manual above, byte for byte — the
+            // same rule every other setting in this file follows
+            if let Some(rules) = store.rules()? {
+                print_lines!("\n## This board's rules\n\n{rules}\n");
+            }
+        }
         Cmd::Export { csv, history, .. } => {
             let format = if csv { export::Format::Csv } else { export::Format::Json };
             let mut out = std::io::stdout().lock();
@@ -1607,12 +1734,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     "{}",
                     pretty(&json!({"ok": true, "from_board": moved.from_board, "to_board": moved.to_board,
                                    "old_id": moved.old_id, "id": moved.new_id, "title": moved.title,
-                                   "checklist": moved.checklist, "events": moved.events}))
+                                   "checklist": moved.checklist, "events": moved.events, "links": moved.links}))
                 );
             } else {
                 say!(
-                    "#{} \"{}\" moved to '{}' as #{} (its checklist and {} events went with it) — it is in TODO, unowned: 'tb {} take {}'",
-                    moved.old_id, moved.title, moved.to_board, moved.new_id, moved.events, moved.to_board, moved.new_id
+                    "#{} \"{}\" moved to '{}' as #{} (its checklist, {} link(s) and {} events went with it) — it is in TODO, unowned: 'tb {} take {}'",
+                    moved.old_id, moved.title, moved.to_board, moved.new_id, moved.links, moved.events, moved.to_board, moved.new_id
                 );
             }
         }
@@ -1638,17 +1765,22 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Config { key: Some(key), value, off, text } => {
+        Cmd::Config { key: Some(key), value, off, text, file } => {
             if text.is_some() && key != "label" {
                 return Err(BoardError(format!(
                     "'{key}' takes one value — only a label has two: 'tb config label review \"WITH REVIEWER\"'"
-                )));
+                ), Code::InvalidValue));
+            }
+            if file.is_some() && key != "rules" {
+                return Err(BoardError(
+                    "--file only goes with rules — 'tb config rules --file PATH'".to_string(), Code::InvalidValue,
+                ));
             }
             let (k, v): (String, serde_json::Value) = match (key.as_str(), value) {
                 // the board's look (store/display.rs): display only, never what a command accepts
                 ("label", None) => {
                     return Err(BoardError(
-                        "say which column — 'tb config label review \"WITH REVIEWER\"', 'tb config label review' reads it, '--off' clears it".to_string(),
+                        "say which column — 'tb config label review \"WITH REVIEWER\"', 'tb config label review' reads it, '--off' clears it".to_string(), Code::ArgRequired,
                     ))
                 }
                 ("label", Some(column)) => {
@@ -1657,7 +1789,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         (Some(_), true) => {
                             return Err(BoardError(format!(
                                 "a label and --off together — set it with 'tb config label {column} \"TEXT\"' or clear it with 'tb config label {column} --off'"
-                            )))
+                            ), Code::InvalidValue))
                         }
                         (Some(t), false) => store.set_label(column, Some(t))?,
                         (None, true) => store.set_label(column, None)?,
@@ -1674,9 +1806,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     (format!("label.{column}"), json!(shown))
                 }
-                (k @ ("wip-counts-blocked" | "waiting-lane"), _) if off => {
-                    let instead = if k == "waiting-lane" { "'tb config waiting-lane hidden' is the default" } else { "'tb config wip-counts-blocked yes' is the default" };
-                    return Err(BoardError(format!("--off does not go with {key} — {instead}")));
+                (k @ ("wip-counts-blocked" | "waiting-lane" | "done-needs-note"), _) if off => {
+                    let instead = match k {
+                        "waiting-lane" => "'tb config waiting-lane hidden' is the default",
+                        "done-needs-note" => "'tb config done-needs-note off' is the default",
+                        _ => "'tb config wip-counts-blocked yes' is the default",
+                    };
+                    return Err(BoardError(format!("--off does not go with {key} — {instead}"), Code::InvalidValue));
                 }
                 // blocks (store/blocks.rs): a blocked card's work slot, and the waiting lane
                 ("wip-counts-blocked", value) => {
@@ -1703,6 +1839,43 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("waiting-lane".into(), json!(text))
                 }
+                // a closing note (store/closing.rs) — off by default, so a board that sets
+                // nothing checks nothing on the way into DONE
+                ("done-needs-note", value) => {
+                    let on = match &value {
+                        Some(v) => store.set_done_needs_note(v)?,
+                        None => store.done_needs_note()?,
+                    };
+                    let text = if on { "on" } else { "off" };
+                    if value.is_none() && !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("done-needs-note".into(), json!(text))
+                }
+                ("max-rounds", _) if off => {
+                    store.set_max_rounds(None)?;
+                    ("max-rounds".into(), serde_json::Value::Null)
+                }
+                // rework rounds (store/rounds.rs) — uncapped by default: no card ever escalates
+                ("max-rounds", Some(value)) => {
+                    let n: i64 = value.parse().map_err(|_| {
+                        BoardError(format!("max-rounds must be a number, got '{value}' — try 'tb config max-rounds 5'"), Code::InvalidValue)
+                    })?;
+                    store.set_max_rounds(Some(n))?;
+                    ("max-rounds".into(), json!(n))
+                }
+                ("max-rounds", None) => {
+                    let n = store.max_rounds()?;
+                    if !j {
+                        match n {
+                            Some(n) => say!("{n}"),
+                            None => say!("off — no card is ever marked escalate"),
+                        }
+                        return Ok(());
+                    }
+                    ("max-rounds".into(), n.map_or(serde_json::Value::Null, |n| json!(n)))
+                }
                 ("done-by", _) if off => {
                     store.set_done_by(None)?;
                     ("done-by".into(), serde_json::Value::Null)
@@ -1719,9 +1892,55 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("done-by".into(), json!(names))
                 }
+                // a board's own conventions (store/rules.rs): free text, printed by 'tb guide'
+                // and shown once to each agent on its first 'tb next' since it was set/changed
+                ("rules", _) if off => {
+                    store.set_rules(None, &actor)?;
+                    ("rules".into(), serde_json::Value::Null)
+                }
+                ("rules", None) => {
+                    let text = store.rules()?;
+                    if !j {
+                        match &text {
+                            Some(t) => {
+                                print_lines!("{t}\n");
+                                return Ok(());
+                            }
+                            None => {
+                                say!(
+                                    "rules is off — this board has no house rules set: 'tb config rules \"TEXT\"' or 'tb config rules --file PATH'"
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                    ("rules".into(), json!(text))
+                }
+                ("rules", Some(value)) => {
+                    let text = store.set_rules(Some(&value), &actor)?;
+                    ("rules".into(), json!(text))
+                }
+                ("done-needs-link", _) if off => {
+                    store.set_done_needs_link(None)?;
+                    ("done-needs-link".into(), serde_json::Value::Null)
+                }
+                // a card may not reach done without a link carrying this label (store/links.rs,
+                // `Store::transition`) — the same honest-mistake shape as `done-by`, and it sits
+                // right beside it in the transition's guard order
+                ("done-needs-link", value) => {
+                    let label = match &value {
+                        Some(v) => store.set_done_needs_link(Some(v))?,
+                        None => store.done_needs_link()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", label.as_deref().unwrap_or("off"));
+                        return Ok(());
+                    }
+                    ("done-needs-link".into(), json!(label))
+                }
                 ("kind", _) if off => {
                     return Err(BoardError(
-                        "--off does not go with kind — 'tb config kind default' makes it an ordinary board".to_string(),
+                        "--off does not go with kind — 'tb config kind default' makes it an ordinary board".to_string(), Code::InvalidValue,
                     ))
                 }
                 // the board's kind (store/kinds.rs): a NAME for a bundle of settings, and a
@@ -1738,7 +1957,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("kind".into(), json!(kind))
                 }
                 ("card-line", _) if off => {
-                    return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string()))
+                    return Err(BoardError("--off does not go with card-line — 'tb config card-line age' is the default".to_string(), Code::InvalidValue))
                 }
                 ("card-line", value) => {
                     let line = match &value {
@@ -1772,22 +1991,23 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 ("github", Some(repo)) => {
                     // the picker checks the repo exists; the CLI must not save a name that
                     // will fail every later sync with an auth-flavoured error
-                    github::check_repo(&repo).map_err(BoardError)?;
+                    github::check_repo(&repo).map_err(|e| BoardError(e, Code::GithubError))?;
                     store.set_github(Some(&repo))?;
                     ("github".into(), json!(repo))
                 }
                 ("wip", Some(value)) => {
                     let n: i64 = value.parse().map_err(|_| {
-                        BoardError(format!("wip must be a number, got '{value}' — try 'tb config wip 3'"))
+                        BoardError(format!("wip must be a number, got '{value}' — try 'tb config wip 3'"), Code::InvalidValue)
                     })?;
                     store.change_wip(n, &actor)?;
                     ("wip".into(), json!(n))
                 }
                 ("wip-per-owner", Some(value)) => {
                     let n: i64 = value.trim().parse().map_err(|_| {
-                        BoardError(format!(
-                            "wip-per-owner must be a number, got '{value}' — try 'tb config wip-per-owner 1' (0 turns it off)"
-                        ))
+                        BoardError(
+                            format!("wip-per-owner must be a number, got '{value}' — try 'tb config wip-per-owner 1' (0 turns it off)"),
+                            terminal_board::store::Code::InvalidValue,
+                        )
                     })?;
                     store.set_wip_per_owner(n, &actor)?;
                     ("wip-per-owner".into(), json!(n))
@@ -1839,7 +2059,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "due-warn" => "'tb config due-warn 3' is the default",
                         _ => "'tb config sort position' is the default",
                     };
-                    return Err(BoardError(format!("--off does not go with {key} — {instead}")));
+                    return Err(BoardError(format!("--off does not go with {key} — {instead}"), Code::InvalidValue));
                 }
                 // `sort`: position (the default) or due — the one order of `tb next`, lists and boards
                 ("sort", value) => {
@@ -1866,7 +2086,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 ("due-warn", Some(value)) => {
                     let n: i64 = value.parse().map_err(|_| {
-                        BoardError(format!("due-warn must be a number of days, got '{value}' — try 'tb config due-warn 3'"))
+                        BoardError(format!("due-warn must be a number of days, got '{value}' — try 'tb config due-warn 3'"), Code::InvalidValue)
                     })?;
                     store.set_due_warn(n)?;
                     ("due-warn".into(), json!(n))
@@ -1909,7 +2129,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 _ => {
                     return Err(BoardError(format!(
                         "unknown or incomplete setting '{key}' — use 'tb config wip 3', 'config github owner/repo', 'config theme dark|light'"
-                    )))
+                    ), Code::UnknownSetting))
                 }
             };
             if j {
@@ -1930,10 +2150,28 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
                         n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                     ),
+                    ("done-needs-link", serde_json::Value::Null) => say!("done-needs-link is off — a card may reach done without a link"),
+                    ("done-needs-link", label) => say!(
+                        "done-needs-link is now {} — a card needs a link with that label ('tb link ID VALUE --label {}') before it may reach done",
+                        label.as_str().unwrap_or(""), label.as_str().unwrap_or("")
+                    ),
+                    ("done-needs-note", v) if v.as_str() == Some("on") => say!(
+                        "done-needs-note is now on — a card needs a note written during the stay it is leaving before it can reach DONE"
+                    ),
+                    ("done-needs-note", _) => say!("done-needs-note is now off — DONE needs no note (the default)"),
+                    ("max-rounds", serde_json::Value::Null) => say!("max-rounds is off — no card is ever marked escalate"),
+                    ("max-rounds", n) => say!(
+                        "max-rounds is now {} — a card sent back more times than that is marked escalate and skipped by 'tb next' / 'tb next --review' (still visible, still workable directly)",
+                        n.as_i64().unwrap_or_default()
+                    ),
                     ("kind", k) => say!(
                         "kind is now {} — its settings are written; change any of them whenever you like, the settings always decide",
                         k.as_str().unwrap_or("")
                     ),
+                    ("rules", serde_json::Value::Null) => {
+                        say!("rules cleared — 'tb guide' and 'tb next' no longer show anything extra")
+                    }
+                    ("rules", _) => say!("rules set — printed by 'tb guide', and shown once to each agent on its next 'tb next'"),
                     ("wip-counts-blocked", v) if v.as_str() == Some("no") => say!(
                         "wip-counts-blocked is now no — a blocked card frees a work slot (up to the WIP limit of them; past that they count again)"
                     ),
@@ -1965,7 +2203,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Github { what: Some(w), .. } if w == "repos" => {
-            let repos = github::list_repos().map_err(|e| BoardError(format!("github: {e}")))?;
+            let repos = github::list_repos().map_err(|e| BoardError(format!("github: {e}"), Code::GithubError))?;
             if j {
                 println!("{}", pretty(&repos));
             } else {
@@ -1978,14 +2216,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Github { what: Some(w), .. } => {
-            return Err(BoardError(format!("unknown 'github {w}' — try 'tb github' or 'tb github repos'")));
+            return Err(BoardError(format!("unknown 'github {w}' — try 'tb github' or 'tb github repos'"), Code::UnknownCommand));
         }
         Cmd::Github { refresh, .. } => {
             let repo = store.github_repo()?.ok_or_else(|| {
                 BoardError(format!(
                     "github is off for board '{}' — turn it on with 'tb config github owner/repo'",
                     store.name
-                ))
+                ), Code::GithubOff)
             })?;
             let view = store.github_view()?;
             let fresh = view.snap.as_ref().is_some_and(|s| now - s.fetched_at < github::MAX_AGE_SECS);
@@ -1993,7 +2231,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let r = github::fetch(&repo, now);
                 store.save_github(&r)?;
                 if let (Err(e), None) = (&r, &view.snap) {
-                    return Err(BoardError(format!("github: {e} — {}", github::fetch_hint(e, "tb github --refresh"))));
+                    return Err(BoardError(format!("github: {e} — {}", github::fetch_hint(e, "tb github --refresh")), Code::GithubError));
                 }
             }
             let view = store.github_view()?;
@@ -2045,7 +2283,7 @@ fn split_board(mut args: Vec<std::ffi::OsString>) -> Result<(Option<String>, Vec
             {
                 return Err(BoardError(format!(
                     "unknown command '{a}' — run 'tb --help' for every command or 'tb guide' for the manual"
-                )));
+                ), Code::UnknownCommand));
             }
             args.remove(1);
             Ok((Some(a), args))
@@ -2089,7 +2327,7 @@ fn main() -> ExitCode {
                     (_, Some(u)) => format!("usage: {u} — {more}"),
                     (_, None) => more.into(),
                 };
-                let v = contract::error(&with_board(&format!("argument error: {what} — {hint}"), explicit));
+                let v = contract::error(&with_board(&format!("argument error: {what} — {hint}"), explicit), Code::Usage);
                 println!("{}", pretty(&v));
                 return ExitCode::from(2); // usage error, as without --json
             }
@@ -2116,9 +2354,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.0 == import::REPORTED => ExitCode::FAILURE,
         Err(e) => {
-            let e = BoardError(with_board(&e.0, explicit.as_deref()));
+            let code = e.1;
+            let e = BoardError(with_board(&e.0, explicit.as_deref()), code);
             if jsonout {
-                println!("{}", pretty(&contract::error(&e.to_string())));
+                println!("{}", pretty(&contract::error(&e.to_string(), e.1)));
             } else {
                 warn!("tb: {e}");
             }

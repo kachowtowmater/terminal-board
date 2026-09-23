@@ -17,7 +17,7 @@
 //! `--from BOARD` copies another board's SETTINGS, never its cards: a board is its work, and
 //! copying work silently would be a surprise nobody asked for.
 
-use super::{Result, Store};
+use super::{Code, Result, Store};
 use rusqlite::OptionalExtension;
 
 /// What a board is for. `default` is exactly the board tb always made.
@@ -67,7 +67,7 @@ pub fn known(kind: &str) -> Result<&'static str> {
             "unknown kind '{}' — tb knows {}: 'tb new board-name --kind deadline'",
             kind.trim(),
             KINDS.join(" and ")
-        ))
+        ), Code::InvalidValue)
     })
 }
 

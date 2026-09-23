@@ -64,12 +64,16 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 | say who you wait on, and when to look again | — | `tb block 3 "waiting for the fee" --on #5 --until 2026-10-09` |
 | give it a tag of your own | — | `tb edit 3 --tag "00-key 2"` · `tb edit 3 --tag none` |
 | give it a due date | — | `tb edit 3 --due 2026-10-09` · `tb edit 3 --due none` · `tb add "…" --due 2026-10-09` |
+| attach evidence — a path, a git sha or a URL, under a label | — | `tb link 3 docs/brief.md --label brief` · `tb link 3 --rm 1` |
 
 `tb config done-by anna,ben` names who may close a card; anyone else is refused, with the
 people to ask. It catches an honest mistake — names in tb are self-asserted, and `--force`
 gets past it (logged), as does answering `y` to the board's `approve your own work?` — so it
 is not a lock. `tb done 3 --approve` records that you checked a card without closing it, on
-any card.
+any card. A board can also require evidence before DONE: `tb config done-needs-link verdict`
+refuses to close a card until it carries a link labeled `verdict`; `--off` turns it off again.
+tb only stores and shows a link's text — it never opens the file, looks up the sha or fetches
+the URL.
 
 A due date is a calendar date (`YYYY-MM-DD`), kept as typed (spaces around it are dropped) — it never moves a day
 because of a time zone. `tb config tz America/Los_Angeles` sets the zone that decides what
@@ -125,6 +129,17 @@ deletes it. From the command line: `tb check 3 --add "balcony"`, `tb check 3 1` 
 
 DOING holds at most 3 cards by default. When it is full, finish or hand back a card first.
 Select DOING and press `+` / `-`, or run `tb config wip 4`.
+
+## When a column is long
+
+A column shows as many cards as it has room for, and at most ten at a time; the rest are
+counted at the bottom of the column as `+12 more`. Scrolling with the arrow keys walks through
+them all, and the number in the column header is always the real total.
+
+This also stops one long column taking the whole board. In the stacked views (`third-h`,
+`half-h`) the four columns share one height, and each gets a fair share of it before any
+column takes a second helping — so forty finished cards in DONE can no longer push TODO down
+to a single line.
 
 ## Boards
 

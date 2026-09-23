@@ -1,15 +1,15 @@
 //! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection.
 
-use crate::store::{BoardError, Result, Store, COLUMNS};
+use crate::store::{BoardError, Code, Result, Store, COLUMNS};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_BOARD: &str = "default";
 
 /// Subcommand names: never valid board names.
-pub const COMMANDS: [&str; 29] = [
-    "add", "list", "show", "next", "take", "note", "check", "move", "done", "block", "drop",
-    "config", "boards", "github", "help", "rm", "prio", "edit", "sync", "board", "watch",
-    "agents", "guide", "setup", "restore", "import", "export", "log", "mv",
+pub const COMMANDS: [&str; 31] = [
+    "add", "list", "show", "next", "take", "assign", "note", "check", "move", "done", "block",
+    "drop", "config", "boards", "github", "help", "rm", "prio", "edit", "sync", "board", "watch",
+    "agents", "guide", "setup", "restore", "import", "export", "log", "mv", "link",
 ];
 
 /// The words that are COMMANDS when they come first — `COMMANDS`, plus `new`.
@@ -27,14 +27,14 @@ pub fn validate(name: &str) -> Result<()> {
     if COMMANDS.contains(&name) {
         return Err(BoardError(format!(
             "'{name}' is a command, so it can't be a board name — pick another, e.g. 'tb -b {name}s' or 'tb home'"
-        )));
+        ), Code::BoardNameIsCommand));
     }
     let ok = (1..=32).contains(&name.len())
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
     if !ok {
         return Err(BoardError(format!(
             "'{name}' is not a command or a valid board name (a-z 0-9 _ -, up to 32) — see 'tb --help' or try 'tb home'"
-        )));
+        ), Code::InvalidBoardName));
     }
     Ok(())
 }
@@ -65,7 +65,7 @@ pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) 
                 let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
                 return Err(BoardError(format!(
                     "the saved default board is '{saved}', but there is no board '{saved}' — boards: {all} · choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'"
-                )));
+                ), Code::NoBoard));
             }
             return Ok(saved);
         }
@@ -130,7 +130,7 @@ fn saved_from(settings: serde_json::Map<String, serde_json::Value>) -> Result<Op
         Some(other) => Err(BoardError(format!(
             "the saved default board in {} is {other}, which is not a board name — {fix}",
             crate::machine::path().display()
-        ))),
+        ), Code::InvalidBoardName)),
     }
 }
 
@@ -181,7 +181,7 @@ pub fn plain_board() -> Result<(String, DefaultSource)> {
 pub fn set_default(name: Option<&str>) -> Result<()> {
     if db_pinned() {
         return Err(BoardError(
-            "TB_DB pins one board file, so there is no default board to choose — unset TB_DB, then 'tb boards --default NAME'".into(),
+            "TB_DB pins one board file, so there is no default board to choose — unset TB_DB, then 'tb boards --default NAME'".into(), Code::DbPinned,
         ));
     }
     let name = name.map(str::trim).filter(|n| *n != DEFAULT_BOARD);
@@ -192,7 +192,7 @@ pub fn set_default(name: Option<&str>) -> Result<()> {
             let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
             return Err(BoardError(format!(
                 "no board '{n}' — boards: {all} · choose one that exists: 'tb boards --default NAME' (create it first with 'tb {n} add \"…\"')"
-            )));
+            ), Code::NoBoard));
         }
     }
     crate::machine::update(|m| match name {

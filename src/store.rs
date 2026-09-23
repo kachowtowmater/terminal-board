@@ -12,12 +12,15 @@ pub mod access;
 pub mod actors;
 pub mod archive;
 pub mod blocks;
-pub mod bulk;
 pub mod closing;
+pub mod bulk;
 pub mod display;
 pub mod due;
 pub mod kinds;
+pub mod links;
 pub mod order;
+pub mod rounds;
+pub mod rules;
 pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -37,8 +40,127 @@ fn layout_alias(l: &str) -> &str {
     }
 }
 
+/// A stable machine-readable symbol for a `--json` failure (`docs/JSON.md`). It lives on
+/// `BoardError` itself (`.1`), not on the message text, so the compiler requires one at every
+/// construction site instead of a caller re-deriving it from prose later.
+///
+/// The vocabulary is OPEN: new variants may be added at any time, and a consumer that meets a
+/// `code` it does not recognize falls back to `error` and the exit status — exactly as it
+/// would for a future addition. Once shipped, a variant's `as_str()` is a contract: it is
+/// never renamed or reused for a different meaning. `Unknown` is the mandatory catch-all, so
+/// no failure path can construct a `BoardError` without picking one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Code {
+    /// Changing a DOING card held by another actor without `--force` (the holder rule).
+    NotOwner,
+    /// A board name given while `TB_DB` pins one file.
+    DbPinned,
+    /// The named board does not exist.
+    NoBoard,
+    /// `--as ""`.
+    EmptyActor,
+    /// Sending a card back to DOING with no reason.
+    ReasonRequired,
+    /// No card with that id (on the board, or in the archive).
+    NoCard,
+    /// DOING is at the board's `wip` limit.
+    WipFull,
+    /// One actor is at this board's `wip-per-owner` cap.
+    WipOwnerFull,
+    /// A write attempted while the board is open read-only (`TB_READONLY` / `--read-only`).
+    ReadOnly,
+    /// The actor is not on this board's `config actors` list.
+    UnknownActor,
+    /// A board name that is not `[a-z0-9_-]{1,32}`.
+    InvalidBoardName,
+    /// A board name that collides with a command word.
+    BoardNameIsCommand,
+    /// `tb done` refused: the linked GitHub issue is still open.
+    GhIssueOpen,
+    /// A GitHub-only command run on a board with no `github` repo configured.
+    GithubOff,
+    /// A GitHub API/network call failed.
+    GithubError,
+    /// An approval outside REVIEW.
+    NotInReview,
+    /// The actor who did the work tried to approve or review their own card
+    /// (never-approve-your-own-work).
+    SelfApprove,
+    /// `config done-by` restricts who may close a card, and the actor is not on the list.
+    DoneByRestricted,
+    /// `config done-needs-note` requires a note written during this stay before DONE.
+    DoneNeedsNote,
+    /// `config done-needs-link` requires a link with that label before DONE.
+    DoneNeedsLink,
+    /// A required argument or value was not given.
+    ArgRequired,
+    /// An unrecognized subcommand or command word.
+    UnknownCommand,
+    /// An unrecognized `tb config` key.
+    UnknownSetting,
+    /// A value given for a recognized field/setting/flag is not one it accepts.
+    InvalidValue,
+    /// The database could not be opened, read or written (including "locked, try again").
+    DbError,
+    /// Reading or writing a file (settings, text-from-file, stdin, export) failed.
+    IoError,
+    /// The interactive TUI failed to start or run.
+    TerminalError,
+    /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
+    /// unrecognized subcommands caught at the parser level, wrong arity, etc.
+    Usage,
+    /// Every failure path that predates this vocabulary, or that does not yet warrant its own
+    /// symbol. A consumer that meets it falls back to `error` and the exit status, exactly as
+    /// it would for a code it does not recognize.
+    Unknown,
+}
+
+impl Code {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Code::NotOwner => "not_owner",
+            Code::DbPinned => "db_pinned",
+            Code::NoBoard => "no_board",
+            Code::EmptyActor => "empty_actor",
+            Code::ReasonRequired => "reason_required",
+            Code::NoCard => "no_card",
+            Code::WipFull => "wip_full",
+            Code::WipOwnerFull => "wip_owner_full",
+            Code::ReadOnly => "read_only",
+            Code::UnknownActor => "unknown_actor",
+            Code::InvalidBoardName => "invalid_board_name",
+            Code::BoardNameIsCommand => "board_name_is_command",
+            Code::GhIssueOpen => "gh_issue_open",
+            Code::GithubOff => "github_off",
+            Code::GithubError => "github_error",
+            Code::NotInReview => "not_in_review",
+            Code::SelfApprove => "self_approve",
+            Code::DoneByRestricted => "done_by_restricted",
+            Code::DoneNeedsNote => "done_needs_note",
+            Code::DoneNeedsLink => "done_needs_link",
+            Code::ArgRequired => "arg_required",
+            Code::UnknownCommand => "unknown_command",
+            Code::UnknownSetting => "unknown_setting",
+            Code::InvalidValue => "invalid_value",
+            Code::DbError => "db_error",
+            Code::IoError => "io_error",
+            Code::TerminalError => "terminal_error",
+            Code::Usage => "usage",
+            Code::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `msg` is the human-readable text (`Display`, `.0`); `code` (`.1`) is the stable symbol a
+/// `--json` caller branches on — see `Code`.
 #[derive(Debug)]
-pub struct BoardError(pub String);
+pub struct BoardError(pub String, pub Code);
 
 impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -48,12 +170,42 @@ impl fmt::Display for BoardError {
 
 impl std::error::Error for BoardError {}
 
+/// SQLITE_BUSY (the whole file is locked) or SQLITE_LOCKED (a table is, inside a shared
+/// connection): both mean another connection holds the lock right now — nothing to do with
+/// whether the file itself is writable.
+fn is_contended(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// The hint for a real path problem (cannot open, read-only, no such file/directory, …):
+/// TB_DB is worth naming, but only when `tb_db` says it is actually set — otherwise it was
+/// never the pin, and naming it points at the wrong thing (#105). Never says "the board
+/// file": `position_error` already names the real file for a house message this same `From`
+/// impl also carries (`bad_position`'s FromSqlConversionFailure), and a second, vaguer file
+/// reference tacked onto that one is not just redundant — `position_guard.rs` pins that no
+/// refusal may print an unusable "the board file" placeholder in place of the real path.
+fn db_error_hint(tb_db: Option<&str>) -> String {
+    match tb_db {
+        Some(path) => format!("check TB_DB ({path}) points at a writable file"),
+        None => "check it is writable".to_string(),
+    }
+}
+
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
         if access::is_readonly_error(&e) {
             return access::refusal("that command");
         }
-        BoardError(format!("database error: {e} — check TB_DB points at a writable file"))
+        if is_contended(&e) {
+            // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
+            // the problem here, so it is not named (#105)
+            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string(), Code::DbError);
+        }
+        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())), Code::DbError)
     }
 }
 
@@ -72,7 +224,7 @@ fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, what: &str)
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
     Ok(BoardError(format!(
         "#{id} is held by {owner} — your cards: {yours} · to {what} anyway use --force (logged)"
-    )))
+    ), Code::NotOwner))
 }
 
 /// The actor-aware WIP message: the board-wide limit with who holds what, and what the
@@ -103,7 +255,7 @@ fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardEr
         Some(id) => format!("finish #{id} with 'tb done {id}' first"),
         None => "you hold none; wait, or ask one of them to finish".to_string(),
     };
-    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
+    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")), Code::WipFull)
 }
 
 /// Who did the work on a card: its OWNER — the agent that held it in DOING — whenever it has
@@ -131,8 +283,42 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
-pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
-    Err(BoardError(msg.into()))
+/// Who most recently HELD this card in DOING, by EITHER route (`tb next`/`tb take`, a
+/// `taken` event, or `tb assign`, an `assigned` event) — unlike `author_of`, dropping the
+/// card does not erase this: a drop logs a `dropped` event, not a `taken`/`assigned` one, so
+/// the last holder stays on record until someone else claims or is assigned it. Used
+/// alongside `author_of` by the self-approval guard in `transition` to close the drop-then-
+/// reassign hole (#55): `author_of` alone forgets who held the card once it is dropped and
+/// unowned, and credits whoever happens to move the orphaned card into review instead.
+///
+/// An `assigned` event's own `actor` column is who ASSIGNED the card (the orchestrator), not
+/// who now holds it — `transition`'s `Kind::Assign` arm logs it that way on purpose, so `tb
+/// show`/`tb log` can answer "who assigned this" and "who holds this" as two different
+/// questions. So for that kind the holder's name is read out of the event's `text` ("assigned
+/// to NAME", the exact text `Kind::Assign` writes) instead of `actor`. An earlier version of
+/// this function looked only at `taken` events, which meant a card reassigned by `tb assign`
+/// (no `taken` event at all) still named the PREVIOUS holder — wrongly refusing a genuine
+/// approval from whoever it was really reassigned to; `case9`/`case10` in tests/review.rs are
+/// that exact false-refusal, fixed.
+fn last_holder_of(conn: &Connection, id: i64) -> Result<Option<String>> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT kind, actor, text FROM events WHERE card_id=? AND kind IN ('taken','assigned') ORDER BY id DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(kind, actor, text)| {
+        if kind == "assigned" {
+            text.strip_prefix("assigned to ").map(str::to_string)
+        } else {
+            Some(actor)
+        }
+    }))
+}
+
+pub(crate) fn err<T>(msg: impl Into<String>, code: Code) -> Result<T> {
+    Err(BoardError(msg.into(), code))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -196,6 +382,13 @@ pub struct Event {
     pub actor_id: Option<i64>,
 }
 
+/// One row of `Store::for_each_log_event`: a card event, or a board-level one (no card —
+/// `card_id` is `None` everywhere this is rendered). See `board_events` and #106.
+pub enum LogEvent {
+    Card(Event),
+    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64> },
+}
+
 /// An event with its database id (for `tb watch --events` resumption).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WatchEvent {
@@ -212,10 +405,15 @@ pub struct CardDetail {
     pub events: Vec<Event>,
     /// Rework round: 1, plus one per send-back (`returned` event).
     pub round: i64,
+    /// Sent back more times than `config max-rounds` allows (`store::rounds`) — derived, never
+    /// stored, always false once `done`.
+    pub escalate: bool,
     /// Everyone who recorded `tb done ID --approve`, oldest first (`store::closing`).
     pub approved_by: Vec<String>,
     /// The identities behind this card's events (`Event::actor_id`), in id order.
     pub actors: Vec<actors::Actor>,
+    /// Evidence attached with `tb link` (`store::links`), in the order they were added.
+    pub links: Vec<links::LinkItem>,
 }
 
 /// Everything a board render needs, loaded in one go.
@@ -297,7 +495,7 @@ pub fn pinned_now() -> Result<Option<i64>> {
         Ok(t) if (TB_NOW_MIN..TB_NOW_MAX).contains(&t) => Ok(Some(t)),
         _ => Err(BoardError(format!(
             "TB_NOW is not a plausible unix second: '{v}' — unset it, or pass seconds between {TB_NOW_MIN} and {TB_NOW_MAX} (2000, last accepted 4102444799)"
-        ))),
+        ), Code::InvalidValue)),
     }
 }
 
@@ -405,6 +603,15 @@ CREATE TABLE IF NOT EXISTS events (
     text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_card ON events(card_id, id);
+CREATE TABLE IF NOT EXISTS links (
+    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT NOT NULL,
+    added_by TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (card_id, idx)
+);
 CREATE TABLE IF NOT EXISTS github_snapshot (
     key INTEGER PRIMARY KEY CHECK (key = 1),
     fetched_at INTEGER NOT NULL DEFAULT 0,
@@ -477,7 +684,7 @@ fn bad_position<T>(id: rusqlite::Result<i64>, value: impl std::fmt::Display) -> 
     Err(rusqlite::Error::FromSqlConversionFailure(
         usize::MAX,
         Type::Integer,
-        Box::new(crate::store::BoardError(position_error(id, value))),
+        Box::new(crate::store::BoardError(position_error(id, value), Code::DbError)),
     ))
 }
 
@@ -593,6 +800,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     // migration: `blocked_on` / `blocked_until` (v2, `tb block --on … --until …`)
     blocks::migrate(conn)?;
+    // migration: `links` on an `archived_cards` table made before links existed (v2, `tb link`)
+    archive::migrate(conn)?;
     Ok(())
 }
 
@@ -637,21 +846,14 @@ fn is_board(conn: &Connection) -> Result<bool> {
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
 /// Would `migrate` change this board's schema? Asked on a READ-ONLY connection, where the
-/// upgrade itself cannot run: a transaction that only reads and is always rolled back.
+/// upgrade itself cannot run: a probe that only reads.
 fn needs_upgrade(conn: &Connection) -> Result<bool> {
-    // an empty database (no tables at all) is a board this mode cannot create either
     let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))?;
     if tables == 0 {
         return Ok(true);
     }
     // every column the current code reads, in one probe: a missing one means an old schema
-    let probe = conn.query_row(
-        r#"SELECT id, title, tag, description, "column", owner, due, gh_ref, created_at,
-                  column_since, blocked, position, reviewer, blocked_on, blocked_until
-           FROM cards LIMIT 1"#,
-        [],
-        |_| Ok(()),
-    );
+    let probe = conn.query_row(&format!("SELECT {CARD_COLS} FROM cards LIMIT 1"), [], |_| Ok(()));
     match probe {
         Ok(()) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
         Err(_) => Ok(true),
@@ -716,7 +918,7 @@ fn backup_aside(path: &Path) -> Result<std::path::PathBuf> {
         BoardError(format!(
             "cannot back up {} before upgrading it: {why} — nothing was changed; make room next to it (or fix the directory's permissions) and run the command again",
             path.display()
-        ))
+        ), Code::IoError)
     };
     let stamp = chrono::Utc
         .timestamp_opt(now(), 0)
@@ -813,7 +1015,7 @@ impl Store {
                     BoardError(format!(
                         "cannot create {}: {e} — set TB_DB to a writable path",
                         dir.display()
-                    ))
+                    ), Code::IoError)
                 })?;
             }
         }
@@ -823,16 +1025,16 @@ impl Store {
         // `path` itself, or the end of its chain of symbolic links — tb creates THAT file
         // (SQLite would create a link's missing target 0644) and opens the database there.
         let (real, created) = if on_disk {
-            crate::fsperm::create_board(path).map_err(BoardError)?
+            crate::fsperm::create_board(path).map_err(|e| BoardError(e, Code::IoError))?
         } else {
             (path.to_path_buf(), false)
         };
         // the file every later refusal names (`position_error`): where the board really is,
         // whether it was named by `TB_DB`, by `-b NAME`, by `TB_BOARD` or by the saved default
         remember_board_file(on_disk.then_some(real.as_path()));
-        // In read-only mode the DATABASE is opened read-only. There are 80-odd write sites
-        // in this crate, and a list of them is a list somebody forgets to add to; this way a
-        // write that slips past the command-level refusal fails at SQLite instead of landing.
+        // In read-only mode the DATABASE is opened read-only. There are eighty-odd write
+        // sites in this crate, and a list of them is a list somebody forgets to add to; this
+        // way a write that slips past the command layer fails at SQLite instead of landing.
         // (See `store::access`. The command layer refuses first, with a better message.)
         let readonly = access::readonly_env();
         let mut conn = if readonly && on_disk {
@@ -842,21 +1044,24 @@ impl Store {
             Connection::open(&real)?
         };
         conn.busy_timeout(Duration::from_secs(10))?;
-        if !readonly {
-            let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-            conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
-            upgrade(&mut conn, &real, on_disk)?;
-        } else {
+        if readonly {
             // a read-only connection cannot upgrade the schema; say so plainly rather than
-            // failing later with SQLite's own words
+            // failing later in SQLite's own words
             conn.execute_batch("PRAGMA foreign_keys=ON")?;
             if on_disk && needs_upgrade(&conn)? {
-                return Err(BoardError(format!(
-                    "board '{}' was made by an older tb and needs an upgrade, which read-only mode cannot do — run any command without TB_READONLY (or --read-only) once, then read it",
-                    real.display()
-                )));
+                return Err(BoardError(
+                    format!(
+                        "board '{}' was made by an older tb and needs an upgrade, which read-only mode cannot do — run any command without TB_READONLY (or --read-only) once, then read it",
+                        real.display()
+                    ),
+                    Code::ReadOnly,
+                ));
             }
+            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() });
         }
+        let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
+        upgrade(&mut conn, &real, on_disk)?;
         if on_disk && !created {
             report_wide_file(&conn, path, &real);
         }
@@ -891,17 +1096,27 @@ impl Store {
         Ok(())
     }
 
-    /// Delete every card, checklist item and event (config is kept).
+    /// Delete every card, checklist item, link and event (config is kept).
     pub fn wipe(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM checklist; DELETE FROM events; DELETE FROM cards; DELETE FROM board_events;
+            "DELETE FROM checklist; DELETE FROM links; DELETE FROM events; DELETE FROM cards; DELETE FROM board_events;
              DELETE FROM sqlite_sequence WHERE name IN ('cards','events','board_events');",
         )?;
         Ok(())
     }
 
     /// Every card event is written here, so this is where it gets its identity (`actor_id`).
+    /// EVERY change to a card writes an event through here, from the CLI, the full-screen
+    /// board, an import, a move between boards and tb's own GitHub sync alike. So this is
+    /// where `config actors` is enforced: a check at the command layer is a check with a door
+    /// next to it (the board called `add` directly and walked straight past one), and the
+    /// same argument that put read-only at the connection puts this at the event.
+    ///
+    /// The actor checked here is the one really doing the writing, not the ambient `--as`,
+    /// which is what makes tb's own `github` sync exempt by ORIGIN rather than by whoever
+    /// happened to type `tb sync`.
     fn log(conn: &Connection, id: i64, actor: &str, kind: &str, text: &str) -> Result<()> {
+        access::guard_actor(conn, actor)?;
         let ts = now();
         let actor_id = actors::stamp(conn, actor, ts)?;
         conn.execute(
@@ -928,7 +1143,7 @@ impl Store {
 
     pub fn set_wip(&self, n: i64) -> Result<()> {
         if !(1..=MAX_WIP).contains(&n) {
-            return err(format!("wip must be 1-{MAX_WIP} — try 'tb config wip 3'"));
+            return err(format!("wip must be 1-{MAX_WIP} — try 'tb config wip 3'"), Code::InvalidValue);
         }
         self.set_config("wip", &n.to_string())
     }
@@ -963,7 +1178,7 @@ impl Store {
         if t != "dark" && t != "light" {
             return err(format!(
                 "unknown theme '{theme}' — use 'tb config theme dark' or 'tb config theme light'"
-            ));
+            ), Code::InvalidValue);
         }
         self.set_config("theme", &t)
     }
@@ -991,7 +1206,7 @@ impl Store {
             Some(r) => {
                 return err(format!(
                     "'{r}' is not owner/repo — try 'tb config github acme/widgets'"
-                ))
+                ), Code::InvalidValue)
             }
             None => {
                 self.conn.execute("DELETE FROM config WHERE key='github'", [])?;
@@ -1057,10 +1272,10 @@ impl Store {
         let v = match v.as_str() {
             "shown" | "show" | "on" => "shown",
             "hidden" | "hide" | "off" => "hidden",
-            _ => return err(format!("'{value}' is not shown|hidden — try 'tb config {key} hidden'")),
+            _ => return err(format!("'{value}' is not shown|hidden — try 'tb config {key} hidden'"), Code::InvalidValue),
         };
         if key != "github-panel" && key != "agents-panel" {
-            return err(format!("unknown panel '{key}' — use github-panel or agents-panel"));
+            return err(format!("unknown panel '{key}' — use github-panel or agents-panel"), Code::InvalidValue);
         }
         self.set_config(key, v)
     }
@@ -1083,7 +1298,10 @@ impl Store {
         all.extend(self.display_settings()?);
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
+        all.extend(self.link_settings()?);
+        all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
+        all.extend(self.rules_settings()?);
         all.extend(self.access_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
@@ -1129,13 +1347,13 @@ impl Store {
         match value.trim().to_ascii_lowercase().as_str() {
             "private" => {
                 let Some(path) = self.path() else {
-                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'");
+                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'", Code::Unknown);
                 };
                 if crate::fsperm::mode_of(&path).is_none() {
-                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'");
+                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'", Code::Unknown);
                 }
                 let done = crate::fsperm::make_private(&path).map_err(|e| {
-                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()))
+                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()), Code::IoError)
                 })?;
                 let base = |f: &std::path::PathBuf| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 // a path that is not a regular file (a symbolic link someone planted) is never
@@ -1165,7 +1383,7 @@ impl Store {
                 log(format!("shared: mode {mode} kept"))?;
                 Ok(format!("file-mode is now shared — tb leaves the mode ({mode}) alone and stops reporting it"))
             }
-            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'")),
+            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'"), Code::InvalidValue),
         }
     }
 
@@ -1180,7 +1398,7 @@ impl Store {
     pub fn set_layout(&self, layout: &str) -> Result<()> {
         let l = layout_alias(&layout.trim().to_ascii_lowercase()).to_string();
         if !LAYOUTS.contains(&l.as_str()) {
-            return err(format!("unknown layout '{layout}' — use 'tb config layout auto|focus|third-h|third-v|half-h|half-v'"));
+            return err(format!("unknown layout '{layout}' — use 'tb config layout auto|focus|third-h|third-v|half-h|half-v'"), Code::InvalidValue);
         }
         self.set_config("layout", &l)
     }
@@ -1194,10 +1412,6 @@ impl Store {
     pub fn is_set_up(&self) -> Result<bool> {
         let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM config", [], |r| r.get(0))?;
         Ok(n > 0)
-    }
-
-    pub(crate) fn write_config(&self, key: &str, value: &str) -> Result<()> {
-        self.set_config(key, value)
     }
 
     fn set_config(&self, key: &str, value: &str) -> Result<()> {
@@ -1217,7 +1431,7 @@ impl Store {
     /// about, which is the point of the flag.
     pub fn add_tagged(&self, raw_title: &str, desc: &str, checks: &[String], actor: &str, tag: Option<Option<&str>>) -> Result<i64> {
         if raw_title.trim().is_empty() {
-            return err("title is empty — try 'tb add \"tag: what to do\"'");
+            return err("title is empty — try 'tb add \"tag: what to do\"'", Code::ArgRequired);
         }
         let (tag, gh, title) = match tag {
             None => parse_title(raw_title),
@@ -1226,7 +1440,18 @@ impl Store {
                 (explicit.map(str::to_string), gh, title)
             }
         };
+        // `BEGIN IMMEDIATE`, not a deferred transaction (#85): this reads `bottom_of` and
+        // then writes the INSERT. A deferred transaction takes its SHARED (read) lock on the
+        // first statement and only asks to upgrade to a write lock on the INSERT — and SQLite
+        // does not run the busy handler for that upgrade, so two concurrent adds return
+        // SQLITE_BUSY ("database is locked") instantly instead of one of them waiting out the
+        // 10s busy_timeout. Starting the transaction as a write from the first statement makes
+        // the busy timeout apply, the way every other read-then-write path here now does.
+        // `add` is `&self` (not `&mut self`), so `transaction_with_behavior` is not available
+        // (it needs `&mut Connection`) — `unchecked_transaction` + an explicit ROLLBACK into a
+        // fresh BEGIN IMMEDIATE is the same trick `note` and `block` already use below.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let t = now();
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
@@ -1320,9 +1545,11 @@ impl Store {
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
+        let escalate = rounds::escalate_of(round, &card.column, self.max_rounds()?);
         let actors = self.actors_by_id(&events.iter().filter_map(|e| e.actor_id).collect::<Vec<_>>())?;
         let approved_by = closing::approved_by(&events);
-        Ok(CardDetail { card, checklist, events, round, approved_by, actors })
+        let links = self.links_of(id)?;
+        Ok(CardDetail { card, checklist, events, round, escalate, approved_by, actors, links })
     }
 
     /// Every card's title, for an export that names a card without loading it again.
@@ -1347,6 +1574,63 @@ impl Store {
         let mut rows = st.query([from_ts])?;
         while let Some(r) = rows.next()? {
             f(&row_event(r)?)?;
+        }
+        Ok(())
+    }
+
+    /// Every event at or after `from_ts`, oldest first, card events interleaved with the
+    /// board's own log (`board_events` — a move's `moved-out` on the board a card left, a WIP
+    /// change, a file-mode change, a soft-delete, …), which otherwise has no command that
+    /// reads it (#106: a card moved off a board leaves a trail on that board nothing prints).
+    /// Two cursors, merged by timestamp, so this streams exactly like `for_each_event`.
+    pub fn for_each_log_event(&self, from_ts: i64, f: &mut dyn FnMut(LogEvent) -> Result<()>) -> Result<()> {
+        let mut cst = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut crows = cst.query([from_ts])?;
+        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut brows = bst.query([from_ts])?;
+
+        /// One `board_events` row, held between cursor advances (a named struct, not a
+        /// 5-tuple, so the type stays readable).
+        struct BoardRow {
+            ts: i64,
+            actor: String,
+            kind: String,
+            text: String,
+            actor_id: Option<i64>,
+        }
+
+        fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(row_event(r)?),
+                None => None,
+            })
+        }
+        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<BoardRow>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? }),
+                None => None,
+            })
+        }
+
+        let mut c_cur = next_card(&mut crows)?;
+        let mut b_cur = next_board(&mut brows)?;
+        loop {
+            let card_first = match (&c_cur, &b_cur) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(c), Some(b)) => c.ts <= b.ts,
+            };
+            if card_first {
+                f(LogEvent::Card(c_cur.take().unwrap()))?;
+                c_cur = next_card(&mut crows)?;
+            } else {
+                let BoardRow { ts, actor, kind, text, actor_id } = b_cur.take().unwrap();
+                f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
+                b_cur = next_board(&mut brows)?;
+            }
         }
         Ok(())
     }
@@ -1478,9 +1762,16 @@ impl Store {
             v.sort_by(|a, b| order::cmp(sort, a, b));
             v
         };
+        // an escalated card (`config max-rounds`, store/rounds.rs) is skipped by the automatic
+        // claim here too, same reasoning as `tb next`'s TODO pick: it is not counted as "yours"
+        // or as "waiting", just passed over, so it never inflates either message below.
+        let max_rounds = rounds::max_rounds_of(&tx)?;
         let mut own = 0;
         let mut target = None;
         for c in &cards {
+            if rounds::is_escalated(&tx, c.id, &c.column, max_rounds)? {
+                continue;
+            }
             if author_of(&tx, c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
                 own += 1;
             } else {
@@ -1494,14 +1785,14 @@ impl Store {
                 format!("no review cards for you — {waiting} your own work; ask another person or agent to review it, and take new work with 'tb next'")
             } else {
                 "no review cards waiting — take new work with 'tb next'".to_string()
-            });
+            }, Code::Unknown);
         };
         let changed = tx.execute(
             r#"UPDATE cards SET reviewer=? WHERE id=? AND "column"='review' AND reviewer IS NULL"#,
             params![actor, target],
         )?;
         if changed != 1 {
-            return err(format!("card #{target} was claimed by someone else — try 'tb next --review'"));
+            return err(format!("card #{target} was claimed by someone else — try 'tb next --review'"), Code::Unknown);
         }
         Self::log(&tx, target, actor, "reviewing", "")?;
         let card = get_card(&tx, target)?;
@@ -1512,6 +1803,20 @@ impl Store {
     /// Atomically take a specific todo card.
     pub fn take(&mut self, id: i64, actor: &str) -> Result<Card> {
         self.claim(Some(id), actor)
+    }
+
+    /// `tb assign ID NAME`: hand a specific TODO card straight to `owner`, without `actor`
+    /// (the one running the command) becoming its holder — `take` done on someone else's
+    /// behalf. Only a TODO card is a valid target (the same restriction `take` itself
+    /// enforces, and `take` has no `--force` to override it either), so this can never pull a
+    /// card away from whoever already holds it. The event log keeps the two facts separate:
+    /// its `actor` is who assigned the card, its new `owner` is who now holds it.
+    pub fn assign(&mut self, id: i64, owner: &str, actor: &str) -> Result<Card> {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            return err(format!("name is empty — try 'tb assign {id} bob'"), Code::ArgRequired);
+        }
+        self.transition(Change::Assign { id, owner }, actor, false)
     }
 
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
@@ -1534,7 +1839,7 @@ impl Store {
                     return err(format!(
                         "card #{id} is in {}{who}, not todo — take another with 'tb next'",
                         c.column
-                    ));
+                    ), Code::Unknown);
                 }
                 id
             }
@@ -1546,18 +1851,29 @@ impl Store {
                 // refuse the claim, never be silently skipped for a card that parses (an
                 // agent runs `tb next` blind — what it hands out must be what the board shows
                 // on top, or nothing).
+                // an escalated card (`config max-rounds`, store/rounds.rs) is skipped here too:
+                // this is the AUTOMATIC pick, and handing out a card that is already stuck in a
+                // worker/reviewer loop would extend the loop unnoticed. `tb take ID` names a
+                // card explicitly and is not filtered — an escalated card is skipped, not hidden.
+                let max_rounds = rounds::max_rounds_of(tx)?;
                 let found: Option<i64> = {
                     let mut st = tx.prepare(&format!(
                         r#"SELECT {CARD_COLS} FROM cards WHERE "column"='todo'"#
                     ))?;
                     let open = st.query_map([], row_card)?.collect::<rusqlite::Result<Vec<Card>>>()?;
                     let sort = order::sort_of(&tx)?;
-                    open.into_iter().filter(|c| c.blocked.is_none()).min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
+                    let mut candidates = Vec::with_capacity(open.len());
+                    for c in open {
+                        if c.blocked.is_none() && !rounds::is_escalated(tx, c.id, &c.column, max_rounds)? {
+                            candidates.push(c);
+                        }
+                    }
+                    candidates.into_iter().min_by(|a, b| order::cmp(sort, a, b)).map(|c| c.id)
                 };
                 match found {
                     Some(i) => i,
                     None => {
-                        return err("no todo cards — add one with 'tb add \"title\"'")
+                        return err("no todo cards — add one with 'tb add \"title\"'", Code::Unknown)
                     }
                 }
             }
@@ -1572,7 +1888,7 @@ impl Store {
 
     pub fn note(&self, id: i64, text: &str, actor: &str) -> Result<()> {
         if text.trim().is_empty() {
-            return err(format!("note is empty — try 'tb note {id} \"what changed\"'"));
+            return err(format!("note is empty — try 'tb note {id} \"what changed\"'"), Code::ArgRequired);
         }
         // The card is checked INSIDE the write transaction, not before it. Checking first
         // and writing after leaves a window: under WAL the check reads happily while another
@@ -1594,7 +1910,7 @@ impl Store {
             return err(format!(
                 "card #{id} has no checklist item {n} (it has {}) — see 'tb show {id}'",
                 d.checklist.len()
-            ));
+            ), Code::Unknown);
         };
         let new = !item.done;
         self.conn.execute(
@@ -1610,7 +1926,7 @@ impl Store {
     pub fn block(&self, id: i64, reason: Option<&str>, actor: &str) -> Result<()> {
         let reason = reason.map(|r| r.trim().trim_start_matches("by ").trim().to_string());
         if reason.as_deref() == Some("") {
-            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"));
+            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"), Code::ArgRequired);
         }
         // the card is checked inside the transaction, for the reason given on `note`
         let tx = self.conn.unchecked_transaction()?;
@@ -1630,9 +1946,13 @@ impl Store {
         self.card(id)?;
         let text = text.trim();
         if text.is_empty() {
-            return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"));
+            return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"), Code::ArgRequired);
         }
+        // reads (the next idx) then writes: needs `BEGIN IMMEDIATE`, same reason as `add` (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick, not
+        // `transaction_with_behavior` (which needs `&mut Connection`) — see `add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let n: i64 = tx.query_row(
             "SELECT COALESCE(MAX(idx), 0) + 1 FROM checklist WHERE card_id=?",
             [id],
@@ -1654,9 +1974,11 @@ impl Store {
             return err(format!(
                 "card #{id} has no checklist item {n} (it has {}) — see 'tb show {id}'",
                 d.checklist.len()
-            ));
+            ), Code::Unknown);
         };
+        // a write transaction from the start, consistent with every other write path (#85)
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute("DELETE FROM checklist WHERE card_id=? AND idx=?", params![id, n])?;
         // two steps so the (card_id, idx) key never collides mid-update
         tx.execute(
@@ -1718,8 +2040,14 @@ impl Store {
     ///    request itself (unknown column, a send-back without its reason, nothing to take);
     ///    a change that changes nothing ends here;
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
-    ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
-    ///    `--force`, logged) → the WIP limit (entering DOING, except a send-back);
+    ///    or `--force`, logged) → self-approval (entering DONE from any column, by the card's
+    ///    author, or
+    ///    `--force`, logged) → `done-by` (entering DONE needs to be one of the named closers,
+    ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
+    ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
+    ///    send-back). The first two are about WHO may touch the card; `done-by` and
+    ///    `done-needs-note` are about closing it responsibly, so they come after — a person
+    ///    blocked by ownership or self-approval never even reaches the closing checks.
     /// 3. the change, then its events.
     ///
     /// A new guard — and a hook on a change — belongs in step 2, after the ones that are there.
@@ -1729,6 +2057,13 @@ impl Store {
         let (c, column, reason) = match change {
             Change::Claim(id) => {
                 let target = Self::claim_target(&tx, id)?;
+                (get_card(&tx, target)?, "doing".to_string(), None)
+            }
+            Change::Assign { id, .. } => {
+                // the same "must be TODO" check `take ID` makes (claim_target's Some(id) arm);
+                // reusing it keeps the refusal text identical, so an agent that has seen
+                // take's error recognizes assign's
+                let target = Self::claim_target(&tx, Some(id))?;
                 (get_card(&tx, target)?, "doing".to_string(), None)
             }
             Change::Drop(id) => {
@@ -1743,7 +2078,7 @@ impl Store {
                 if !COLUMNS.contains(&column.as_str()) {
                     return err(format!(
                         "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
-                    ));
+                    ), Code::InvalidValue);
                 }
                 let reason = reason.map(str::trim);
                 let c = get_card(&tx, id)?;
@@ -1751,12 +2086,12 @@ impl Store {
                 if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
                     return err(format!(
                         "say why it goes back — 'tb move {id} doing \"what to fix\"'"
-                    ));
+                    ), Code::ReasonRequired);
                 }
                 if !send_back && reason.is_some() {
                     return err(format!(
                         "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
-                    ));
+                    ), Code::InvalidValue);
                 }
                 if c.column == column {
                     // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
@@ -1777,6 +2112,15 @@ impl Store {
             Change::Claim(_) => Kind::Claim,
             Change::Drop(_) => Kind::Drop,
             Change::Move { .. } => Kind::Move,
+            Change::Assign { .. } => Kind::Assign,
+        };
+        // who `assign` hands the card to — read out of `change` here (not inside the "3. the
+        // change" match below) because `column`/`c` are rebound by then; a WIP cap keyed on
+        // the HOLDER (not the actor issuing the command) must see this name too — see the
+        // note beside the WIP check below.
+        let assignee = match change {
+            Change::Assign { owner, .. } => Some(owner),
+            _ => None,
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
 
@@ -1798,14 +2142,30 @@ impl Store {
                 }
             }
         }
-        if kind == Kind::Move && column == "done" && c.column == "review" {
-            if let Some(author) = author_of(&tx, &c)? {
-                if author.eq_ignore_ascii_case(actor) {
-                    if !force {
-                        return err("you did this work — ask another person or agent to review it");
-                    }
-                    Self::log(&tx, id, actor, "force", "approved own work")?;
+        // Every way into DONE is guarded, not just REVIEW -> DONE (#55, the LAUNDERING hole):
+        // the owner of a REVIEW card could move it back to TODO first — which clears the
+        // owner — and then close it with a plain `tb done`, which used to see `c.column ==
+        // "todo"` and skip this check entirely. `column == "done" && c.column != "done"` is
+        // the same shape `done-by` below already uses, for the same reason its comment gives:
+        // moving the card out of REVIEW first must not be a way round the guard.
+        //
+        // A second question closes the DROPPED-WORK hole (#55): `author_of` only sees the
+        // CURRENT owner, or — once unowned — whoever last moved the card into review. A drop
+        // clears the owner, so an agent that held the card in DOING, dropped it, and then let
+        // someone else move the now-unowned card into review stops being "the author" by that
+        // reading, even though it did the work. `last_holder_of` answers "who most recently
+        // HELD this card, by either `tb next`/`tb take` or `tb assign`" instead — a drop logs
+        // a `dropped` event, not a `taken`/`assigned` one, so it does not erase this — and a
+        // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
+        // supersedes it, so a real reassignment is never falsely refused.
+        if column == "done" && c.column != "done" {
+            let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
+                || last_holder_of(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
+            if self_approving {
+                if !force {
+                    return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
                 }
+                Self::log(&tx, id, actor, "force", "approved own work")?;
             }
         }
         // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
@@ -1820,26 +2180,73 @@ impl Store {
                 Self::log(&tx, id, actor, "force", &format!("closed #{id}, not on the done-by list"))?;
             }
         }
+        // a closing note (`config done-needs-note`, store/closing.rs) — off by default (a
+        // board that sets nothing is unchanged). "A note" means one written during the stay
+        // being left, not one from an earlier round: a note from round 1 must not silently
+        // satisfy round 3's close. `--force` is open to everyone and logged, exactly like the
+        // guards above; `github` is exempt — a merged PR is its own trace, the same reasoning
+        // as the holder and `done-by` exemptions.
+        if column == "done" && c.column != "done" && actor != "github" && closing::needs_note(&tx, id)? {
+            if !force {
+                return Err(closing::no_note_err(id));
+            }
+            Self::log(&tx, id, actor, "force", &format!("closed #{id} with no note since it entered {}", c.column))?;
+        }
+        // evidence gate (`config done-needs-link`, store/links.rs): a card may not reach DONE
+        // without a link carrying that label. Same shape as `done-by` and `done-needs-note`
+        // above it — checked right after them, so every DONE-entry gate (who may close it, did
+        // they leave a note, what it must carry) applies before the WIP guard below ever runs;
+        // `--force` is open to everyone and logged, and `github` is exempt, as it is for the
+        // holder rule, `done-by` and `done-needs-note`: a merged PR is already evidence, not a
+        // person claiming the card is done. Ordered after `done-needs-note` rather than before
+        // it only because that guard landed on main first — a board setting both sees whichever
+        // it is missing first hit here in that order, and each refusal names exactly one thing
+        // to fix, so a board that sets only one is never affected by this choice.
+        if column == "done" && c.column != "done" && actor != "github" {
+            if let Some(label) = links::required_label(&tx)? {
+                if !links::has_label(&tx, id, &label)? {
+                    if !force {
+                        return Err(links::missing_link_err(id, &label));
+                    }
+                    Self::log(&tx, id, actor, "force", &format!("closed #{id} without a link labeled {label}"))?;
+                }
+            }
+        }
         // a returned card is its owner's existing work, not new work: WIP does not block it
         if column == "doing" && !send_back {
             let wip = wip_of(&tx)?;
             // `wip-counts-blocked no` (store/blocks.rs) discounts blocked DOING cards, up to
             // `wip` of them, so waiting for someone else does not stall the board — and
-            // blocking everything can still never hand out unlimited work
+            // blocking everything can still never hand out unlimited work.
+            //
+            // The per-owner cap (`wip-per-owner`, store/access.rs) lives here too: `tb assign`
+            // enters DOING through this exact check, on purpose, so the cap catches it for
+            // free — PROVIDED it is keyed on the card's new HOLDER, never on `actor` alone.
+            // `actor` is who is issuing the command (the assigner); for `Kind::Assign` that is
+            // not who ends up holding the card, and a cap keyed on the wrong name would let an
+            // orchestrator assign straight past it — exactly the hole a per-owner limit exists
+            // to close. Hence `assignee.unwrap_or(actor)`: `assignee` is `Some` only for
+            // `Kind::Assign`, and for `Kind::Claim` it is `None`, so this is `actor` there.
+            // NOT `c.owner`, which is still `None` for an assign (the card is still TODO).
+            //
+            // Board-wide first, then per-owner: the board-wide message names every holder, so
+            // a board that is simply full says so once, rather than telling one agent it is
+            // personally over a cap that would not have mattered. Each gate discounts blocked
+            // cards by its OWN number (store/access.rs), so they compose as independent limits.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
-            // `wip-per-owner N` (store/access.rs): a SECOND, independent question. The
-            // board-wide limit above asks "is the board full?"; this asks "are YOU full?",
-            // which is what keeps one agent from taking every slot. Both must pass, and each
-            // discounts blocked cards the same way, capped by its own number.
-            let holder = if kind == Kind::Claim { actor } else { c.owner.as_deref().unwrap_or(actor) };
-            access::room_for(&tx, holder)?;
+            access::room_for(&tx, assignee.unwrap_or(actor))?;
         }
 
         // 3. the change, then its events
         let owner = match (kind, column.as_str()) {
+            // MUST come before the `Kind::Claim` arm below: assign sets the NAMED owner, not
+            // the actor running the command — that distinction (who assigned it vs. who now
+            // holds it) is the whole point of the command, and the event log carries both:
+            // `owner` here is who holds it, `actor` on the "assigned" event is who assigned it.
+            (Kind::Assign, _) => Some(assignee.expect("Kind::Assign always carries an owner").to_string()),
             (Kind::Claim, _) => Some(actor.to_string()),
             (_, "todo") => None,
             (_, "doing") => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
@@ -1861,10 +2268,15 @@ impl Store {
             params![column, owner, now(), pos, reviewer, column, id, c.column],
         )?;
         if changed != 1 {
-            return err(format!("card #{id} was taken by someone else — try 'tb next'"));
+            return err(format!("card #{id} was taken by someone else — try 'tb next'"), Code::Unknown);
         }
         match kind {
             Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
+            // logged under `actor` — who ran 'tb assign', i.e. who assigned it — never under
+            // `owner` (who now holds it): that split is what lets `tb show`/`tb log` answer
+            // "who assigned this" and "who holds this" as two different questions, the way
+            // every other event's `actor` column already answers "who did this".
+            Kind::Assign => Self::log(&tx, id, actor, "assigned", &format!("assigned to {}", owner.as_deref().unwrap_or("")))?,
             Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
             Kind::Move => {
                 if block_cleared {
@@ -1886,11 +2298,12 @@ impl Store {
         Ok(c)
     }
 
-    /// Hard-delete a card with its checklist and events; logged on the board.
+    /// Hard-delete a card with its checklist, links and events; logged on the board.
     pub fn delete_card(&mut self, id: i64, actor: &str) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
+        tx.execute("DELETE FROM links WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM cards WHERE id=?", [id])?;
         Self::log_board(&tx, actor, "delete", &format!("deleted #{id} \"{}\"", c.title))?;
@@ -1900,6 +2313,10 @@ impl Store {
 
     /// Reorder a card within its column: `top`, `bottom`, `up`, `down`.
     pub fn reorder(&mut self, id: i64, how: &str, actor: &str) -> Result<Card> {
+        // a reorder that moves nothing writes no event, so it would never reach the check in
+        // `log`: ask here, so a name the board does not know is refused consistently rather
+        // than being told a no-op succeeded
+        access::guard_actor(&self.conn, actor)?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         // `prio` edits POSITION, so it walks the column in position order whatever the board
@@ -1917,7 +2334,7 @@ impl Store {
             "up" => i.saturating_sub(1),
             "down" => (i + 1).min(ids.len() - 1),
             _ => {
-                return err(format!("unknown '{how}' — use 'tb prio {id} top|bottom|up|down'"));
+                return err(format!("unknown '{how}' — use 'tb prio {id} top|bottom|up|down'"), Code::InvalidValue);
             }
         };
         let moved = ids.remove(i);
@@ -1979,21 +2396,21 @@ impl Store {
                 if t == base_title {
                     skip_title = true;
                 } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
-                    return err(e);
+                    return err(e, Code::Unknown);
                 }
             }
             if let Some(d) = desc {
                 if d == base_desc {
                     skip_desc = true;
                 } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
-                    return err(e);
+                    return err(e, Code::Unknown);
                 }
             }
         }
         let mut what = Vec::new();
         if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
-                return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
+                return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"), Code::ArgRequired);
             }
             let (guessed, gh, title) = match tag {
                 Some(_) => parse_title_keeping_prefix(t),
@@ -2021,7 +2438,7 @@ impl Store {
             what.push("description");
         }
         if what.is_empty() {
-            return err(format!("nothing to change — 'tb edit {id} --title T' and/or '--desc D'"));
+            return err(format!("nothing to change — 'tb edit {id} --title T' and/or '--desc D'"), Code::Unknown);
         }
         Self::log(&tx, id, actor, "edit", &format!("{} edited", what.join(" and ")))?;
         let c = get_card(&tx, id)?;
@@ -2046,7 +2463,7 @@ impl Store {
             "todo" | "review" => self.move_card(id, "done", actor, force, None),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
-            )),
+            ), Code::Unknown),
         }
     }
 
@@ -2077,6 +2494,12 @@ enum Change<'a> {
     Move { id: i64, column: &'a str, reason: Option<&'a str> },
     /// `drop`: back to TODO, unowned.
     Drop(i64),
+    /// `assign ID NAME`: TODO → DOING, owned by `owner` — never the actor running the
+    /// command. Only reaches a TODO card (the same restriction `claim_target` gives `take`,
+    /// and `take` itself has no `--force` to take a card away from its current holder
+    /// either), so the holder guard never needs a separate check here: a card already held
+    /// by someone is simply not a valid target, by construction.
+    Assign { id: i64, owner: &'a str },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2084,6 +2507,7 @@ enum Kind {
     Claim,
     Move,
     Drop,
+    Assign,
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.
@@ -2136,7 +2560,7 @@ fn theme_of(conn: &Connection) -> Result<String> {
 fn get_card(conn: &Connection, id: i64) -> Result<Card> {
     conn.query_row(&format!("SELECT {CARD_COLS} FROM cards WHERE id=?"), [id], row_card)
         .optional()?
-        .ok_or_else(|| BoardError(format!("no card #{id} — see 'tb list' for ids")))
+        .ok_or_else(|| BoardError(format!("no card #{id} — see 'tb list' for ids"), Code::NoCard))
 }
 
 /// Compact age: 40m, 1h12m, 2d.
@@ -2179,6 +2603,39 @@ pub fn fmt_clock(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #105: SQLITE_BUSY/SQLITE_LOCKED (another `tb` holds the write lock) reads nothing like
+    /// a real path problem (cannot open, read-only, …), and only the latter names TB_DB.
+    #[test]
+    fn a_locked_database_and_a_path_problem_get_different_messages() {
+        let locked = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::DatabaseBusy, extended_code: 5 },
+            Some("database is locked".to_string()),
+        );
+        let path_problem = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::CannotOpen, extended_code: 14 },
+            Some("unable to open database file".to_string()),
+        );
+        let locked_msg = BoardError::from(locked).0;
+        let path_msg = BoardError::from(path_problem).0;
+        assert_ne!(locked_msg, path_msg, "a lock and a path problem must not read the same");
+        assert!(locked_msg.contains("another tb is writing this board"), "{locked_msg}");
+        assert!(!locked_msg.contains("TB_DB"), "a lock is not a TB_DB problem: {locked_msg}");
+        // whether the path message names TB_DB depends on whether it is actually set — that
+        // exact rule is `the_tb_db_hint_names_it_only_when_set` below, via the pure function,
+        // so this does not assert on ambient process environment here
+        assert!(path_msg.starts_with("database error: unable to open database file"), "{path_msg}");
+    }
+
+    /// #105: TB_DB is named only when it is actually set — otherwise it was never the pin.
+    /// Never says "the board file": that placeholder is reserved for when the real file is
+    /// genuinely unknown (`position_guard.rs` pins it out of an actual refusal).
+    #[test]
+    fn the_tb_db_hint_names_it_only_when_set() {
+        assert_eq!(db_error_hint(None), "check it is writable");
+        assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
+        assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
 
     #[test]
     fn title_parsing() {

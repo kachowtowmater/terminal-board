@@ -318,8 +318,11 @@ fn read_only_refuses_every_write() {
     let v: Value = serde_json::from_slice(&o.stdout).unwrap();
     let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["error", "hint", "ok"]);
+    assert_eq!(keys, ["code", "error", "hint", "ok"]);
     assert_eq!(v["ok"], false);
+    // the stable machine-readable symbol (#144), so a script can branch on the refusal
+    // without matching English: read-only is its own code, not the catch-all
+    assert_eq!(v["code"], "read_only");
     assert!(v["error"].as_str().unwrap().starts_with("read-only mode: 'tb add'"), "{v}");
     assert!(v["hint"].as_str().unwrap().contains("unset TB_READONLY"), "{v}");
 
@@ -382,4 +385,213 @@ fn the_manuals_teach_it() {
     for (name, doc) in [("README.md", include_str!("../README.md")), ("docs/JSON.md", include_str!("../docs/JSON.md"))] {
         assert!(doc.contains("wip-per-owner") && doc.contains("actors") && doc.contains("read-only"), "{name}");
     }
+}
+
+/// Drive the full-screen board in a REAL TERMINAL: `script` gives it a pty, and the keys are
+/// fed with pauses, because the board reads them as they arrive rather than all at once.
+fn board_keys(h: &Home, actor: &str, typed: &str) -> Output {
+    let tb = env!("CARGO_BIN_EXE_tb");
+    // The keys are fed to SCRIPT's stdin, never to the board's: crossterm reads the terminal
+    // (`/dev/tty`), not stdin, so keys piped straight at `tb` are read by nobody. The board
+    // then sits there until `timeout` kills it — and a test that drove nothing still passes
+    // its negative control, for entirely the wrong reason. `script` owns the pty, so what it
+    // reads on ITS stdin is what the board reads as typed keys.
+    let pty = if cfg!(target_os = "linux") {
+        format!("script -q -e -c {} /dev/null", shell_quote(tb))
+    } else {
+        format!("script -q /dev/null {}", shell_quote(tb))
+    };
+    // `a` opens the add form, the title is typed, Enter saves it, `q` quits. The pauses are
+    // needed because the board reads keys as they arrive rather than all at once. `timeout`
+    // bounds it so a board that never sees its quit key cannot hang the suite.
+    let feed = format!(
+        "(sleep 2; printf a; sleep 1; printf %s {}; sleep 0.5; printf '\\r'; sleep 1.5; printf q; sleep 1) | timeout 25 {} 2>&1",
+        shell_quote(typed),
+        pty
+    );
+    let mut c = Command::new("sh");
+    c.args(["-c", &feed]);
+    c.current_dir(h.path()).env("HOME", h.path()).env("TB_AS", actor).env("TB_NO_HERDR", "1").env("TZ", "UTC");
+    for k in ["TB_DB", "TB_BOARD", "TB_CONFIG", "TB_READONLY"] {
+        c.env_remove(k);
+    }
+    let o = c.output().unwrap();
+    // Proof that the board really ran and really quit. Without this, every assertion below
+    // is satisfied just as well by a board that never started: 124 is `timeout` killing it,
+    // and an empty pty means it drew nothing.
+    assert_ne!(o.status.code(), Some(124), "the board never took its quit key — it was killed by timeout");
+    assert!(!o.stdout.is_empty(), "the board drew nothing: it never started");
+    o
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// DEFECT 1, in the reviewer's own construction: the full-screen board calls the store
+/// directly, so a check at the command layer has a door beside it. The check now lives in
+/// `Store::log`, which every card change goes through, so the board cannot walk past it.
+#[test]
+fn the_full_screen_board_cannot_walk_past_the_names_list() {
+    let h = Home::new();
+    // past the first-run wizard, or the pty meets that instead of the board
+    h.ok(&["setup", "--yes", "--no-github", "--no-agents"]);
+    h.ok(&["add", "x: a card"]);
+    h.ok(&["config", "actors", "alice"]);
+    let before = std::fs::read(h.board_file("default")).unwrap();
+
+    // a name the board does not know, adding a card through the board itself
+    let o = board_keys(&h, "mallory", "mallory was here");
+    assert_eq!(
+        ids(&h.ok(&["list"])).len(),
+        1,
+        "an off-list name added a card through the full-screen board:\n{}",
+        text(&o.stdout)
+    );
+    assert_eq!(std::fs::read(h.board_file("default")).unwrap(), before, "the board file changed");
+
+    // the same board, the same keys, a name it does know: the card really is added, so the
+    // test is proving the guard and not merely that the keys did nothing
+    let o = board_keys(&h, "alice", "alice was here");
+    let after = ids(&h.ok(&["list"]));
+    assert_eq!(after.len(), 2, "the board refused a name it knows:\n{}", text(&o.stdout));
+    assert!(h.ok(&["list"]).contains("alice was here"));
+}
+
+/// The board's other writing keys, through the board's own key handler — the harness the rest
+/// of this repo uses for board behaviour, and the same store calls the pty above makes.
+#[test]
+fn every_writing_key_on_the_board_honours_the_names_list() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use terminal_board::store::Store;
+    use terminal_board::tui::{App, Mode};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let mut s = Store::open(&db).unwrap();
+    s.add("x: one", "", &[], "alice").unwrap();
+    s.add("x: two", "", &[], "alice").unwrap();
+    s.set_actors("alice", "alice").unwrap();
+    let before = std::fs::read(&db).unwrap();
+
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    let mut app = App::new(s.snapshot().unwrap(), "mallory");
+    app.reload(&s);
+    // every key that changes a card: next/take, done, delete (and its y), prio, and the add
+    // and note forms typed out in full
+    for k in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Char('x'), KeyCode::Char('y')] {
+        app.handle_key(key(k), &mut s);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT), &mut s);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT), &mut s);
+    for form in ["a", "N"] {
+        app.handle_key(key(KeyCode::Char(form.chars().next().unwrap())), &mut s);
+        for c in "typed by mallory".chars() {
+            app.handle_key(key(KeyCode::Char(c)), &mut s);
+        }
+        app.handle_key(key(KeyCode::Enter), &mut s);
+        app.mode = Mode::Normal;
+    }
+    assert_eq!(std::fs::read(&db).unwrap(), before, "a board key wrote for a name the board does not know");
+    assert_eq!(s.list().unwrap().len(), 2, "a card was added or removed");
+
+    // and the same keys as a name the board knows do work
+    let mut app = App::new(s.snapshot().unwrap(), "alice");
+    app.reload(&s);
+    app.handle_key(key(KeyCode::Char('a')), &mut s);
+    for c in "typed by alice".chars() {
+        app.handle_key(key(KeyCode::Char(c)), &mut s);
+    }
+    app.handle_key(key(KeyCode::Enter), &mut s);
+    assert_eq!(s.list().unwrap().len(), 3, "the board refused a name it knows");
+}
+
+/// Every other way in: the CLI, an import, an edit from a file, and a move between boards.
+#[test]
+fn every_write_route_honours_the_names_list() {
+    let h = Home::new();
+    h.ok(&["add", "x: one"]);
+    h.ok(&["other", "add", "x: over there"]);
+    h.ok(&["config", "actors", "alice"]);
+    h.ok(&["other", "config", "actors", "alice"]);
+    std::fs::write(h.path().join("cards.json"), r#"[{"title":"x: imported"}]"#).unwrap();
+    std::fs::write(h.path().join("edit.json"), r#"[{"id":1,"description":"changed"}]"#).unwrap();
+    let before = std::fs::read(h.board_file("default")).unwrap();
+
+    for args in [
+        &["add", "x: nope"][..],
+        &["note", "1", "nope"][..],
+        &["check", "1", "--add", "nope"][..],
+        &["edit", "1", "--desc", "nope"][..],
+        &["block", "1", "#2"][..],
+        &["take", "1"][..],
+        &["next"][..],
+        &["prio", "1", "top"][..],
+        &["rm", "1"][..],
+        &["import", "cards.json"][..],
+        &["edit", "--from", "edit.json"][..],
+        &["mv", "1", "--to", "other"][..],
+    ] {
+        let o = h.cmd(args, "mallory").output().unwrap();
+        assert_eq!(o.status.code(), Some(1), "{args:?} was not refused: {}{}", text(&o.stdout), text(&o.stderr));
+        assert!(text(&o.stderr).contains("not one of this board's names"), "{args:?}: {}", text(&o.stderr));
+    }
+    assert_eq!(std::fs::read(h.board_file("default")).unwrap(), before, "an off-list name wrote something");
+
+    // a move is refused by the board it would ARRIVE at as well, not only the one it leaves
+    h.ok(&["config", "actors", "alice,mallory"]);
+    let o = h.cmd(&["mv", "1", "--to", "other"], "mallory").output().unwrap();
+    assert_eq!(o.status.code(), Some(1), "the destination board's list was not consulted");
+    assert!(text(&o.stderr).contains("not one of this board's names"), "{}", text(&o.stderr));
+    assert_eq!(ids(&h.ok(&["other", "list"])).len(), 1, "the card arrived anyway");
+}
+
+/// DEFECT 2. tb's own sync is not a person: its writes are made under `github`, by origin, so
+/// a restrictive list must not stop `tb sync`. Driven through a real sync with a fake `gh`.
+#[test]
+fn a_names_list_does_not_block_tb_sync() {
+    let h = Home::new();
+    h.ok(&["add", "repo: gh#310 a linked card"]);
+    h.ok(&["take", "1"]);
+    let day = "2026-01-01T00:00:00Z";
+    std::fs::write(
+        h.path().join("prs.json"),
+        format!(r#"[{{"number":333,"title":"fix","headRefName":"f","isDraft":false,"reviewDecision":"","createdAt":"{day}","updatedAt":"{day}","author":{{"login":"a"}},"statusCheckRollup":[],"closingIssuesReferences":[{{"number":310}}]}}]"#),
+    )
+    .unwrap();
+    std::fs::write(
+        h.path().join("issues.json"),
+        format!(r#"[{{"number":310,"title":"a linked card","labels":[],"assignees":[],"createdAt":"{day}"}}]"#),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("empty.json"), "[]").unwrap();
+    let gh = h.path().join("gh");
+    let p = h.path().display();
+    std::fs::write(
+        &gh,
+        format!("#!/bin/sh\ncase \"$1 $2\" in\n  \"repo view\") echo '{{\"nameWithOwner\":\"acme/widgets\"}}';;\n  \"pr list\") case \"$*\" in *merged*) cat {p}/empty.json;; *) cat {p}/prs.json;; esac;;\n  \"issue list\") cat {p}/issues.json;;\n  \"run list\") cat {p}/empty.json;;\n  api*) echo 42;;\n  *) echo '[]';;\nesac\n"),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let run = |args: &[&str], actor: &str| -> Output { h.cmd(args, actor).env("TB_GH", &gh).output().unwrap() };
+    assert!(run(&["config", "github", "acme/widgets"], "alice").status.success());
+
+    // a list naming only alice: alice's sync still works, because the writes it makes are the
+    // SYNC's, recorded under `github`, not alice's
+    h.ok(&["config", "actors", "alice"]);
+    let o = run(&["sync"], "alice");
+    assert!(o.status.success(), "a names list blocked tb sync: {}{}", text(&o.stdout), text(&o.stderr));
+    let card = h.json(&["show", "1", "--json"]);
+    assert_eq!(card["column"], "review", "the sync did not move the card: {card}");
+    assert!(
+        card["events"].as_array().unwrap().iter().any(|e| e["actor"] == "github"),
+        "the sync's write is recorded under its own name: {card}"
+    );
+
+    // and the exemption is by ORIGIN, not a name anybody may borrow: a person cannot write as
+    // `github` from the command line
+    let o = h.cmd(&["note", "1", "riding in"], "github").output().unwrap();
+    assert!(!o.status.success(), "a person wrote as the sync actor: {}", text(&o.stdout));
 }

@@ -108,7 +108,9 @@ fn json_refusal(o: &Output) -> (String, String) {
     assert_eq!(v["ok"], false, "{v}");
     let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["error", "hint", "ok"], "{v}");
+    assert_eq!(keys, ["code", "error", "hint", "ok"], "{v}");
+    // #81: every refusal reading text from a file/stdin carries the stable `io_error` code
+    assert_eq!(v["code"], "io_error", "{v}");
     (v["error"].as_str().unwrap().to_string(), v["hint"].as_str().unwrap().to_string())
 }
 
@@ -446,6 +448,129 @@ fn an_open_pipe_on_stdin_never_stalls_a_command_that_did_not_ask_for_it() {
         let out = out.unwrap_or_else(|| panic!("{args:?} waited on a standard input it was never asked to read"));
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
+}
+
+/// #79: `--file -` on a pipe nobody ever closes hangs forever by default — never let that
+/// stall an unattended agent loop with no way out. `TB_STDIN_TIMEOUT` is the opt-in: set, it
+/// bounds the wait for `-`'s FIRST byte and refuses instead of hanging.
+#[test]
+fn tb_stdin_timeout_refuses_a_pipe_nobody_closes_instead_of_hanging() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let mut cmd = b.cmd(&["note", "1", "--file", "-"]);
+    cmd.env("TB_STDIN_TIMEOUT", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let held_open = child.stdin.take().unwrap(); // never written to, never closed — the reproducer
+    let out = wait_at_most(child, Duration::from_secs(10));
+    drop(held_open);
+    let out = out.unwrap_or_else(|| panic!("TB_STDIN_TIMEOUT=1 did not bound a pipe nobody closes"));
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("TB_STDIN_TIMEOUT") && err.contains("waited 1s"), "{err}");
+    assert!(b.notes(1).is_empty(), "nothing was stored from a refused read");
+}
+
+/// #79: unset (the default), `TB_STDIN_TIMEOUT` never applies — a producer that is merely
+/// slow to write its first byte is not mistaken for a hung one, however long it takes. This
+/// is the failure mode the decision explicitly avoids: a wrong default would truncate this.
+#[test]
+fn without_tb_stdin_timeout_a_slow_starting_producer_is_never_truncated() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let mut child = b.cmd(&["note", "1", "--file", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // slower than the timeout the test above uses, on purpose: proves the default is unbounded
+    std::thread::sleep(Duration::from_millis(1500));
+    stdin.write_all(b"arrived late, on purpose").unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "a slow starter was refused although TB_STDIN_TIMEOUT is unset: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(b.notes(1), ["arrived late, on purpose"]);
+}
+
+/// #79 (found reviewing PR #95): a FIFO with no writer used to hang inside `open()`, before
+/// any guard could run. Fixed the wrong way at first (SENT BACK): refusing every FIFO on file
+/// type alone also refused one that DOES have a writer — a previously-working use case
+/// (`mkfifo f; (echo hi > f &); tb note 1 --file f`). A second wrong fix (also caught before
+/// landing): opening non-blocking and switching to blocking mode before reading LOOKS right
+/// but is not — a FIFO read `open()` with `O_NONBLOCK` always succeeds at once whether or not
+/// a writer exists, but a subsequent `read()`, even back in blocking mode, does NOT wait for
+/// a writer that has not attached yet: with zero writers it returns EOF immediately, because
+/// the kernel only blocks a read while a writer already holds the pipe open. The real fix
+/// keeps the ordinary blocking `open()` (which DOES correctly wait for a writer, however long
+/// that takes — unset `TB_STDIN_TIMEOUT`, nothing changes) and, only when `TB_STDIN_TIMEOUT`
+/// is set, bounds that open with a deadline via a background thread + channel, since `open()`
+/// itself takes no timeout parameter.
+///
+/// A writer, ready immediately: succeeds, default settings, no timeout needed.
+#[test]
+fn a_fifo_with_a_writer_still_succeeds() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("a-writer-is-here");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let mut writer = Command::new("sh").arg("-c").arg(format!("printf '%s' 'from the fifo' > '{}'", fifo.display())).spawn().unwrap();
+    let o = b.run(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    assert!(writer.wait().unwrap().success());
+    assert!(o.status.success(), "a FIFO with a writer was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.notes(1), ["from the fifo"]);
+}
+
+/// A writer that attaches a moment later (not present when tb opens the FIFO): tb waits for
+/// it rather than refusing immediately, the same way `-` waits for a slow-to-start producer.
+#[test]
+fn a_fifo_whose_writer_attaches_a_moment_later_still_succeeds() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("writer-attaches-late");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let mut writer = Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 0.8 && printf '%s' 'arrived late, on purpose' > '{}'", fifo.display()))
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let o = b.run(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    assert!(writer.wait().unwrap().success());
+    assert!(o.status.success(), "a writer that attaches a moment later was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(start.elapsed() >= Duration::from_millis(750), "returned before the writer could plausibly have attached: {:?}", start.elapsed());
+    assert_eq!(b.notes(1), ["arrived late, on purpose"]);
+}
+
+/// No writer, ever, and `TB_STDIN_TIMEOUT` set: refused promptly, not hung.
+#[test]
+fn a_fifo_with_no_writer_is_refused_promptly_under_tb_stdin_timeout() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("nobody-ever-writes-here");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let start = Instant::now();
+    let mut cmd = b.cmd(&["note", "1", "--file", fifo.to_str().unwrap()]);
+    cmd.env("TB_STDIN_TIMEOUT", "1");
+    let o = cmd.output().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(5), "TB_STDIN_TIMEOUT did not bound a FIFO with no writer: took {:?}", start.elapsed());
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("TB_STDIN_TIMEOUT") && err.contains("waited 1s") && err.contains("writer") && err.contains("none did"), "{err}");
+    assert!(b.notes(1).is_empty());
+}
+
+/// No writer, ever, and `TB_STDIN_TIMEOUT` UNSET: tb waits (today's, and always tb's,
+/// default) rather than refusing on file type alone — the exact regression the FIFO fix was
+/// sent back for. Bounded by `wait_at_most` so a regression here fails fast, not by hanging.
+#[test]
+fn without_tb_stdin_timeout_a_fifo_with_no_writer_waits_rather_than_refusing() {
+    let b = Board::new();
+    b.ok(&["add", "docs: target"]);
+    let fifo = b.dir.path().join("nobody-ever-writes-here-either");
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let child = b.cmd(&["note", "1", "--file", fifo.to_str().unwrap()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let out = wait_at_most(child, Duration::from_secs(3));
+    assert!(
+        out.is_none(),
+        "a FIFO with no writer and no TB_STDIN_TIMEOUT returned instead of waiting: {:?}",
+        out.map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+    );
 }
 
 /// `script` runs a command with a real terminal on its standard input (its own pty).

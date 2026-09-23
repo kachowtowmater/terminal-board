@@ -16,9 +16,16 @@
 //! An explicit `--tag KEY` is the tag the user chose, instead of the one tb guesses from a
 //! `tag:` prefix. It may hold digits, spaces and hyphens, which a guessed tag may not, so a
 //! title like `due 10/9 (file by 10/6): …` can carry a real tag.
+//!
+//! **`done-needs-note`** (off by default) refuses to move a card into DONE until a `tb note`
+//! was written during the stay being left — not just at some point in the card's history, so a
+//! note from round 1 cannot silently stand in for round 3's close. On a board where one person
+//! is accountable for closing work, DONE with no trace is what makes the board untrustworthy
+//! later. It follows the same bargain as `done-by`: `--force` gets past it and is logged, and
+//! `github` is exempt (a merged PR is its own trace).
 
-use super::{err, Card, Connection, Event, Result, Store};
-use rusqlite::OptionalExtension;
+use super::{Code, err, Card, Connection, Event, Result, Store};
+use rusqlite::{params, OptionalExtension};
 
 /// Longest tag, in characters — the width a card line budgets for one.
 pub const TAG_MAX: usize = 20;
@@ -31,16 +38,16 @@ pub fn clean_tag(raw: &str, example: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     if tag.is_empty() {
-        return err(format!("the tag is empty — give one, e.g. '{example}' (or --tag none to clear it)"));
+        return err(format!("the tag is empty — give one, e.g. '{example}' (or --tag none to clear it)"), Code::ArgRequired);
     }
     let n = tag.chars().count();
     if n > TAG_MAX {
-        return err(format!("that tag is {n} characters, the limit is {TAG_MAX} — shorten it: '{example}'"));
+        return err(format!("that tag is {n} characters, the limit is {TAG_MAX} — shorten it: '{example}'"), Code::InvalidValue);
     }
     if let Some(bad) = tag.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == ' ')) {
         return err(format!(
             "a tag holds letters, digits, spaces, hyphens and underscores — '{bad}' is none of those: '{example}'"
-        ));
+        ), Code::InvalidValue);
     }
     Ok(Some(tag))
 }
@@ -81,7 +88,7 @@ pub(super) fn not_allowed(id: i64, actor: &str, names: &[String]) -> super::Boar
     super::BoardError(format!(
         "only {} may close a card on this board ({actor} is not on the list) — ask one of them to run 'tb done {id}', or 'tb done {id} --force' if you mean it (logged)",
         names.join(" or ")
-    ))
+    ), Code::DoneByRestricted)
 }
 
 /// May `actor` move a card into DONE? `github` is exempt: its moves are evidence-driven
@@ -93,6 +100,54 @@ pub(super) fn may_close(conn: &Connection, actor: &str) -> Result<Option<Vec<Str
         return Ok(None);
     }
     Ok(Some(names))
+}
+
+/// `done-needs-note` on `conn` (inside the transition's transaction).
+fn done_needs_note_of(conn: &Connection) -> Result<bool> {
+    let v: Option<String> =
+        conn.query_row("SELECT value FROM config WHERE key='done-needs-note'", [], |r| r.get(0)).optional()?;
+    Ok(v.is_some_and(|v| v.trim().eq_ignore_ascii_case("on")))
+}
+
+/// The event that started the stay being left: the most recent event that changed this card's
+/// `column` (`created`, `taken`, `moved`, `dropped` or `moved-in` — every kind that sets
+/// `cards.column_since`). Event **ids** are a true insertion order — unlike `ts` (unix
+/// SECONDS), two events can never tie on it, which a `tb note` immediately followed by a `tb
+/// done` can do on `ts`. 0 for a card with no such event yet (there always is one — `created`
+/// — but 0 is still the right answer: every note ever written is "since" it).
+fn column_entry_event_id(conn: &Connection, id: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM events WHERE card_id=? AND kind IN ('created','taken','moved','dropped','moved-in')",
+        [id],
+        |r| r.get(0),
+    )?)
+}
+
+/// Has anyone written a note (`tb note`, any `--file` form — same `note` event kind) since the
+/// stay being left began? A note kept from an earlier round never counts: closing needs a note
+/// written for the work now closing.
+fn has_note_this_stay(conn: &Connection, id: i64) -> Result<bool> {
+    let entry = column_entry_event_id(conn, id)?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE card_id=? AND kind='note' AND id>?",
+        params![id, entry],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Does entering DONE need a note it does not have? False whenever the board has not turned
+/// `done-needs-note` on — so a board that sets nothing is asked nothing.
+pub(super) fn needs_note(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(done_needs_note_of(conn)? && !has_note_this_stay(conn, id)?)
+}
+
+/// The refusal when DONE needs a note the card does not have: what to run, and the escape
+/// hatch, in the same shape `not_allowed` uses.
+pub(super) fn no_note_err(id: i64) -> super::BoardError {
+    super::BoardError(format!(
+        "this board needs a closing note before DONE (config done-needs-note) — 'tb note {id} \"what you checked\"', then 'tb done {id}' again, or 'tb done {id} --force' to skip it (logged)"
+    ), Code::DoneNeedsNote)
 }
 
 impl Store {
@@ -110,23 +165,56 @@ impl Store {
         let names = parse_names(list);
         if names.is_empty() {
             return err(
-                "say who may close a card — 'tb config done-by anna,ben', or 'tb config done-by --off' to let anyone".to_string(),
+                "say who may close a card — 'tb config done-by anna,ben', or 'tb config done-by --off' to let anyone".to_string(), Code::ArgRequired,
             );
         }
         for n in &names {
             if n.chars().count() > 32 || n.contains(char::is_whitespace) && n.split_whitespace().count() > 4 {
-                return err(format!("'{n}' does not look like a name — 'tb config done-by anna,ben'"));
+                return err(format!("'{n}' does not look like a name — 'tb config done-by anna,ben'"), Code::InvalidValue);
             }
         }
         self.set_config("done-by", &names.join(","))?;
         Ok(names)
     }
 
-    /// `done-by` for the `tb config` listing — listed once the board sets it, so a board that
-    /// sets nothing lists exactly what it always did.
+    /// `done-needs-note on|off` — off (the default) is today's behaviour: DONE checks nothing.
+    pub fn done_needs_note(&self) -> Result<bool> {
+        done_needs_note_of(&self.conn)
+    }
+
+    pub fn set_done_needs_note(&self, value: &str) -> Result<bool> {
+        let v = value.trim().to_ascii_lowercase();
+        let on = match v.as_str() {
+            "on" | "yes" | "true" => true,
+            "off" | "no" | "false" => false,
+            _ => {
+                return err(format!(
+                    "'{}' is not on|off — 'tb config done-needs-note on' requires a note before DONE",
+                    value.trim()
+                ), Code::InvalidValue)
+            }
+        };
+        self.set_config("done-needs-note", if on { "on" } else { "off" })?;
+        Ok(on)
+    }
+
+    /// `done-by` and `done-needs-note` for the `tb config` listing — each listed only once the
+    /// board sets it, so a board that sets nothing lists exactly what it always did.
     pub fn closing_settings(&self) -> Result<Vec<(String, String)>> {
+        let mut v = Vec::new();
         let names = self.done_by()?;
-        Ok(if names.is_empty() { Vec::new() } else { vec![("done-by".to_string(), names.join(","))] })
+        if !names.is_empty() {
+            v.push(("done-by".to_string(), names.join(",")));
+        }
+        let set: bool = self
+            .conn
+            .query_row("SELECT 1 FROM config WHERE key='done-needs-note'", [], |r| r.get::<_, i64>(0))
+            .optional()?
+            .is_some();
+        if set {
+            v.push(("done-needs-note".to_string(), if self.done_needs_note()? { "on" } else { "off" }.to_string()));
+        }
+        Ok(v)
     }
 
     /// Record that `actor` checked card `id`: an `approved` event; the card does not move.
@@ -136,10 +224,10 @@ impl Store {
         if c.column != "review" {
             return err(format!(
                 "#{id} is not in review — an approval records a review pass; move it there first: 'tb move {id} review'"
-            ));
+            ), Code::NotInReview);
         }
         if self.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
-            return err(format!("you did this work — ask another person or agent to approve #{id}"));
+            return err(format!("you did this work — ask another person or agent to approve #{id}"), Code::SelfApprove);
         }
         // the text says what happened; what the card waits for next depends on the card
         let waits = if c.gh_ref.is_some() { "done waits for the merge" } else { "it stays in review" };
@@ -224,5 +312,126 @@ mod tests {
         let events = [ev("anna", "approved"), ev("bob", "note"), ev("BEN", "approved"), ev("anna", "approved")];
         assert_eq!(approved_by(&events), ["anna", "BEN"]);
         assert!(approved_by(&[ev("anna", "note")]).is_empty());
+    }
+
+    // ------------------------------------------------------------------ A12: done-needs-note
+
+    #[test]
+    fn done_needs_note_refuses_close_without_one_written_since_the_current_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        assert!(!s.done_needs_note().unwrap(), "off by default");
+        let id = s.add("widgets: fix it", "", &[], "bob").unwrap();
+        s.take(id, "bob").unwrap();
+        s.done(id, "bob").unwrap(); // -> review, no note at all
+        // off (the default): closes with no note, exactly as before
+        s.move_to(id, "done", "carol").unwrap();
+        assert_eq!(s.card(id).unwrap().column, "done");
+
+        // on: a fresh card with no note is refused, and the refusal says exactly what to run
+        s.set_done_needs_note("on").unwrap();
+        let id2 = s.add("widgets: fix it too", "", &[], "bob").unwrap();
+        s.take(id2, "bob").unwrap();
+        s.done(id2, "bob").unwrap(); // -> review
+        let e = s.move_to(id2, "done", "carol").unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!(
+                "this board needs a closing note before DONE (config done-needs-note) — 'tb note {id2} \"what you checked\"', then 'tb done {id2}' again, or 'tb done {id2} --force' to skip it (logged)"
+            )
+        );
+        assert_eq!(s.card(id2).unwrap().column, "review", "nothing moved");
+
+        // a note written during THIS stay (in review) satisfies it
+        s.note(id2, "looks correct, tests pass", "carol").unwrap();
+        s.move_to(id2, "done", "carol").unwrap();
+        assert_eq!(s.card(id2).unwrap().column, "done");
+    }
+
+    /// The stricter reading: a note from an earlier round (or an earlier column) does not
+    /// carry over. This is the useful-and-annoying choice the feature is for — a note kept
+    /// from round 1 must not silently satisfy round 3's close.
+    #[test]
+    fn a_note_from_an_earlier_stay_does_not_satisfy_a_later_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        s.set_done_needs_note("on").unwrap();
+        let id = s.add("widgets: fix it", "", &[], "bob").unwrap();
+        s.take(id, "bob").unwrap();
+        s.note(id, "starting work", "bob").unwrap(); // written in DOING
+        s.done(id, "bob").unwrap(); // -> review; no note written during THIS review stay
+        let e = s.move_to(id, "done", "carol").unwrap_err().to_string();
+        assert!(e.starts_with("this board needs a closing note before DONE"), "an older note does not carry over: {e}");
+        // sent back, reworked and renoted, but again not during the NEW review stay
+        s.send_back(id, "needs another pass", "carol").unwrap();
+        s.note(id, "fixed the edge case", "bob").unwrap(); // written in DOING, again
+        s.done(id, "bob").unwrap(); // -> review again; column_since resets
+        let e = s.move_to(id, "done", "carol").unwrap_err().to_string();
+        assert!(e.starts_with("this board needs a closing note before DONE"), "{e}");
+        // a note written during THIS review stay finally satisfies it
+        s.note(id, "re-checked, good", "carol").unwrap();
+        s.move_to(id, "done", "carol").unwrap();
+        assert_eq!(s.card(id).unwrap().column, "done");
+    }
+
+    /// `--force` gets past it, logged, exactly like `done-by`; `github` is exempt for the same
+    /// reason it is exempt from `done-by` — a merged PR is its own trace.
+    #[test]
+    fn done_needs_note_force_bypasses_and_logs_github_is_exempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        s.set_done_needs_note("on").unwrap();
+        let id = s.add("widgets: fix it", "", &[], "bob").unwrap();
+        s.take(id, "bob").unwrap();
+        s.done(id, "bob").unwrap();
+        s.move_to_forced(id, "done", "carol").unwrap();
+        assert_eq!(s.card(id).unwrap().column, "done");
+        let forced: Vec<String> =
+            s.show(id).unwrap().events.into_iter().filter(|e| e.kind == "force").map(|e| e.text).collect();
+        assert_eq!(forced, [format!("closed #{id} with no note since it entered review")]);
+
+        let id2 = s.add("widgets: gh#7 fix it", "", &[], "bob").unwrap();
+        s.take(id2, "bob").unwrap();
+        s.done(id2, "bob").unwrap();
+        s.move_to(id2, "done", "github").unwrap();
+        assert_eq!(s.card(id2).unwrap().column, "done");
+    }
+
+    /// The guard order is a real decision: `done-by` (who may close) answers before
+    /// `done-needs-note` (did they leave a trace) — a person not even allowed to close never
+    /// gets to hear about the note.
+    #[test]
+    fn done_by_is_checked_before_done_needs_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        s.set_done_by(Some("anna")).unwrap();
+        s.set_done_needs_note("on").unwrap();
+        let id = s.add("widgets: fix it", "", &[], "bob").unwrap();
+        s.take(id, "bob").unwrap();
+        s.done(id, "bob").unwrap();
+        let e = s.move_to(id, "done", "carol").unwrap_err().to_string();
+        assert!(e.starts_with("only anna may close a card"), "done-by must answer first: {e}");
+        let e = s.move_to(id, "done", "anna").unwrap_err().to_string();
+        assert!(e.starts_with("this board needs a closing note before DONE"), "{e}");
+        s.note(id, "verified", "anna").unwrap();
+        s.move_to(id, "done", "anna").unwrap();
+        assert_eq!(s.card(id).unwrap().column, "done");
+    }
+
+    #[test]
+    fn done_needs_note_config_round_trips_and_is_listed_only_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("b.db")).unwrap();
+        assert!(s.closing_settings().unwrap().is_empty());
+        assert!(s.set_done_needs_note("ON").unwrap());
+        assert_eq!(s.closing_settings().unwrap(), [("done-needs-note".to_string(), "on".to_string())]);
+        assert!(!s.set_done_needs_note("off").unwrap());
+        assert_eq!(
+            s.closing_settings().unwrap(),
+            [("done-needs-note".to_string(), "off".to_string())],
+            "an explicit off is still listed, same as wip-counts-blocked"
+        );
+        let e = s.set_done_needs_note("maybe").unwrap_err().to_string();
+        assert!(e.starts_with("'maybe' is not on|off"), "{e}");
     }
 }

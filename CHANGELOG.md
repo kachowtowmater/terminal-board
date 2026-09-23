@@ -2,6 +2,190 @@
 
 ## Unreleased
 
+### Concurrent writers wait for the lock instead of failing instantly (#85)
+
+`tb add` (and several other write paths) opened a plain, deferred transaction that reads
+before it writes — `bottom_of`, finding the next position, then the INSERT. SQLite does not
+run the busy handler for a read-to-write lock UPGRADE, only for a fresh lock request, so two
+processes writing at once could both fail with "database is locked" straight away instead of
+one of them waiting out the 10s busy timeout. Measured: a storm of 20 rounds × 4 simultaneous
+`tb add` lost the large majority of writes to instant refusals.
+- Every write transaction now starts as `BEGIN IMMEDIATE`, taking the write lock on its first
+  statement so the busy timeout actually applies. An ordinary, uncontended write is unaffected
+  — there was never anything to wait for either way.
+
+### Two residual self-approval bypasses closed (#55)
+
+The never-approve-your-own-work rule keyed the self-approval check on the FROM column being
+REVIEW, and on the card's current owner or (once unowned) whoever last moved it into review.
+Two sequences got past that:
+- **Laundering**: the owner of a REVIEW card moved it back to TODO first (clearing the owner)
+  and closed it with a plain `tb done` — TODO → DONE skipped the check entirely. The guard now
+  fires on entering DONE from any column, the same shape `done-by` already uses.
+- **Dropped work**: an agent that held a card in DOING, dropped it (clearing the owner), and
+  let someone else move the now-unowned card into review was no longer recognized as the
+  author. A new signal — who most recently held the card, by `tb next`/`tb take` OR `tb
+  assign` — closes this without weakening a genuine third-party approval: a fresh claim or
+  assignment to a different agent still supersedes the dropped one, so a real reassignment
+  (including through `tb assign`, which logs no `taken` event) is never falsely refused.
+- Two further sequences from the same review (a stray space around `--as` smuggling the same
+  actor past the guard; a hand-run impersonating `github`) were already closed by #103 and by
+  the CLI's existing `github`-actor refusal — locked in with regression tests here.
+
+### `--json` failures carry a stable `code`
+
+Every `--json` failure was `{"ok":false,"error":"…","hint":"…"}` — two prose strings and no
+symbol anywhere, so an agent that needed to tell "the card is held by someone else" from "no
+card #N" from "doing is full" apart had to substring-match English that embeds card ids, agent
+names and counts. Rewording any message would have silently broken every such caller.
+- A third field, `"code"`, is a stable lowercase snake_case symbol on every `--json` failure
+  object — runtime and argument errors alike, on every command that can fail. It is carried on
+  the error type itself, so a new failure path without one is a compile error, not a runtime gap.
+- The vocabulary is open (docs/JSON.md has the full table and the five 2.0.0 refusals it pins);
+  an unrecognized code means the same as one from a future tb: read `error`/`hint`.
+- Additive only: `"v"` stays 1, `error` and `hint` keep their current meaning and wording.
+
+### The GitHub rail and one-line bar mark a full 20-item page
+
+The wide 2×2 tile and the one-line summary already marked a full page of the 20 newest open
+PRs/issues (`20 newest`, `20+`, `M/20 free`); the narrow stat block and the GITHUB bar did not,
+so on a full page they read `PRS 20 open` and `20 PR` exactly as they would for a repo that
+really has 20.
+- Both forms now pick the widest page-label form that fits whole — long, then terse, then
+  today's text — the same degrade-whole rule the tile already follows; nothing is ever cut
+  mid-word, and the stat block's column padding is unchanged.
+
+### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
+
+`--file -` (and `--desc-file -`) waited for standard input to close however long that took,
+with no way to tell a producer that is merely slow to start from a pipe nobody will ever
+close — the worst outcome for an unattended agent loop. A named pipe named as the path had the
+same gap, and a plain `open()` on one with no writer blocked before any guard could even run.
+- `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only, on `-` and on a FIFO
+  path alike; unset (the default) or `0`, nothing changes — tb waits exactly as it always did,
+  including for a FIFO whose writer attaches a moment later. Nothing after the first byte is
+  ever timed, so a slow-but-real producer is never truncated.
+- Whole seconds, leniently parsed like tb's other read-only knobs (docs/AGENTS.md).
+
+### `tb log` shows a board's own trail, not only its cards'
+
+`tb mv` recorded `moved-out` on the board a card LEFT, but nothing ever printed it — the card
+simply vanished from that board's own history, though the destination board's `moved-in` was
+always readable via `tb show`. `tb log` now interleaves the board's own events (a move, a WIP
+change, a file-mode change, a soft-delete) with its card events, oldest first by the same
+clock.
+- `card_id` (and `actor_id`, when known) is `null` on a board-level row in `--json`; plain text
+  marks the row `board` where a card row shows `#ID`.
+
+### A locked database says so, not "check TB_DB"
+
+Every write that collided with another `tb` mid-write surfaced as `database error: database is
+locked — check TB_DB points at a writable file` — naming TB_DB even when it was never set, and
+telling you to check a file that was never the problem.
+- A contended write now says `database is locked — another tb is writing this board right now:
+  wait a moment and try again`. TB_DB is still named for a real path problem (cannot open,
+  read-only, …), but only when it is actually set.
+
+### Evidence links: `tb link` and `tb config done-needs-link`
+
+A card is a unit of work; what proves it was done lives somewhere else — a file on disk, a
+commit, a URL — and until now that only ever went in prose in a note.
+- `tb link ID VALUE --label LABEL` attaches a path, a git sha or a URL as evidence, under a
+  label you choose (`brief`, `verdict`, `commit`, or any other word); `tb link ID --rm N`
+  removes one and the rest renumber. A card may carry any number of links, including several
+  under the same label. `tb show ID` / `--json` list them (new table `links`, docs/SCHEMA.md).
+- **tb only stores and displays the text.** It is never parsed as one of the three forms, and
+  there is no code path from a link to the filesystem or the network: no read, no fetch.
+- `tb config done-needs-link LABEL` refuses to move a card into DONE while it carries no link
+  with that label — the same honest-mistake shape `done-by` already has, checked right beside
+  it in `Store::transition`: names and labels are self-asserted, `--force` gets past it and is
+  logged, and the GitHub sync is exempt (a merged PR is already evidence). `--off` clears it.
+- Links travel with a card on `tb mv ID --to BOARD` and through `tb config rm archive` /
+  `tb restore ID`, exactly like the checklist and the history.
+- A board that sets nothing behaves exactly as before: `done-needs-link` is off by default,
+  and a card with no links renders and reads exactly as it always did.
+
+### One long column no longer squeezes the others out
+
+Reported from using the board: *"the todo when on full does not display all the things done.
+most likely cause is that the done has too many and it pushes everyone."*
+
+Two things were wrong, and both are fixed.
+- In the stacked views (`third-h`, `half-h`, and `auto` when it picks them) the four columns
+  share one height, and each was grown to everything it wanted in turn — so the first long
+  column took the lot and the others were left as one-row headers. Every column now reaches a
+  **fair share** of the room before any column takes a second helping; what no column wants is
+  handed out afterwards, so no space is wasted.
+- A column drew as many cards as its space allowed, however many that was. It now draws at
+  most **ten at a time**, and the rest are counted by the `+N more` hint that a column running
+  out of room already showed. Arrow keys still reach every card: the cap is a window that
+  follows the selection, not a wall.
+- The unboxed (compact) column list, used in short panes, scrolled past cards **without saying
+  so**. It now carries the same `+N more`, and at a single row it shows that hint rather than
+  half a card — because a hidden card with nothing to say it is there is the one thing this
+  must never do. The hint itself shortens in whole words (`+12 more`, `+12`, `+`) like every
+  other hint on the board.
+- Column header counts are unchanged and always the real total.
+
+### Ownership: `check` and `prio` follow the holder rule; `note` stays open
+
+A DOING card someone else holds is theirs — and so are its checklist and its place in the
+column. `tb check ID N` (toggle), `tb check ID --add`, `tb check ID --rm` and
+`tb prio ID top|bottom|up|down` on a held card are refused for anyone else, worded exactly as
+`tb edit` refuses (`#1 is held by bot-1 — your cards: none · to tick it anyway use --force
+(logged)`), and `--force` (new on both commands) goes through and is logged as its own `force`
+event (`checked #1 held by bot-1`, `added a check to #1 held by bot-1`,
+`removed a check from #1 held by bot-1`, `reordered #1 held by bot-1`). The holder, cards
+nobody holds and REVIEW cards are unaffected. `tb note` stays open to everyone on purpose: a
+progress note adds to a card, it does not take it over. The full-screen board follows the same
+rule with its own keys: `Enter`/`a`/`d` on the checklist popup and `K`/`J`/shift-Up/Down for
+queue order ask "… anyway? y/n (logged)" on someone else's DOING card, exactly like the
+existing prompt for a column move or delete, and `y` takes the forced, logged path.
+### A closing note requirement, and a rounds cap that marks a looping card `escalate`
+
+- `tb config done-needs-note on` refuses to move a card into DONE until a `tb note` was
+  written during the stay being left — not just anywhere in the card's history, so a note kept
+  from round 1 cannot silently stand in for round 3's close. Off (the default) is unchanged
+  behaviour. `--force` gets past it, logged; the GitHub sync is exempt, same reasoning as
+  `done-by`. Sits in `Store::transition` right after `done-by`: who may close answers before
+  whether they left a trace.
+- `tb config max-rounds N` marks a card `escalate` (JSON, derived — never stored, and always
+  `false` once DONE) once it has been sent back more than N times, built on the existing round
+  counter (`returned` events), not a second one. `tb next` and `tb next --review` skip an
+  escalated card in their automatic pick; it is never hidden from `tb list`, `tb board` or
+  `tb show`, and `tb take ID` / `tb move` / `tb done` still act on it directly.
+- Both settings are unset by default, so a board that sets nothing renders and behaves exactly
+  as before.
+
+### `tb assign ID NAME` and a board's own `tb config rules`
+
+Two ways an orchestrator directs a board instead of just working it.
+
+- **`tb assign ID NAME`** hands a specific TODO card straight to `NAME`, without the caller
+  becoming its owner — `tb take` run on someone else's behalf, for an orchestrator that already
+  knows who should do what. It reaches this exact behaviour through the SAME transition and WIP
+  check `take`/`next`/`move` already share, on purpose: `NAME` becomes the card's owner and the
+  column moves to DOING, only from TODO (the same restriction `take` enforces, and like `take`
+  there is no `--force` to pull a card away from whoever already holds it — a card already held
+  is simply not a valid target). The event log keeps the two facts apart: its `actor` is whoever
+  ran `tb assign` (who assigned it), `cards.owner` is `NAME` (who now holds it) — a new `assigned`
+  event kind. A per-owner WIP cap, when one exists, sees it too: `assign` enters DOING through
+  the one check every other column change does.
+- **`tb config rules "TEXT"` / `--file PATH` / `--off`** is a board's own conventions — house
+  style, branch naming, who to ping — printed by `tb guide` and shown once to each agent,
+  automatically, the first `tb next` since the text was last set or changed. "Once" compares the
+  TEXT, not a boolean, in a `board_events` row (`rules-seen`) exactly like every other setting
+  change already logs itself: editing the rules makes them new again for everyone, including an
+  agent that saw the old wording, and the mark travels with the board file like the rest of its
+  history (copy it, and an agent who already saw a board's rules still has on the copy). Long
+  text goes through the same bounded file reader `--desc-file` uses (`src/textin.rs`): UTF-8, at
+  most 256 KiB, `-` for standard input, a terminal refused. `tb next --json` carries the text
+  once, in an additive `"rules"` field, so a `--json` consumer is shown it too, not only a
+  terminal.
+- A board that sets no rules renders and behaves exactly as before: `tb guide` prints unchanged,
+  and `tb next`/`tb take` carry no new field. `docs/AGENTS.md` stays at its 250-line cap by
+  rewording two existing lines instead of only adding.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a

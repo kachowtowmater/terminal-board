@@ -2,7 +2,8 @@
 //! `agents --json`). Field names here are pinned by golden tests; see docs/JSON.md.
 
 use crate::herdr::Agent;
-use crate::store::{Card, Result, Store, COLUMNS};
+use crate::store::links::LinkItem;
+use crate::store::{Card, Code, Result, Store, COLUMNS};
 use serde::Serialize;
 
 /// Schema version of every JSON object below.
@@ -74,11 +75,18 @@ pub struct CardJ {
     pub checklist: Vec<CheckJ>,
     /// Rework round: 1, plus one per send-back (`returned` event) — counted from events.
     pub round: i64,
+    /// Sent back more times than `config max-rounds` allows — derived, never stored, and
+    /// always false on a `done` card. Skipped by `tb next` / `tb next --review`'s automatic
+    /// pick; never hidden from `tb list`, `tb board` or `tb show`. See `store::rounds`.
+    pub escalate: bool,
     /// Everyone who recorded `tb done ID --approve` on this card, oldest first, no repeats.
     /// A record of who checked it — not a permission (see `done-by` in the docs).
     pub approved_by: Vec<String>,
     /// The last 10 events, oldest first.
     pub events: Vec<EventJ>,
+    /// Evidence attached with `tb link ID VALUE --label LABEL` (`store::links`), in the order
+    /// they were added. tb only stores this text — see docs/JSON.md.
+    pub links: Vec<LinkItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +175,7 @@ pub fn card_with(
     let d = store.show(c.id)?;
     let due = due.info(c);
     let skip = d.events.len().saturating_sub(CARD_EVENTS);
+    let round = crate::store::round_of(&d.events);
     Ok(CardJ {
         id: c.id,
         title: c.title.clone(),
@@ -190,7 +199,8 @@ pub fn card_with(
         column_since: c.column_since,
         last_event_at: d.events.last().map(|e| e.ts).unwrap_or(c.created_at),
         checklist: d.checklist.iter().map(|i| CheckJ { n: i.idx, idx: i.idx, text: i.text.clone(), done: i.done }).collect(),
-        round: crate::store::round_of(&d.events),
+        round,
+        escalate: d.escalate,
         approved_by: crate::store::closing::approved_by(&d.events),
         events: d
             .events
@@ -198,6 +208,7 @@ pub fn card_with(
             .skip(skip)
             .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
             .collect(),
+        links: d.links.clone(),
     })
 }
 
@@ -280,11 +291,12 @@ pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
     here.chain(elsewhere).collect()
 }
 
-/// `{"ok":false,"error":…,"hint":…}` from an error message shaped "what — what to do".
-pub fn error(msg: &str) -> serde_json::Value {
+/// `{"ok":false,"error":…,"hint":…,"code":…}` from an error message shaped "what — what to
+/// do" and the stable symbol carried on the `BoardError` it came from (`docs/JSON.md`).
+pub fn error(msg: &str, code: Code) -> serde_json::Value {
     let (e, hint) = match msg.split_once(" — ") {
         Some((e, h)) => (e.trim().to_string(), h.trim().to_string()),
         None => (msg.trim().to_string(), "see 'tb --help'".to_string()),
     };
-    serde_json::json!({"ok": false, "error": e, "hint": hint})
+    serde_json::json!({"ok": false, "error": e, "hint": hint, "code": code.as_str()})
 }
