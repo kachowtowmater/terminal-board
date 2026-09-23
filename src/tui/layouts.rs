@@ -677,9 +677,14 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     }
 
     // ROUND 3 — spare height must not sit as a blank band between sections and the panels
-    // (issue #4): stretch the LAST boxed section to absorb what is left.
-    if left > 0 && all_served {
-        if let Some(&c) = order.iter().rev().find(|&&c| counts[c] > 0 && heights[c] > 1) {
+    // (issue #4): stretch the LAST boxed section to absorb what is left. While a column is
+    // still waiting for its first card the surplus may only go to a section already showing
+    // EVERY card it has, where more rows can pad a box but can never conjure an Nth card in
+    // front of a column with none.
+    if left > 0 {
+        let padding_only = |c: usize| heights[c] >= column_height(app, c, w, true);
+        let room = |&&c: &&usize| counts[c] > 0 && heights[c] > 1 && (all_served || padding_only(c));
+        if let Some(&c) = order.iter().rev().find(room) {
             heights[c] += left;
         }
     }
@@ -914,6 +919,10 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         // ROUND 3 — no blank band between the grid and the panels.
         grid[0] += budget / 2;
         grid[1] += budget - budget / 2;
+    } else if let Some(r) = grow.into_iter().find(|&r| row_live(r) && grid[r] >= row_need(r, true)) {
+        // a row still short of its first card leaves the spare rows to a row that is
+        // already showing every card it has: padding, never an extra card
+        grid[r] += budget;
     }
     // a panel too short to draw becomes its 1-line bar, and the row it stood in goes back
     // to the cards — never MORE rows than the body has, even when there are none to take
