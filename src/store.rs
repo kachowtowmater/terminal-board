@@ -8,9 +8,9 @@
 //! `Store` lives; a command that moves or replaces a board file (`lock_for_move`) takes the
 //! EXCLUSIVE half across the whole operation, so it waits for every live reader/writer and none
 //! can arrive mid-move. `link_into_place` is the other half: placing a file back without ever
-//! clobbering one a racing writer just created. Nothing here adds a new command — this is the
-//! primitive a future `archive`/`restore` (and anything else that retires or revives a board
-//! file) is built on.
+//! clobbering one a racing writer just created. This primitive is what `crate::boards::archive`
+//! and `crate::boards::restore` (#80) are built on — anything else that retires or revives a
+//! board file must use it too, never a plain `rename`.
 
 use crate::lock;
 use rusqlite::types::Type;
@@ -123,6 +123,13 @@ pub enum Code {
     /// progress) without getting the shared lock, or a command that moves/replaces a board
     /// file waited out every reader/writer without getting the exclusive one.
     BoardBusy,
+    /// `tb boards archive` refused: `NAME` is the board a bare `tb` opens right now.
+    DefaultBoard,
+    /// `tb boards restore` refused: a live board (or a stray `-wal`/`-shm`) is already at that
+    /// name.
+    BoardExists,
+    /// `tb boards restore` refused: no archived board has that name.
+    NoArchive,
     /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
     /// unrecognized subcommands caught at the parser level, wrong arity, etc.
     Usage,
@@ -163,6 +170,9 @@ impl Code {
             Code::IoError => "io_error",
             Code::TerminalError => "terminal_error",
             Code::BoardBusy => "board_busy",
+            Code::DefaultBoard => "default_board",
+            Code::BoardExists => "board_exists",
+            Code::NoArchive => "no_archive",
             Code::Usage => "usage",
             Code::Unknown => "unknown",
         }
@@ -1203,6 +1213,42 @@ impl Store {
         // migration: who did the work (`actors`, `events.actor_id`, `board_events.actor_id`)
         actors::migrate(&conn)?;
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock })
+    }
+
+    /// Like [`open`](Self::open), for a caller that must NEVER conjure a missing board:
+    /// `Ok(None)` when the file genuinely is not there, rather than `open`'s usual
+    /// create-if-missing.
+    ///
+    /// A plain `path.exists()` before calling `open` is NOT enough — it is a second,
+    /// unlocked look at the filesystem, so `archive`/`restore` (#80) can land in the gap
+    /// between that check finding the board there and `open` actually running, and `open`
+    /// unconditionally creates what it does not find. That gap is exactly door 1 from #112,
+    /// reopened one layer up: a command policy never allows to create a board (`tb NAME note`,
+    /// `tb NAME show`, …) would resurrect an empty one anyway, which then blocks `restore`
+    /// with "already exists" — the very failure this feature exists to remove. Measured: a
+    /// `note` writer racing `boards archive` resurrected an empty board in up to 19 of 100
+    /// rounds before this existed.
+    ///
+    /// The fix takes the SAME SHARED lock `open` takes, keeps it held across BOTH the
+    /// existence check and the call to `open` below (an `flock` process may hold any number
+    /// of SHARED guards on the same file without blocking itself, so re-taking it inside
+    /// `open` is not a second wait) — so no EXCLUSIVE `lock_for_move` can land in that gap
+    /// either. Degrades exactly like `open` when the lock file itself cannot be used
+    /// (`lock::Error::Io`): no lock, no gap-closing, the pre-#112 behavior.
+    pub fn open_if_exists(path: &Path) -> Result<Option<Store>> {
+        let on_disk = !path.as_os_str().is_empty() && path.as_os_str() != ":memory:";
+        if !on_disk {
+            return Self::open(path).map(Some);
+        }
+        let _hold = match lock::take(&lock::sibling(path), lock::Mode::Shared, lock_wait()) {
+            Ok(g) => Some(g),
+            Err(lock::Error::Busy(pids)) => return Err(lock_err("open", path, lock::Error::Busy(pids))),
+            Err(lock::Error::Io(_)) => None,
+        };
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Self::open(path).map(Some)
     }
 
     /// The database file (None for an in-memory board).

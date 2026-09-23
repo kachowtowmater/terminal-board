@@ -1,6 +1,8 @@
-//! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection.
+//! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection,
+//! archive/restore (#80).
 
-use crate::store::{BoardError, Code, Result, Store, COLUMNS};
+use crate::store::{self, BoardError, Code, Result, Store, COLUMNS};
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_BOARD: &str = "default";
@@ -231,6 +233,248 @@ pub fn path_for(name: &str) -> PathBuf {
     }
 }
 
+/// Where `tb boards archive` puts a retired board: `~/.local/state/terminal-board/archive`.
+/// Nothing in tb ever deletes a board — an archived board is a file the user can restore, or
+/// remove themselves, whenever they are sure.
+pub fn archive_dir() -> PathBuf {
+    state_dir().join("archive")
+}
+
+/// With `TB_DB` set there is one pinned file and no boards directory, so there is nothing to
+/// move: the same refusal `tb boards` and the picker already give.
+fn not_pinned(verb: &str) -> Result<()> {
+    if db_pinned() {
+        return Err(BoardError(format!("TB_DB pins one board file — unset TB_DB to {verb} a board"), Code::DbPinned));
+    }
+    Ok(())
+}
+
+fn no_board_err(name: &str) -> BoardError {
+    let names = list();
+    let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+    BoardError(format!("no board '{name}' — boards: {all} · see 'tb boards'"), Code::NoBoard)
+}
+
+fn no_archive_err(name: &str, all: &[ArchiveRow]) -> BoardError {
+    let mut names: Vec<&str> = all.iter().map(|a| a.name.as_str()).collect();
+    names.dedup();
+    let have = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+    BoardError(format!("no archived board '{name}' — archived: {have} · see 'tb boards --archived'"), Code::NoArchive)
+}
+
+/// `YYYYmmdd-HHMMSS-NNNNNNNNN`: the human part plus the local clock's nanoseconds, so two
+/// archives of the SAME name landing in the SAME second (there is no race that lets that
+/// happen for tb's own callers — `archive` holds the name's lock for its whole run — but nothing
+/// stops a person archiving, restoring and archiving again by hand fast enough) never collide
+/// on a filename. Lexicographically sortable, so `archived()`'s ordering is also chronological.
+fn stamp_now() -> String {
+    let now = chrono::Local::now();
+    format!("{}-{:09}", now.format("%Y%m%d-%H%M%S"), now.timestamp_subsec_nanos())
+}
+
+/// An archived board file: `archive/<name>@<stamp>.db`. `@` is not a legal board-name
+/// character, so splitting the file stem back into `(name, stamp)` is unambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveRow {
+    pub name: String,
+    pub stamp: String,
+    pub path: PathBuf,
+    /// Card counts in column order, or `None` when the file cannot be read.
+    pub counts: Option<[usize; 4]>,
+}
+
+impl ArchiveRow {
+    /// The stamp's human part as `2026-09-21 10:15`, or the raw stamp if it is not the
+    /// expected shape (e.g. a hand-placed file this tb never wrote).
+    pub fn archived_at(&self) -> String {
+        let s = &self.stamp;
+        if s.len() >= 15 && s.is_char_boundary(15) && s.as_bytes()[8] == b'-' {
+            let s = &s[..15];
+            return format!("{}-{}-{} {}:{}", &s[0..4], &s[4..6], &s[6..8], &s[9..11], &s[11..13]);
+        }
+        s.clone()
+    }
+}
+
+/// Card counts of a board file, read WITHOUT changing anything on disk: an archived board must
+/// come back exactly as it went in, and the normal `Store::open` runs migrations. `None` when
+/// it cannot be read.
+///
+/// Read-only and `query_only` keep the `.db` itself untouched, but SQLite still makes a `-shm`
+/// (and can make a `-wal`) to read a WAL database, so anything this call created is removed
+/// again once the connection is closed. Sidecars that were already there are left alone — they
+/// belong to the archived board, and a concurrent `restore` moving them out from under this
+/// read simply makes the file briefly unreadable, which reads as `None`, never a corruption.
+fn counts_read_only(path: &Path) -> Option<[usize; 4]> {
+    let sidecars: Vec<(PathBuf, bool)> = ["-wal", "-shm"]
+        .iter()
+        .map(|ext| {
+            let p = PathBuf::from(format!("{}{ext}", path.display()));
+            let existed = p.exists();
+            (p, existed)
+        })
+        .collect();
+    let counts = (|| {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags).ok()?;
+        conn.execute_batch("PRAGMA query_only=ON").ok()?;
+        let mut st = conn.prepare(r#"SELECT "column", COUNT(*) FROM cards GROUP BY "column""#).ok()?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).ok()?;
+        let mut counts = [0usize; 4];
+        for (col, n) in rows.flatten() {
+            if let Some(i) = COLUMNS.iter().position(|c| *c == col) {
+                counts[i] = n.max(0) as usize;
+            }
+        }
+        Some(counts)
+    })();
+    for (p, existed) in sidecars {
+        if !existed {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    counts
+}
+
+/// Every archived board, oldest first within a name (so the last one for a name is newest —
+/// `restore` takes that one).
+pub fn archived() -> Vec<ArchiveRow> {
+    let mut v: Vec<ArchiveRow> = std::fs::read_dir(archive_dir())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let f = e.file_name().to_string_lossy().to_string();
+                    let stem = f.strip_suffix(".db")?;
+                    let (name, stamp) = stem.rsplit_once('@')?;
+                    if validate(name).is_err() {
+                        return None;
+                    }
+                    let path = e.path();
+                    let counts = counts_read_only(&path);
+                    Some(ArchiveRow { name: name.to_string(), stamp: stamp.to_string(), path, counts })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by(|a, b| (&a.name, &a.stamp).cmp(&(&b.name, &b.stamp)));
+    v
+}
+
+/// Move a board out of the boards directory into `archive/<name>@<stamp>.db`, holding
+/// `store::lock_for_move` — the EXCLUSIVE half of the board's own lock (#112) — across the
+/// WHOLE operation: the first look at whether the board is there, folding its WAL back in, and
+/// the move itself. `Store::open` takes the SHARED half for as long as it lives and BEFORE it
+/// so much as asks whether the file exists, so while this holds the lock nothing can be
+/// mid-open, mid-write, or about to (re)create the file out from under it — the two-door defect
+/// (#112) two earlier rounds of this feature hit is closed by construction, not by a retry
+/// loop. Nothing is ever deleted.
+pub fn archive(name: &str) -> Result<PathBuf> {
+    validate(name)?;
+    not_pinned("archive")?;
+    // there is no session state in the CLI: the board you are "in" is the one a bare `tb`
+    // opens, which is `TB_BOARD`/the saved default/`default`. Moving that one out from under
+    // it is the one archive nobody can mean.
+    if name == default_name() {
+        return Err(BoardError(format!(
+            "'{name}' is the board a bare 'tb' opens — archive another board, or point TB_BOARD at a different one first"
+        ), Code::DefaultBoard));
+    }
+    let src = boards_dir().join(format!("{name}.db"));
+    let _guard = store::lock_for_move(&src)?;
+    // Re-checked UNDER the lock, which is what makes this check meaningful: nothing else can
+    // be creating, writing or archiving `src` right now, so if it is not a file then either it
+    // never existed or an earlier archiver (this lock serializes them) already took it.
+    if !src.is_file() {
+        return Err(no_board_err(name));
+    }
+    // Fold the WAL back into the file so the single .db that lands in archive/ holds
+    // everything, including a write that committed but had not yet been checkpointed. A raw
+    // connection, never `Store::open`/`crate::lock::take`: this thread already holds the
+    // EXCLUSIVE lock on `src`'s own sibling file, and `flock` is per OPEN FILE DESCRIPTION —
+    // a second attempt from this very process would block on itself.
+    if let Ok(conn) = Connection::open_with_flags(&src, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+        let _: std::result::Result<i64, _> = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0));
+    }
+    // Whatever the checkpoint above did or did not manage, drop any sidecar it left: the
+    // exclusive lock means nobody could be writing one right now, and a `-wal`/`-shm` sitting
+    // beside an archived file for no reason is exactly the leftover-file defect this command
+    // exists to stop causing.
+    for ext in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", src.display()));
+    }
+    let dir = archive_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        BoardError(format!("cannot create {}: {e} — check the state directory is writable", dir.display()), Code::IoError)
+    })?;
+    // nanosecond timestamps make a same-name collision practically impossible under tb's own
+    // locking (only one archiver of a given name can ever be inside this function at once);
+    // still never clobber one that is somehow already there (a hand-placed file, a clock that
+    // moved backwards) — pick another stamp a few times rather than overwrite it.
+    let mut dst = dir.join(format!("{name}@{}.db", stamp_now()));
+    let mut tries = 0;
+    while dst.exists() {
+        tries += 1;
+        if tries > 5 {
+            return Err(BoardError(format!("{} already exists — wait a moment and archive again", dst.display()), Code::BoardExists));
+        }
+        dst = dir.join(format!("{name}@{}.db", stamp_now()));
+    }
+    std::fs::rename(&src, &dst).map_err(|e| {
+        BoardError(format!("cannot move {} to {}: {e} — check the state directory is writable", src.display(), dst.display()), Code::IoError)
+    })?;
+    Ok(dst)
+}
+
+/// Move the newest archive of `name` back into the boards directory, holding
+/// `store::lock_for_move` across the whole operation exactly as `archive` does — no writer can
+/// create, open or archive `name` while this runs — and placing the file with
+/// `store::link_into_place`, which refuses (hard-link, then unlink the source) rather than
+/// ever clobbering a board a racing `add` created in the window before this lock was granted.
+/// Restoring the board a bare `tb` currently opens is fine: unlike `archive`, there is no live
+/// file this could pull out from under anyone — that is the whole point of `restore`.
+pub fn restore(name: &str) -> Result<(PathBuf, PathBuf)> {
+    validate(name)?;
+    not_pinned("restore")?;
+    let dst = boards_dir().join(format!("{name}.db"));
+    let _guard = store::lock_for_move(&dst)?;
+    // Checked UNDER the lock: nothing can be creating `dst` (or opening a Store on it) right
+    // now, so a `.db` — or a stray `-wal`/`-shm` a pre-#80 hand-move left beside a name that
+    // was never fully cleaned up — sitting there already is real, not a race artifact.
+    let stray: Vec<String> = ["-wal", "-shm"]
+        .iter()
+        .map(|ext| format!("{}{ext}", dst.display()))
+        .filter(|p| Path::new(p).exists())
+        .collect();
+    if dst.exists() || !stray.is_empty() {
+        let extra = if stray.is_empty() { String::new() } else { format!(" (and {})", stray.join(", ")) };
+        return Err(BoardError(format!(
+            "board '{name}' already exists — archive it first, or move {}{extra} aside before restoring", dst.display()
+        ), Code::BoardExists));
+    }
+    let all = archived();
+    let src = all.iter().rfind(|a| a.name == name).cloned().ok_or_else(|| no_archive_err(name, &all))?;
+    std::fs::create_dir_all(boards_dir()).map_err(|e| {
+        BoardError(format!("cannot create {}: {e} — check the state directory is writable", boards_dir().display()), Code::IoError)
+    })?;
+    // sidecars first (only present on a hand-placed archive — `archive` above always
+    // checkpoints and drops its own), the `.db` last: the database becoming visible at `dst`
+    // is what makes the board "there" to anything reading the directory, so it lands only
+    // once everything beside it already has.
+    for ext in ["-wal", "-shm"] {
+        let s = PathBuf::from(format!("{}{ext}", src.path.display()));
+        if s.exists() {
+            let d = PathBuf::from(format!("{}{ext}", dst.display()));
+            store::link_into_place(&s, &d).map_err(|e| {
+                BoardError(format!("cannot move {} to {}: {e} — check the state directory is writable", s.display(), d.display()), Code::IoError)
+            })?;
+        }
+    }
+    store::link_into_place(&src.path, &dst).map_err(|e| {
+        BoardError(format!("cannot move {} to {}: {e} — check the state directory is writable", src.path.display(), dst.display()), Code::IoError)
+    })?;
+    Ok((src.path.clone(), dst))
+}
+
 fn move_with_sidecars(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)?;
     for ext in ["-wal", "-shm"] {
@@ -310,20 +554,42 @@ pub fn db_pinned() -> bool {
 }
 
 /// The rows `tb boards` prints: every board on disk, counted. `TB_DB` pins one file, so it
-/// reports the one board it is.
+/// reports the one board it is (and, as always under `TB_DB`, is created on first read —
+/// nothing there can ever be archived, so there is no race to close).
 pub fn rows() -> Result<Vec<BoardRow>> {
     let def = default_name();
-    let names = if db_pinned() { vec![def.clone()] } else { list() };
-    names
+    if db_pinned() {
+        let path = path_for(&def);
+        let snap = Store::open(&path)?.named(&def).snapshot()?;
+        let mut counts = [0usize; 4];
+        for (i, c) in COLUMNS.iter().enumerate() {
+            counts[i] = snap.in_column(c).len();
+        }
+        return Ok(vec![BoardRow { name: def.clone(), is_default: true, counts, path }]);
+    }
+    // `list()` is a snapshot of the directory: a board archived in the window between that
+    // listing and here must simply stop appearing, never be recreated empty by a plain
+    // `Store::open` racing the move (#80/#112) — `open_if_exists` is the same atomic check
+    // `open_board` uses, and `Ok(None)` (filtered out) is exactly "archived just now, so not
+    // listed", which is already correct for one archived before `list()` ran.
+    list()
         .iter()
-        .map(|n| {
+        .filter_map(|n| {
             let path = path_for(n);
-            let snap = Store::open(&path)?.named(n).snapshot()?;
+            let store = match Store::open_if_exists(&path) {
+                Ok(Some(s)) => s.named(n),
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            };
+            let snap = match store.snapshot() {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
             let mut counts = [0usize; 4];
             for (i, c) in COLUMNS.iter().enumerate() {
                 counts[i] = snap.in_column(c).len();
             }
-            Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path })
+            Some(Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path }))
         })
         .collect()
 }
