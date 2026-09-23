@@ -15,6 +15,15 @@
   flag) now names `omp` as the harness in `Identity::resolve`, the same way Claude Code names
   itself. omp exports no session id or model via the environment today, so those stay unknown
   until it does (#90).
+
+### Identity: `pi` sessions and models are read automatically (#90)
+
+- `Identity::resolve` now reads `PI_SESSION_ID` as the session and `PI_MODEL` as the model,
+  the same way `CLAUDE_CODE_SESSION_ID` is read for Claude Code, but only when the harness
+  resolved to `pi`: a stray `PI_MODEL` or `PI_SESSION_ID` under another harness is never taken.
+  `TB_SESSION` and `TB_MODEL` still win when set. pi's harness name was already read from
+  `AI_AGENT`.
+
 ### `a` can set a due date without dropping to the CLI (#104)
 
 Split out of #77: the `e` form gained a due field, but `a` stayed a one-line title prompt, so

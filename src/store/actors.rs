@@ -13,8 +13,9 @@
 //!   (a time, a process id) is part of it, so a session writes one row however many commands
 //!   it runs, and two processes that arrive at once still make one row.
 //! - **Nothing is guessed.** `harness` and `session` are read from what the harness exports
-//!   (or, inside a herdr pane, from herdr's record of that pane); `model` and `role` are only
-//!   ever what `TB_MODEL` / `TB_ROLE` say, because no harness exports them. Unknown is NULL.
+//!   (or, inside a herdr pane, from herdr's record of that pane); `role` is only ever what
+//!   `TB_ROLE` says, because no harness exports it; `model` is only ever `TB_MODEL`, except for
+//!   `pi`, the one harness found to export its own live model name (`$PI_MODEL`). Unknown is NULL.
 //! - **No identity, no row.** A person in a plain terminal exports none of this: their events
 //!   keep `actor_id` NULL and read exactly as they always did — and their machine's name is
 //!   not written into a board file that gets shared.
@@ -114,16 +115,23 @@ impl Identity {
             .or_else(|| var("AI_AGENT").and_then(|v| harness_of(&v)))
             .or_else(|| var("OMPCODE").map(|_| "omp".to_string()))
             .or_else(|| var("CLAUDECODE").map(|_| "claude-code".to_string()));
-        let mut session = tb("SESSION").or_else(|| var("CLAUDE_CODE_SESSION_ID"));
+        // pi exports its session id and live model name (`PI_SESSION_ID`, `PI_MODEL`) next to
+        // `AI_AGENT=pi`. They are only trusted once the harness is pi: another tool could set
+        // the same plain-looking names, and nothing is attributed to pi unless pi is running.
+        let is_pi = harness.as_deref() == Some("pi");
+        let mut session = tb("SESSION")
+            .or_else(|| var("CLAUDE_CODE_SESSION_ID"))
+            .or_else(|| is_pi.then(|| var("PI_SESSION_ID")).flatten());
         if harness.is_none() || session.is_none() {
             if let Some(rec) = var("HERDR_PANE_ID").and_then(|p| (src.pane)(p.trim())) {
                 harness = harness.or(rec.harness);
                 session = session.or(rec.session);
             }
         }
+        let model = tb("MODEL").or_else(|| is_pi.then(|| var("PI_MODEL")).flatten());
         let mut who = Identity {
             harness: harness.and_then(|v| field(&v)),
-            model: tb("MODEL").and_then(|v| field(&v)),
+            model: model.and_then(|v| field(&v)),
             role: tb("ROLE").and_then(|v| field(&v)),
             session: session.and_then(|v| session_token(&v)),
             host: None,
@@ -407,6 +415,43 @@ mod tests {
         assert_eq!(resolve(&[("OMPCODE", "1"), ("CLAUDECODE", "1")], None).harness.as_deref(), Some("omp"));
         // without OMPCODE, CLAUDECODE is unchanged
         assert_eq!(resolve(&[("CLAUDECODE", "1")], None).harness.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn pi_session_and_model_are_read_from_what_pi_exports() {
+        let who = resolve(&[("AI_AGENT", "pi"), ("PI_SESSION_ID", UUID), ("PI_MODEL", "model-y")], None);
+        assert_eq!(who.harness.as_deref(), Some("pi"));
+        assert_eq!(who.session.as_deref(), Some(UUID));
+        assert_eq!(who.model.as_deref(), Some("model-y"));
+    }
+
+    #[test]
+    fn explicit_tb_session_and_model_win_over_what_pi_exports() {
+        let who = resolve(
+            &[
+                ("AI_AGENT", "pi"),
+                ("PI_SESSION_ID", UUID),
+                ("PI_MODEL", "model-y"),
+                ("TB_SESSION", "run-7"),
+                ("TB_MODEL", "model-x"),
+            ],
+            None,
+        );
+        assert_eq!(who.harness.as_deref(), Some("pi"));
+        assert_eq!(who.session.as_deref(), Some("run-7"));
+        assert_eq!(who.model.as_deref(), Some("model-x"));
+    }
+
+    #[test]
+    fn a_harness_that_is_not_pi_never_takes_a_stray_pi_export() {
+        for harness in [("CLAUDECODE", "1"), ("OMPCODE", "1"), ("TB_HARNESS", "codex")] {
+            let who = resolve(&[harness, ("PI_MODEL", "model-y"), ("PI_SESSION_ID", UUID)], None);
+            assert_eq!(who.model, None, "{harness:?}: PI_MODEL is pi's own");
+            assert_eq!(who.session, None, "{harness:?}: PI_SESSION_ID is pi's own");
+        }
+        // no harness at all: still nothing guessed
+        let who = resolve(&[("PI_MODEL", "model-y"), ("PI_SESSION_ID", UUID)], None);
+        assert_eq!((who.harness, who.model, who.session), (None, None, None));
     }
 
     #[test]
