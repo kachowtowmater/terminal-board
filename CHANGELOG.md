@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Panes split evenly, not by what they hold
+
+On a real board of 20 TODO / 4 DOING / 4 REVIEW / 60 DONE, the 2x2 grid (`half-v`) sized
+each row by its fuller cell, so DONE's pile won the height (a 30-row top row against a
+32-row bottom one at 127x75) and TODO's twenty cards were cut short while REVIEW sat half
+empty. Every view now splits its space EVENLY — the grid's two rows and two columns, the
+stacked sections of `third-v`, the four columns of `half-h`/`third-h` — through one function,
+`even_extents`: extents differ by at most one cell, whatever the panes hold. A pane with more
+cards than fit says `+N more`, and the arrow keys scroll into them, as before.
+
+- The demand-driven share-out (first cards cheapest-first, round-robin growth, leftover to
+  the pane furthest behind) is gone; its non-starvation, evenness and no-monopoly property
+  sweeps are kept unchanged and still pass, now as consequences of equal space, and a new
+  sweep pins the equal split itself.
+- How much height the grid and the stack take before the panels is now twice (grid) or four
+  times (stack) their fullest pane's need, not the sum of each pane's need — the sum would
+  hand a long column's rows to its empty neighbours.
+- `third-v` gives an empty column its equal box (with the first-card hint on an empty TODO)
+  instead of folding it into a one-row header; a section still becomes a header when the
+  equal share is under three rows, and then every section does.
+- Scrolling fix found while pinning the overflow: a column with room for more than the ten
+  cards it draws at once stopped its window one card above the selection, so on a tall pane
+  the last cards of a long column could never be scrolled onto screen. The window now always
+  contains the selected card.
+
 ### Tidy batch: four small, independent fixes (cards #111, #114, #115, #90)
 
 - **Self-approval guard**: the holder of an `assigned` card now lives in a structured

@@ -20,6 +20,13 @@
 //! it (`  0m`) is not a card a person can name, and counting the box instead of the id is
 //! how instance four survived a sweep that was already running.
 //!
+//! Since panes split EVENLY (`even_extents` in src/tui.rs: every pane of the board the same
+//! size, give or take one cell, whatever it holds), these properties are no longer each
+//! enforced by a stage of a demand-driven share-out — they FOLLOW from equal space: two
+//! equally tall columns of equally costly cards show the same number of cards. They are
+//! kept exactly as they were, as the guard that the equal split did not give any of them
+//! back. The split itself is swept as a property of its own at the end of this file.
+//!
 //! Two deliberate exclusions, both pre-existing on `main` and neither caused by the height
 //! allocation: the FOCUS layout, which draws one card by design, and anything under 40
 //! columns wide, where cards are cut too far to be identified at all.
@@ -431,10 +438,11 @@ fn the_half_v_grid_grows_evenly() {
 //   REVIEW/DONE two rows short, so the identical 1-row-each split let TODO/DOING cross it
 //   (5/5, title-only last card) while REVIEW/DONE, just as entitled, got nothing (3/5).
 //
-// Neither round writes off a loser for good any more: `round_robin_grow` (src/tui.rs) is
-// the ONE implementation of "serve the floor, re-judge a tie fresh, and hand any leftover
-// to whoever is still furthest behind" — called at both column and row granularity, so the
-// tie rule cannot drift between the two allocators again.
+// Both were fixed by sharing one round-robin implementation between the two allocators.
+// That share-out has since been replaced by the equal split (`even_extents`, src/tui.rs):
+// there is no tie left to break, because no pane's size depends on another's cards. The
+// sweeps below are kept unchanged as the proof that no column or row monopolises the
+// height under the equal split either.
 //
 // Both `check_evenness`/`assert_no_monopoly` above already cover this ONCE the shape is
 // actually swept — the reason round 1 of this rework missed the column case is that the
@@ -522,4 +530,105 @@ fn a_same_cost_tie_does_not_let_one_row_monopolise_growth() {
     // the exact reported repros, named on their own.
     sweep_no_monopoly([5, 5, 5, 5], &["half-v"], &[(75, 35)]);
     sweep_no_monopoly([6, 6, 6, 6], &["half-v"], &[(126, 41)]);
+}
+
+// ---------------------------------------------------------------------------------------
+// EQUAL EXTENTS — the invariant the allocators now obey directly. Reported by the owner on
+// a real board of 20 TODO / 4 DOING / 4 REVIEW / 60 DONE: the grid sized its rows by
+// demand, so DONE's pile won the height. THE PROPERTY:
+//
+// > Every pane of the board is the same size, give or take one cell, whatever it holds:
+// > the grid's two rows and two columns, the stacked sections, the side-by-side columns.
+//
+// Read off the screen: a pane's frame starts in column 0 (card boxes sit inside it), so
+// its top-left and bottom-left corners there are its edges; GITHUB/AGENTS frames are not
+// board panes and are skipped.
+
+/// The board panes' frames, top to bottom, as `(top line, bottom line)`.
+fn board_frames(screen: &str) -> Vec<(usize, usize)> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let mut out = Vec::new();
+    let mut open = None;
+    for (y, line) in lines.iter().enumerate() {
+        match line.chars().next() {
+            Some('┌' | '┏') if open.is_none() => open = Some(y),
+            Some('└' | '┗') => {
+                if let Some(top) = open.take() {
+                    if !lines[top].contains("GITHUB") && !lines[top].contains("AGENTS") {
+                        out.push((top, y));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Widths of the first `n` panes whose top edge is on line `y`, each measured to the next
+/// pane's corner (or the end of the line).
+fn widths_on(screen: &str, y: usize, n: usize) -> Vec<usize> {
+    let line: Vec<char> = screen.lines().nth(y).unwrap().chars().collect();
+    let mut starts: Vec<usize> = line.iter().enumerate().filter(|(_, c)| matches!(c, '┌' | '┏')).map(|(i, _)| i).collect();
+    starts.push(line.len());
+    starts.windows(2).take(n).map(|p| p[1] - p[0]).collect()
+}
+
+fn check_even_extents(screen: &str, layout: &str, what: &str) {
+    let frames = board_frames(screen);
+    let spread = |v: &[usize]| v.iter().max().unwrap() - v.iter().min().unwrap();
+    let heights: Vec<usize> = frames.iter().map(|(a, b)| b - a + 1).collect();
+    match layout {
+        "half-v" => {
+            if frames.len() < 2 {
+                return; // too short for two framed rows: nothing to compare
+            }
+            assert!(spread(&heights[..2]) <= 1, "{what}: grid rows {:?} differ by more than one:\n{screen}", &heights[..2]);
+            for (top, _) in &frames[..2] {
+                let w = widths_on(screen, *top, 2);
+                assert!(spread(&w) <= 1, "{what}: grid columns {w:?} differ by more than one:\n{screen}");
+            }
+        }
+        "third-v" => {
+            // all four sections are boxed, or all four are one-row headers: never a mix
+            assert!(frames.is_empty() || frames.len() == 4, "{what}: {} of 4 sections boxed:\n{screen}", frames.len());
+            if frames.len() == 4 {
+                assert!(spread(&heights) <= 1, "{what}: sections {heights:?} differ by more than one:\n{screen}");
+            }
+        }
+        _ => {
+            if let Some((top, _)) = frames.first() {
+                let w = widths_on(screen, *top, 4);
+                assert!(spread(&w) <= 1, "{what}: columns {w:?} differ by more than one:\n{screen}");
+            }
+        }
+    }
+}
+
+/// 6. THE CARTESIAN, for equal extents: every combination of column counts (0, 1, 4, 20,
+///    60 — the owner's shape among them), over every layout that splits panes, every cursor
+///    position and five sizes.
+#[test]
+fn every_shape_of_board_splits_its_panes_evenly() {
+    let sizes = [(60u16, 20u16), (100, 30), (126, 41), (127, 75), (62, 70)];
+    let layouts = ["third-h", "third-v", "half-h", "half-v"];
+    for counts in [[20usize, 4, 4, 60], [60, 4, 4, 20], [0, 0, 0, 60], [1, 0, 60, 0], [4, 60, 1, 0], [20, 20, 20, 20], [0, 1, 4, 20]] {
+        let (_d, s) = board(counts, [Cost::Plain, Cost::Everything, Cost::Note, Cost::Plain]);
+        for layout in layouts {
+            s.set_layout(layout).unwrap();
+            for col in [0usize, 3] {
+                let mut app = App::new(s.snapshot().unwrap(), "alice");
+                app.reload(&s);
+                app.agents = AgentsState::Unavailable("herdr not available".into());
+                app.col = col;
+                for (w, h) in sizes {
+                    let screen = render(&app, w, h);
+                    if is_focus_view(&screen) {
+                        continue;
+                    }
+                    check_even_extents(&screen, layout, &format!("{counts:?} {layout} {w}x{h} cursor={col}"));
+                }
+            }
+        }
+    }
 }
