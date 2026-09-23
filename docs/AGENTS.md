@@ -101,8 +101,7 @@ unless a person asks you to change them.
 ## Recipes
 
 - **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`.
-- **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves
-  again. Take something else with `tb next`, or wait.
+- **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
 - **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`,
   then `tb note ID "filed #NEW"`. A card too big: add its parts as cards, note their ids, and
   narrow the original with `tb edit ID --desc "…"`.
@@ -154,6 +153,7 @@ The AGENTS panel matches your name to your herdr pane; an idle agent holding a D
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
 | `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
 | `TB_STDIN_TIMEOUT` | seconds to wait for `-`'s first byte before refusing; unset or `0` = wait forever | knob |
+| `TB_LOCK_WAIT_MS` | milliseconds a board lock waits before refusing (`board_busy`); unset = 10000 | test hook |
 
 A variable that changes what tb **writes** must validate its value and refuse; one that only changes what tb reads or executes may
 stay lenient — today that binds `TB_NOW` only: a value that is not an integer in that range exits non-zero before any command runs

@@ -1,5 +1,18 @@
 //! SQLite store: cards, checklist, events, config. WAL mode, atomic claims.
+//!
+//! **A board's file, not just its bytes, has a lifetime** (#112): `Store::open` creates the
+//! file if it is not there, and most write paths take their own short transaction, so nothing
+//! stopped a process holding an open handle from being told the file had moved, or a process
+//! arriving just after a move from recreating the board it was meant to find gone. `Store::open`
+//! now takes `crate::lock`'s SHARED lock on a path-keyed `.lock` file for as long as the
+//! `Store` lives; a command that moves or replaces a board file (`lock_for_move`) takes the
+//! EXCLUSIVE half across the whole operation, so it waits for every live reader/writer and none
+//! can arrive mid-move. `link_into_place` is the other half: placing a file back without ever
+//! clobbering one a racing writer just created. Nothing here adds a new command — this is the
+//! primitive a future `archive`/`restore` (and anything else that retires or revives a board
+//! file) is built on.
 
+use crate::lock;
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
@@ -106,6 +119,10 @@ pub enum Code {
     IoError,
     /// The interactive TUI failed to start or run.
     TerminalError,
+    /// A board could not be locked: `Store::open` waited out an exclusive holder (a move in
+    /// progress) without getting the shared lock, or a command that moves/replaces a board
+    /// file waited out every reader/writer without getting the exclusive one.
+    BoardBusy,
     /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
     /// unrecognized subcommands caught at the parser level, wrong arity, etc.
     Usage,
@@ -145,6 +162,7 @@ impl Code {
             Code::DbError => "db_error",
             Code::IoError => "io_error",
             Code::TerminalError => "terminal_error",
+            Code::BoardBusy => "board_busy",
             Code::Usage => "usage",
             Code::Unknown => "unknown",
         }
@@ -569,6 +587,10 @@ pub struct Store {
     conn: Connection,
     /// Board name shown in headers.
     pub name: String,
+    /// The SHARED lock on this board's slot, held for as long as this `Store` lives (dropped
+    /// with it). `None` for an in-memory board (`:memory:`) and for a read-only open, which
+    /// never creates or moves anything — see `Store::open`'s doc comment.
+    _lock: Option<lock::Guard>,
 }
 
 const SCHEMA: &str = r#"
@@ -1020,6 +1042,67 @@ fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
     );
 }
 
+/// How long `Store::open` waits for a stuck EXCLUSIVE holder (a move that never finished) to
+/// let go, and how long `lock_for_move` waits for every SHARED holder (every open `Store` on
+/// that board) to close. Both bounded, both overridable in tests with `TB_LOCK_WAIT_MS` — the
+/// ordinary case never gets near either: an uncontended `flock` returns immediately.
+fn lock_wait() -> Duration {
+    match crate::env("LOCK_WAIT_MS").and_then(|s| s.parse().ok()) {
+        Some(ms) => Duration::from_millis(ms),
+        None => Duration::from_secs(10),
+    }
+}
+
+/// `lock::Error` into a `BoardError` naming the board and what the caller was doing
+/// (`"open"` or `"move"`), with `Code::BoardBusy` — never the catch-all, so a `--json` caller
+/// can tell "still open somewhere" from every other refusal.
+fn lock_err(doing: &str, path: &Path, e: lock::Error) -> BoardError {
+    match e {
+        lock::Error::Io(io) => BoardError(format!("cannot lock '{}': {io}", path.display()), Code::IoError),
+        lock::Error::Busy(pids) => {
+            let who = if pids.is_empty() {
+                "close whatever process has it open".to_string()
+            } else if pids.len() == 1 {
+                format!("close process {} (see 'kill {}' if it is stuck)", pids[0], pids[0])
+            } else {
+                format!("close these processes: {}", pids.iter().map(i32::to_string).collect::<Vec<_>>().join(", "))
+            };
+            BoardError(
+                format!(
+                    "cannot {doing} '{}': still open in another process — {who}, then try again",
+                    path.display()
+                ),
+                Code::BoardBusy,
+            )
+        }
+    }
+}
+
+/// The EXCLUSIVE lock for `path`'s slot: waits for every live `Store::open` on it (the SHARED
+/// half) to close, and for any other move already in progress to finish first. A command that
+/// ARCHIVES, RESTORES or otherwise REPLACES the file a board name points at must hold this
+/// across the WHOLE operation — from the first look at what is there to the last file removed
+/// or put in place — so no `Store::open` can land in the middle and either recreate what is
+/// being retired or open what has not finished being put back. On timeout, refuses naming
+/// which process to close where that can be determined (`crate::lock`, best-effort via Linux's
+/// `/proc/locks`).
+pub fn lock_for_move(path: &Path) -> Result<lock::Guard> {
+    lock::take(&lock::sibling(path), lock::Mode::Exclusive, lock_wait()).map_err(|e| lock_err("move", path, e))
+}
+
+/// Place `from` at `to` without ever clobbering an existing file there: hard-link `from` into
+/// `to` — refused by the filesystem itself, atomically, if `to` already exists (`EEXIST`),
+/// rather than tb checking "is anything there" first and racing its own answer — then remove
+/// `from`. A future `restore` (or anything else that revives a retired board file) must use
+/// this, never a plain rename: a board that a concurrent `add` created afresh while the caller
+/// waited for `lock_for_move` is left exactly as that `add` left it, never overwritten. Callers
+/// hold `lock_for_move(to)` across both steps (this function does not take it itself, so a
+/// caller placing several sidecars — `.db`, `-wal`, `-shm` — can do it all under one lock).
+pub fn link_into_place(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(from, to)?;
+    std::fs::remove_file(from)
+}
+
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).
 pub struct Seed<'a> {
     pub title: &'a str,
@@ -1036,6 +1119,31 @@ impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         // `:memory:` (and SQLite's unnamed temporary database) have no file to look after
         let on_disk = !path.as_os_str().is_empty() && path.as_os_str() != ":memory:";
+        // The SHARED lock, held for as long as this `Store` lives — taken BEFORE anything
+        // below so much as asks whether the file exists. A command that MOVES or REPLACES a
+        // board file (`lock_for_move`) holds the EXCLUSIVE half of this same lock across the
+        // whole move, so this wait either returns instantly (nobody is moving anything, the
+        // ordinary case) or blocks until that move is fully done — and only then do we look:
+        // never mid-move, never a half-moved file, never "not there yet" when it is about to
+        // be put back. See the module doc comment for the whole shape.
+        //
+        // A genuine timeout (`Error::Busy`: the lock file opened fine, something else holds
+        // it EXCLUSIVE past the wait) refuses — that is the whole point. But an outright
+        // failure to even open or create the `.lock` file (`Error::Io`: no permission, a
+        // read-only boards directory) degrades to opening WITHOUT the lock, exactly the
+        // pre-#112 behavior, rather than turning "the directory is read-only" into "boards
+        // cannot be read at all" — a regression nothing here should introduce. A deployment
+        // that cannot create this file cannot take the EXCLUSIVE half either, so nothing
+        // capable of racing this open is possible there in the first place.
+        let _lock = if !on_disk {
+            None
+        } else {
+            match lock::take(&lock::sibling(path), lock::Mode::Shared, lock_wait()) {
+                Ok(g) => Some(g),
+                Err(lock::Error::Busy(pids)) => return Err(lock_err("open", path, lock::Error::Busy(pids))),
+                Err(lock::Error::Io(_)) => None,
+            }
+        };
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
                 std::fs::create_dir_all(dir).map_err(|e| {
@@ -1084,7 +1192,7 @@ impl Store {
                     Code::ReadOnly,
                 ));
             }
-            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() });
+            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock });
         }
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
@@ -1094,7 +1202,7 @@ impl Store {
         }
         // migration: who did the work (`actors`, `events.actor_id`, `board_events.actor_id`)
         actors::migrate(&conn)?;
-        Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() })
+        Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock })
     }
 
     /// The database file (None for an in-memory board).

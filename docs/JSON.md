@@ -304,6 +304,7 @@ Everyday failures:
 | `db_error` | the database could not be opened, read or written (including "locked, try again") |
 | `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
 | `terminal_error` | the interactive TUI failed to start or run |
+| `board_busy` | a board file could not be locked: something else has it open, or is moving it, past the wait |
 | `usage` | a command-line argument failed to parse (clap): missing/extra/malformed flags, an unrecognized subcommand caught at the parser level, wrong arity |
 | `unknown` | the open-ended catch-all above |
 
