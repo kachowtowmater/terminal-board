@@ -74,6 +74,7 @@ Every card change, oldest first per card (`ORDER BY ts, id`).
 | `kind` | TEXT | see the vocabulary below |
 | `text` | TEXT | detail (empty when the kind carries none) |
 | `actor_id` | INTEGER NULL FK → actors.id | the identity behind `actor` (harness, model, role, session, machine); NULL when nothing but the name is known, and on every event written before identities were recorded — nothing is back-filled |
+| `assignee` | TEXT NULL | `kind='assigned'` only: who the card was assigned to, structured (#111) — the self-approval guard reads this directly, never `text`, so a reworded message cannot change who it refuses. NULL for every other kind, and on an `assigned` row written before this column existed (the guard falls back to parsing `text` for those only). Not exposed in JSON — `text` already carries the same name for reading |
 
 Event `kind` vocabulary — **open set; new kinds may appear; ignore what you don't know**:
 

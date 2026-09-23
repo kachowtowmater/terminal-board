@@ -75,6 +75,10 @@ struct Past {
     kind: String,
     text: String,
     actor_id: Option<i64>,
+    /// The structured holder of an `assigned` event (#111) — carried over so the self-approval
+    /// guard on the destination board never has to fall back to parsing `text`, the way a
+    /// pre-migration row does.
+    assignee: Option<String>,
 }
 
 /// Everything about card `id` that travels to another board, read through the transaction
@@ -86,10 +90,10 @@ fn pack(tx: &rusqlite::Transaction, id: i64) -> Result<Packed> {
     let checklist = st
         .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut st = tx.prepare("SELECT ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id")?;
+    let mut st = tx.prepare("SELECT ts, actor, kind, text, actor_id, assignee FROM events WHERE card_id=? ORDER BY ts, id")?;
     let events = st
         .query_map([id], |r| {
-            Ok(Past { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? })
+            Ok(Past { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)?, assignee: r.get(5)? })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut st = tx.prepare("SELECT idx, label, value, added_by, added_at FROM links WHERE card_id=? ORDER BY idx")?;
@@ -151,11 +155,13 @@ impl Store {
                 params![new_id, l.idx, l.label, l.value, l.added_by, l.added_at],
             )?;
         }
-        // the history, with the actor and the time each event really had
+        // the history, with the actor and the time each event really had; `assignee` travels
+        // too (#111), so an `assigned` event's holder is still read from a structured column
+        // on the destination board, not silently dropped back to parsing `text`
         for e in events {
             tx.execute(
-                "INSERT INTO events(card_id, ts, actor, kind, text, actor_id) VALUES (?,?,?,?,?,?)",
-                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id],
+                "INSERT INTO events(card_id, ts, actor, kind, text, actor_id, assignee) VALUES (?,?,?,?,?,?,?)",
+                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id, e.assignee],
             )?;
         }
         // then the move itself, so the card says where it came from

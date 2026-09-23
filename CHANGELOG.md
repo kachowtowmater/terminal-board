@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Tidy batch: four small, independent fixes (cards #111, #114, #115, #90)
+
+- **Self-approval guard**: the holder of an `assigned` card now lives in a structured
+  `events.assignee` column, read directly by the never-self-approve guard — not parsed out of
+  the event's "assigned to NAME" prose, which changing only the write-site's wording could
+  silently defeat (no compiler error, no failing test) and reopen the self-approval bypass on
+  an assign-then-drop-then-force-move path. Existing `assigned` rows keep their prose as a
+  fallback; every `assigned` event written from here on sets the structured field, and the
+  guard never looks at `text` once it is set (#111).
+
 ### `tb boards archive` / `restore`: retire a board without moving files by hand (#80)
 
 Until now the only way to retire a board — a scratch board, a finished project — was to move
