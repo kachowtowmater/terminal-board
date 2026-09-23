@@ -27,7 +27,7 @@ In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
-Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--off]] | move|done|take|next|drop ... --break-glass \"why\"
+Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
 GitHub  github [--refresh] | github repos | sync
 Agents  agents
 Setup   setup [--yes] [--github R|--no-github] [--agents-md PATH] [--dry-run]
@@ -2484,8 +2484,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 say!("this machine did not know a hook called '{name}'");
             }
         }
-        Cmd::Trust { name: Some(name), sha256: Some(hex), .. } => {
+        Cmd::Trust { name: Some(name), sha256: Some(hex), timeout, .. } => {
             let (path, digest) = terminal_board::hooks::confirm(&name, &hex)?;
+            if let Some(secs) = timeout {
+                terminal_board::hooks::set_timeout(&name, secs)?;
+            }
             if j {
                 println!(
                     "{}",
@@ -2509,12 +2512,19 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 );
             }
         }
+        // `--timeout` alone: a new time limit for a hook already recorded — what the timeout
+        // refusal tells people to run. Its trust is kept: a time limit is not a new command.
+        Cmd::Trust { name: Some(name), timeout: Some(secs), .. } => {
+            terminal_board::hooks::set_timeout(&name, secs)?;
+            if j {
+                println!("{}", pretty(&json!({"ok": true, "name": name, "timeout_secs": secs})));
+            } else {
+                say!("'{name}' may now take {secs}s before it is stopped and the change refused");
+            }
+        }
         Cmd::Trust { name: Some(name), .. } => {
             let Some(e) = terminal_board::hooks::entry(&name)? else {
-                return Err(BoardError(
-                    format!("this machine does not know a hook called '{name}' — record it with 'tb trust {name} -- COMMAND'"),
-                    Code::InvalidValue,
-                ));
+                return Err(terminal_board::hooks::no_hook_err(&name));
             };
             let st = terminal_board::hooks::state(&e);
             let now_digest = terminal_board::hooks::resolve(e.argv.first().map(String::as_str).unwrap_or_default())

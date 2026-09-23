@@ -138,6 +138,11 @@ pub enum Code {
     /// A pre-change hook (`config hook`, `crate::hooks`) refused the change, could not be run,
     /// is not trusted on this machine, or this machine does not know it.
     HookRefused,
+    /// A pre-change hook allowed the change, but the card was changed by someone else while
+    /// the hook ran, so the approval no longer describes it. Nothing was written: retry.
+    HookRace,
+    /// `tb trust NAME …` for a name this machine has no hook under.
+    NoHook,
     /// Every failure path that predates this vocabulary, or that does not yet warrant its own
     /// symbol. A consumer that meets it falls back to `error` and the exit status, exactly as
     /// it would for a code it does not recognize.
@@ -180,6 +185,8 @@ impl Code {
             Code::NoArchive => "no_archive",
             Code::Usage => "usage",
             Code::HookRefused => "hook_refused",
+            Code::HookRace => "hook_race",
+            Code::NoHook => "no_hook",
             Code::Unknown => "unknown",
         }
     }
@@ -2342,6 +2349,16 @@ impl Store {
     /// A new persona-independent guard (not a hook) belongs in step 2, after the ones there.
     fn transition_inner(&mut self, change: Change<'_>, actor: &str, force: bool, snapshot: Option<(i64, &str, Option<&str>)>) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A pre-change hook (if `transition` asked one) approved a change to exactly this card
+        // in exactly this state. Checked FIRST, before step 1's own refusals: a card someone
+        // else took while the hook ran must read as "changed while the hook ran", not as
+        // whatever step 1 would say about the card it is now.
+        if let Some((exp_id, exp_col, exp_owner)) = snapshot {
+            let same = get_card(&tx, exp_id).is_ok_and(|now| now.column == exp_col && now.owner.as_deref() == exp_owner);
+            if !same {
+                return Err(gate::race_err(exp_id));
+            }
+        }
         // 1. what is asked
         let (c, column, reason) = match change {
             Change::Claim(id) => {
@@ -2403,10 +2420,7 @@ impl Store {
         // this one was just taken) — comparing the id catches that, not only the column/owner.
         if let Some((exp_id, exp_col, exp_owner)) = snapshot {
             if c.id != exp_id || c.column != exp_col || c.owner.as_deref() != exp_owner {
-                return err(
-                    "changed while the pre-change hook ran — retry",
-                    Code::Unknown,
-                );
+                return Err(gate::race_err(exp_id));
             }
         }
         let id = c.id;
@@ -2658,22 +2672,28 @@ impl Store {
     /// every refusal `transition_inner` would reach on its own.
     ///
     /// `gate` decides three things: whether a hook is asked at all (`HookGate::Sync` — tb's own
-    /// GitHub sync — and running INSIDE another hook are exempt by construction, never by actor
-    /// name), whether the pre-change hook actually runs or is skipped with `--break-glass`
+    /// GitHub sync — is exempt by construction, never by actor name; a hook's own `tb` call on
+    /// this board skips it only with a live run ticket, and is logged as `hook-nested`), whether the pre-change hook actually runs or is skipped with `--break-glass`
     /// (`HookGate::BreakGlass`, logged on the card and the board — `store::gate` — never
     /// silently; refused outright when this board asks for no hook to break), and nothing about
     /// the guards in `transition_inner`, which run exactly as they always did.
     fn transition(&mut self, change: Change<'_>, actor: &str, force: bool, gate: HookGate<'_>) -> Result<Card> {
-        let live = !matches!(gate, HookGate::Sync) && !hooks::in_hook();
-        let pre_name = if live { self.hook(hooks::Event::PreChange)? } else { None };
-        let post_name = if live { self.hook(hooks::Event::PostChange)? } else { None };
+        let sync = matches!(gate, HookGate::Sync);
+        let board = self.hook_board();
+        // a hook's own `tb` call on this very board, backed by a live run ticket — never by an
+        // environment variable anyone can set (`hooks::nested`); recorded below, never silent
+        let nested = if sync { None } else { hooks::nested(&board) };
+        let live = !sync && nested.is_none();
+        let asks = (self.hook(hooks::Event::PreChange)?, self.hook(hooks::Event::PostChange)?);
+        let nested = nested.filter(|_| asks.0.is_some() || asks.1.is_some());
+        let (pre_name, post_name) = if live { asks } else { (None, None) };
         if live && pre_name.is_none() && matches!(gate, HookGate::BreakGlass(_)) {
             return Err(gate::no_gate_err());
         }
         let before = if pre_name.is_some() || post_name.is_some() { Some(self.probe(change)?) } else { None };
         // (id, from-column, from-owner, the run to log once the change is committed) — kept
         // only when a pre-change hook actually ran and approved; `None` for break-glass, sync,
-        // in-hook and "no hook configured" alike, so nothing extra is logged for any of them.
+        // nested and "no hook configured" alike, so nothing extra is logged for any of them.
         let mut approved: Option<(i64, String, Option<String>, hooks::Run)> = None;
         // (hook name, why) — kept only for a break-glass that reaches a real change: logging it
         // against a change the OTHER guards (holder, self-approval, WIP, …) went on to refuse
@@ -2686,7 +2706,7 @@ impl Store {
                     let payload = crate::contract::card_by_id(&*self, card.id)?;
                     let payload = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
                     let text = hooks::payload(hooks::Event::PreChange, &self.name, &payload, &card.column, to, actor, now(), force, None);
-                    let run = hooks::fire(hooks::Event::PreChange, name, &text)?;
+                    let run = hooks::fire(hooks::Event::PreChange, name, &text, &board)?;
                     approved = Some((card.id, card.column.clone(), card.owner.clone(), run));
                 }
             }
@@ -2695,6 +2715,9 @@ impl Store {
         let result = self.transition_inner(change, actor, force, snapshot);
         if let (Ok(c), Some((name, why))) = (&result, &break_glass) {
             let _ = self.log_break_glass(c.id, actor, name, why);
+        }
+        if let (Ok(c), Some(n)) = (&result, &nested) {
+            let _ = self.log_nested(c.id, actor, n);
         }
         if let (Ok(c), Some((_, _, _, run))) = (&result, &approved) {
             // best-effort: the change itself already succeeded and must not be undone by a
@@ -2710,7 +2733,7 @@ impl Store {
             let text = hooks::payload(hooks::Event::PostChange, &self.name, &card_v, from, &c.column, actor, now(), force, None);
             // a post-change hook never decides anything: a failure is a line to report, not a
             // change to undo (`hooks::fire_after` already turns an Err into that line)
-            let line = match hooks::fire_after(name, &text) {
+            let line = match hooks::fire_after(name, &text, &board) {
                 Ok(run) => run.line(),
                 Err(msg) => format!("{name} failed: {msg}"),
             };

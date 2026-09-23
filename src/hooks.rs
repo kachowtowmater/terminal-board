@@ -15,8 +15,10 @@
 //! that file's SHA-256 — and the hook stays UNTRUSTED. It runs only after
 //! `tb trust NAME --sha256 HEX` echoes back the hash the machine just showed: you cannot
 //! trust what you were not shown, and no step needs a terminal (the client's users are agents).
-//! Every run re-resolves the command and re-hashes the file. A hook whose file has changed,
-//! moved or gone is not run.
+//! Every run re-resolves the command, opens the file ONCE, hashes what it read, and runs that
+//! same open file (a private copy of those same bytes where the platform cannot run an open
+//! file) — never the path looked up again, so a file renamed over it in between never runs.
+//! A hook whose file has changed, moved or gone is not run.
 //!
 //! # Fail closed
 //!
@@ -154,11 +156,219 @@ pub fn valid_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// Is tb running INSIDE a hook? Then no hook fires: a hook that calls `tb` would otherwise
-/// call itself for ever. The hook is this machine's own trusted code, and it is the gate — so
-/// the change it makes has already been through one.
-pub fn in_hook() -> bool {
-    crate::env("IN_HOOK").is_some()
+// ---------------------------------------------------------------- a hook's own `tb` calls
+//
+// A hook that itself runs `tb` against the board that asked for it must not fire that hook
+// again (it would call itself for ever), and a plain environment variable cannot be what says
+// so: anyone can set one. So each run gets a TICKET — a random token handed to the hook in
+// `TB_HOOK_TOKEN`, and a private file (`hook-runs/TOKEN.run` beside this machine's settings,
+// mode 0600 in a 0700 directory of this user's) that names the tb process running the hook
+// and the board it runs for. The file is removed when the hook ends. A nested `tb` skips the
+// hook only when its token names a ticket that exists, belongs to a tb process that is still
+// alive, and is for the SAME board — and even then the change is recorded (`hook-nested`, on
+// the card and in the board log), never silent. `TB_IN_HOOK=1` is still set for a hook to
+// read, but it decides nothing.
+
+/// The variable a hook's own `tb` calls find their run's token in.
+const TOKEN_VAR: &str = "TB_HOOK_TOKEN";
+/// How many hooks deep this process is (0 outside any hook). Forging it can only make tb
+/// refuse sooner, never skip a hook.
+const DEPTH_VAR: &str = "TB_HOOK_DEPTH";
+/// A hook whose own `tb` call asks another board's hook, whose own call asks another… — cut
+/// off (refused) at this depth instead of running until every timeout fires.
+pub const MAX_DEPTH: u32 = 4;
+
+/// The run a nested `tb` call was made from: the hook's name and event, as its ticket says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nested {
+    pub name: String,
+    pub event: String,
+}
+
+/// Is this `tb` a hook's own call, made while that hook runs for the board `board` (its
+/// canonical path)? Only a live ticket for that very board says yes; anything else — no
+/// token, a token that is not one, a ticket that is gone, stale, someone else's, or for
+/// another board — is `None`, and the hook runs as for anybody.
+pub fn nested(board: &str) -> Option<Nested> {
+    let token = std::env::var(TOKEN_VAR).ok()?;
+    if board.is_empty() || !is_token(&token) {
+        return None;
+    }
+    let dir = run_dir();
+    let file = dir.join(format!("{token}.run"));
+    if !private(&dir, true) || !private(&file, false) {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(&file).ok()?.take(64 * 1024).read_to_string(&mut text).ok()?;
+    let mut parts = text.splitn(4, '\n');
+    let pid: u32 = parts.next()?.trim().parse().ok()?;
+    let name = parts.next()?.to_string();
+    let event = parts.next()?.to_string();
+    let for_board = parts.next()?.strip_suffix('\n')?;
+    (for_board == board && alive(pid)).then_some(Nested { name, event })
+}
+
+fn is_token(t: &str) -> bool {
+    t.len() == 64 && t.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn depth() -> u32 {
+    std::env::var(DEPTH_VAR).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0)
+}
+
+/// Where run tickets (and, where a file cannot be run from an open handle, the private copy
+/// of a hook's command) live: beside this machine's settings, never beside a board.
+fn run_dir() -> PathBuf {
+    let settings = machine::path();
+    let parent = settings.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    parent.join("hook-runs")
+}
+
+/// `path` is this user's own and nobody else's: a real directory (`dir`) or regular file, not
+/// a link, owned by this user, no group/other permission bits. (No file modes: nothing to check.)
+fn private(path: &Path, dir: bool) -> bool {
+    let Ok(m) = std::fs::symlink_metadata(path) else { return false };
+    if (dir && !m.is_dir()) || (!dir && !m.is_file()) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        m.uid() == sys::euid() && m.permissions().mode() & 0o077 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        sys::alive(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// The ticket for one run, removed (with the private copy of the command, if one was made)
+/// when the run is over — whatever way it ends.
+struct Ticket {
+    token: String,
+    /// Where a private copy of the command goes (unix only).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    dir: PathBuf,
+    file: PathBuf,
+    copy: Option<PathBuf>,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.file);
+        if let Some(c) = &self.copy {
+            let _ = std::fs::remove_file(c);
+        }
+    }
+}
+
+fn issue(board: &str, name: &str, event: Event) -> std::io::Result<Ticket> {
+    let dir = run_dir();
+    let mut mk = std::fs::DirBuilder::new();
+    mk.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut mk, 0o700);
+    mk.create(&dir)?;
+    if !private(&dir, true) {
+        return Err(std::io::Error::other(format!(
+            "{} must be a directory only this user can use (chmod 700 it)",
+            dir.display()
+        )));
+    }
+    prune(&dir);
+    let token = new_token()?;
+    let file = dir.join(format!("{token}.run"));
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    let mut f = open.open(&file)?;
+    let ticket = Ticket { token, dir, file, copy: None };
+    write!(f, "{}\n{name}\n{}\n{board}\n", std::process::id(), event.name())?;
+    Ok(ticket)
+}
+
+/// Tickets (and copies) left by a tb that was killed mid-run: harmless — their process is
+/// gone, so `nested` never honours them — but not worth keeping.
+fn prune(dir: &Path) {
+    let Ok(list) = std::fs::read_dir(dir) else { return };
+    for f in list.flatten().take(1000) {
+        let p = f.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("run") {
+            continue;
+        }
+        let pid = std::fs::read_to_string(&p).ok().and_then(|t| t.lines().next().and_then(|l| l.trim().parse::<u32>().ok()));
+        if !pid.is_some_and(alive) {
+            let _ = std::fs::remove_file(&p);
+            let _ = std::fs::remove_file(p.with_extension("cmd"));
+        }
+    }
+}
+
+/// 256 random bits, as 64 hex digits.
+fn new_token() -> std::io::Result<String> {
+    let mut b = [0u8; 32];
+    #[cfg(unix)]
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    #[cfg(not(unix))]
+    {
+        use std::hash::{BuildHasher, Hasher};
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        for (i, chunk) in b.chunks_mut(8).enumerate() {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(seed ^ i as u128);
+            h.write_u32(std::process::id());
+            chunk.copy_from_slice(&h.finish().to_le_bytes());
+        }
+    }
+    Ok(sha256::hex(&b))
+}
+
+/// The few C calls this module needs, without a `libc` dependency: every unix's C runtime has
+/// them, and a Rust binary already links it.
+#[cfg(unix)]
+mod sys {
+    extern "C" {
+        fn geteuid() -> u32;
+        fn kill(pid: i32, sig: i32) -> i32;
+        #[cfg(target_os = "linux")]
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+
+    pub fn euid() -> u32 {
+        unsafe { geteuid() }
+    }
+
+    /// Signal 0 delivers nothing; it only asks whether `pid` exists (and is ours to signal).
+    pub fn alive(pid: u32) -> bool {
+        pid != 0 && i32::try_from(pid).is_ok_and(|p| unsafe { kill(p, 0) } == 0)
+    }
+
+    /// Clear close-on-exec on `fd`. Called in the child between fork and exec only (so the
+    /// parent's own handle stays close-on-exec), where it has to be async-signal-safe: one
+    /// `fcntl`, no allocation.
+    #[cfg(target_os = "linux")]
+    pub fn keep_across_exec(fd: i32) -> std::io::Result<()> {
+        const F_SETFD: i32 = 2;
+        if unsafe { fcntl(fd, F_SETFD, 0) } == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------- the trust store
@@ -247,12 +457,7 @@ pub fn record(name: &str, argv: &[String], timeout: Option<u64>) -> Result<(Path
         ));
     }
     if let Some(t) = timeout {
-        if !(1..=MAX_TIMEOUT_SECS).contains(&t) {
-            return Err(BoardError(
-                format!("a hook timeout is 1 to {MAX_TIMEOUT_SECS} seconds, not {t} — try 'tb trust {name} --timeout 10 -- COMMAND'"),
-                Code::InvalidValue,
-            ));
-        }
+        check_timeout(name, t)?;
     }
     let path = resolve(&argv[0])?;
     let digest = sha256::of_file(&path)
@@ -270,14 +475,43 @@ pub fn record(name: &str, argv: &[String], timeout: Option<u64>) -> Result<(Path
     Ok((path, digest))
 }
 
+fn check_timeout(name: &str, t: u64) -> Result<()> {
+    if (1..=MAX_TIMEOUT_SECS).contains(&t) {
+        return Ok(());
+    }
+    Err(BoardError(
+        format!("a hook timeout is 1 to {MAX_TIMEOUT_SECS} seconds, not {t} — try 'tb trust {name} --timeout 10'"),
+        Code::InvalidValue,
+    ))
+}
+
+/// The refusal for a name this machine has no hook under (`tb trust NAME …` on a name that
+/// was never recorded, or was forgotten).
+pub fn no_hook_err(name: &str) -> BoardError {
+    BoardError(
+        format!("this machine does not know a hook called '{name}' — record it with 'tb trust {name} -- COMMAND'"),
+        Code::NoHook,
+    )
+}
+
+/// `tb trust NAME --timeout SECS`: change how long a recorded hook may take. Nothing else
+/// changes — the same command is trusted (or not) exactly as before, since a time limit is not
+/// a different program. The refusal a timeout prints tells people to run exactly this.
+pub fn set_timeout(name: &str, secs: u64) -> Result<()> {
+    check_timeout(name, secs)?;
+    if entry(name)?.is_none() {
+        return Err(no_hook_err(name));
+    }
+    edit(name, move |one| {
+        one.insert("timeout_secs".into(), json!(secs));
+    })
+}
+
 /// Trust a recorded hook by echoing back the digest that was shown. The file is hashed again
 /// here: a hash that was right a minute ago is not a hash that is right now.
 pub fn confirm(name: &str, given: &str) -> Result<(PathBuf, String)> {
     let Some(e) = entry(name)? else {
-        return Err(BoardError(
-            format!("this machine does not know a hook called '{name}' — record it with 'tb trust {name} -- COMMAND'"),
-            Code::InvalidValue,
-        ));
+        return Err(no_hook_err(name));
     };
     let given = given.trim().to_ascii_lowercase();
     if given.len() != 64 || !given.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -318,39 +552,72 @@ pub fn forget(name: &str) -> Result<bool> {
 
 /// What `tb trust` reports for one recorded hook: is it ready to run, and why not.
 pub fn state(e: &Entry) -> State {
+    match check(e) {
+        Ok(_) => State::Trusted,
+        Err(s) => s,
+    }
+}
+
+/// A hook's command, opened ONCE. Its digest was taken from this open file, and it is this
+/// open file that runs — never the path looked up a second time, which a rename could have
+/// pointed somewhere else in between (see [`command_for`]).
+struct Pinned {
+    /// The file `argv[0]` resolved to (what the hook is told as `TB_HOOK_PATH`).
+    path: PathBuf,
+    /// Held open so the file that runs is the file that was read (Linux runs it through
+    /// this handle; elsewhere a copy of `bytes` runs instead).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    file: std::fs::File,
+    /// Exactly the bytes that were hashed (what a private copy is written from, on unix).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    bytes: Vec<u8>,
+}
+
+/// Resolve, open, hash and check a recorded hook: `Ok` only for one that is trusted, unchanged
+/// and safe, with the very file that was checked held open to be run.
+fn check(e: &Entry) -> std::result::Result<Pinned, State> {
     let Some(argv0) = e.argv.first() else {
-        return State::Missing("no command is recorded".into());
+        return Err(State::Missing("no command is recorded".into()));
     };
-    let path = match resolve(argv0) {
-        Ok(p) => p,
-        Err(e) => return State::Missing(e.0),
-    };
+    let path = resolve(argv0).map_err(|e| State::Missing(e.0))?;
     if let Some(trusted) = &e.path {
         if Path::new(trusted) != path {
-            return State::Missing(format!("'{argv0}' now resolves to {} — it was {trusted}", path.display()));
+            return Err(State::Missing(format!("'{argv0}' now resolves to {} — it was {trusted}", path.display())));
         }
     }
-    let now = match sha256::of_file(&path) {
-        Ok(d) => d,
-        Err(err) => return State::Missing(format!("cannot read {}: {err}", path.display())),
-    };
+    let cannot = |err: std::io::Error| State::Missing(format!("cannot read {}: {err}", path.display()));
+    let mut file = std::fs::File::open(&path).map_err(cannot)?;
+    let meta = file.metadata().map_err(cannot)?;
+    if !meta.is_file() {
+        return Err(State::Missing(format!("{} is not a file", path.display())));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(cannot)?;
+    let now = sha256::of_bytes(&bytes);
     match &e.sha256 {
-        None => State::Untrusted,
-        Some(was) if *was != now => State::Changed { now },
-        Some(_) => match unsafe_writers(&path) {
-            Some(why) => State::Unsafe(why),
-            None => State::Trusted,
+        None => Err(State::Untrusted),
+        Some(was) if *was != now => Err(State::Changed { now }),
+        Some(_) => match unsafe_writers(&meta, &path) {
+            Some(why) => Err(State::Unsafe(why)),
+            None => Ok(Pinned { path, file, bytes }),
         },
     }
 }
 
-/// Anyone besides the owner who could rewrite what runs: the command itself, or the settings
-/// that name it. (On a system without file modes there is nothing to check.)
-fn unsafe_writers(path: &Path) -> Option<String> {
+/// Anyone besides the owner who could rewrite what runs: the command itself (the file that
+/// was opened, by its own mode), or the settings that name it. (On a system without file
+/// modes there is nothing to check.)
+fn unsafe_writers(opened: &std::fs::Metadata, path: &Path) -> Option<String> {
     #[cfg(unix)]
     {
-        for (what, p) in [("the command", path.to_path_buf()), ("the settings file", machine::path())] {
-            if let Some(mode) = crate::fsperm::mode_of(&p) {
+        use std::os::unix::fs::PermissionsExt;
+        let settings = machine::path();
+        let modes = [
+            ("the command", path.to_path_buf(), Some(opened.permissions().mode() & 0o7777)),
+            ("the settings file", settings.clone(), crate::fsperm::mode_of(&settings)),
+        ];
+        for (what, p, mode) in modes {
+            if let Some(mode) = mode {
                 if mode & 0o022 != 0 {
                     return Some(format!(
                         "{what} can be changed by other users: {} is mode {} — chmod go-w it",
@@ -364,7 +631,7 @@ fn unsafe_writers(path: &Path) -> Option<String> {
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        let _ = (opened, path);
         None
     }
 }
@@ -449,9 +716,15 @@ pub fn payload(event: Event, board: &str, card: &Value, from: &str, to: &str, ac
 /// the error already says what happened and what to do about it — `error` is always the fixed
 /// text `"hook refused"` (`Code::HookRefused`), so a caller can branch on `code` without
 /// parsing prose; `hint` says why and what to do.
-pub fn fire(event: Event, name: &str, payload: &str) -> Result<Run> {
+pub fn fire(event: Event, name: &str, payload: &str, board: &str) -> Result<Run> {
     let refused = |how: String| BoardError(format!("hook refused — {how}"), Code::HookRefused);
     let glass = "or make the change with --break-glass \"why\" (recorded on the card)";
+    let deep = depth();
+    if deep >= MAX_DEPTH {
+        return Err(refused(format!(
+            "the hook '{name}' was asked from inside {deep} other hook runs — a hook's own tb calls keep asking hooks; change one of them not to, {glass}"
+        )));
+    }
     let e = match entry(name) {
         Ok(Some(e)) => e,
         Ok(None) => {
@@ -469,31 +742,35 @@ pub fn fire(event: Event, name: &str, payload: &str) -> Result<Run> {
             )))
         }
     };
-    match state(&e) {
-        State::Trusted => {}
-        State::Untrusted => {
+    let pinned = match check(&e) {
+        Ok(p) => p,
+        Err(State::Trusted) => unreachable!("check() never reports Trusted as an error"),
+        Err(State::Untrusted) => {
             return Err(refused(format!(
                 "the hook '{name}' is not trusted on this machine — run 'tb trust {name}' to see its file and digest, then 'tb trust {name} --sha256 HEX', {glass}"
             )))
         }
-        State::Changed { now } => {
+        Err(State::Changed { now }) => {
             return Err(refused(format!(
                 "the hook '{name}' has changed since it was trusted — look at what it does now, then 'tb trust {name} --sha256 {now}', {glass}"
             )))
         }
-        State::Missing(why) => {
+        Err(State::Missing(why)) => {
             return Err(refused(format!("the hook '{name}' cannot be run: {why} — record it again with 'tb trust {name} -- COMMAND', {glass}")))
         }
-        State::Unsafe(why) => {
+        Err(State::Unsafe(why)) => {
             return Err(refused(format!("the hook '{name}' is not safe to run: {why} — fix the permissions, then run it again, {glass}")))
         }
-    }
+    };
     let timeout = Duration::from_secs(e.timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
     let started = Instant::now();
-    let out = match run(&e.argv, payload, timeout, event, name) {
-        Ok(o) => o,
-        Err(err) => return Err(refused(format!("the hook '{name}' could not be started: {err} — check 'tb trust {name}', {glass}"))),
-    };
+    let not_started = |err: std::io::Error| refused(format!("the hook '{name}' could not be started: {err} — check 'tb trust {name}', {glass}"));
+    // the ticket (and any private copy) lives until the run is over, then is removed
+    let mut ticket = issue(board, name, event).map_err(not_started)?;
+    let cmd = command_for(&pinned, &mut ticket).map_err(not_started)?;
+    let out = run(cmd, &e.argv[1..], payload, timeout, event, name, &ticket.token, &pinned.path).map_err(not_started)?;
+    drop(ticket);
+    drop(pinned);
     let ms = started.elapsed().as_millis();
     if out.timed_out {
         return Err(refused(format!(
@@ -517,8 +794,71 @@ pub fn fire(event: Event, name: &str, payload: &str) -> Result<Run> {
 
 /// Run `event`'s hook and, whatever happens, say what happened: post-change hooks do not
 /// decide anything, so a failure is a line to report, never a change to undo.
-pub fn fire_after(name: &str, payload: &str) -> std::result::Result<Run, String> {
-    fire(Event::PostChange, name, payload).map_err(|e| e.0)
+pub fn fire_after(name: &str, payload: &str, board: &str) -> std::result::Result<Run, String> {
+    fire(Event::PostChange, name, payload, board).map_err(|e| e.0)
+}
+
+/// How the checked file is started — always THAT file, never `argv[0]` looked up again:
+///
+/// - **Linux** (with `/proc`): the open handle itself, `/proc/self/fd/N`, kept open across
+///   exec so a script's interpreter reads the same file too. What runs is the very file that
+///   was hashed; renaming another file over the path at any moment changes nothing.
+/// - **Other unix** (macOS, BSD) — or Linux without `/proc`: a private copy of exactly the
+///   bytes that were hashed, written to this user's 0700 `hook-runs` directory and removed
+///   after the run. A rename in the command's own directory cannot reach it.
+/// - **Elsewhere** (Windows): the canonical path that was hashed. A swap between the hash and
+///   the start is still possible there; this is the one platform where it is.
+///
+/// Either way `argv[0]` is the resolved path, and `TB_HOOK_PATH` names it — a script's own
+/// `$0` is the handle or the copy, not where it lives.
+fn command_for(p: &Pinned, ticket: &mut Ticket) -> std::io::Result<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        if Path::new("/proc/self/fd").is_dir() {
+            return Ok(by_handle(p));
+        }
+    }
+    #[cfg(unix)]
+    {
+        by_copy(p, ticket)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ticket;
+        Ok(Command::new(&p.path))
+    }
+}
+
+/// Linux: run the open handle itself (`/proc/self/fd/N`), kept open across exec.
+#[cfg(target_os = "linux")]
+fn by_handle(p: &Pinned) -> Command {
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let fd = p.file.as_raw_fd();
+    let mut cmd = Command::new(format!("/proc/self/fd/{fd}"));
+    cmd.arg0(&p.path);
+    // SAFETY: runs in the forked child before exec; `keep_across_exec` is one fcntl call on
+    // an fd number copied in — async-signal-safe, no allocation, no locks.
+    unsafe {
+        cmd.pre_exec(move || sys::keep_across_exec(fd));
+    }
+    cmd
+}
+
+/// Any unix: run a private copy (0700, in this user's 0700 `hook-runs`) of exactly the bytes
+/// that were hashed; the ticket removes it when the run is over.
+#[cfg(unix)]
+fn by_copy(p: &Pinned, ticket: &mut Ticket) -> std::io::Result<Command> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::process::CommandExt;
+    let copy = ticket.dir.join(format!("{}.cmd", ticket.token));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o700).open(&copy)?;
+    ticket.copy = Some(copy.clone());
+    f.write_all(&p.bytes)?;
+    drop(f);
+    let mut cmd = Command::new(&copy);
+    cmd.arg0(&p.path);
+    Ok(cmd)
 }
 
 struct Output {
@@ -602,16 +942,20 @@ fn last_line(err: &str, out: &str) -> Option<String> {
 /// function does not return until that orphan exits on its own. Measured: a 1s timeout on a
 /// script whose last line is `sleep 5` took the full 5s without this. Killing the group takes
 /// the orphan down with it, so the reader threads see EOF right away.
-fn run(argv: &[String], payload: &str, timeout: Duration, event: Event, name: &str) -> std::io::Result<Output> {
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
+#[allow(clippy::too_many_arguments)]
+fn run(mut cmd: Command, args: &[String], payload: &str, timeout: Duration, event: Event, name: &str, token: &str, path: &Path) -> std::io::Result<Output> {
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // a hook that runs `tb` must not fire hooks again, for ever
+        // for the hook to read; they decide nothing — the token is what lets the hook's own
+        // `tb` calls on this board skip it (see `nested`), and only while this run is live
         .env("TB_IN_HOOK", "1")
         .env("TB_HOOK_EVENT", event.name())
-        .env("TB_HOOK_NAME", name);
+        .env("TB_HOOK_NAME", name)
+        .env("TB_HOOK_PATH", path)
+        .env(TOKEN_VAR, token)
+        .env(DEPTH_VAR, (depth() + 1).to_string());
     pgroup::isolate(&mut cmd);
     let mut child = cmd.spawn()?;
     let mut stdin = child.stdin.take();
@@ -713,6 +1057,44 @@ mod tests {
         assert_eq!((Event::PreChange.name(), Event::PreChange.key()), ("pre-change", "hook"));
         assert_eq!((Event::PostChange.name(), Event::PostChange.key()), ("post-change", "hook-after"));
         assert_eq!(Event::all().len(), 2);
+    }
+
+    /// The file that runs is the file that was hashed, by every way this platform starts one
+    /// — even when another file is renamed over its path after it was checked.
+    #[cfg(unix)]
+    #[test]
+    fn the_file_that_runs_is_the_file_that_was_read_not_what_the_path_names_now() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("hook.sh");
+        let put = |p: &Path, body: &str| {
+            std::fs::write(p, body).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        type Start = fn(&Pinned, &mut Ticket) -> std::io::Result<Command>;
+        #[cfg(target_os = "linux")]
+        let handle: Option<(&str, Start)> = Some(("the open handle", |p, _| Ok(by_handle(p))));
+        #[cfg(not(target_os = "linux"))]
+        let handle: Option<(&str, Start)> = None;
+        for (way, start) in std::iter::once(("a private copy", by_copy as Start)).chain(handle) {
+            put(&hook, "#!/bin/sh\necho trusted\n");
+            let mut file = std::fs::File::open(&hook).unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            let pinned = Pinned { path: hook.clone(), file, bytes };
+            // checked; now something else takes its name
+            let other = dir.path().join("other.sh");
+            put(&other, "#!/bin/sh\necho swapped\n");
+            std::fs::rename(&other, &hook).unwrap();
+            let token = "0".repeat(64);
+            let mut ticket = Ticket { token: token.clone(), dir: dir.path().to_path_buf(), file: dir.path().join("none.run"), copy: None };
+            let cmd = start(&pinned, &mut ticket).unwrap();
+            let out = run(cmd, &[], "{}\n", Duration::from_secs(10), Event::PreChange, "h", &token, &hook).unwrap();
+            assert_eq!((out.code, out.out.trim()), (Some(0), "trusted"), "{way}: {}", out.err);
+            let copy = ticket.copy.clone();
+            drop(ticket);
+            assert!(copy.is_none_or(|c| !c.exists()), "{way}: the private copy is removed after the run");
+        }
     }
 
     #[test]

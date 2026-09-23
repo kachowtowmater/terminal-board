@@ -35,8 +35,24 @@ override), never in the board: a copied board can ask for a gate, never say what
   retry" if the card no longer matches what the hook was asked about. A hook's own subprocess
   is started as the leader of its own process group so a timeout can take down anything it
   forked (a shell script's last line is a common orphan otherwise), and it is told
-  `TB_IN_HOOK=1` / `TB_HOOK_EVENT` / `TB_HOOK_NAME` so a hook that itself runs `tb` can never
-  fire another hook, for ever.
+  `TB_IN_HOOK=1` / `TB_HOOK_EVENT` / `TB_HOOK_NAME` / `TB_HOOK_PATH` for its own use.
+- **A hook's own `tb` calls, never forgeable and never silent.** Its calls on the same board
+  do not ask it again only when they carry the run's random `TB_HOOK_TOKEN`, backed by a
+  private ticket file (0600, in a 0700 `hook-runs` directory beside the settings) that names
+  the live tb process and the board, and is removed when the run ends. `TB_IN_HOOK=1` or any
+  other variable set by hand skips nothing. Such a change is recorded as a `hook-nested` event
+  on the card and a row in the board log. Hook calls that reach other boards' hooks are
+  refused four deep (`TB_HOOK_DEPTH`) instead of running until every timeout fires.
+- **The file that was hashed is the file that runs.** The command is opened once, hashed from
+  that open file, and run from it — on Linux through `/proc/self/fd/N`, elsewhere on unix as a
+  private copy of exactly the hashed bytes — never by looking `argv[0]` up again, so a file
+  renamed over the command between the check and the start never runs. Windows still runs the
+  canonical path (a residual window there).
+- `tb trust NAME --timeout SECS` alone changes a recorded hook's time limit (the timeout
+  refusal tells people to run exactly that), keeping its trust; an unknown NAME is refused
+  with the new code `no_hook`. A card that changed while its hook ran is refused with the new
+  code `hook_race` (retry). docs/AGENTS.md keeps its line width: its line cap now has a width
+  cap next to it, so the count cannot be met by joining lines.
 - A board with no hook set is byte-for-byte unchanged — checked with a fixed command sweep,
   main binary vs branch binary, stdout and exit codes diffed. New `tests/hooks.rs`; documented
   in README, `docs/AGENTS.md`, `docs/JSON.md` and `docs/SCHEMA.md`.

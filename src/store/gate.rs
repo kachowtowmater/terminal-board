@@ -89,6 +89,33 @@ impl Store {
         Self::log_board(&self.conn, actor, "break-glass", &format!("#{id} {text}"))?;
         Ok(())
     }
+
+    /// Record a change made by a hook's own `tb` call on this board, which did not ask the
+    /// hook again (it is the hook's run that is deciding) — on the card and in the board log,
+    /// the same two places as a break-glass: a change that skipped a gate is never silent.
+    pub fn log_nested(&self, id: i64, actor: &str, n: &crate::hooks::Nested) -> Result<()> {
+        let text = format!("made from inside the {} hook '{}', which was not asked again", n.event, n.name);
+        Self::log(&self.conn, id, actor, "hook-nested", &text)?;
+        Self::log_board(&self.conn, actor, "hook-nested", &format!("#{id} {text}"))?;
+        Ok(())
+    }
+
+    /// Who a hook's run ticket names as its board: the board file's canonical path (empty for
+    /// an in-memory board, which no other process can open — so nothing is ever nested in it).
+    pub(super) fn hook_board(&self) -> String {
+        self.path()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p).display().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// A pre-change hook approved card `id`, but it changed while the hook ran: its answer is about
+/// a card that no longer looks like that, so nothing is written — run the command again.
+pub fn race_err(id: i64) -> BoardError {
+    BoardError(
+        format!("card #{id} changed while the pre-change hook ran, so its answer no longer applies — retry the command (the hook is asked again)"),
+        Code::HookRace,
+    )
 }
 
 /// The one refusal for `--break-glass` where there is nothing to break: a flag that quietly

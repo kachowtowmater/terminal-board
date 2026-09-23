@@ -361,3 +361,134 @@ fn tb_sync_is_exempt_from_the_hook_by_origin_not_by_actor_name() {
     assert!(o.status.success(), "sync: {}", text(&o.stderr));
     assert_eq!(h.column(id), "done");
 }
+
+// ---------------------------------------------------------------- nested calls: never forgeable, never silent
+
+/// Everything a hook's own `tb` call needs to find this test's board: the same `HOME` (and so
+/// the same default board) the outer `tb` was given, which the hook inherits from it.
+fn nested_take(id: i64, actor: &str) -> String {
+    format!("#!/bin/sh\n\"{}\" take {id} --as {actor} >/dev/null 2>&1 || exit 3\nexit 0\n", env!("CARGO_BIN_EXE_tb"))
+}
+
+#[test]
+fn a_hook_cannot_be_skipped_by_setting_an_environment_variable() {
+    let h = Home::new();
+    let id = h.add("x: card");
+    let script = h.script("gate.sh", REFUSE);
+    h.ok(&["config", "hook", "gate"]);
+    h.trust("gate", &script);
+    let hex = "a".repeat(64);
+    let forged: [&[(&str, &str)]; 5] = [
+        &[("TB_IN_HOOK", "1")],
+        &[("TTYBOARD_IN_HOOK", "1")],
+        &[("TB_IN_HOOK", "1"), ("TB_HOOK_TOKEN", &hex), ("TB_HOOK_NAME", "gate"), ("TB_HOOK_EVENT", "pre-change")],
+        &[("TB_HOOK_TOKEN", "../config.json")],
+        &[("TB_HOOK_DEPTH", "1")],
+    ];
+    for vars in forged {
+        let mut c = h.cmd(&["take", &id.to_string(), "--json"], "mallory");
+        for (k, v) in vars {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(1), "{vars:?} got past the hook: {}", text(&o.stdout));
+        let v: Value = serde_json::from_str(&text(&o.stdout)).unwrap();
+        assert_eq!(v["code"], "hook_refused", "{vars:?}: {v}");
+        assert_eq!(h.column(id), "todo", "{vars:?} moved the card");
+    }
+}
+
+#[test]
+fn a_change_made_from_inside_the_hook_is_recorded_on_the_card_and_the_board() {
+    let h = Home::new();
+    let id = h.add("x: outer");
+    let other = h.add("x: taken by the hook itself");
+    let script = h.script("inner.sh", &nested_take(other, "bob"));
+    h.ok(&["config", "hook", "inner"]);
+    h.trust("inner", &script);
+    h.ok(&["take", &id.to_string()]);
+    assert_eq!(h.column(id), "doing");
+    let v = h.json(&["show", &other.to_string()]);
+    assert_eq!((v["column"].as_str(), v["owner"].as_str()), (Some("doing"), Some("bob")), "the hook's own call went through: {v}");
+    let nested: Vec<&Value> = v["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "hook-nested").collect();
+    assert_eq!(nested.len(), 1, "a change that skipped the hook says so on the card: {v}");
+    assert!(nested[0]["text"].as_str().unwrap().contains("inner"), "{v}");
+    let log = h.ok(&["log"]);
+    assert!(log.contains("hook-nested") && log.contains(&format!("#{other}")), "and in the board log: {log}");
+}
+
+#[test]
+fn a_card_that_changed_while_the_hook_ran_is_refused_with_its_own_code() {
+    let h = Home::new();
+    let id = h.add("x: contested");
+    // the hook itself takes the very card it is being asked about, for someone else
+    let script = h.script("race.sh", &nested_take(id, "bob"));
+    h.ok(&["config", "hook", "race"]);
+    h.trust("race", &script);
+    let v = h.json_err(&["take", &id.to_string()]);
+    assert_eq!(v["code"], "hook_race", "{v}");
+    assert!(v["hint"].as_str().unwrap_or_default().contains("retry"), "{v}");
+    let card = h.json(&["show", &id.to_string()]);
+    assert_eq!(card["owner"], "bob", "the outer change was not applied on top: {card}");
+}
+
+// ---------------------------------------------------------------- tb trust NAME --timeout
+
+#[test]
+fn trust_timeout_alone_changes_a_known_hooks_timeout_and_keeps_its_trust() {
+    let h = Home::new();
+    let script = h.script("ok.sh", ALLOW);
+    h.trust("ok", &script);
+    assert_eq!(h.json(&["trust", "ok"])["timeout_secs"], 10);
+    h.json(&["trust", "ok", "--timeout", "30"]);
+    let v = h.json(&["trust", "ok"]);
+    assert_eq!(v["timeout_secs"], 30, "{v}");
+    assert_eq!(v["state"], "trusted", "a new time limit is not a new command: {v}");
+    let v = h.json_err(&["trust", "ok", "--timeout", "0"]);
+    assert_eq!(v["code"], "invalid_value", "{v}");
+    assert_eq!(h.json(&["trust", "ok"])["timeout_secs"], 30, "a refused value changes nothing");
+    let v = h.json_err(&["trust", "nope", "--timeout", "5"]);
+    assert_eq!(v["code"], "no_hook", "{v}");
+    let v = h.json(&["trust"]);
+    assert_eq!(v["hooks"].as_array().unwrap().len(), 1, "an unknown name is not recorded by a timeout: {v}");
+}
+
+// ---------------------------------------------------------------- the file checked is the file run
+
+#[test]
+fn a_hook_file_swapped_after_it_was_checked_never_runs() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let h = Home::new();
+    let id = h.add("x: card");
+    let evil_ran = h.path().join("evil.ran");
+    let good_ran = h.path().join("good.ran");
+    let good = format!("#!/bin/sh\ntouch {}\nexit 0\n", good_ran.display());
+    let evil = format!("#!/bin/sh\ntouch {}\nexit 0\n", evil_ran.display());
+    let hook = h.script("gate.sh", &good);
+    h.ok(&["config", "hook", "gate"]);
+    h.trust("gate", &hook);
+    // a file that was never trusted is renamed over the trusted one and back, as fast as
+    // possible, while the board is worked: whatever tb hashed must be exactly what it runs
+    let stop = Arc::new(AtomicBool::new(false));
+    let swapper = {
+        let (stop, dir, hook) = (stop.clone(), h.path().to_path_buf(), hook.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                for (body, tmp) in [(&evil, "evil.tmp"), (&good, "good.tmp")] {
+                    let t = dir.join(tmp);
+                    std::fs::write(&t, body).unwrap();
+                    std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o755)).unwrap();
+                    std::fs::rename(&t, &hook).unwrap();
+                }
+            }
+        })
+    };
+    for i in 0..300 {
+        let _ = h.run(&[if i % 2 == 0 { "take" } else { "drop" }, &id.to_string()]);
+    }
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().unwrap();
+    assert!(!evil_ran.exists(), "a file whose digest was never trusted ran");
+    assert!(good_ran.exists(), "the trusted file never ran at all — the test did not exercise the hook");
+}
