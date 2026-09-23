@@ -588,7 +588,7 @@ pub(super) fn draw_stack(f: &mut Frame, app: &App, area: Rect) {
         y += gh_h;
     }
     if ag_on && ag_h > 0 && y < body.y + bh {
-        let r = Rect { y, height: ag_h.min(body.y + bh - y), ..body };
+        let r = Rect { y, height: ag_h.min((body.y + bh).saturating_sub(y)), ..body };
         if ag_h >= 3 {
             draw_agents_compact(f, app, r);
         } else {
@@ -607,106 +607,78 @@ const STACK_GH_ROWS: u16 = 8;
 /// The four columns as stacked sections sharing `area` (selected section first). A section
 /// is either a boxed column (at least 2 dense cards, or all of them) or its 1-row header —
 /// never the unboxed list — and all boxed sections share one card style.
+/// The four columns as stacked sections sharing `area` (selected section first). A section
+/// is either a boxed column (at least one card) or its 1-row header — never the unboxed list
+/// — and all boxed sections share one card style.
+///
+/// # THE RULE THIS FUNCTION OBEYS
+///
+/// **No column gets its Nth card while any populated column still has none, as long as that
+/// column's first card would fit at all.** First cards come before second cards, globally,
+/// whatever the cursor is on and whatever order the columns are in.
+///
+/// That is the whole of it, and every stage below is written to obey it rather than to be
+/// locally reasonable: three rounds of review found three different loops that each grew one
+/// column past another column's first card. So the height is handed out in ROUNDS —
+///
+/// 1. **first cards**, cheapest first, so the most columns possible are served. A column
+///    whose first card does not fit stays a one-row header, and a header carries its true
+///    count, so nothing is hidden with nothing to say so;
+/// 2. **growth**, only once every column that can be served has been: an equal share each,
+///    then what nobody wants;
+/// 3. **surplus**, so no blank band sits between the sections and the panels.
+///
+/// A column skipped in round 1 can never be helped later: round 1 goes cheapest first, and
+/// the budget only shrinks, so if the cheapest unserved column did not fit then, nothing
+/// that comes after fits either.
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     let w = area.width;
     let order: Vec<usize> = std::iter::once(app.col).chain((0..4).filter(|c| *c != app.col)).collect();
+    let rank = |c: usize| order.iter().position(|x| *x == c).unwrap_or(4);
     let mut heights = [1u16; 4];
     let mut left = area.height.saturating_sub(4);
     let claimants = || (0..4).filter(|c| counts[*c] > 0);
 
-    // ONE CARD EACH, FAIRLY, BEFORE ANYBODY GETS TWO.
-    //
-    // This pass used to be first-come and all-or-nothing, walking from the SELECTED column:
-    // a long selected column took its whole minimum and a later column, unable to afford
-    // its own, stayed a bare header — a short column showing nothing while a long one filled
-    // the pane, which is the bug this whole change is about. It is the selection that made it
-    // unpredictable: the same board looked different depending on where the cursor happened
-    // to be. Now nobody may take more than an equal share of what is left while another
-    // column still has nothing, so the outcome does not depend on the cursor at all.
-    // What one column may take while others are still waiting for the same thing. EVERY
-    // stage of this allocation divides: giving one stage the whole remaining budget is what
-    // let the selected column take it all, twice — once when two columns were populated, and
-    // again, in the very next loop, when three were.
-    let want_of = |pass: u8, c: usize, heights: &[u16; 4]| -> u16 {
-        match pass {
-            0 if heights[c] > 1 => 0,
-            0 => column_min_one(app, c, w) - 1,
-            _ => column_min_boxed(app, c, w).saturating_sub(heights[c]),
-        }
-    };
-    for pass in [0u8, 1] {
-        for &c in &order {
-            if counts[c] == 0 {
-                continue;
-            }
-            let need = want_of(pass, c, &heights);
-            if need == 0 {
-                continue;
-            }
-            // a share of what is left, divided by everyone who still wants this same step —
-            // never the whole budget, whichever column the cursor happens to be on
-            let waiting = claimants().filter(|x| want_of(pass, *x, &heights) > 0).count().max(1) as u16;
-            let fair = left / waiting;
-            // a part-grant would be a frame with nothing in it: a column takes its minimum
-            // whole, or stays a header, where the count in the header tells the truth
-            if need <= fair {
-                heights[c] += need;
-                left -= need;
-            }
+    // ROUND 1 — one card each, cheapest first. Cost, not position, decides who is served:
+    // a column holding one short card must not lose its only card to a column that already
+    // has one and wants a second (`[1, 80, 1, 80]`, found in review).
+    let mut firsts: Vec<(u16, usize, usize)> =
+        claimants().map(|c| (column_min_one(app, c, w) - 1, rank(c), c)).collect();
+    firsts.sort_unstable();
+    for (cost, _, c) in firsts {
+        if cost <= left {
+            heights[c] += cost;
+            left -= cost;
         }
     }
-    // FAIRNESS IS NOT EVERYBODY STARVING. When the pane is so short that an equal share buys
-    // nobody even one card, the columns that CAN afford one take it in turn — the cursor's
-    // column first, because that is the one being read. The rest stay headers, and a header
-    // carries its true count, so nothing is hidden with nothing to say so.
-    if claimants().all(|c| heights[c] == 1) {
-        for &c in &order {
-            if counts[c] == 0 {
-                continue;
-            }
-            let need = column_min_one(app, c, w) - 1;
-            if need <= left {
-                heights[c] += need;
-                left -= need;
-            }
-        }
-    }
-    // Then grow toward all dense boxes, then all 4-row boxes — but a FAIR SHARE at a time.
-    //
-    // This is the fix for "the done has too many and it pushes everyone": these four sections
-    // share one height, and growing each to everything it wanted in turn let the first long
-    // column take the lot, leaving the others as one-row headers. Each column may now reach
-    // its share of the room before any column takes a second helping; what no column wants is
-    // handed out afterwards, so nothing is wasted. Cards that do not fit say `+N more`.
-    let wants = |c: usize| counts[c] > 0;
-    let sharers = (0..4).filter(|c| wants(*c)).count().max(1) as u16;
+
+    // Is every populated column showing a card? Until that is true, NOBODY gets a second
+    // one — not even with room going spare. The few unused rows are the honest price: they
+    // say the pane has no room for another column, where a column quietly growing to two
+    // cards beside an empty neighbour says nothing at all.
+    let all_served = claimants().all(|c| heights[c] > 1);
+
+    // ROUND 2 — now, and only now, second and further cards: an equal share each before
+    // anybody takes what is left over. Skipping a column still at one row is right HERE and
+    // only here: round 1 has already served everyone whose first card fits.
+    let sharers = claimants().count().max(1) as u16;
     for dense in [true, false] {
         for share in [area.height / sharers, u16::MAX] {
             for &c in &order {
-                if counts[c] == 0 {
+                if counts[c] == 0 || heights[c] == 1 || !all_served {
                     continue;
                 }
-                // A column the passes above could not afford is rescued here if room came
-                // free — to a whole minimum, never an empty frame, and never by taking what
-                // another column still waiting for its first card would need. Rescuing on a
-                // first-come basis is exactly the unfairness this change is about.
-                let floor = if heights[c] == 1 { column_min_one(app, c, w) } else { heights[c] };
-                if floor > heights[c] {
-                    let stuck = claimants().filter(|x| heights[*x] == 1).count().max(1) as u16;
-                    if floor - heights[c] > left / stuck {
-                        continue;
-                    }
-                }
-                let want = column_height(app, c, w, dense).max(floor).min(share.max(floor));
+                let want = column_height(app, c, w, dense).min(share.max(heights[c]));
                 let add = want.saturating_sub(heights[c]).min(left);
                 heights[c] += add;
                 left -= add;
             }
         }
     }
-    // spare height must not sit as a blank band between sections and the panels
-    // (issue #4): stretch the LAST boxed section to absorb what is left
-    if left > 0 {
+
+    // ROUND 3 — spare height must not sit as a blank band between sections and the panels
+    // (issue #4): stretch the LAST boxed section to absorb what is left.
+    if left > 0 && all_served {
         if let Some(&c) = order.iter().rev().find(|&&c| counts[c] > 0 && heights[c] > 1) {
             heights[c] += left;
         }
@@ -864,6 +836,21 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         h(2 * r).max(h(2 * r + 1))
     };
     let full = [row_need(0, false), row_need(1, false)];
+    // THE RULE THIS SHARE-OUT OBEYS — the one `draw_sections` states in full above: no
+    // column gets its Nth card while any populated column still has none, as long as that
+    // column's first card would fit at all. A grid ROW sets one height for two columns, so
+    // its price for "a card in every column of it" is the dearer of the two; the cheaper
+    // row is served first, and only once every populated row has been does either grow.
+    // A proportional split cannot obey this — a row of cheap columns asks for little and
+    // so is handed little, which is how `[1, 1, 1, 80]` at 60x20 left TODO and DOING as
+    // bare 2-row frames while DONE drew four cards (found in review).
+    let live = |ci: usize| !app.col_cards(ci).is_empty();
+    let row_live = |r: usize| live(2 * r) || live(2 * r + 1);
+    // 3 rows is what an empty column asks for: its frame and a blank interior.
+    let row_one = |r: usize| {
+        let one = |ci: usize| if live(ci) { column_min_one(app, ci, cw[ci % 2]) } else { 3 };
+        one(2 * r).max(one(2 * r + 1))
+    };
     let gh_want = if gh_on { github_want(app, body.width) } else { 0 };
     let ag_want = if ag_on { 2 + agent_count(app).min(8) } else { 0 };
     // the panels' floor: GITHUB >= 14 rows, AGENTS >= 4 (less only when the grid would starve)
@@ -871,39 +858,76 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     let ag_min = ag_want.min(4).min(bh.saturating_sub(grid_floor));
     let gh_min = gh_want.min(GRID_GH_MIN).min(bh.saturating_sub(grid_floor + ag_min));
     let cap = bh - gh_min - ag_min;
-    let mut grid = if full[0] + full[1] <= cap {
-        full
-    } else {
-        let dense = [row_need(0, true), row_need(1, true)];
-        if dense[0] + dense[1] <= cap {
-            dense
-        } else {
-            let top = (u32::from(cap) * u32::from(dense[0]) / u32::from((dense[0] + dense[1]).max(1))) as u16;
-            [top, cap - top]
-        }
-    };
-    // spare rows: GITHUB up to what it wants, then AGENTS, then back to the cards
-    let mut left = bh - grid[0] - grid[1];
-    let mut gh_h = gh_want.min(left.saturating_sub(ag_min));
-    left -= gh_h;
-    let mut ag_h = ag_want.min(left);
-    left -= ag_h;
-    for (r, want) in full.iter().enumerate() {
-        let add = want.saturating_sub(grid[r]).min(left);
-        grid[r] += add;
-        left -= add;
+    // the panels take what they want out of whatever the grid cannot use, down to their floor
+    let spare = bh - (full[0] + full[1]).min(cap);
+    let mut gh_h = gh_want.min(spare.saturating_sub(ag_min));
+    let mut ag_h = ag_want.min(spare - gh_h);
+    let mut budget = bh - gh_h - ag_h;
+
+    // Both rows keep their 2-row frame before anything else: the frame carries the column
+    // name and its TRUE count, so a row with no room for a card still says what it holds —
+    // the grid's version of the bare header a starved section falls back to.
+    let mut grid = [0u16; 2];
+    for r in [0, 1] {
+        grid[r] = 2.min(budget);
+        budget -= grid[r];
     }
-    grid[0] += left / 2;
-    grid[1] += left - left / 2;
+
+    // ROUND 1 — a card in every column that can hold one, cheaper row first (and a
+    // populated row before an empty one, which only wants its frame).
+    let mut order = [0usize, 1];
+    let key = |r: usize| (!row_live(r), row_one(r));
+    if key(1) < key(0) {
+        order.swap(0, 1);
+    }
+    for r in order {
+        let cost = row_one(r).saturating_sub(grid[r]);
+        if cost <= budget {
+            grid[r] += cost;
+            budget -= cost;
+        }
+    }
+    // Until every populated row shows a card, NOBODY grows — the rows left over stay blank
+    // rather than quietly becoming a second card beside a column with none.
+    let all_served = (0..2).all(|r| !row_live(r) || grid[r] >= row_one(r));
+
+    // ROUND 2 — second and further cards: an equal share each, then what the other row
+    // does not want, dense boxes before 4-row ones. Round 1 went cheapest-first so the
+    // most columns are served; growth goes the other way round, to whichever row has the
+    // most cards still to show, so a spare row lands where it draws something.
+    let mut grow = [0usize, 1];
+    if (row_need(1, false), row_live(1)) > (row_need(0, false), row_live(0)) {
+        grow.swap(0, 1);
+    }
+    if all_served {
+        let half = (grid[0] + grid[1] + budget) / 2;
+        for dense in [true, false] {
+            for share in [half, u16::MAX] {
+                for r in grow {
+                    let want = row_need(r, dense).min(share.max(grid[r]));
+                    let add = want.saturating_sub(grid[r]).min(budget);
+                    grid[r] += add;
+                    budget -= add;
+                }
+            }
+        }
+        // ROUND 3 — no blank band between the grid and the panels.
+        grid[0] += budget / 2;
+        grid[1] += budget - budget / 2;
+    }
+    // a panel too short to draw becomes its 1-line bar, and the row it stood in goes back
+    // to the cards — never MORE rows than the body has, even when there are none to take
     let mut bars = (false, false);
     if gh_on && gh_h < 5 {
-        grid[1] = (grid[1] + gh_h).saturating_sub(1);
-        gh_h = 1;
+        let give = grid[1] + gh_h;
+        grid[1] = give.saturating_sub(1);
+        gh_h = give.min(1);
         bars.0 = true;
     }
     if ag_on && ag_h < 3 {
-        grid[1] = (grid[1] + ag_h).saturating_sub(1);
-        ag_h = 1;
+        let give = grid[1] + ag_h;
+        grid[1] = give.saturating_sub(1);
+        ag_h = give.min(1);
         bars.1 = true;
     }
     let cols_h = grid[0] + grid[1];
@@ -926,7 +950,7 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         y += gh_h;
     }
     if ag_on {
-        let r = Rect { y, height: ag_h.min(body.y + bh - y), ..body };
+        let r = Rect { y, height: ag_h.min((body.y + bh).saturating_sub(y)), ..body };
         if bars.1 {
             note_area(app, 1, r);
             f.render_widget(Paragraph::new(ag_bar(app, body.width as usize)), r);

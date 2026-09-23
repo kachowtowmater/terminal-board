@@ -35,13 +35,25 @@ const LAYOUTS: [&str; 6] = ["auto", "focus", "third-h", "third-v", "half-h", "ha
 /// A board with `[todo, doing, review, done]` cards in those columns; the title says which
 /// column a card belongs to, so a screen can be read back to "which columns show work".
 fn board_of(counts: [usize; 4]) -> (tempfile::TempDir, Store) {
+    board_of_mixed(counts, [false; 4])
+}
+
+/// `board_of`, but the flagged columns' cards carry a title long enough to wrap over
+/// several lines. What the allocator trades is COST, not count, so a column holding one
+/// cheap card beside one holding a single expensive card is its own shape.
+fn board_of_mixed(counts: [usize; 4], long: [bool; 4]) -> (tempfile::TempDir, Store) {
     common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     s.set_wip(99).unwrap();
     for (ci, col) in ["todo", "doing", "review", "done"].iter().enumerate() {
         for i in 1..=counts[ci] {
-            let id = s.add(&format!("{col}{i}"), "", &[], "alice").unwrap();
+            let title = if long[ci] {
+                format!("{col}{i} a title long enough that it wraps over several lines in any column this board can draw")
+            } else {
+                format!("{col}{i}")
+            };
+            let id = s.add(&title, "", &[], "alice").unwrap();
             if *col != "todo" {
                 s.move_to(id, col, "alice").unwrap();
             }
@@ -50,24 +62,66 @@ fn board_of(counts: [usize; 4]) -> (tempfile::TempDir, Store) {
     (dir, s)
 }
 
-/// Which columns have at least one of their own cards drawn. By card ID: a narrow column
-/// cuts the title but never the `#id`, and the ids are handed out column by column.
-fn columns_showing(screen: &str, counts: [usize; 4]) -> Vec<usize> {
+/// THE INVARIANT, checked the same way everywhere: **no column shows a second card while a
+/// populated column shows none.** Every round of review found a different loop breaking it —
+/// a shape-by-shape test list kept missing the next one, so the tests assert the rule itself.
+///
+/// `per_column` is how many of each column's own cards are drawn.
+fn assert_first_cards_before_second(per_column: [usize; 4], counts: [usize; 4], what: &str, screen: &str) {
+    let starved: Vec<usize> = (0..4).filter(|c| counts[*c] > 0 && per_column[*c] == 0).collect();
+    if starved.is_empty() {
+        return;
+    }
+    for (c, n) in per_column.iter().enumerate() {
+        assert!(
+            *n <= 1,
+            "{what}: column {c} shows {n} cards while {starved:?} (populated) show none — first cards come before second cards:\n{screen}"
+        );
+    }
+}
+
+/// How many of each column's own cards are drawn, by card ID: a narrow column cuts the title
+/// but never the `#id`, and ids are handed out column by column.
+fn cards_per_column(screen: &str, counts: [usize; 4]) -> [usize; 4] {
     let mut board = screen.to_string();
     while let Some(at) = board.find("last moved #") {
         let end = board[at..].find("  ").map(|i| at + i).unwrap_or(board.len());
         board.replace_range(at..end.min(board.len()), "");
     }
-    let mut first = 1usize;
-    let mut out = Vec::new();
-    for (ci, n) in counts.iter().enumerate() {
-        let ids = first..first + n;
-        if ids.clone().any(|id| board.contains(&format!("#{id} ")) || board.contains(&format!("#{id}\n"))) {
-            out.push(ci);
+    // read every `#<id>` token off the screen: a column four cells wide draws `#164` with no
+    // space after it, so matching on a trailing space misses cards that ARE drawn
+    let mut ids: std::collections::BTreeSet<usize> = Default::default();
+    let chars: Vec<char> = board.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '#' {
+            let digits: String = chars[i + 1..].iter().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                // a cut number (`#16…`) is not a card id: the next char must not be an ellipsis
+                let after = chars.get(i + 1 + digits.len());
+                if after != Some(&'…') {
+                    if let Ok(id) = digits.parse::<usize>() {
+                        ids.insert(id);
+                    }
+                }
+                i += digits.len();
+            }
         }
+        i += 1;
+    }
+    let mut out = [0usize; 4];
+    let mut first = 1usize;
+    for (ci, n) in counts.iter().enumerate() {
+        out[ci] = (first..first + n).filter(|id| ids.contains(id)).count();
         first += n;
     }
     out
+}
+
+/// Which columns have at least one of their own cards drawn.
+fn columns_showing(screen: &str, counts: [usize; 4]) -> Vec<usize> {
+    let per = cards_per_column(screen, counts);
+    (0..4).filter(|c| per[*c] > 0).collect()
 }
 
 /// THE SECOND REPRODUCTION (review of #131, round two): with THREE or more populated columns
@@ -76,7 +130,16 @@ fn columns_showing(screen: &str, counts: [usize; 4]) -> Vec<usize> {
 /// cards — got none. The reviewer's case: 80 / 3 / 80 / 80.
 #[test]
 fn three_and_four_populated_columns_all_show_work() {
-    for counts in [[80usize, 0, 0, 80], [80, 3, 0, 80], [80, 3, 80, 80], [10, 3, 5, 116], [3, 3, 3, 3]] {
+    for counts in [
+        [80usize, 0, 0, 80],
+        [80, 3, 0, 80],
+        [80, 3, 80, 80],
+        [10, 3, 5, 116],
+        [3, 3, 3, 3],
+        [1, 80, 1, 80],  // review, round three: two cheap columns beside two long ones
+        [1, 1, 1, 80],
+        [80, 1, 0, 0],
+    ] {
         let live = (0..4).filter(|c| counts[*c] > 0).count();
         let (_d, s) = board_of(counts);
         for layout in LAYOUTS {
@@ -91,6 +154,8 @@ fn three_and_four_populated_columns_all_show_work() {
                     if is_focus_view(&screen) {
                         continue;
                     }
+                    let per = cards_per_column(&screen, counts);
+                    assert_first_cards_before_second(per, counts, &format!("{counts:?} {layout} {w}x{h} cursor={col}"), &screen);
                     let showing = columns_showing(&screen, counts);
                     // never ONE column taking the room while other populated columns show
                     // nothing — unless the pane is too short for a second box at all, when
@@ -107,6 +172,42 @@ fn three_and_four_populated_columns_all_show_work() {
                         // and with real room, one column may not be the only one drawing
                         assert!(h < 24 || w < 80, "{counts:?} {layout} {w}x{h} cursor={col}: only column {} shows work:\n{screen}", showing[0]);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The same invariant where the columns cost DIFFERENT amounts: one column's single card
+/// wraps over several lines while its neighbour's is one line. An allocator that trades on
+/// count alone reads these as equal and starves the expensive one; an allocator that trades
+/// on a share of the height reads the cheap one as wanting little and starves it instead.
+#[test]
+fn a_cheap_column_and_an_expensive_one_both_show_work() {
+    for (counts, long) in [
+        ([1usize, 1, 1, 1], [false, true, false, true]),
+        ([1, 1, 1, 1], [true, false, true, false]),
+        ([1, 80, 1, 80], [false, true, false, true]),
+        ([80, 1, 80, 1], [true, false, true, false]),
+        ([1, 1, 1, 80], [true, false, false, false]),
+        ([10, 3, 5, 116], [false, true, false, false]),
+    ] {
+        let (_d, s) = board_of_mixed(counts, long);
+        for layout in LAYOUTS {
+            s.set_layout(layout).unwrap();
+            for col in 0..4usize {
+                let mut app = App::new(s.snapshot().unwrap(), "alice");
+                app.reload(&s);
+                app.agents = AgentsState::Unavailable("herdr not available".into());
+                app.col = col;
+                for (w, h) in [(60u16, 20u16), (60, 14), (80, 24), (100, 30), (126, 41)] {
+                    let screen = render(&app, w, h);
+                    if is_focus_view(&screen) {
+                        continue;
+                    }
+                    let per = cards_per_column(&screen, counts);
+                    let what = format!("{counts:?} long={long:?} {layout} {w}x{h} cursor={col}");
+                    assert_first_cards_before_second(per, counts, &what, &screen);
                 }
             }
         }
