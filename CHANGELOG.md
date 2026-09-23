@@ -24,9 +24,10 @@ Two sequences got past that:
   fires on entering DONE from any column, the same shape `done-by` already uses.
 - **Dropped work**: an agent that held a card in DOING, dropped it (clearing the owner), and
   let someone else move the now-unowned card into review was no longer recognized as the
-  author. A new signal — who most recently claimed the card with `tb next` / `tb take` — closes
-  this without weakening a genuine third-party approval: a fresh claim by a different agent
-  still supersedes the dropped one.
+  author. A new signal — who most recently held the card, by `tb next`/`tb take` OR `tb
+  assign` — closes this without weakening a genuine third-party approval: a fresh claim or
+  assignment to a different agent still supersedes the dropped one, so a real reassignment
+  (including through `tb assign`, which logs no `taken` event) is never falsely refused.
 - Two further sequences from the same review (a stray space around `--as` smuggling the same
   actor past the guard; a hand-run impersonating `github`) were already closed by #103 and by
   the CLI's existing `github`-actor refusal — locked in with regression tests here.

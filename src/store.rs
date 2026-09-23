@@ -270,18 +270,38 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
-/// Who most recently claimed this card with `tb next` / `tb take` (a `taken` event) —
-/// unlike `author_of`, dropping the card does not erase this: a drop logs a `dropped` event,
-/// not a `taken` one, so the last claimant stays on record until someone else claims it. Used
+/// Who most recently HELD this card in DOING, by EITHER route (`tb next`/`tb take`, a
+/// `taken` event, or `tb assign`, an `assigned` event) — unlike `author_of`, dropping the
+/// card does not erase this: a drop logs a `dropped` event, not a `taken`/`assigned` one, so
+/// the last holder stays on record until someone else claims or is assigned it. Used
 /// alongside `author_of` by the self-approval guard in `transition` to close the drop-then-
 /// reassign hole (#55): `author_of` alone forgets who held the card once it is dropped and
 /// unowned, and credits whoever happens to move the orphaned card into review instead.
-fn last_taken_by(conn: &Connection, id: i64) -> Result<Option<String>> {
-    Ok(conn
-        .query_row("SELECT actor FROM events WHERE card_id=? AND kind='taken' ORDER BY id DESC LIMIT 1", [id], |r| {
-            r.get(0)
-        })
-        .optional()?)
+///
+/// An `assigned` event's own `actor` column is who ASSIGNED the card (the orchestrator), not
+/// who now holds it — `transition`'s `Kind::Assign` arm logs it that way on purpose, so `tb
+/// show`/`tb log` can answer "who assigned this" and "who holds this" as two different
+/// questions. So for that kind the holder's name is read out of the event's `text` ("assigned
+/// to NAME", the exact text `Kind::Assign` writes) instead of `actor`. An earlier version of
+/// this function looked only at `taken` events, which meant a card reassigned by `tb assign`
+/// (no `taken` event at all) still named the PREVIOUS holder — wrongly refusing a genuine
+/// approval from whoever it was really reassigned to; `case9`/`case10` in tests/review.rs are
+/// that exact false-refusal, fixed.
+fn last_holder_of(conn: &Connection, id: i64) -> Result<Option<String>> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT kind, actor, text FROM events WHERE card_id=? AND kind IN ('taken','assigned') ORDER BY id DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(kind, actor, text)| {
+        if kind == "assigned" {
+            text.strip_prefix("assigned to ").map(str::to_string)
+        } else {
+            Some(actor)
+        }
+    }))
 }
 
 pub(crate) fn err<T>(msg: impl Into<String>, code: Code) -> Result<T> {
@@ -2069,15 +2089,14 @@ impl Store {
         // CURRENT owner, or — once unowned — whoever last moved the card into review. A drop
         // clears the owner, so an agent that held the card in DOING, dropped it, and then let
         // someone else move the now-unowned card into review stops being "the author" by that
-        // reading, even though it did the work. `last_taken_by` answers "who most recently
-        // claimed this card with `tb next` / `tb take`" instead — a drop logs a `dropped`
-        // event, not a `taken` one, so it does not erase this — and a fresh claim by a
-        // DIFFERENT actor since (a genuinely new author) still supersedes it. `tb assign` is
-        // not covered: its event records who assigned the card, not who now holds it, so
-        // reusing this signal for `assign` would name the wrong person.
+        // reading, even though it did the work. `last_holder_of` answers "who most recently
+        // HELD this card, by either `tb next`/`tb take` or `tb assign`" instead — a drop logs
+        // a `dropped` event, not a `taken`/`assigned` one, so it does not erase this — and a
+        // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
+        // supersedes it, so a real reassignment is never falsely refused.
         if column == "done" && c.column != "done" {
             let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
-                || last_taken_by(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
+                || last_holder_of(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
             if self_approving {
                 if !force {
                     return err("you did this work — ask another person or agent to review it", Code::SelfApprove);

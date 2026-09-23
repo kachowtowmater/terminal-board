@@ -353,6 +353,87 @@ fn case8_cli_refuses_to_act_as_github() {
     assert_eq!(s.card(id).unwrap().column, "todo", "the impersonation attempt must not move the card");
 }
 
+/// #55, false-refusal caught on review: `last_holder_of` must survive `tb assign`. A takes a
+/// card and drops it; the card is legitimately reassigned with `tb assign` — which logs an
+/// `assigned` event, not a `taken` one — to B. B finishes it and moves it to review. A must be
+/// free to approve B's work: A no longer holds the card, `tb assign` just does not say so via
+/// a `taken` row the way `tb take` does.
+#[test]
+fn case9_reassigned_by_tb_assign_after_a_drop_the_original_worker_may_still_approve() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+    s.take(id, "a").unwrap();
+    s.drop_card(id, "a").unwrap();
+    assert_eq!(s.card(id).unwrap().column, "todo");
+    s.assign(id, "b", "orchestrator").unwrap();
+    assert_eq!(s.card(id).unwrap().owner.as_deref(), Some("b"));
+    assert_eq!(s.done(id, "b").unwrap().column, "review");
+    // a's earlier, dropped claim must not survive the reassignment
+    let r = s.done(id, "a");
+    assert!(r.is_ok(), "a legitimately handed the card on via `tb assign` and must be able to review b's work: {r:?}");
+    assert_eq!(r.unwrap().column, "done");
+}
+
+/// #55: several people pass through DOING (some via `tb take`, some via `tb assign`) before
+/// the real author. Whoever is not the CURRENT holder may approve, however many times the
+/// card changed hands before that, and however it changed hands.
+#[test]
+fn case10_several_holders_in_a_row_only_the_current_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+    s.take(id, "a").unwrap();
+    s.drop_card(id, "a").unwrap();
+    s.take(id, "b").unwrap();
+    s.drop_card(id, "b").unwrap();
+    s.assign(id, "c", "orchestrator").unwrap();
+    assert_eq!(s.done(id, "c").unwrap().column, "review");
+    // a held and dropped it earliest in the chain; not the author of c's work
+    assert_eq!(
+        s.done(id, "a").unwrap().column,
+        "done",
+        "a's dropped claim from earlier in the chain must not block an unrelated approval"
+    );
+
+    let id = s.add("widgets: fix another thing", "", &[], "lead").unwrap();
+    s.take(id, "a").unwrap();
+    s.drop_card(id, "a").unwrap();
+    s.take(id, "b").unwrap();
+    s.drop_card(id, "b").unwrap();
+    s.assign(id, "c", "orchestrator").unwrap();
+    assert_eq!(s.done(id, "c").unwrap().column, "review");
+    // b held it more recently than a (but still before c, the real author) — still not blocked
+    assert_eq!(
+        s.done(id, "b").unwrap().column,
+        "done",
+        "b's dropped claim must not block either, even though b held it more recently than a"
+    );
+}
+
+/// #55: a card taken and dropped long ago, with unrelated activity on the SAME card in
+/// between (a note, a block and its clearing, another note) that touches no ownership at
+/// all, must not stop that original dropper from reviewing someone else's later, unrelated
+/// work on the same card.
+#[test]
+fn case11_a_long_ago_dropped_claim_does_not_block_a_much_later_unrelated_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+    s.take(id, "a").unwrap();
+    s.drop_card(id, "a").unwrap();
+    // time passes; unrelated activity on the same card, none of it a claim on it
+    s.note(id, "still waiting on a decision", "lead").unwrap();
+    s.block(id, Some("waiting on design"), "lead").unwrap();
+    s.block(id, None, "lead").unwrap();
+    s.note(id, "picking this back up", "someone").unwrap();
+    // b genuinely does the work now
+    s.take(id, "b").unwrap();
+    assert_eq!(s.done(id, "b").unwrap().column, "review");
+    // a, whose claim is long gone and superseded, reviews b's work fine
+    assert_eq!(s.done(id, "a").unwrap().column, "done");
+}
+
 #[test]
 fn tui_asks_the_author_before_approving_own_work() {
     let dir = tempfile::tempdir().unwrap();
