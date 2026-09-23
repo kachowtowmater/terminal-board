@@ -3,7 +3,7 @@
 //! defaults to skip. Prompts read from the terminal (`/dev/tty`, or `$TB_TTY`), so they work
 //! even when stdin is a pipe (`curl … | bash`).
 
-use crate::store::{BoardError, Result, Store};
+use crate::store::{BoardError, Code, Result, Store};
 use crate::{boards, github};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -305,7 +305,7 @@ impl Wizard {
             if !dry {
                 std::fs::create_dir_all(skill.parent().unwrap_or(Path::new(".")))
                     .and_then(|_| std::fs::write(&skill, SKILL))
-                    .map_err(|e| BoardError(format!("cannot write {}: {e}", skill.display())))?;
+                    .map_err(|e| BoardError(format!("cannot write {}: {e}", skill.display()), Code::IoError))?;
             }
             self.did(format!("Claude Code skill in {}", tilde(&skill)), "Would install the Claude Code skill".into());
         } else if !claude && self.o.agents.is_none() {
@@ -326,7 +326,7 @@ impl Wizard {
         match target {
             Some(t) => {
                 if !dry {
-                    write_block(&t).map_err(|e| BoardError(format!("cannot write {}: {e}", t.display())))?;
+                    write_block(&t).map_err(|e| BoardError(format!("cannot write {}: {e}", t.display()), Code::IoError))?;
                     remember(&format!("snippet={}", t.display()));
                 }
                 self.did(format!("agent snippet in {}", t.display()), format!("Would add the agent snippet to {}", t.display()));
@@ -460,7 +460,7 @@ impl Wizard {
         let Some(r) = repo else { return Ok(None) };
         match github::check_repo(&r) {
             Ok(name) => Ok(Some(name)),
-            Err(e) if self.o.github.is_some() => Err(BoardError(e)),
+            Err(e) if self.o.github.is_some() => Err(BoardError(e, Code::GithubError)),
             Err(e) => {
                 note(&e);
                 Ok(None)

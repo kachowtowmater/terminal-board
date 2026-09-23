@@ -39,8 +39,118 @@ fn layout_alias(l: &str) -> &str {
     }
 }
 
+/// A stable machine-readable symbol for a `--json` failure (`docs/JSON.md`). It lives on
+/// `BoardError` itself (`.1`), not on the message text, so the compiler requires one at every
+/// construction site instead of a caller re-deriving it from prose later.
+///
+/// The vocabulary is OPEN: new variants may be added at any time, and a consumer that meets a
+/// `code` it does not recognize falls back to `error` and the exit status — exactly as it
+/// would for a future addition. Once shipped, a variant's `as_str()` is a contract: it is
+/// never renamed or reused for a different meaning. `Unknown` is the mandatory catch-all, so
+/// no failure path can construct a `BoardError` without picking one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Code {
+    /// Changing a DOING card held by another actor without `--force` (the holder rule).
+    NotOwner,
+    /// A board name given while `TB_DB` pins one file.
+    DbPinned,
+    /// The named board does not exist.
+    NoBoard,
+    /// `--as ""`.
+    EmptyActor,
+    /// Sending a card back to DOING with no reason.
+    ReasonRequired,
+    /// No card with that id (on the board, or in the archive).
+    NoCard,
+    /// DOING is at the board's `wip` limit.
+    WipFull,
+    /// A board name that is not `[a-z0-9_-]{1,32}`.
+    InvalidBoardName,
+    /// A board name that collides with a command word.
+    BoardNameIsCommand,
+    /// `tb done` refused: the linked GitHub issue is still open.
+    GhIssueOpen,
+    /// A GitHub-only command run on a board with no `github` repo configured.
+    GithubOff,
+    /// A GitHub API/network call failed.
+    GithubError,
+    /// An approval outside REVIEW.
+    NotInReview,
+    /// The actor who did the work tried to approve or review their own card
+    /// (never-approve-your-own-work).
+    SelfApprove,
+    /// `config done-by` restricts who may close a card, and the actor is not on the list.
+    DoneByRestricted,
+    /// `config done-needs-note` requires a note written during this stay before DONE.
+    DoneNeedsNote,
+    /// `config done-needs-link` requires a link with that label before DONE.
+    DoneNeedsLink,
+    /// A required argument or value was not given.
+    ArgRequired,
+    /// An unrecognized subcommand or command word.
+    UnknownCommand,
+    /// An unrecognized `tb config` key.
+    UnknownSetting,
+    /// A value given for a recognized field/setting/flag is not one it accepts.
+    InvalidValue,
+    /// The database could not be opened, read or written (including "locked, try again").
+    DbError,
+    /// Reading or writing a file (settings, text-from-file, stdin, export) failed.
+    IoError,
+    /// The interactive TUI failed to start or run.
+    TerminalError,
+    /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
+    /// unrecognized subcommands caught at the parser level, wrong arity, etc.
+    Usage,
+    /// Every failure path that predates this vocabulary, or that does not yet warrant its own
+    /// symbol. A consumer that meets it falls back to `error` and the exit status, exactly as
+    /// it would for a code it does not recognize.
+    Unknown,
+}
+
+impl Code {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Code::NotOwner => "not_owner",
+            Code::DbPinned => "db_pinned",
+            Code::NoBoard => "no_board",
+            Code::EmptyActor => "empty_actor",
+            Code::ReasonRequired => "reason_required",
+            Code::NoCard => "no_card",
+            Code::WipFull => "wip_full",
+            Code::InvalidBoardName => "invalid_board_name",
+            Code::BoardNameIsCommand => "board_name_is_command",
+            Code::GhIssueOpen => "gh_issue_open",
+            Code::GithubOff => "github_off",
+            Code::GithubError => "github_error",
+            Code::NotInReview => "not_in_review",
+            Code::SelfApprove => "self_approve",
+            Code::DoneByRestricted => "done_by_restricted",
+            Code::DoneNeedsNote => "done_needs_note",
+            Code::DoneNeedsLink => "done_needs_link",
+            Code::ArgRequired => "arg_required",
+            Code::UnknownCommand => "unknown_command",
+            Code::UnknownSetting => "unknown_setting",
+            Code::InvalidValue => "invalid_value",
+            Code::DbError => "db_error",
+            Code::IoError => "io_error",
+            Code::TerminalError => "terminal_error",
+            Code::Usage => "usage",
+            Code::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `msg` is the human-readable text (`Display`, `.0`); `code` (`.1`) is the stable symbol a
+/// `--json` caller branches on — see `Code`.
 #[derive(Debug)]
-pub struct BoardError(pub String);
+pub struct BoardError(pub String, pub Code);
 
 impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -80,9 +190,9 @@ impl From<rusqlite::Error> for BoardError {
         if is_contended(&e) {
             // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
             // the problem here, so it is not named (#105)
-            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string());
+            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string(), Code::DbError);
         }
-        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())))
+        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())), Code::DbError)
     }
 }
 
@@ -101,7 +211,7 @@ fn ownership_err(tx: &Connection, id: i64, owner: &str, actor: &str, what: &str)
     let yours = if mine.is_empty() { "none".to_string() } else { mine.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(", ") };
     Ok(BoardError(format!(
         "#{id} is held by {owner} — your cards: {yours} · to {what} anyway use --force (logged)"
-    )))
+    ), Code::NotOwner))
 }
 
 /// The actor-aware WIP message: the board-wide limit with who holds what, and what the
@@ -132,7 +242,7 @@ fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardEr
         Some(id) => format!("finish #{id} with 'tb done {id}' first"),
         None => "you hold none; wait, or ask one of them to finish".to_string(),
     };
-    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")))
+    BoardError(format!("doing is full ({doing}/{wip}: {}) — {tail}", holders.join(", ")), Code::WipFull)
 }
 
 /// Who did the work on a card: its OWNER — the agent that held it in DOING — whenever it has
@@ -160,8 +270,8 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
-pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
-    Err(BoardError(msg.into()))
+pub(crate) fn err<T>(msg: impl Into<String>, code: Code) -> Result<T> {
+    Err(BoardError(msg.into(), code))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -338,7 +448,7 @@ pub fn pinned_now() -> Result<Option<i64>> {
         Ok(t) if (TB_NOW_MIN..TB_NOW_MAX).contains(&t) => Ok(Some(t)),
         _ => Err(BoardError(format!(
             "TB_NOW is not a plausible unix second: '{v}' — unset it, or pass seconds between {TB_NOW_MIN} and {TB_NOW_MAX} (2000, last accepted 4102444799)"
-        ))),
+        ), Code::InvalidValue)),
     }
 }
 
@@ -527,7 +637,7 @@ fn bad_position<T>(id: rusqlite::Result<i64>, value: impl std::fmt::Display) -> 
     Err(rusqlite::Error::FromSqlConversionFailure(
         usize::MAX,
         Type::Integer,
-        Box::new(crate::store::BoardError(position_error(id, value))),
+        Box::new(crate::store::BoardError(position_error(id, value), Code::DbError)),
     ))
 }
 
@@ -753,7 +863,7 @@ fn backup_aside(path: &Path) -> Result<std::path::PathBuf> {
         BoardError(format!(
             "cannot back up {} before upgrading it: {why} — nothing was changed; make room next to it (or fix the directory's permissions) and run the command again",
             path.display()
-        ))
+        ), Code::IoError)
     };
     let stamp = chrono::Utc
         .timestamp_opt(now(), 0)
@@ -855,7 +965,7 @@ impl Store {
                     BoardError(format!(
                         "cannot create {}: {e} — set TB_DB to a writable path",
                         dir.display()
-                    ))
+                    ), Code::IoError)
                 })?;
             }
         }
@@ -865,7 +975,7 @@ impl Store {
         // `path` itself, or the end of its chain of symbolic links — tb creates THAT file
         // (SQLite would create a link's missing target 0644) and opens the database there.
         let (real, created) = if on_disk {
-            crate::fsperm::create_board(path).map_err(BoardError)?
+            crate::fsperm::create_board(path).map_err(|e| BoardError(e, Code::IoError))?
         } else {
             (path.to_path_buf(), false)
         };
@@ -948,7 +1058,7 @@ impl Store {
 
     pub fn set_wip(&self, n: i64) -> Result<()> {
         if !(1..=MAX_WIP).contains(&n) {
-            return err(format!("wip must be 1-{MAX_WIP} — try 'tb config wip 3'"));
+            return err(format!("wip must be 1-{MAX_WIP} — try 'tb config wip 3'"), Code::InvalidValue);
         }
         self.set_config("wip", &n.to_string())
     }
@@ -983,7 +1093,7 @@ impl Store {
         if t != "dark" && t != "light" {
             return err(format!(
                 "unknown theme '{theme}' — use 'tb config theme dark' or 'tb config theme light'"
-            ));
+            ), Code::InvalidValue);
         }
         self.set_config("theme", &t)
     }
@@ -1011,7 +1121,7 @@ impl Store {
             Some(r) => {
                 return err(format!(
                     "'{r}' is not owner/repo — try 'tb config github acme/widgets'"
-                ))
+                ), Code::InvalidValue)
             }
             None => {
                 self.conn.execute("DELETE FROM config WHERE key='github'", [])?;
@@ -1077,10 +1187,10 @@ impl Store {
         let v = match v.as_str() {
             "shown" | "show" | "on" => "shown",
             "hidden" | "hide" | "off" => "hidden",
-            _ => return err(format!("'{value}' is not shown|hidden — try 'tb config {key} hidden'")),
+            _ => return err(format!("'{value}' is not shown|hidden — try 'tb config {key} hidden'"), Code::InvalidValue),
         };
         if key != "github-panel" && key != "agents-panel" {
-            return err(format!("unknown panel '{key}' — use github-panel or agents-panel"));
+            return err(format!("unknown panel '{key}' — use github-panel or agents-panel"), Code::InvalidValue);
         }
         self.set_config(key, v)
     }
@@ -1151,13 +1261,13 @@ impl Store {
         match value.trim().to_ascii_lowercase().as_str() {
             "private" => {
                 let Some(path) = self.path() else {
-                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'");
+                    return err("this board has no file yet — add a card first, e.g. 'tb add \"title\"'", Code::Unknown);
                 };
                 if crate::fsperm::mode_of(&path).is_none() {
-                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'");
+                    return err("this platform has no file modes — there is nothing to tighten; see 'tb config'", Code::Unknown);
                 }
                 let done = crate::fsperm::make_private(&path).map_err(|e| {
-                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()))
+                    BoardError(format!("cannot change the mode of {}: {e} — check that you own the file, then 'tb config file-mode private' again", path.display()), Code::IoError)
                 })?;
                 let base = |f: &std::path::PathBuf| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 // a path that is not a regular file (a symbolic link someone planted) is never
@@ -1187,7 +1297,7 @@ impl Store {
                 log(format!("shared: mode {mode} kept"))?;
                 Ok(format!("file-mode is now shared — tb leaves the mode ({mode}) alone and stops reporting it"))
             }
-            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'")),
+            other => err(format!("'{other}' is not private|shared — try 'tb config file-mode private'"), Code::InvalidValue),
         }
     }
 
@@ -1202,7 +1312,7 @@ impl Store {
     pub fn set_layout(&self, layout: &str) -> Result<()> {
         let l = layout_alias(&layout.trim().to_ascii_lowercase()).to_string();
         if !LAYOUTS.contains(&l.as_str()) {
-            return err(format!("unknown layout '{layout}' — use 'tb config layout auto|focus|third-h|third-v|half-h|half-v'"));
+            return err(format!("unknown layout '{layout}' — use 'tb config layout auto|focus|third-h|third-v|half-h|half-v'"), Code::InvalidValue);
         }
         self.set_config("layout", &l)
     }
@@ -1235,7 +1345,7 @@ impl Store {
     /// about, which is the point of the flag.
     pub fn add_tagged(&self, raw_title: &str, desc: &str, checks: &[String], actor: &str, tag: Option<Option<&str>>) -> Result<i64> {
         if raw_title.trim().is_empty() {
-            return err("title is empty — try 'tb add \"tag: what to do\"'");
+            return err("title is empty — try 'tb add \"tag: what to do\"'", Code::ArgRequired);
         }
         let (tag, gh, title) = match tag {
             None => parse_title(raw_title),
@@ -1578,14 +1688,14 @@ impl Store {
                 format!("no review cards for you — {waiting} your own work; ask another person or agent to review it, and take new work with 'tb next'")
             } else {
                 "no review cards waiting — take new work with 'tb next'".to_string()
-            });
+            }, Code::Unknown);
         };
         let changed = tx.execute(
             r#"UPDATE cards SET reviewer=? WHERE id=? AND "column"='review' AND reviewer IS NULL"#,
             params![actor, target],
         )?;
         if changed != 1 {
-            return err(format!("card #{target} was claimed by someone else — try 'tb next --review'"));
+            return err(format!("card #{target} was claimed by someone else — try 'tb next --review'"), Code::Unknown);
         }
         Self::log(&tx, target, actor, "reviewing", "")?;
         let card = get_card(&tx, target)?;
@@ -1607,7 +1717,7 @@ impl Store {
     pub fn assign(&mut self, id: i64, owner: &str, actor: &str) -> Result<Card> {
         let owner = owner.trim();
         if owner.is_empty() {
-            return err(format!("name is empty — try 'tb assign {id} bob'"));
+            return err(format!("name is empty — try 'tb assign {id} bob'"), Code::ArgRequired);
         }
         self.transition(Change::Assign { id, owner }, actor, false)
     }
@@ -1632,7 +1742,7 @@ impl Store {
                     return err(format!(
                         "card #{id} is in {}{who}, not todo — take another with 'tb next'",
                         c.column
-                    ));
+                    ), Code::Unknown);
                 }
                 id
             }
@@ -1666,7 +1776,7 @@ impl Store {
                 match found {
                     Some(i) => i,
                     None => {
-                        return err("no todo cards — add one with 'tb add \"title\"'")
+                        return err("no todo cards — add one with 'tb add \"title\"'", Code::Unknown)
                     }
                 }
             }
@@ -1681,7 +1791,7 @@ impl Store {
 
     pub fn note(&self, id: i64, text: &str, actor: &str) -> Result<()> {
         if text.trim().is_empty() {
-            return err(format!("note is empty — try 'tb note {id} \"what changed\"'"));
+            return err(format!("note is empty — try 'tb note {id} \"what changed\"'"), Code::ArgRequired);
         }
         // The card is checked INSIDE the write transaction, not before it. Checking first
         // and writing after leaves a window: under WAL the check reads happily while another
@@ -1703,7 +1813,7 @@ impl Store {
             return err(format!(
                 "card #{id} has no checklist item {n} (it has {}) — see 'tb show {id}'",
                 d.checklist.len()
-            ));
+            ), Code::Unknown);
         };
         let new = !item.done;
         self.conn.execute(
@@ -1719,7 +1829,7 @@ impl Store {
     pub fn block(&self, id: i64, reason: Option<&str>, actor: &str) -> Result<()> {
         let reason = reason.map(|r| r.trim().trim_start_matches("by ").trim().to_string());
         if reason.as_deref() == Some("") {
-            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"));
+            return err(format!("say what blocks it — 'tb block {id} \"#7\"'"), Code::ArgRequired);
         }
         // the card is checked inside the transaction, for the reason given on `note`
         let tx = self.conn.unchecked_transaction()?;
@@ -1739,7 +1849,7 @@ impl Store {
         self.card(id)?;
         let text = text.trim();
         if text.is_empty() {
-            return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"));
+            return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"), Code::ArgRequired);
         }
         let tx = self.conn.unchecked_transaction()?;
         let n: i64 = tx.query_row(
@@ -1763,7 +1873,7 @@ impl Store {
             return err(format!(
                 "card #{id} has no checklist item {n} (it has {}) — see 'tb show {id}'",
                 d.checklist.len()
-            ));
+            ), Code::Unknown);
         };
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM checklist WHERE card_id=? AND idx=?", params![id, n])?;
@@ -1864,7 +1974,7 @@ impl Store {
                 if !COLUMNS.contains(&column.as_str()) {
                     return err(format!(
                         "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
-                    ));
+                    ), Code::InvalidValue);
                 }
                 let reason = reason.map(str::trim);
                 let c = get_card(&tx, id)?;
@@ -1872,12 +1982,12 @@ impl Store {
                 if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
                     return err(format!(
                         "say why it goes back — 'tb move {id} doing \"what to fix\"'"
-                    ));
+                    ), Code::ReasonRequired);
                 }
                 if !send_back && reason.is_some() {
                     return err(format!(
                         "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
-                    ));
+                    ), Code::InvalidValue);
                 }
                 if c.column == column {
                     // `tb move ID review` on a claimed card releases the claim (a reviewer that stopped)
@@ -1932,7 +2042,7 @@ impl Store {
             if let Some(author) = author_of(&tx, &c)? {
                 if author.eq_ignore_ascii_case(actor) {
                     if !force {
-                        return err("you did this work — ask another person or agent to review it");
+                        return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
                     }
                     Self::log(&tx, id, actor, "force", "approved own work")?;
                 }
@@ -2031,7 +2141,7 @@ impl Store {
             params![column, owner, now(), pos, reviewer, column, id, c.column],
         )?;
         if changed != 1 {
-            return err(format!("card #{id} was taken by someone else — try 'tb next'"));
+            return err(format!("card #{id} was taken by someone else — try 'tb next'"), Code::Unknown);
         }
         match kind {
             Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
@@ -2093,7 +2203,7 @@ impl Store {
             "up" => i.saturating_sub(1),
             "down" => (i + 1).min(ids.len() - 1),
             _ => {
-                return err(format!("unknown '{how}' — use 'tb prio {id} top|bottom|up|down'"));
+                return err(format!("unknown '{how}' — use 'tb prio {id} top|bottom|up|down'"), Code::InvalidValue);
             }
         };
         let moved = ids.remove(i);
@@ -2155,21 +2265,21 @@ impl Store {
                 if t == base_title {
                     skip_title = true;
                 } else if let Some(e) = conflict("title", base_title, &now_raw, t) {
-                    return err(e);
+                    return err(e, Code::Unknown);
                 }
             }
             if let Some(d) = desc {
                 if d == base_desc {
                     skip_desc = true;
                 } else if let Some(e) = conflict("description", base_desc, &c.description, d) {
-                    return err(e);
+                    return err(e, Code::Unknown);
                 }
             }
         }
         let mut what = Vec::new();
         if let (Some(t), false) = (raw_title, skip_title) {
             if t.trim().is_empty() {
-                return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"));
+                return err(format!("title is empty — try 'tb edit {id} --title \"tag: new title\"'"), Code::ArgRequired);
             }
             let (guessed, gh, title) = match tag {
                 Some(_) => parse_title_keeping_prefix(t),
@@ -2197,7 +2307,7 @@ impl Store {
             what.push("description");
         }
         if what.is_empty() {
-            return err(format!("nothing to change — 'tb edit {id} --title T' and/or '--desc D'"));
+            return err(format!("nothing to change — 'tb edit {id} --title T' and/or '--desc D'"), Code::Unknown);
         }
         Self::log(&tx, id, actor, "edit", &format!("{} edited", what.join(" and ")))?;
         let c = get_card(&tx, id)?;
@@ -2222,7 +2332,7 @@ impl Store {
             "todo" | "review" => self.move_card(id, "done", actor, force, None),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
-            )),
+            ), Code::Unknown),
         }
     }
 
@@ -2319,7 +2429,7 @@ fn theme_of(conn: &Connection) -> Result<String> {
 fn get_card(conn: &Connection, id: i64) -> Result<Card> {
     conn.query_row(&format!("SELECT {CARD_COLS} FROM cards WHERE id=?"), [id], row_card)
         .optional()?
-        .ok_or_else(|| BoardError(format!("no card #{id} — see 'tb list' for ids")))
+        .ok_or_else(|| BoardError(format!("no card #{id} — see 'tb list' for ids"), Code::NoCard))
 }
 
 /// Compact age: 40m, 1h12m, 2d.

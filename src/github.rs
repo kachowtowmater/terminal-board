@@ -672,13 +672,15 @@ pub fn unix_time(ts: &str) -> Option<i64> {
 /// newest of more, so its counts say "newest" instead of reading as "all of them".
 pub const PAGE: usize = 20;
 
-/// `20 newest` for a full page, `N open` otherwise.
-fn pr_count(len: usize) -> String {
+/// `20 newest` for a full page, `N open` otherwise. `pub(crate)`: also the long form for a
+/// full-page PR count in the narrow stat block and the one-line bar (`tui/layouts.rs`, #78).
+pub(crate) fn pr_count(len: usize) -> String {
     if len >= PAGE { format!("{len} newest") } else { format!("{len} open") }
 }
 
-/// ` in newest 20` when the counts come from a full issue page, else nothing.
-fn issue_page(len: usize) -> String {
+/// ` in newest 20` when the counts come from a full issue page, else nothing. `pub(crate)`:
+/// also used to build the long "free" form in the narrow stat block and the one-line bar.
+pub(crate) fn issue_page(len: usize) -> String {
     if len >= PAGE { format!(" in newest {PAGE}") } else { String::new() }
 }
 

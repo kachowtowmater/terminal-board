@@ -10,7 +10,7 @@
 
 use crate::store::blocks::BlockCtx;
 use crate::store::due;
-use crate::store::{BoardError, Card, Result};
+use crate::store::{BoardError, Card, Code, Result};
 
 /// The filters as they were typed, before anything is checked. The command line fills this
 /// in; `Filter::parse` turns it into a `Filter` or into a refusal.
@@ -41,7 +41,7 @@ impl Group {
             "tag" => Ok(Group::Tag),
             other => crate::store::err(format!(
                 "cannot group by '{other}' — the only grouping is 'tb list --group tag'"
-            )),
+            ), Code::InvalidValue),
         }
     }
 }
@@ -91,7 +91,7 @@ impl Filter {
                 match look.column_of_label(typed) {
                     Some(real) => BoardError(format!(
                         "'{typed}' is the label on {real} — a filter takes the column name: 'tb list --column {real}'"
-                    )),
+                    ), Code::InvalidValue),
                     None => e,
                 }
             })?),
@@ -100,7 +100,7 @@ impl Filter {
             if due::parse_date(d).is_none() {
                 return crate::store::err(format!(
                     "'{d}' is not a date — use YYYY-MM-DD, e.g. 'tb list --due-before 2026-10-09'"
-                ));
+                ), Code::InvalidValue);
             }
         }
         Ok(Filter {

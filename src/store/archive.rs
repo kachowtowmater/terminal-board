@@ -17,7 +17,7 @@
 //! name, so a column another part of tb adds to `cards` later is archived and restored
 //! without this file knowing about it.
 
-use super::{bottom_of, err, get_card, now, ownership_err, wip_full_err, wip_of, BoardError, Card, Result, Store};
+use super::{Code, bottom_of, err, get_card, now, ownership_err, wip_full_err, wip_of, BoardError, Card, Result, Store};
 use rusqlite::{params, types::ValueRef, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
@@ -198,7 +198,7 @@ impl Store {
             RM_DELETE => {
                 self.conn.execute("DELETE FROM config WHERE key='rm'", [])?;
             }
-            _ => return err(format!("'{value}' is not delete|archive — try 'tb config rm archive'")),
+            _ => return err(format!("'{value}' is not delete|archive — try 'tb config rm archive'"), Code::InvalidValue),
         }
         if old != v {
             board_log(&self.conn, actor, "rm", &format!("rm {old} -> {v}"))?;
@@ -309,10 +309,10 @@ impl Store {
             None
         };
         let Some((card, checklist, events, column, links)) = row else {
-            return err(format!("no archived card #{id} — see 'tb list --archived'"));
+            return err(format!("no archived card #{id} — see 'tb list --archived'"), Code::NoCard);
         };
         if tx.query_row("SELECT COUNT(*) FROM cards WHERE id=?", [id], |r| r.get::<_, i64>(0))? > 0 {
-            return err(format!("a card #{id} is on the board already — see 'tb show {id}'"));
+            return err(format!("a card #{id} is on the board already — see 'tb show {id}'"), Code::Unknown);
         }
         if column == "doing" {
             let (wip, doing) = (
@@ -323,7 +323,7 @@ impl Store {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
         }
-        let broken = |what: &str| BoardError(format!("the archived {what} of #{id} cannot be read — nothing was restored; see 'tb list --archived'"));
+        let broken = |what: &str| BoardError(format!("the archived {what} of #{id} cannot be read — nothing was restored; see 'tb list --archived'"), Code::DbError);
         let mut card: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&card).map_err(|_| broken("card"))?;
         let checklist: Vec<serde_json::Map<String, serde_json::Value>> =
             serde_json::from_str(&checklist).map_err(|_| broken("checklist"))?;

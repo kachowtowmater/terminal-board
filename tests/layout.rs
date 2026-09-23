@@ -1265,6 +1265,90 @@ fn full_page_labels_fit_at_small_sizes() {
     assert!(render(&quiet, 80, 60).contains("no open issues or PRs"));
 }
 
+/// gh#78: the two GitHub renderings the tile/summary follow-up (#34) left out — the narrow
+/// stat block (`tidy_stats`, drawn in third-h/third-v/the rail) and the one-line GITHUB bar
+/// (`gh_bar`) — also mark a full 20-item page: long, else terse, else today's text, never cut
+/// mid-word. A wide render sweep (all six layouts) checks that a full page is never rendered
+/// identically to a 19-item one; three known configurations (from `third_height_rail_...`,
+/// `tidy_github_block_aligns_at_62_48_40` and `medium_bars_when_panels_do_not_fit`, all
+/// elsewhere in this file) pin the exact bar and stat-block forms, including the "no column
+/// moves" invariant the two-col stat block pad (`TIDY_TWO_COL`) depends on.
+#[test]
+fn stat_block_and_bar_label_a_full_page() {
+    common::pin_clock();
+    let (_d1, s1, mut plain, _c1) = setup_page(19, 19, true);
+    let (_d2, s2, mut full, _c2) = setup_page(20, 20, true);
+
+    // a full page never renders identically to a 19-item one, at any width/height/layout
+    // where a labelled form fits; every label seen is whole, never cut mid-word
+    let (mut long, mut terse) = (0, 0);
+    for layout in LAYOUTS {
+        for (s, app) in [(&s1, &mut plain), (&s2, &mut full)] {
+            s.set_layout(layout).unwrap();
+            app.reload(s);
+        }
+        for h in [12u16, 20, 30, 41, 60] {
+            for w in (40u16..=200).step_by(4) {
+                let (a, b) = (render(&plain, w, h), render(&full, w, h));
+                let at = format!("{layout} {w}x{h}");
+                for l in b.lines() {
+                    assert!(!l.contains("newe") || whole(l, "newest"), "{at}: 'newest' cut: {l}");
+                    assert!(!l.contains("in newest") || whole(l, "in newest 20"), "{at}: long label cut: {l}");
+                }
+                long += usize::from(b.contains("newest") && !a.contains("newest"));
+                terse += usize::from(b.contains("20+") && !a.contains("20+"));
+            }
+        }
+    }
+    assert!(long > 0, "the sweep never saw a long label appear only on the full page");
+    assert!(terse > 0, "the sweep never saw a terse label appear only on the full page");
+
+    // the three targeted checks below all use `auto` (the sweep above left it on half-v)
+    for (s, app) in [(&s1, &mut plain), (&s2, &mut full)] {
+        s.set_layout("auto").unwrap();
+        app.reload(s);
+    }
+
+    // 1) the one-line GITHUB bar (RAIL falls back to a bar when even 3 rows do not fit;
+    //    `medium_bars_when_panels_do_not_fit` pins 95x35 as exactly that size). At 95 cols
+    //    only the terse form fits whole; a wider bar (120) fits the long form.
+    let bar_plain = render(&plain, 95, 35);
+    let bar_full = render(&full, 95, 35);
+    assert!(bar_plain.contains(" GITHUB acme/widgets · 60 issues") && bar_plain.contains("19 PR") && !bar_plain.contains("newest") && !bar_plain.contains("20+"), "19-item bar reads as an unlabelled real total:\n{bar_plain}");
+    assert!(bar_full.contains("17/20 free") && bar_full.contains("20+ PR"), "20-item bar not terse-labelled at 95 cols:\n{bar_full}");
+    let bar_full_wide = render(&full, 160, 14);
+    assert!(bar_full_wide.contains("20 PR newest") && bar_full_wide.contains("free in newest 20"), "20-item bar not long-labelled at 160x14:\n{bar_full_wide}");
+    let bar_plain_wide = render(&plain, 160, 14);
+    assert!(!bar_plain_wide.contains("newest") && !bar_plain_wide.contains("20+"), "19-item bar wrongly labelled at 160x14:\n{bar_plain_wide}");
+
+    // 2) the narrow stat block, two-column form (`tidy_github_block_aligns_at_62_48_40` pins
+    //    62/48/40 wide, 70 tall as ThirdV; >=58 wide keeps MERGED/MAIN CI on the ISSUES/PRS rows)
+    let stat_plain = render(&plain, 62, 70);
+    let stat_full = render(&full, 62, 70);
+    let line = |screen: &str, needle: &str| screen.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle} row:\n{screen}")).to_string();
+    let (issues_plain, prs_plain) = (line(&stat_plain, "ISSUES "), line(&stat_plain, "PRS  "));
+    let (issues_full, prs_full) = (line(&stat_full, "ISSUES "), line(&stat_full, "PRS  "));
+    assert!(!issues_plain.contains('/') && !prs_plain.contains("newest") && !prs_plain.contains("20+"), "19-item stat block reads unlabelled: {issues_plain} / {prs_plain}");
+    assert!(issues_full.contains("17/20 free") || issues_full.contains("17 free"), "20-item ISSUES row: {issues_full}");
+    assert!(prs_full.contains("20 newest") || prs_full.contains("20+"), "20-item PRS row not labelled: {prs_full}");
+    // the caveat: MERGED / MAIN CI never move, whichever form won
+    assert_eq!(issues_plain.find("MERGED"), issues_full.find("MERGED"), "MERGED moved:\n{issues_plain}\n{issues_full}");
+    assert_eq!(prs_plain.find("MAIN CI"), prs_full.find("MAIN CI"), "MAIN CI moved:\n{prs_plain}\n{prs_full}");
+
+    // 3) the narrow stat block, four-row form (< 58 wide: MERGED/MAIN CI get their own rows)
+    let stat_full_n = render(&full, 48, 70);
+    let prs_n = line(&stat_full_n, "PRS  ");
+    assert!(!prs_n.contains("MERGED") && !prs_n.contains("MAIN CI"), "48 cols should still be the 4-row form: {prs_n}");
+    assert!(prs_n.contains("20 newest") || prs_n.contains("20+"), "20-item PRS row (4-row form) not labelled: {prs_n}");
+
+    // a fewer-than-20 repo shows no page label at any of these sizes — nothing to mark
+    let (_d, _s, few, _) = setup_page(5, 5, false);
+    for (w, h) in [(95u16, 35u16), (62, 70), (48, 70)] {
+        let screen = render(&few, w, h);
+        assert!(!screen.contains("newest") && !screen.contains("20+") && !screen.contains("/20"), "{w}x{h}: no page label without a full page:\n{screen}");
+    }
+}
+
 // gh#75: the board footer degrades one hint at a time -------------------------------------
 
 /// Every board hint, in the order the footer drops them (first dropped first). The last two

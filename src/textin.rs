@@ -11,7 +11,7 @@
 //! `-` means standard input. It is refused when standard input is a terminal: agents have
 //! none, and a command that waits for typing never returns.
 
-use crate::store::BoardError;
+use crate::store::{BoardError, Code};
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
@@ -102,7 +102,7 @@ fn wait_for_first_byte(timeout: std::time::Duration, usage: &str) -> Result<(), 
              a pipe nobody writes to or closes would otherwise hang tb forever: check what is supposed \
              to feed it, or unset TB_STDIN_TIMEOUT to wait as long as it takes: 'tb {usage} -'",
             timeout.as_secs()
-        ))),
+        ), Code::IoError)),
     }
 }
 
@@ -122,13 +122,13 @@ fn from_stdin(is_terminal: bool, input: &mut dyn Read, usage: &str, max: usize) 
     input
         .take(max as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| BoardError(format!("could not read standard input: {e} — try a file instead: 'tb {usage} PATH'")))?;
+        .map_err(|e| BoardError(format!("could not read standard input: {e} — try a file instead: 'tb {usage} PATH'"), Code::IoError))?;
     if bytes.len() > max {
         return Err(BoardError(format!(
             "standard input is over the limit of {} for text from a file — {}",
             limit(max),
             shorten(max)
-        )));
+        ), Code::IoError));
     }
     text_of(bytes, "standard input", usage)
 }
@@ -136,7 +136,7 @@ fn from_stdin(is_terminal: bool, input: &mut dyn Read, usage: &str, max: usize) 
 fn terminal_refusal(usage: &str) -> BoardError {
     BoardError(format!(
         "'-' reads piped text, but standard input is a terminal — pipe or redirect it: 'tb {usage} - < FILE', or pass the path: 'tb {usage} FILE'"
-    ))
+    ), Code::IoError)
 }
 
 fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError> {
@@ -144,12 +144,12 @@ fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError>
     let again = format!("'tb {usage} PATH', or pipe the text: 'tb {usage} -'");
     let refuse = |e: &std::io::Error| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            BoardError(format!("no file {shown} — check the path (it is relative to where tb runs): {again}"))
+            BoardError(format!("no file {shown} — check the path (it is relative to where tb runs): {again}"), Code::IoError)
         }
         std::io::ErrorKind::PermissionDenied => {
-            BoardError(format!("cannot read {shown}: permission denied — make it readable, then {again}"))
+            BoardError(format!("cannot read {shown}: permission denied — make it readable, then {again}"), Code::IoError)
         }
-        _ => BoardError(format!("cannot read {shown}: {e} — check the path: {again}")),
+        _ => BoardError(format!("cannot read {shown}: {e} — check the path: {again}"), Code::IoError),
     };
     // #79: `File::open` on a FIFO already does exactly the right thing by default — it waits
     // for a writer to attach, however long that takes, same as `-` waits for a producer. The
@@ -159,7 +159,7 @@ fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError>
     let mut file = if is_fifo(path) { open_fifo(path, &shown, usage, &refuse)? } else { std::fs::File::open(path).map_err(|e| refuse(&e))? };
     let meta = file.metadata().map_err(|e| refuse(&e))?;
     if meta.is_dir() {
-        return Err(BoardError(format!("{shown} is a directory, not a text file — name a file: {again}")));
+        return Err(BoardError(format!("{shown} is a directory, not a text file — name a file: {again}"), Code::IoError));
     }
     // a path that IS the terminal (/dev/tty, /dev/stdin in a shell) would wait for typing too
     if file.is_terminal() {
@@ -170,7 +170,7 @@ fn from_file(path: &Path, usage: &str, max: usize) -> Result<String, BoardError>
             "{shown} is {size}; text from a file is limited to {} — {}",
             limit(max),
             shorten(max).replace("in a file", "in the file")
-        ))
+        ), Code::IoError)
     };
     if meta.is_file() && meta.len() > max as u64 {
         return Err(too_big(format!("{} bytes", meta.len())));
@@ -232,9 +232,9 @@ fn open_fifo(path: &Path, shown: &str, usage: &str, refuse: &dyn Fn(&std::io::Er
             "{shown} waited {}s for a writer to open it (TB_STDIN_TIMEOUT) and none did — check what is supposed \
              to feed it, or unset TB_STDIN_TIMEOUT to wait as long as it takes: 'tb {usage} PATH'",
             timeout.as_secs()
-        ))),
+        ), Code::IoError)),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(BoardError(format!("cannot read {shown}: the thread opening it vanished without a trace — try again")))
+            Err(BoardError(format!("cannot read {shown}: the thread opening it vanished without a trace — try again"), Code::IoError))
         }
     }
 }
@@ -251,13 +251,13 @@ fn text_of(bytes: Vec<u8>, shown: &str, usage: &str) -> Result<String, BoardErro
     if let Some(at) = bytes.iter().position(|b| *b == 0) {
         return Err(BoardError(format!(
             "{shown} holds a NUL byte (offset {at}), so it is not a text file — tb stores UTF-8 text; convert it first (e.g. iconv -f utf-16 -t utf-8), then 'tb {usage} PATH'"
-        )));
+        ), Code::IoError));
     }
     let text = String::from_utf8(bytes).map_err(|e| {
         BoardError(format!(
             "{shown} is not UTF-8 text (bad byte at offset {}) — tb stores UTF-8 text; convert it first (e.g. iconv -f latin1 -t utf-8), then 'tb {usage} PATH'",
             e.utf8_error().valid_up_to()
-        ))
+        ), Code::IoError)
     })?;
     let text = match text.strip_prefix('\u{feff}') {
         Some(rest) => rest.to_string(),
@@ -268,7 +268,7 @@ fn text_of(bytes: Vec<u8>, shown: &str, usage: &str) -> Result<String, BoardErro
         // input is /dev/null: never let that silently blank a description
         return Err(BoardError(format!(
             "{shown} is empty — nothing to store; check what writes it, then 'tb {usage} PATH' or 'tb {usage} -' with the text piped in"
-        )));
+        ), Code::IoError));
     }
     Ok(text)
 }

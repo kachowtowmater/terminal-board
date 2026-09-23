@@ -177,11 +177,14 @@ card).
 
 ## JSON
 
-Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures answer `{"ok":false,"error":"…","hint":"…"}` and exit
-non-zero. `tb next --as NAME --json` is the card you got, `tb show ID --json` one card with checklist and notes, `tb board --json`
-the whole board, `tb watch --json` NDJSON (the board again on every change), `tb agents --json` who is on this board + the card each
-holds. Field names are stable (schema `"v":1`); see docs/JSON.md. A `"warnings"` list — or a `tb: …` line on stderr of a command
-that succeeded — is for your operator: pass it on; do not change settings because of it.
+Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures answer
+`{"ok":false,"error":"…","hint":"…","code":"…"}` and exit non-zero — branch on `code`, a stable snake_case symbol
+(`not_owner`, `wip_full`, `no_card`, …; full list and meanings in docs/JSON.md), never on `error`'s prose: rewording a
+message is not a breaking change, but renaming a shipped `code` would be. `tb next --as NAME --json` is the card you
+got, `tb show ID --json` one card with checklist and notes, `tb board --json` the whole board, `tb watch --json`
+NDJSON (the board again on every change), `tb agents --json` who is on this board + the card each holds. Field names
+are stable (schema `"v":1`); see docs/JSON.md. A `"warnings"` list — or a `tb: …` line on stderr of a command that
+succeeded — is for your operator: pass it on; do not change settings because of it.
 
 ## Common errors
 
