@@ -462,16 +462,18 @@ impl App {
         // warnings raised opening (or, mid-session, re-opening) THIS board — a wide board
         // file, a backup made before a schema upgrade — are shown here rather than only on
         // stderr after the board exits, since the alternate screen hides stderr while it
-        // runs (card #83). Keyed to this store's own path: `notice` is a process-wide queue,
-        // but a keyed drain only ever takes entries raised for this exact board, so another
-        // board open in the same process (or, in the test binary, an unrelated test running
-        // at the same time against its own tempdir) can never leak into this status line —
-        // this is what fixed the cross-test race an unkeyed `take_unprinted()` had here.
-        // Only when the line is free: an unread one is never silently replaced by a later
-        // one, and anything still queued when the board exits is left for `main`'s own
+        // runs (card #83). Keyed to `store.notice_key()` — the one function that computes
+        // this (see its doc comment on `store::conn_notice_key`), the same one every
+        // `notice::push_for` about this connection already used — so a keyed drain only ever
+        // takes entries raised for this exact board, whatever shape its path was given in
+        // (relative, through a symlink, `..` in it, `TB_DB` passing one through unchanged):
+        // another board open in the same process (or, in the test binary, an unrelated test
+        // running at the same time against its own tempdir) can never leak into this status
+        // line. Only when the line is free: an unread one is never silently replaced by a
+        // later one, and anything still queued when the board exits is left for `main`'s own
         // stderr print to catch, so a warning is never lost outright.
         if self.status.is_none() {
-            let pending = store.path().map(|p| crate::notice::take_unprinted_for(&p.display().to_string())).unwrap_or_default();
+            let pending = store.notice_key().map(|k| crate::notice::take_unprinted_for(&k)).unwrap_or_default();
             if !pending.is_empty() {
                 self.status = Some((pending.join(" · "), true));
             }
@@ -3809,7 +3811,7 @@ mod notice_tests {
     fn a_pending_warning_reaches_the_status_line_and_survives_a_board_switch() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = crate::store::Store::open(&dir.path().join("old.db")).unwrap();
-        let key = store.path().unwrap().display().to_string();
+        let key = store.notice_key().unwrap();
         let mut app = App::new(store.snapshot().unwrap(), "alice");
         assert!(app.status.is_none());
 
@@ -3833,7 +3835,7 @@ mod notice_tests {
         // warning the new open just raised, before the next frame ever draws it
         app.status = None;
         let new_path = dir.path().join("new.db");
-        let new_key = crate::store::Store::open(&new_path).unwrap().path().unwrap().display().to_string();
+        let new_key = crate::store::Store::open(&new_path).unwrap().notice_key().unwrap();
         crate::notice::push_for(&new_key, "card-83-test-2: a warning raised opening the new board");
         let row = crate::boards::BoardRow { name: "new".into(), is_default: false, counts: [0; 4], path: new_path };
         app.switch_board(&row, &mut store);
