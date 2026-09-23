@@ -18,6 +18,26 @@ most, so a long column kept taking every extra card while a short one sat at two
   same height by construction (nothing is shared out there to make uneven), so they are
   unaffected.
 - A board that fits entirely renders exactly as it did before.
+### A board file now has a locked lifetime (#112)
+
+`Store::open` created a board file if it was not there, and most write paths took their own
+short transaction, so nothing stopped a process holding an open handle from being told the
+file had moved, or a process arriving just after a move from recreating the board it was meant
+to find gone. Measured while building `tb boards archive` (#80, not part of this change):
+`restore` racing a writer destroyed the restored cards in 55 of 55 rounds; `archive` racing
+short-lived writers lost 67 acknowledged writes at 8 racers and resurrected a zero-byte board
+in 30 of 100 rounds.
+- The `flock` helper built for the machine-local settings file is now shared
+  (`crate::lock`), with a SHARED mode alongside the existing EXCLUSIVE one.
+- `Store::open` takes the SHARED lock on a path-keyed lock file for as long as the `Store`
+  lives. Any future command that moves or replaces a board file takes the EXCLUSIVE lock
+  across the whole operation (`store::lock_for_move`), so it waits for every live
+  reader/writer and none can arrive mid-move; `store::link_into_place` places a file back by
+  hard-link-then-unlink, so it is refused rather than clobbering one a racing writer just
+  created. This PR adds the primitive only — no new command.
+- A board genuinely held open refuses a move (once one exists) with the new `board_busy`
+  code, naming the process to close where that can be determined. A killed holder leaves
+  nothing stale: the lock is the kernel's and dies with the process.
 
 ### Concurrent writers wait for the lock instead of failing instantly (#85)
 

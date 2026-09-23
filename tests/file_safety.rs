@@ -470,11 +470,15 @@ fn the_backup_is_reported_in_json_and_a_current_board_gets_none() {
     assert!(errs(&o).is_empty(), "{}", errs(&o));
     assert!(!out(&o).contains("warnings"));
     assert!(backups_of(&s.db()).is_empty());
-    let only: Vec<String> = std::fs::read_dir(s.db().parent().unwrap())
+    let mut only: Vec<String> = std::fs::read_dir(s.db().parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
         .collect();
-    assert_eq!(only, ["board.db"], "no stray files next to the board");
+    only.sort();
+    // `.board.db.lock`: the SHARED lock `Store::open` now holds for its lifetime (#112) — a
+    // sibling of every board, present the instant anything opens it, never a backup or a
+    // stray write. Nothing else belongs next to the board.
+    assert_eq!(only, [".board.db.lock", "board.db"], "no stray files next to the board");
 }
 
 #[cfg(unix)]
@@ -693,5 +697,9 @@ fn a_link_that_leads_nowhere_usable_is_refused_and_creates_nothing() {
     assert!(errs(&o).contains("is a symbolic link that never ends") && errs(&o).contains("fix the link"), "{}", errs(&o));
     let names: Vec<String> =
         std::fs::read_dir(d.join("loop")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
-    assert_eq!(names.len(), 2, "only the two links: {names:?}");
+    // `Store::open` takes its lock on the NAME given (`a.db`), before it ever tries to follow
+    // the chain, so `.a.db.lock` is expected here even though the open itself failed (#112);
+    // nothing else — a `.db`, a `.partial`, anything real — was created past the two links.
+    let real: Vec<&String> = names.iter().filter(|n| !n.ends_with(".lock")).collect();
+    assert_eq!(real.len(), 2, "only the two links: {names:?}");
 }

@@ -17,16 +17,18 @@
 //! - [`update`] — read, change, write back, under a lock (below). Keys the caller does not
 //!   touch keep their exact text, down to the digits of a number.
 //!
-//! **One writer at a time.** `update` holds an advisory lock (`flock`) on a sibling `.lock`
-//! file across read → change → write → rename, and RE-READS the file inside the lock: what a
-//! caller changed is applied to whatever the file says at that moment, so a write by someone
-//! else between the two is kept, not reverted. This matters beyond tidiness — a trust store
-//! lives here, and a silently reverted revocation fails OPEN. The lock is the KERNEL's, held
-//! by an open file, so it dies with the process: there is no stale lock to reap, and the
-//! `.lock` file's mere existence never blocks anyone. The wait is bounded; on timeout the
-//! command refuses and says what to look for. Where there is no `flock` (Windows) this
-//! compiles to no lock at all — the write is still atomic, but two writers at the same instant
-//! are last-writer-wins, as they were before.
+//! **One writer at a time.** `update` holds `crate::lock`'s advisory EXCLUSIVE lock on a
+//! sibling `.lock` file across read → change → write → rename, and RE-READS the file inside
+//! the lock: what a caller changed is applied to whatever the file says at that moment, so a
+//! write by someone else between the two is kept, not reverted. This matters beyond tidiness —
+//! a trust store lives here, and a silently reverted revocation fails OPEN. The lock is the
+//! KERNEL's, held by an open file, so it dies with the process: there is no stale lock to
+//! reap, and the `.lock` file's mere existence never blocks anyone. The wait is bounded; on
+//! timeout the command refuses and says what to look for. `crate::lock` is shared with
+//! `crate::store::Store::open`, which takes the SHARED half of the same mechanism for a
+//! board's own lifetime — see that module's doc comment for why one file now serves both.
+//! Where there is no `flock` (Windows) this compiles to no lock at all — the write is still
+//! atomic, but two writers at the same instant are last-writer-wins, as they were before.
 //!
 //! Writes are atomic (a temp file beside the real file, then a rename), the file is created
 //! private (mode 0600, its directory 0700 when tb has to create it), and a file that is not a
@@ -38,6 +40,7 @@
 //! file. A link into a directory that does not exist, and a chain that never ends, are
 //! refused: tb creates the settings file through a link, never directories.
 
+use crate::lock;
 use crate::store::{BoardError, Code, Result};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
@@ -130,7 +133,7 @@ fn update_at(settings: &Path, change: impl FnOnce(&mut Map<String, Value>)) -> R
         }
         create_private_dir(&dir).map_err(|e| cannot("create the directory for", &target, &dir, e))?;
     }
-    let _guard = lock::take(&lock_path(&target), LOCK_WAIT)?;
+    let _guard = lock_settings(&target, LOCK_WAIT)?;
     let fresh_raw = load_raw(&target)?;
     let mut out: Raw = fresh_raw.clone();
     for op in &ops {
@@ -302,11 +305,6 @@ fn parent_of(target: &Path) -> PathBuf {
     target.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn lock_path(target: &Path) -> PathBuf {
-    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("config.json");
-    parent_of(target).join(format!(".{name}.lock"))
-}
-
 fn cannot(what: &str, target: &Path, dir: &Path, e: std::io::Error) -> BoardError {
     BoardError(
         format!(
@@ -398,81 +396,25 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     b.create(dir)
 }
 
-/// One writer at a time, for as long as a process lives.
-///
-/// The lock is the kernel's (`flock`), taken on an open `.lock` file beside the settings. Two
-/// things follow, and both matter: it is released when the process ends however it ends, so a
-/// killed `tb` can never wedge the file; and the `.lock` file's EXISTENCE means nothing, so
-/// there is no stale lock to detect or reap. Only a process that is holding it right now
-/// blocks anyone.
-#[cfg(unix)]
-mod lock {
-    use super::{create_private_dir, Duration, Path};
-    use std::time::Instant;
-    use crate::store::{BoardError, Code, Result};
-    use std::os::unix::io::AsRawFd;
-
-    /// Holds the lock until it is dropped (or the process ends).
-    pub struct Guard(std::fs::File);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            // closing the file would release it anyway; this says so out loud
-            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-        }
-    }
-
-    pub fn take(path: &Path, wait: Duration) -> Result<Guard> {
-        let mut o = std::fs::OpenOptions::new();
-        o.read(true).write(true).create(true).truncate(false);
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
-        let file = o.open(path).map_err(|e| {
-            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-            let _ = create_private_dir(&dir);
-            BoardError(format!(
-                "cannot lock the settings file: {e} at {} — check that folder is writable, or point TB_CONFIG at another file",
-                path.display()
-            ), Code::IoError)
-        })?;
-        let start = Instant::now();
-        loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(Guard(file));
-            }
-            let e = std::io::Error::last_os_error();
-            if e.kind() != std::io::ErrorKind::WouldBlock {
-                return Err(BoardError(format!(
-                    "cannot lock the settings file: {e} at {} — point TB_CONFIG at a file on a normal filesystem",
-                    path.display()
-                ), Code::IoError));
-            }
-            if start.elapsed() >= wait {
-                return Err(BoardError(format!(
-                    "another tb has been writing the settings for {}s — wait for it to finish and try again (if nothing is running, a process is stuck holding {})",
-                    wait.as_secs(),
-                    path.display()
-                ), Code::IoError));
-            }
-            std::thread::sleep(Duration::from_millis(5 + (std::process::id() % 11) as u64));
-        }
-    }
-}
-
-/// Without `flock` there is no lock: the write is still atomic (a temp file and a rename), but
-/// two writers at the same instant are last-writer-wins, as they were before.
-#[cfg(not(unix))]
-mod lock {
-    use super::{Duration, Path};
-    use crate::store::Result;
-
-    pub struct Guard;
-
-    pub fn take(_path: &Path, _wait: Duration) -> Result<Guard> {
-        Ok(Guard)
-    }
+/// One writer at a time, for as long as a process lives: `crate::lock::take` on a `.lock` file
+/// beside the settings (`crate::lock::sibling`), EXCLUSIVE — the same mechanism `Store::open`
+/// now uses SHARED for a board's own lifetime (`crate::store`), lifted out of this file so the
+/// two never drift apart. It is released when the process ends however it ends, so a killed
+/// `tb` can never wedge the file; the `.lock` file's EXISTENCE means nothing, so there is no
+/// stale lock to detect or reap. Only a process holding it right now blocks anyone. Messages
+/// here stay settings-specific; `crate::lock` itself knows nothing about what a caller locks.
+fn lock_settings(path: &Path, wait: Duration) -> Result<lock::Guard> {
+    lock::take(&lock::sibling(path), lock::Mode::Exclusive, wait).map_err(|e| match e {
+        lock::Error::Io(e) => BoardError(format!(
+            "cannot lock the settings file: {e} at {} — check that folder is writable, or point TB_CONFIG at another file",
+            path.display()
+        ), Code::IoError),
+        lock::Error::Busy(_) => BoardError(format!(
+            "another tb has been writing the settings for {}s — wait for it to finish and try again (if nothing is running, a process is stuck holding {})",
+            wait.as_secs(),
+            path.display()
+        ), Code::IoError),
+    })
 }
 
 #[cfg(test)]
