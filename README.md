@@ -911,6 +911,14 @@ A board whose cards carry **no due dates**, and which sets none of these setting
 behaves exactly as it did before. Giving a card a due date is the opt-in: from then on it shows
 its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 
+### Long columns
+
+Each column draws at most ten cards at a time and counts the rest as `+N more` at its foot —
+and in the stacked views, where the four columns share one height, every column gets a fair
+share of the room before any column takes more. One long column can no longer squeeze the
+others out. Arrow keys still reach every card, and the count in a column header is always the
+real total, whatever is hidden.
+
 ## Layouts and themes
 
 Give Terminal Board any pane you like: half the screen, a third, or a small corner. It picks

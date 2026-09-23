@@ -130,6 +130,17 @@ deletes it. From the command line: `tb check 3 --add "balcony"`, `tb check 3 1` 
 DOING holds at most 3 cards by default. When it is full, finish or hand back a card first.
 Select DOING and press `+` / `-`, or run `tb config wip 4`.
 
+## When a column is long
+
+A column shows as many cards as it has room for, and at most ten at a time; the rest are
+counted at the bottom of the column as `+12 more`. Scrolling with the arrow keys walks through
+them all, and the number in the column header is always the real total.
+
+This also stops one long column taking the whole board. In the stacked views (`third-h`,
+`half-h`) the four columns share one height, and each gets a fair share of it before any
+column takes a second helping — so forty finished cards in DONE can no longer push TODO down
+to a single line.
+
 ## Boards
 
 Keep separate boards for separate things. `tb` opens `default`; any other name opens that
