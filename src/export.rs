@@ -221,11 +221,22 @@ fn json(store: &Store, out: &mut dyn Write) -> Result<()> {
 pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Result<()> {
     use crate::store::LogEvent;
     let tz = store.tz()?;
+    // the identity behind each event's `actor_id` (the trace: who, in which harness, model,
+    // role, session and machine) — read once per id, however many events share it
+    let mut known: std::collections::HashMap<i64, Option<crate::store::actors::Actor>> = std::collections::HashMap::new();
+    let mut identity = |id: Option<i64>| -> Option<crate::store::actors::Actor> {
+        let id = id?;
+        known.entry(id).or_insert_with(|| store.actor_by_id(id).ok().flatten()).clone()
+    };
     if json_out {
         wrote(out.write_all(b"[\n"))?;
         let mut first = true;
         store.for_each_log_event(since, &mut |e| {
-            let line = match &e {
+            let who = identity(match &e {
+                LogEvent::Card(e) => e.actor_id,
+                LogEvent::Board { actor_id, .. } => *actor_id,
+            });
+            let mut line = match &e {
                 LogEvent::Card(e) => serde_json::json!({
                     "v": contract::SCHEMA_VERSION,
                     "ts": e.ts,
@@ -245,6 +256,9 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
                     "text": text,
                 }),
             };
+            // additive: the whole identity inline, as `tb watch --events` carries it (a log
+            // is a flat list with no `actors[]` to look an id up in); null when none is known
+            line["identity"] = serde_json::to_value(&who).unwrap_or(serde_json::Value::Null);
             let text = serde_json::to_string(&crate::clean_json(&line)).unwrap_or_else(|_| "null".into());
             let r = out.write_all(if first { b"  " } else { b",\n  " }).and_then(|()| out.write_all(text.as_bytes()));
             first = false;
@@ -260,7 +274,14 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
         let (ts, id_col, actor, kind, tail) = match &e {
             LogEvent::Card(e) => {
                 let title = titles.get(&e.card_id).cloned().unwrap_or_default();
-                let detail = if e.text.is_empty() { String::new() } else { format!(": {}", e.text) };
+                let mut detail = if e.text.is_empty() { String::new() } else { format!(": {}", e.text) };
+                // a move into DONE carries the identity behind the name — the trace of who
+                // closed the card (store/verifier.rs); other events keep their one short line
+                if e.kind == "moved" && e.text.ends_with("-> done") {
+                    if let Some(a) = identity(e.actor_id) {
+                        detail.push_str(&format!(" (by {})", a.line()));
+                    }
+                }
                 (e.ts, format!("#{}", e.card_id), e.actor.as_str(), e.kind.as_str(), format!("{}{}", crate::plain::fit(&title, 28), detail))
             }
             LogEvent::Board { ts, actor, kind, text, .. } => (*ts, "board".to_string(), actor.as_str(), kind.as_str(), text.clone()),

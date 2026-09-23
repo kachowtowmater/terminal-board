@@ -113,9 +113,10 @@ fn author_is_the_owner_and_falls_back_to_the_mover_only_when_unowned() {
     s.move_to(id, "review", "github").unwrap();
     assert_eq!(s.author(id).unwrap(), None);
     assert_eq!(s.done(id, "lead").unwrap().column, "done");
-    // todo -> done has no author to protect
+    // todo -> done has no author to protect — and is refused anyway: nothing reaches done
+    // except from review
     let id = s.add("e", "", &[], "lead").unwrap();
-    assert_eq!(s.done(id, "lead").unwrap().column, "done");
+    assert_eq!(s.done(id, "lead").unwrap_err().1.to_string(), "not_from_review");
 }
 
 /// A card bot-1 holds, force-moved into REVIEW by someone who is not its owner. This is the
@@ -272,12 +273,18 @@ fn case5_review_to_todo_to_done_is_still_refused() {
     assert_eq!(s.card(id).unwrap().owner, None);
     // ... but bot-1 is still the recorded author — the "-> review" event survives the move
     assert_eq!(s.author(id).unwrap().as_deref(), Some("bot-1"));
+    // todo -> done is now refused for everyone (nothing reaches done except from review), so
+    // the laundering route is closed one step earlier; its forced form still meets self-approval
     let r = s.done(id, "bot-1");
     assert!(r.is_err(), "todo -> done must not launder self-approval: {r:?}");
-    assert!(r.unwrap_err().to_string().contains(REFUSED));
+    assert_eq!(r.unwrap_err().1.to_string(), "not_from_review");
     assert_eq!(s.card(id).unwrap().column, "todo", "the card did not reach done");
     let r = s.move_to(id, "done", "bot-1");
     assert!(r.is_err(), "the same rule on the move path: {r:?}");
+    assert_eq!(r.unwrap_err().1.to_string(), "not_from_review");
+    // back through review, bot-1 is still its author and still refused
+    s.move_to(id, "review", "bot-1").unwrap();
+    let r = s.done(id, "bot-1");
     assert!(r.unwrap_err().to_string().contains(REFUSED));
     // a genuinely different agent still closes it fine, no --force needed
     assert_eq!(s.done(id, "bot-2").unwrap().column, "done");
@@ -448,7 +455,8 @@ fn tui_asks_the_author_before_approving_own_work() {
     app.handle_key(key(KeyCode::Char('d')), &mut s);
     let Mode::Confirm { action, prompt } = app.mode.clone() else { panic!("no confirm: {:?}", app.mode) };
     assert_eq!(action, Confirm::ApproveOwn(id));
-    assert_eq!(prompt, "this is your work — approve it yourself? y/n");
+    // the prompt names every rule `y` gets past (here only the one)
+    assert_eq!(prompt, "this is your work — close it anyway, skipping: never approve your own work? y/n (logged)");
     app.handle_key(key(KeyCode::Char('n')), &mut s);
     assert_eq!(s.card(id).unwrap().column, "review");
     assert!(!kinds(&s, id).contains(&"force".to_string()));

@@ -63,7 +63,7 @@ fn setup() -> (tempfile::TempDir, Store, App) {
     for (t, col, owner) in cards {
         let id = s.add(t, "", &[], "alice").unwrap();
         if col != "todo" {
-            s.move_to(id, col, owner.unwrap_or("alice")).unwrap();
+            if col == "done" { s.move_to_forced(id, col, owner.unwrap_or("alice")) } else { s.move_to(id, col, owner.unwrap_or("alice")) }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
         }
     }
     s.set_github(Some("acme/widgets")).unwrap();
@@ -643,7 +643,7 @@ fn focus_view_picks_my_doing_card_then_top_todo_then_selection() {
     assert!(screen.contains("write install guide") && screen.contains("o TODO"), "{screen}");
     // no TODO and nothing of mine: the selection
     for id in 1..=3 {
-        s.move_to(id, "done", "alice").unwrap();
+        s.move_to_forced(id, "done", "alice").unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     }
     app.reload(&s);
     app.col = 2;
@@ -812,7 +812,7 @@ fn setup_live() -> (tempfile::TempDir, Store, App) {
     for (t, col, owner) in cards {
         let id = s.add(t, "", &[], "alice").unwrap();
         if col != "todo" {
-            s.move_to(id, col, owner.unwrap_or("alice")).unwrap();
+            if col == "done" { s.move_to_forced(id, col, owner.unwrap_or("alice")) } else { s.move_to(id, col, owner.unwrap_or("alice")) }.unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
         }
     }
     s.set_github(Some("acme/widgets")).unwrap();

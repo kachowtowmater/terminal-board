@@ -594,9 +594,12 @@ pub struct AutoMove {
 }
 
 /// Forward-only moves for cards with gh_ref: an open linked PR -> review (from todo/doing);
-/// a merged PR or a closed issue -> done. Never backwards. A card a reviewer sent back
+/// a merged PR or a closed issue -> review too, NEVER done — closing on GitHub is evidence for
+/// a verifier, not a verdict (store/verifier.rs: only a verifier moves REVIEW to DONE). A card
+/// already in review stays where it is. Never backwards. A card a reviewer sent back
 /// (`returned` = card id -> time of its last return) stays in DOING until its PR is
-/// updated after that return.
+/// updated after that return, and one whose PR merged or issue closed stays there for its
+/// owner to hand back with `tb done`.
 pub fn plan_moves(
     s: &GhSnapshot,
     cards: &[crate::store::Card],
@@ -608,12 +611,17 @@ pub fn plan_moves(
         let Some(n) = c.gh_ref else { continue };
         let mv = |to: &str, text: String| AutoMove { card_id: c.id, gh_ref: n, from: c.column.clone(), to: to.into(), text };
         if let Some(st) = states.get(&n) {
-            if st.pr && st.merged {
-                out.push(mv("done", format!("PR gh#{n} merged → done")));
-                continue;
-            }
-            if !st.pr && st.closed {
-                out.push(mv("done", format!("issue gh#{n} closed → done")));
+            let what = if st.pr && st.merged {
+                Some(format!("PR gh#{n} merged"))
+            } else if !st.pr && st.closed {
+                Some(format!("issue gh#{n} closed"))
+            } else {
+                None
+            };
+            if let Some(what) = what {
+                if c.column != "review" && !(c.column == "doing" && returned.contains_key(&c.id)) {
+                    out.push(mv("review", format!("{what} → review (a verifier moves it to done)")));
+                }
                 continue;
             }
         }

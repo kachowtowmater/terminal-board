@@ -312,7 +312,7 @@ fn doing_stays_in_position_order_and_done_newest_first() {
     assert_eq!(b.column("doing"), [3, 7, 1]);
     // DONE: newest first, whatever the dates (the clock moves a minute per card)
     for (id, at) in [("2", "2026-10-01T12:01:00Z"), ("5", "2026-10-01T12:02:00Z"), ("4", "2026-10-01T12:03:00Z")] {
-        let o = b.cmd("UTC", at, &["move", id, "done"]).output().unwrap();
+        let o = b.cmd("UTC", at, &["move", id, "done", "--force"]).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     }
     assert_eq!(b.column("done"), [4, 5, 2], "a finished card's date orders nothing");

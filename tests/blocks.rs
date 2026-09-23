@@ -385,7 +385,7 @@ fn the_waiting_lane_is_display_only_and_never_double_counts() {
     assert_eq!(b.json(&["next", "--json", "--as", "carol"])["card"]["id"], 2, "tb next is unaffected");
     assert_eq!(b.column(1), "todo", "the card never left its column");
     // a done card is never in the lane, even blocked before it finished
-    b.ok(&["move", "3", "done"]);
+    b.ok(&["move", "3", "done", "--force"]); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     b.ok(&["block", "3", "stale", "--as", "alice"]);
     assert_eq!(b.ok(&["board"]).matches("WAITING (2)").count(), 1, "the done card is not in the lane");
     b.ok(&["config", "waiting-lane", "hidden"]);
