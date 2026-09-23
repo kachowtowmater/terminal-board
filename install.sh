@@ -36,7 +36,7 @@ Terminal Board installer
 Usage: install.sh [options]      (curl -fsSL …/install.sh | bash -s -- [options])
 
   --prefix DIR        install tb into DIR (default ~/.local/bin)
-  --version vX.Y.Z    install this release (default: the latest)
+  --version vX.Y.Z    install this release (default: the latest; the v is optional)
   --binary PATH       install this tb binary instead of downloading one
   --no-build          never build from source (fail if no release binary fits)
   --no-setup          do not run 'tb setup' afterwards
@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
         --no-setup) NO_SETUP=1 ;;
         --no-build) NO_BUILD=1 ;;
         --prefix) PREFIX="${2:?--prefix needs a directory}"; shift ;;
-        --version) VERSION="${2:?--version needs a tag like v1.0.0}"; shift ;;
+        --version) VERSION="${2:?--version needs a tag like v3.0.0}"; VERSION="v${VERSION#v}"; shift ;;
         --binary) BINARY="${2:?--binary needs a path}"; shift ;;
         --github) SETUP_ARGS+=(--github "${2:?--github needs OWNER/REPO}"); shift ;;
         --agents-md) AGENTS_MD="${2:?--agents-md needs a path}"; SETUP_ARGS+=(--agents-md "$2"); shift ;;
@@ -139,6 +139,11 @@ uninstall() {
         done <"$STATE_FILE"
     fi
     if [ -n "$AGENTS_MD" ] && [ "$DRY" = 0 ]; then strip_block "$AGENTS_MD"; note "removed the snippet block from $AGENTS_MD"; fi
+    for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
+        if [ -f "$f" ] && grep -qxF "# Terminal Board" "$f"; then
+            note "left the PATH line in $f (under '# Terminal Board'); remove it by hand if you like"
+        fi
+    done
     if [ -d "$STATE_DIR/boards" ]; then
         if ask "Also delete your boards in $STATE_DIR/boards? This cannot be undone." s; then
             run rm -rf "$STATE_DIR"
@@ -147,6 +152,8 @@ uninstall() {
             note "kept your boards in $STATE_DIR/boards"
             run rm -f "$STATE_FILE"
         fi
+    elif [ -f "$STATE_FILE" ]; then
+        run rm -f "$STATE_FILE"
     fi
     say "Uninstalled."
 }

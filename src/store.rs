@@ -1516,6 +1516,13 @@ impl Store {
         Ok(v.as_deref() != Some("hidden"))
     }
 
+    /// The panel's setting if one was ever made (`None` = never set, so the default applies).
+    pub fn panel_choice(&self, key: &str) -> Result<Option<bool>> {
+        let v: Option<String> =
+            self.conn.query_row("SELECT value FROM config WHERE key=?", [key], |r| r.get(0)).optional()?;
+        Ok(v.map(|v| v != "hidden"))
+    }
+
     pub fn set_panel(&self, key: &str, value: &str) -> Result<()> {
         let v = value.trim().to_ascii_lowercase();
         let v = match v.as_str() {

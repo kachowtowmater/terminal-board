@@ -254,6 +254,7 @@ impl Wizard {
 
         step(1, "Board");
         let path = boards::path_for(board);
+        let existed = path.exists();
         let store = if dry {
             if path.exists() {
                 Some(Store::open(&path)?.named(board))
@@ -264,7 +265,8 @@ impl Wizard {
             Some(open(board)?)
         };
         note(&format!("board '{board}' ({})", path.display()));
-        self.did(format!("board '{board}' ready"), format!("Would create the board '{board}'"));
+        let would = if existed { format!("Would use the board '{board}' (it exists)") } else { format!("Would create the board '{board}'") };
+        self.did(format!("board '{board}' ready"), would);
 
         step(2, "GitHub");
         self.github(store.as_ref())?;
@@ -272,9 +274,15 @@ impl Wizard {
         step(3, "AGENTS panel");
         let herdr = crate::herdr::herdr_enabled();
         note(if herdr { "herdr found" } else { "herdr not found (optional: it powers the AGENTS panel)" });
+        // a board that already chose keeps its choice as the default, so re-running setup
+        // (or upgrading with `install.sh --yes`) never flips a panel the person had shown
+        let chosen = match &store {
+            Some(s) => s.panel_choice("agents-panel")?,
+            None => None,
+        };
         let show = match self.o.agents {
             Some(v) => v,
-            None => self.p.ask("Show the AGENTS panel (a live view of your herdr agents)?", herdr && !self.o.yes),
+            None => self.p.ask("Show the AGENTS panel (a live view of your herdr agents)?", chosen.unwrap_or(herdr && !self.o.yes)),
         };
         if let Some(s) = &store {
             if !dry {
