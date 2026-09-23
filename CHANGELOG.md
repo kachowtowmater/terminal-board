@@ -15,6 +15,51 @@
   flag) now names `omp` as the harness in `Identity::resolve`, the same way Claude Code names
   itself. omp exports no session id or model via the environment today, so those stay unknown
   until it does (#90).
+### `a` can set a due date without dropping to the CLI (#104)
+
+Split out of #77: the `e` form gained a due field, but `a` stayed a one-line title prompt, so
+a card could only get a date by leaving the board. `a` now asks a second, optional question
+after the title — the smallest change that still gives full parity with `tb add --due` / the
+`e` form, and none for someone who never wants a date.
+
+- Enter on the title moves to a `due (YYYY-MM-DD, empty for none):` prompt; enter there with
+  nothing typed creates the card with no date (unchanged from before), a real date creates it
+  with that date, and a bad one refuses in the exact words `tb add --due` and the `e` form
+  already use (`DueDate::parse`) — the prompt stays open with what was typed so it can be
+  fixed. Esc at this step cancels the whole add, title included, matching esc everywhere else
+  in this app; it is not a way to skip only the date (enter on an empty prompt is).
+- Nothing is written until the date is checked: a refused date leaves no card and no title
+  behind, the same guarantee the `e` form gives.
+- One footer line, not a new floating form — `NO layout change`, and nothing here can drop a
+  field the way #107 could, because there is no field to drop.
+
+### The edit form's "field not shown" notice is now shown at every height (#107)
+
+Found reviewing #125: `src/tui.rs` drew the "X not shown" notice for a pane too short for
+every field only `if !hidden.is_empty() && used < pad.height` — at exactly the heights where
+the fields shown already fill the pad to its last row (h=8 with one field, h=12 with two)
+`used == pad.height`, there is no free row, and the notice silently did not draw. The existing
+test only swept h=14, the same single-height gap that let an earlier crash through.
+
+- The notice now takes the last row on screen (over the bottom border of the last field's box)
+  when there is no free row below it, instead of being skipped — the same trade the card
+  column's own `+N more` hint already makes when it runs out of a dedicated row.
+- `a_short_pane_drops_fields_and_says_so` now sweeps every height from too-short-to-draw
+  through everything-fits (not one value), asserting the notice names exactly what is missing
+  at each one.
+
+### TODO overflow count verified exact after #131/#147 (#108)
+
+Reported by the board owner: a 12-card TODO column said `+12 more` at a near-full-screen
+size, and growing the window did not change it — more hidden cards than the column could
+possibly be hiding. Reproduced against current `main`: it no longer happens. `card_box_heights`
+/ `column_height` (landed for #131, the round-robin growth of #147) already give a column the
+height it actually has rather than a stale or conservative estimate, and `draw_boxed`'s own
+`+N more` hint counts exactly what it did not draw.
+- Two new tests pin this rather than leave it to memory: the hint always equals `12 -
+  (titles actually drawn)` at half-h, third-h and third-v sizes, it is never the full 12, and
+  it shrinks (never holds still or grows) as a pane gets taller, down to the intentional
+  `MAX_VISIBLE_CARDS` floor of "+2 more" — not to zero, which is a cap by design, not a bug.
 
 ### `tb boards archive` / `restore`: retire a board without moving files by hand (#80)
 

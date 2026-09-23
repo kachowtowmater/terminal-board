@@ -263,6 +263,7 @@ fn keys_add_move_note_popup() {
         app.handle_key(key(KeyCode::Char(c)), &mut s);
     }
     app.handle_key(key(KeyCode::Enter), &mut s);
+    app.handle_key(key(KeyCode::Enter), &mut s); // due-date step (card #104), left empty
     let c = s.card(1).unwrap();
     assert_eq!((c.tag.as_deref(), c.title.as_str()), (Some("admin"), "renew domain"));
     app.handle_key(key(KeyCode::Char('>')), &mut s);

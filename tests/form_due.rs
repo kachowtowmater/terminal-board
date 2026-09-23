@@ -274,6 +274,35 @@ fn a_short_pane_drops_fields_and_says_so() {
     // one row taller than the whole form: everything, and no notice
     let screen = render(&app, 80, 20);
     assert!(screen.contains("Description") && !screen.contains("not shown"), "{screen}");
+
+    // card #107: the notice is guarded by `used < pad.height`, so at exactly the heights
+    // where the shown fields fill the pad with no row to spare (h=8, pad=4, one field; h=12,
+    // pad=8, two fields) a hidden field got no notice at all. This one height (14) missed
+    // that gap, so the sweep now covers every height from "too short to draw at all" through
+    // "everything fits" — whatever is missing on screen must be named on screen, always.
+    for h in 4u16..=30 {
+        let (_d, _s, app) = open_form(Some("2026-10-09"));
+        let screen = render(&app, 80, h);
+        if !screen.contains("Edit #") {
+            continue; // too short to draw the form at all (see the width/height guard above)
+        }
+        let mut hidden = Vec::new();
+        if !screen.contains("Title") {
+            hidden.push("title");
+        }
+        if !screen.contains("Due  (YYYY-MM-DD") {
+            hidden.push("due");
+        }
+        if !screen.contains("Description") {
+            hidden.push("description");
+        }
+        if hidden.is_empty() {
+            assert!(!screen.contains("not shown"), "h={h}: nothing is hidden but a notice is shown:\n{screen}");
+        } else {
+            let want = format!("{} not shown", hidden.join(" and "));
+            assert!(screen.contains(&want), "h={h}: {} hidden but the notice does not say so:\n{screen}", hidden.join(" and "));
+        }
+    }
 }
 
 /// A card with no due date renders exactly as it did: the field is in the form, which no

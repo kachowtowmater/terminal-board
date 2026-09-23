@@ -84,6 +84,11 @@ const HERDR_EVERY: Duration = Duration::from_secs(5);
 pub enum Mode {
     Normal,
     Add(String),
+    /// Second step of `a`: the title is settled, now asking for an optional due date — the
+    /// same second-prompt shape `n` (note) and the review send-back already use, so a card
+    /// can get a date without leaving the board (card #104). `title` is carried through
+    /// unwritten until the date is checked: nothing is created if it is refused.
+    AddDue { title: String, buf: String },
     Note { id: i64, buf: String, from_popup: bool },
     /// Sending a REVIEW card back to DOING: the reason being typed.
     SendBack { id: i64, buf: String },
@@ -503,13 +508,12 @@ impl App {
             Mode::Add(mut buf) => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
-                    self.mode = Mode::Normal;
-                    if !buf.trim().is_empty() {
-                        let r = store.add(&buf, "", &[], &actor);
-                        if let Some(id) = self.report(r, |id| format!("added #{id}")) {
-                            self.reload(store);
-                            self.focus_card(id);
-                        }
+                    if buf.trim().is_empty() {
+                        self.mode = Mode::Normal;
+                    } else {
+                        // nothing is written yet — the card is only created once the due
+                        // date (if any) has been checked, in `Mode::AddDue` below
+                        self.mode = Mode::AddDue { title: buf, buf: String::new() };
                     }
                 }
                 KeyCode::Backspace => {
@@ -519,6 +523,47 @@ impl App {
                 KeyCode::Char(c) => {
                     buf.push(c);
                     self.mode = Mode::Add(buf);
+                }
+                _ => {}
+            },
+            // the due date, checked before anything is written and in the same words
+            // `tb add --due` / the `e` form use, so all three refuse alike (card #104)
+            Mode::AddDue { title, mut buf } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let typed = buf.trim();
+                    let raw = if typed.is_empty() { crate::store::due::NONE.to_string() } else { typed.to_string() };
+                    match crate::store::due::DueDate::parse(&raw, "tb add \"tag: title\" --due 2026-10-09") {
+                        Ok(date) => {
+                            self.mode = Mode::Normal;
+                            let r = store.add(&title, "", &[], &actor);
+                            if let Some(id) = self.report(r, |id| match &date {
+                                Some(d) => format!("added #{id}, due {}", d.as_str()),
+                                None => format!("added #{id}"),
+                            }) {
+                                if let Some(d) = &date {
+                                    let dr = store.set_due(id, Some(d), &actor).map(|_| ());
+                                    self.report(dr, |()| format!("added #{id}, due {}", d.as_str()));
+                                }
+                                self.reload(store);
+                                self.focus_card(id);
+                            }
+                        }
+                        Err(e) => {
+                            // refused, exactly as `tb add --due` would: nothing is created,
+                            // the typed date stays on screen to fix
+                            self.status = Some((e.to_string(), true));
+                            self.mode = Mode::AddDue { title, buf };
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    self.mode = Mode::AddDue { title, buf };
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    self.mode = Mode::AddDue { title, buf };
                 }
                 _ => {}
             },
@@ -2605,7 +2650,14 @@ fn footer(app: &App, width: u16) -> Line<'static> {
         Mode::Add(buf) => Line::from(vec![
             Span::styled(" add: ", key),
             Span::raw(format!("{buf}_")),
-            Span::styled("   enter save  esc cancel  (tip: 'admin: renew domain')", dim()),
+            Span::styled("   enter: due date  esc cancel  (tip: 'admin: renew domain')", dim()),
+        ]),
+        Mode::AddDue { title, buf } => Line::from(vec![
+            Span::styled(" due for ", key),
+            Span::styled(format!("\"{}\"", fit(title, 24)), bold()),
+            Span::styled(" (YYYY-MM-DD, empty for none): ", key),
+            Span::raw(format!("{buf}_")),
+            Span::styled("   enter save  esc cancel", dim()),
         ]),
         Mode::AddCheck { id, buf } => Line::from(vec![
             Span::styled(format!(" add check #{id}: "), key),
@@ -3194,9 +3246,20 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
         .map(|(_, n)| *n)
         .collect();
     let used = shown.len() as u16 * FORM_ROWS_PER_FIELD;
-    if !hidden.is_empty() && used < pad.height {
+    // a dropped field is never silent, at ANY height: when there is a free row below the
+    // last field, the notice takes it (unchanged from before); when there is not — every
+    // field slot is already at its own minimum, so there is no spare row to reserve without
+    // shrinking a box below the 3 rows a border+text+border needs — the notice instead takes
+    // the LAST row on screen, over the bottom border of the last field shown. That is the
+    // same trade the card column already makes for its own `+N more` hint (`draw_boxed`):
+    // one row of a box's border is a smaller loss than a field nobody is told about (card
+    // #107 — `used < pad.height` skipped the notice at exactly the heights, 8 and 12, where
+    // `used == pad.height` and no free row exists; the sole existing test only checked h=14,
+    // where a free row happens to exist, so the gap went uncaught).
+    if !hidden.is_empty() {
         let text = format!("{} not shown — make the pane taller (tab still reaches it)", hidden.join(" and "));
-        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + used, height: 1, ..pad });
+        let y = used.min(pad.height.saturating_sub(1));
+        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + y, height: 1, ..pad });
     }
 }
 
@@ -3211,7 +3274,7 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("q", "quit"),
     ]),
     ("Cards", &[
-        ("a", "add a card ('tag: title')"),
+        ("a", "add a card ('tag: title'), then an optional due date"),
         ("e", "edit title and description"),
         ("x", "delete (asks y/n)"),
         ("enter", "open the card"),
