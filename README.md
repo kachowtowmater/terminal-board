@@ -288,8 +288,8 @@ tb take 2
 tb note 2 "kitchen done"
 tb check 2 1
 tb done 2
-tb next --review --as bob
-tb done 2 --as bob
+TB_ROLE=verifier tb next --review --as bob
+TB_ROLE=verifier tb done 2 --as bob
 tb
 ```
 
@@ -574,7 +574,7 @@ tb check 3 --rm 1
 tb block 1 "#3"
 tb block 1 --clear
 tb move 3 review
-tb done 3 --as bob
+TB_ROLE=verifier tb done 3 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
@@ -930,7 +930,7 @@ key and the GitHub sync all stop at REVIEW.
 <!-- no-test -->
 ```sh
 TB_ROLE=verifier tb next --review --as rv-1   # a verifier claims the top REVIEW card
-tb done 7 --as rv-1                            # ... and closes it; the move records the whole identity
+TB_ROLE=verifier tb done 7 --as rv-1           # ... and closes it; the move records the whole identity
 tb config verifiers rv-1,rv-2                  # a person names verifiers on the board
 tb config verifier-only off                    # a person turns the verifier rule off for this board
 ```
@@ -987,7 +987,7 @@ tb evidence show 1
 tb evidence config done-needs-link verdict
 tb evidence take 1
 tb evidence done 1
-tb evidence done 1 --as bob
+TB_ROLE=verifier tb evidence done 1 --as bob
 tb evidence config done-needs-link --off
 ```
 
@@ -1075,7 +1075,7 @@ tb office config max-rounds 5
 tb office move 1 doing "add the rollback step"        # round 2 — shows r2
 tb office done 1 --as anna                             # doing -> review; column_since resets
 tb office note 1 "checked the rollback step, looks right"
-tb office done 1                                       # closes: a note was written this stay
+TB_ROLE=verifier tb office done 1                      # closes: a note was written this stay
 ```
 
 **`tb config done-needs-note on`** refuses to move a card into DONE until somebody has written

@@ -326,10 +326,7 @@ impl Wizard {
         let target = match (&self.o.agents_md, self.o.agents) {
             (Some(p), _) => Some(p.clone()),
             (None, Some(false)) => None,
-            (None, _) => {
-                let t = self.p.text("Add the agent snippet to which AGENTS.md / CLAUDE.md? Path (enter = skip):");
-                (!t.is_empty()).then(|| expand(&t))
-            }
+            (None, _) => self.snippet_path(),
         };
         match target {
             Some(t) => {
@@ -349,6 +346,21 @@ impl Wizard {
         }
         self.summary();
         Ok(())
+    }
+
+    /// The snippet file, asked as a path. A yes/no answer is not a path: `n`/`no`/`s`/`skip`
+    /// skip the step like enter does, and `y`/`yes` asks again with an example (there is no
+    /// default file to say yes to), so neither ever becomes a file named `./y` or `./no`.
+    fn snippet_path(&mut self) -> Option<PathBuf> {
+        for _ in 0..3 {
+            let t = self.p.text("Add the agent snippet to which AGENTS.md / CLAUDE.md? Path (enter = skip):");
+            match t.to_ascii_lowercase().as_str() {
+                "" | "n" | "no" | "s" | "skip" => return None,
+                "y" | "yes" => note("That asks for a path: type the file to add it to, e.g. ./AGENTS.md or ~/CLAUDE.md, or press enter to skip."),
+                _ => return Some(expand(&t)),
+            }
+        }
+        None
     }
 
     fn github(&mut self, store: Option<&Store>) -> Result<()> {

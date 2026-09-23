@@ -117,7 +117,8 @@ Each item is one line here and has a full section in [UPGRADING.md](https://gith
 - **Install and setup:** `install.sh --version 3.0.0` works with or without the `v`.
   Re-running `tb setup --yes`, or upgrading with `install.sh --yes`, keeps a board's AGENTS
   panel setting. `tb setup --dry-run` names an existing board rather than offering to create
-  it. `install.sh --uninstall` points out the PATH line it leaves behind.
+  it. `install.sh --uninstall` points out the PATH line it leaves behind. A `y` at the snippet
+  path prompt is no longer taken as a file name.
 
 The sections below give each change in full.
 
@@ -134,7 +135,45 @@ The sections below give each change in full.
 - `install.sh --uninstall` names the `PATH` line it added to your shell's startup file and
   leaves it where it is, so it removes nothing it did not put there. It also removes its own
   record of agent snippets when no board was ever made.
+- At the setup wizard's snippet prompt, which asks for a path, a yes/no answer is no longer
+  taken as a file name. Before, typing `y` wrote the snippet into a new file called `./y`.
+  Now `n`, `no`, `s` or `skip` skip the step, the same as enter. `y` or `yes` asks again
+  with an example path, because there is no default file to say yes to.
 - `tests/install_test.sh` has a scenario for each of these.
+
+### Shared boards: one card per agent, known names, and a read-only mode (#130)
+
+- **`tb config wip-per-owner N`**: nobody may hold more than `N` DOING cards at once. `0`, the
+  default, turns it off. It is a second limit beside the board-wide `wip`, and both must
+  pass: `wip` asks whether the board is full, `wip-per-owner` whether one person is. Each
+  discounts blocked cards under `wip-counts-blocked no`, capped by its own number. The
+  refusal (`you already hold 1 of 1 (#3 …)`) names the cards you hold.
+- **`tb config actors NAME,NAME,…`** (`--off` clears it): a write whose `--as` is not on the
+  list is refused, so a typo cannot invent an agent. Names are matched trimmed and without
+  case. Reads and `tb config` are never refused, so a list can always be corrected. A list
+  that leaves out the person setting it is refused, and the `github` sync name is always
+  allowed. Cards already held by a name that is not on the list are left untouched.
+- **`TB_READONLY=1` or `--read-only`** refuses every write (`read-only mode: 'tb add' would
+  change the board`, exit 1), enforced at the database connection as well as at the command.
+  Reads are unaffected. A board made by an older tb cannot be upgraded in this mode, and it
+  says so.
+- Both settings appear in `tb config` only once they are set, so a board that uses neither
+  lists exactly what it always did.
+
+### Warnings in the full-screen board's status line, exact owner styling, hidden idle holders (#143)
+
+- **Warnings are visible on the full-screen board.** A warning (a board file other users can
+  read, a backup made while upgrading) used to be printed to stderr just before the board took
+  over the screen, where nobody saw it. It now appears in the board's status line, where `esc`
+  clears it. A later warning never silently replaces one that has not been read, and anything
+  still unread when the board exits is printed to stderr. Switching boards with `B` no longer
+  hides a warning the new board just raised. No layout change.
+- **A card's owner is styled only from an exact name match.** The owner text on a card took
+  its live colour from a looser herdr matcher (a pane label or a name's first word), so a card
+  could look held by a near-miss pane. It now uses the same exact match as the AGENTS panel.
+- **An idle holder cut off the AGENTS panel is still named.** When the panel is too short and
+  a hidden row is an idle agent still holding a card, the closing `+N more` line says how many
+  there are and turns red, as that row would have. Nothing changes when no hidden row is idle.
 
 ### Only a verifier moves REVIEW to DONE, enforced by tb (breaking — see UPGRADING.md)
 

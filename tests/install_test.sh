@@ -201,6 +201,18 @@ check "skip explained" 'grep -q "Claude Code not detected" "$SCRATCH/out"'
 check "one skip line, no ~/.claude created" '[ "$(grep -c "^ *- Claude Code skill" "$SCRATCH/out")" = 1 ] && [ ! -e "$HOME/.claude" ]'
 check "next answer reaches the snippet prompt" 'grep -q "terminal-board:start" "$HOME/NOTES.md"'
 
+echo "(k3) a yes/no answer at the snippet path prompt is never a file name"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+(cd "$HOME" && TB_TTY=$(answers '\n\ny\n~/A.md\n') "$TB" setup) >"$SCRATCH/out" 2>&1
+check "y is re-asked, with an example" 'grep -q "That asks for a path" "$SCRATCH/out"'
+check "no file named y" '[ ! -e "$HOME/y" ]'
+check "the path typed next is used" 'grep -q "terminal-board:start" "$HOME/A.md"'
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+(cd "$HOME" && TB_TTY=$(answers '\n\nno\n') "$TB" setup) >"$SCRATCH/out" 2>&1
+check "no skips the step" '[ ! -e "$HOME/no" ] && grep -q "agent snippet (.tb setup --agents-md PATH. later)" "$SCRATCH/out"'
+
 echo "(l) interactive: github yes, pick #1, skill yes, snippet path"
 new_home
 fake_gh "$FAKE" ok

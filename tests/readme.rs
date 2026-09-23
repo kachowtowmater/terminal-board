@@ -76,11 +76,25 @@ fn run_doc_mode(md: &str, name: &str, boards_mode: bool) -> usize {
             continue;
         }
         let cmd = t.strip_prefix("$ ").unwrap_or(t);
+        // `TB_ROLE=verifier tb done 1`: leading NAME=VALUE words are the command's environment,
+        // as a shell reads them, so a doc can show a verifier's command exactly as one runs it
+        let mut envs: Vec<(&str, &str)> = Vec::new();
+        let mut cmd = cmd;
+        while let Some((word, rest)) = cmd.split_once(' ') {
+            match word.split_once('=') {
+                Some((k, v)) if !k.is_empty() && k.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') => {
+                    envs.push((k, v));
+                    cmd = rest.trim_start();
+                }
+                _ => break,
+            }
+        }
         if !(cmd == "tb" || cmd.starts_with("tb ")) {
             continue;
         }
         let rest = cmd.strip_prefix("tb").unwrap();
         let mut c = Command::new("sh");
+        c.envs(envs.iter().copied());
         c.arg("-c").arg(format!("\"$TB_BIN\"{rest}"));
         if boards_mode {
             // boards-dir mode: every board is its own file under this temp HOME
