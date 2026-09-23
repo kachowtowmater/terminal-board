@@ -516,6 +516,9 @@ tb --version
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
 | `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
+| `tb config hook NAME` / `hook-after NAME` / `--off` | ask this machine to gate (or, after the fact, hear about) every move — see [Hooks](#hooks-this-machines-own-gate-on-a-move) |
+| `tb trust NAME -- COMMAND ARGS…` / `--sha256 HEX` / `--timeout SECS` / `--off` | record, confirm, re-time or forget what NAME runs on this machine; `tb trust` alone lists them |
+| `tb move\|done\|take\|next\|drop … --break-glass "why"` | skip this board's pre-change hook, logged on the card and the board |
 | `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
@@ -867,6 +870,71 @@ against a repository and never fetches a URL.**
 with that label, the same honest-mistake shape `done-by` already has: names and labels are
 **self-asserted**, `--force` gets past it and is logged, and the GitHub sync is exempt (a
 merged PR closing its card is already evidence, not a person). `--off` turns it off again.
+
+### Hooks: this machine's own gate on a move
+
+A board is a file people copy, mail and check into a repository — a command written inside it
+would be code that runs when someone else opens that file. So a board can only ASK for a gate
+by NAME; what that name runs, and whether this particular machine is willing to run it, lives
+in `~/.config/terminal-board/config.json` (override with `TB_CONFIG`) and is decided fresh on
+every machine that opens the board.
+
+<!-- no-test -->
+```sh
+tb config hook approve
+tb trust approve -- /usr/local/bin/check-move.sh
+tb trust approve --sha256 <the hash tb just printed>
+tb trust
+tb take 1
+tb take 1 --break-glass "approve is down, ops said go"
+tb config hook --off
+```
+
+`tb config hook NAME` (pre-change) and `tb config hook-after NAME` (post-change) name the
+event; `tb trust NAME -- COMMAND ARGS…` records what NAME runs on THIS machine and prints the
+file it resolved to and that file's sha256 — the hook stays **untrusted** until
+`tb trust NAME --sha256 HEX` echoes that hash back, so nothing is trusted blind and no step
+needs a terminal (agents run this too). `tb trust` alone lists every hook this machine knows,
+and its state: `trusted`, `NOT TRUSTED`, `MISSING` (the file moved or is gone), `CHANGED`
+(re-hashed and it no longer matches) or `UNSAFE` (the command, or the settings file, is
+writable by someone other than its owner). Every run is re-resolved and re-hashed first, and
+the file that runs is the very file that was hashed, not the path looked up again: on Linux tb
+runs its open handle (`/proc/self/fd/N`); on macOS and other unixes it runs a private copy of
+exactly the bytes it hashed (in a `hook-runs` directory beside the settings, mode 0700,
+removed after the run), so renaming another file over the command mid-run changes nothing.
+What is left: a rewrite IN PLACE of the command's own file by its owner, who could equally
+trust anything; and on Windows the canonical path is run, so a swap between the hash and the
+start is still possible there. A script's `$0` is therefore the handle or the copy —
+`TB_HOOK_PATH` names where it really lives. `tb trust NAME --timeout SECS` changes only the
+time limit of a hook already recorded, and keeps its trust.
+
+A trusted hook is this machine's, not the board's: any board opened here may name it, and it
+is handed that board's card JSON — so write a hook to judge the proposal it is given, never
+to trust it (a board file is written by whoever wrote it).
+
+Before a card changes column, the pre-change hook gets one line of JSON on standard input —
+`{"v":1,"event":"pre-change","board":"work","card":{…},"from":"doing","to":"review",
+"actor":"bot-1","ts":1790000000,"forced":false,"reason":null}` (`card` is the very object
+`tb show --json` prints) — and has 10 seconds (`tb trust NAME --timeout SECS` to change it) to
+exit 0 or the change is refused: a non-zero exit (its last line of output becomes the refusal's
+`hint`), a timeout, an untrusted/changed/missing hook, or one this machine has never heard of
+all refuse it the same way, and **nothing is written**. `--force` never skips a hook — the
+proposal it is handed says `"forced": true` either way. The one door past it is
+`--break-glass "why"` on `move`/`done`/`take`/`next`/`drop`, which skips the ask and is
+recorded instead: a `break-glass` event on the card and a row in the board's own log, so a
+broken hook can never brick a board, and never silently. `tb sync` (the GitHub evidence sync)
+is exempt by an internal origin, never by the actor name — it writes down what a merged PR or
+a closed issue already says, not a person or agent proposing a change. `hook-after` runs once
+the change has already landed; its answer is recorded (`tb show ID`) but never acted on.
+
+The hook runs outside the board's write lock, so it can itself run `tb`. Its own calls on the
+same board do not ask it again — but only because tb hands each run a random token
+(`TB_HOOK_TOKEN`) backed by a private ticket file that lives exactly as long as the run; a
+variable anyone can set (`TB_IN_HOOK=1`, which a hook still sees) skips nothing. A change made
+that way is recorded as a `hook-nested` event on the card and a row in `tb log`. If the card
+the hook was asked about changes while it runs (its own call, or anyone else's), the change
+is refused with the code `hook_race` and nothing is written: run it again. Hooks whose own
+calls reach other boards' hooks are cut off, refused, four deep.
 
 ### Rework rounds and a closing note
 

@@ -102,13 +102,11 @@ unless a person asks you to change them.
 
 - **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`.
 - **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
-- **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`,
-  then `tb note ID "filed #NEW"`. A card too big: add its parts as cards, note their ids, and
-  narrow the original with `tb edit ID --desc "…"`.
-- **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not
-  do, so two verifiers never take the same one (atomic; `tb move ID review` frees a stale claim).
-  Check the done criteria, then `tb done ID` with a note of what you checked, or send it back to
-  its owner with `tb move ID doing "what is missing"` — it returns to DOING showing its round
+- **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`.
+  A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
+- **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
+  the same one (atomic; `tb move ID review` frees a stale claim). Check the done criteria, then `tb done ID` with a note of what
+  you checked, or send it back to its owner with `tb move ID doing "what is missing"` — it returns to DOING showing its round
   `r2`, `r3`, … (`round` in JSON). Too many rounds (`tb config max-rounds`) marks it `escalate` (JSON) — `tb next` / `tb next --review` skip it, but it stays listed and you can still `tb take`/`tb move`/`tb done` it directly.
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
@@ -125,14 +123,16 @@ unless a person asks you to change them.
   done-by`) or require a link first (`tb config done-needs-link LABEL`, attach one with `tb link ID VALUE --label LABEL`): the error
   says what to do. All three catch an honest mistake — names and labels are self-asserted — so never pass another agent's name or
   fake a link.
-- `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces
-  and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
+- `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused
   (`--force` overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — a note adds to a card, it
   does not take it over. `github` is tb's own sync: never act under it.
 - `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log splits who assigned it from who now holds
   it. A board's rules (`tb config rules`) print with `tb guide` and show once, on your first `tb next` after they are set or changed.
+- A board may name a hook (`tb config hook NAME`): a command THIS machine runs before every move, once trusted (`tb trust NAME -- CMD`,
+  then `tb trust NAME --sha256 HEX`; `tb trust` lists them). Unknown, untrusted, changed, timed out or failing, it REFUSES the move
+  (`hook_refused`, nothing written); `--force` never skips it, `--break-glass "why"` does and is logged — only when a person says so.
 
 ## Environment variables and identity
 
@@ -172,8 +172,7 @@ card).
   the card and the next sync moves it.
 - Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR.
 - `gh#N` is case-insensitive (`GH#6`); `tb sync` reports a `gh#N` that matches nothing — `tb edit` it.
-- `tb done` will not move a `gh#N` card to DONE while its issue is still open: close the
-  issue on GitHub (or merge the PR) instead of adding `--force`.
+- `tb done` will not move a `gh#N` card to DONE while its issue is still open: close the issue on GitHub (or merge the PR) instead of adding `--force`.
 
 ## JSON
 
@@ -203,6 +202,7 @@ succeeded — is for your operator: pass it on; do not change settings because o
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` |
 | `no card #ID` | `tb list` to find the right ID |
+| `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
 
 ## Brief line for orchestrators
 

@@ -649,10 +649,13 @@ pub fn still_open(s: &GhSnapshot, n: i64) -> bool {
     s.issues.iter().any(|i| i.number == n) || s.prs.iter().any(|p| p.number == n)
 }
 
-/// Apply planned moves as actor `github`, logging the reason on each card.
+/// Apply planned moves as actor `github`, logging the reason on each card. `move_sync`, not
+/// `move_to`: a board's pre-change hook gates the people and agents working it, not tb writing
+/// down what GitHub already says — and a refused sync would leave the board disagreeing with
+/// GitHub for ever, with nobody to `--break-glass` it back into step.
 pub fn apply_moves(store: &mut crate::store::Store, moves: &[AutoMove]) -> crate::store::Result<()> {
     for m in moves {
-        store.move_to(m.card_id, &m.to, "github")?;
+        store.move_sync(m.card_id, &m.to, "github")?;
         store.note_kind(m.card_id, "github", &m.text, "github")?;
     }
     Ok(())

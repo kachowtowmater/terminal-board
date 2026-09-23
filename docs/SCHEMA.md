@@ -152,7 +152,7 @@ Key/value settings.
 
 | column | type | meaning |
 |---|---|---|
-| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-link`, `done-needs-note`, `max-rounds`, `kind`) — a row exists only once the setting is set |
+| `key` | TEXT PK | setting name (`wip`, `theme`, `layout`, `github`, `github-panel`, `agents-panel`, `tz`, `due-warn`, `sort`, `rm`, `file-mode`, `card-line`, `label.todo` / `label.doing` / `label.review` / `label.done`, `wip-counts-blocked`, `waiting-lane`, `done-by`, `done-needs-link`, `done-needs-note`, `max-rounds`, `kind`, `hook`, `hook-after`) — a row exists only once the setting is set. `hook` / `hook-after` hold a NAME only (`[a-z0-9_-]{1,32}`), never a command — see README, "Hooks: this machine's own gate on a move" |
 | `value` | TEXT | the setting's value |
 
 ### archived_cards
