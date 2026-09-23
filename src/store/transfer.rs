@@ -42,6 +42,7 @@
 //! should take the shared lock on both boards and the duplicate window closes.
 
 use super::archive::board_log;
+use super::links::LinkItem;
 use super::{get_card, now, Card, Result, Store};
 use rusqlite::{params, TransactionBehavior};
 
@@ -56,13 +57,15 @@ pub struct Moved {
     /// The checklist items and events that travelled with it.
     pub checklist: usize,
     pub events: usize,
+    /// The evidence links that travelled with it (`store::links`).
+    pub links: usize,
 }
 
 /// One checklist item as it travels: its number, its text, whether it is ticked.
 type Item = (i64, String, bool);
 
 /// Everything about a card that travels to another board.
-type Packed = (Card, Vec<Item>, Vec<Past>);
+type Packed = (Card, Vec<Item>, Vec<Past>, Vec<LinkItem>);
 
 /// One event as it sits in the source, so it can be written again at the far end with its
 /// original actor and time.
@@ -89,13 +92,26 @@ fn pack(tx: &rusqlite::Transaction, id: i64) -> Result<Packed> {
             Ok(Past { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok((card, checklist, events))
+    let mut st = tx.prepare("SELECT idx, label, value, added_by, added_at FROM links WHERE card_id=? ORDER BY idx")?;
+    let links = st.query_map([id], super::links::row_link)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((card, checklist, events, links))
 }
 
 impl Store {
     /// Write a card that came from another board into this one, in TODO at the bottom,
-    /// unowned, with its checklist and its whole history. Returns the id it has here.
-    fn receive(&mut self, from: &str, card: &Card, checklist: &[Item], events: &[Past], actor: &str, forced: Option<&str>) -> Result<i64> {
+    /// unowned, with its checklist, its links and its whole history. Returns the id it has
+    /// here.
+    #[allow(clippy::too_many_arguments)]
+    fn receive(
+        &mut self,
+        from: &str,
+        card: &Card,
+        checklist: &[Item],
+        events: &[Past],
+        links: &[LinkItem],
+        actor: &str,
+        forced: Option<&str>,
+    ) -> Result<i64> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pos: i64 =
             tx.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"='todo'"#, [], |r| r.get(0))?;
@@ -124,6 +140,13 @@ impl Store {
             tx.execute(
                 "INSERT INTO checklist(card_id, idx, text, done) VALUES (?,?,?,?)",
                 params![new_id, idx, text, *done as i64],
+            )?;
+        }
+        // the evidence, with the original label, value and who attached it
+        for l in links {
+            tx.execute(
+                "INSERT INTO links(card_id, idx, label, value, added_by, added_at) VALUES (?,?,?,?,?,?)",
+                params![new_id, l.idx, l.label, l.value, l.added_by, l.added_at],
             )?;
         }
         // the history, with the actor and the time each event really had
@@ -166,12 +189,13 @@ impl Store {
         // held until the delete commits. A concurrent `tb note` waits here and then finds the
         // card gone; a second `tb mv` of the same card does the same, instead of copying twice.
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (card, checklist, events) = pack(&tx, id)?;
-        let new_id = dest.receive(&from, &card, &checklist, &events, actor, forced)?;
+        let (card, checklist, events, links) = pack(&tx, id)?;
+        let new_id = dest.receive(&from, &card, &checklist, &events, &links, actor, forced)?;
         // from here the card exists on the destination: a failure below leaves a duplicate,
         // never a hole
         let cleared = (|| -> Result<()> {
             tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
+            tx.execute("DELETE FROM links WHERE card_id=?", [id])?;
             tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
             tx.execute("DELETE FROM cards WHERE id=?", [id])?;
             board_log(&tx, actor, "moved-out", &format!("#{id} to {to} is #{new_id} there"))?;
@@ -194,6 +218,7 @@ impl Store {
             title: super::raw_title(&card),
             checklist: checklist.len(),
             events: events.len(),
+            links: links.len(),
         })
     }
 
