@@ -37,6 +37,7 @@ pub mod order;
 pub mod rounds;
 pub mod rules;
 pub mod transfer;
+pub mod verifier;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
 pub const DEFAULT_WIP: i64 = 3;
@@ -103,6 +104,12 @@ pub enum Code {
     SelfApprove,
     /// `config done-by` restricts who may close a card, and the actor is not on the list.
     DoneByRestricted,
+    /// A move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`):
+    /// nothing reaches DONE except from REVIEW (store/verifier.rs).
+    NotFromReview,
+    /// REVIEW -> DONE by an agent with no verifier role and not on `config verifiers`
+    /// (store/verifier.rs).
+    NotVerifier,
     /// `config done-needs-note` requires a note written during this stay before DONE.
     DoneNeedsNote,
     /// `config done-needs-link` requires a link with that label before DONE.
@@ -170,6 +177,8 @@ impl Code {
             Code::NotInReview => "not_in_review",
             Code::SelfApprove => "self_approve",
             Code::DoneByRestricted => "done_by_restricted",
+            Code::NotFromReview => "not_from_review",
+            Code::NotVerifier => "not_verifier",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::ArgRequired => "arg_required",
@@ -1547,6 +1556,7 @@ impl Store {
         all.extend(self.display_settings()?);
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
+        all.extend(self.verifier_settings()?);
         all.extend(self.link_settings()?);
         all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
@@ -2331,9 +2341,11 @@ impl Store {
     ///    the change is refused as "changed while the hook ran": an approval about a card that
     ///    has since moved is never acted on.
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
-    ///    or `--force`, logged) → self-approval (entering DONE from any column, by the card's
-    ///    author, or
-    ///    `--force`, logged) → `done-by` (entering DONE needs to be one of the named closers,
+    ///    or `--force`, logged) → review-first (entering DONE from anywhere but REVIEW, or
+    ///    `--force`, logged — store/verifier.rs) → self-approval (entering DONE by the card's
+    ///    author or last holder, or `--force`, logged) → the
+    ///    verifier rule (REVIEW -> DONE needs a verifier role, a place on `config verifiers`,
+    ///    or a person; or `--force`, logged — store/verifier.rs) → `done-by` (entering DONE needs to be one of the named closers,
     ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
     ///    send-back). The first two are about WHO may touch the card; `done-by` and
@@ -2474,6 +2486,16 @@ impl Store {
         // a `dropped` event, not a `taken`/`assigned` one, so it does not erase this — and a
         // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
         // supersedes it, so a real reassignment is never falsely refused.
+        // Nothing reaches DONE except from REVIEW (store/verifier.rs, rule 1) — checked before
+        // the self-approval guard, so a `todo -> done` shortcut is named for what it is. It
+        // binds everyone, tb's own GitHub sync included (which only ever moves to REVIEW);
+        // `--force` gets past it and is logged, like every guard here.
+        if column == "done" && c.column != "done" && c.column != "review" {
+            if !force {
+                return Err(verifier::not_from_review(id, &c.column));
+            }
+            Self::log(&tx, id, actor, "force", &format!("closed #{id} from {}, skipping review", c.column))?;
+        }
         if column == "done" && c.column != "done" {
             let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
                 || last_holder_of(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
@@ -2482,6 +2504,19 @@ impl Store {
                     return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
                 }
                 Self::log(&tx, id, actor, "force", "approved own work")?;
+            }
+        }
+        // REVIEW -> DONE only by a verifier (store/verifier.rs, rule 2): an agent needs a
+        // verifier role (`TB_ROLE`) or a place on `config verifiers`; a person (no harness in
+        // the identity) always qualifies. On unless `config verifier-only off`. After the
+        // self-approval guard: a verifier's own work is still its own work.
+        if column == "done" && c.column != "done" {
+            let who = actors::current();
+            if !verifier::may_verify(&tx, actor, &who)? {
+                if !force {
+                    return Err(verifier::not_verifier_err(id, actor, &who));
+                }
+                Self::log(&tx, id, actor, "force", &format!("closed #{id} with no verifier role"))?;
             }
         }
         // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
@@ -2890,7 +2925,8 @@ impl Store {
         Ok(c)
     }
 
-    /// doing -> review; todo/review -> done.
+    /// doing -> review; review -> done (by a verifier, store/verifier.rs). A TODO card is
+    /// refused by the same guard `tb move ID done` meets: nothing reaches DONE except from REVIEW.
     pub fn done(&mut self, id: i64, actor: &str) -> Result<Card> {
         self.done_opts(id, actor, false, None)
     }

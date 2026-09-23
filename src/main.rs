@@ -22,7 +22,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | restore ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
 Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
-Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|rules
+Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
@@ -2038,6 +2038,39 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("max-rounds".into(), n.map_or(serde_json::Value::Null, |n| json!(n)))
                 }
+                // who moves REVIEW -> DONE (store/verifier.rs): on by default, logged on change
+                ("verifier-only", _) if off => {
+                    return Err(BoardError(
+                        "--off does not go with verifier-only — 'tb config verifier-only off' lets any reviewer close a card".to_string(), Code::InvalidValue,
+                    ))
+                }
+                ("verifier-only", value) => {
+                    let on = match &value {
+                        Some(v) => store.set_verifier_only(v, &actor)?,
+                        None => store.verifier_only()?,
+                    };
+                    let text = if on { "on" } else { "off" };
+                    if value.is_none() && !j {
+                        say!("{text}");
+                        return Ok(());
+                    }
+                    ("verifier-only".into(), json!(text))
+                }
+                ("verifiers", _) if off => {
+                    store.set_verifiers(None, &actor)?;
+                    ("verifiers".into(), json!(Vec::<String>::new()))
+                }
+                ("verifiers", value) => {
+                    let names = match &value {
+                        Some(v) => store.set_verifiers(Some(v), &actor)?,
+                        None => store.verifiers()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", if names.is_empty() { "none — only an agent with TB_ROLE=verifier, or a person, may close a card".to_string() } else { names.join(",") });
+                        return Ok(());
+                    }
+                    ("verifiers".into(), json!(names))
+                }
                 ("done-by", _) if off => {
                     store.set_done_by(None)?;
                     ("done-by".into(), serde_json::Value::Null)
@@ -2332,6 +2365,19 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         say!("card-line is now due — a dated card shows its due date and the days left where its age was")
                     }
                     ("card-line", _) => say!("card-line is now age — every card shows its age in the column"),
+                    ("verifier-only", v) if v.as_str() == Some("off") => say!(
+                        "verifier-only is now off — any reviewer who did not do the work may move a card from review to done (still only from review)"
+                    ),
+                    ("verifier-only", _) => say!(
+                        "verifier-only is now on (the default) — only a verifier moves a card from review to done: TB_ROLE=verifier, a name on 'tb config verifiers', or a person"
+                    ),
+                    ("verifiers", n) if n.as_array().is_some_and(|a| a.is_empty()) => {
+                        say!("verifiers cleared — only an agent with TB_ROLE=verifier, or a person, may close a card")
+                    }
+                    ("verifiers", n) => say!(
+                        "verifiers is now {} — they may move a card from review to done whatever their recorded role (never their own work)",
+                        n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
                     ("done-by", serde_json::Value::Null) => say!("done-by is off — anyone may close a card"),
                     ("done-by", n) => say!(
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",

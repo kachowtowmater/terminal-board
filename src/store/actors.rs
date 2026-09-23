@@ -324,6 +324,16 @@ pub fn use_environment() {
     FROM_ENVIRONMENT.store(true, Ordering::Relaxed);
 }
 
+/// This process's identity as the guards see it: exactly what `stamp` records with every
+/// event, or nothing at all when identity recording is off (a program linking the crate that
+/// never called `use_environment`, which then reads as a person).
+pub(super) fn current() -> Identity {
+    if !FROM_ENVIRONMENT.load(Ordering::Relaxed) {
+        return Identity::default();
+    }
+    WHO.get_or_init(Identity::from_env).clone()
+}
+
 /// The `actor_id` for an event `actor` writes now: the ONE place an identity reaches the
 /// board — both event inserts (`Store::log`, `Store::log_board`) call it, and every write goes
 /// through those. None when nothing is known beyond the name.

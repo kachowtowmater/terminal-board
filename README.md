@@ -219,7 +219,7 @@ Press `?` on the board to see all keys at any time.
 | `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
 | `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |
-| `d` | done: DOING → REVIEW, REVIEW/TODO → DONE (on your own REVIEW card it asks `approve your own work? y/n`) |
+| `d` | done: DOING → REVIEW, REVIEW → DONE by a verifier (on your own REVIEW card it asks `approve your own work? y/n`) |
 | Shift+← / Shift+→ (or `<` `>`) | move the card to the previous / next column |
 | Shift+↑ / Shift+↓ (or `K` `J`) | move the card up / down in its column |
 | `n` | add a note to the card's history |
@@ -393,7 +393,8 @@ failure: a failing check (`FAIL`), a blocked card, or an idle agent holding a ca
 linked to issue or pull request N:
 
 - an open pull request for it → the card moves to **REVIEW**;
-- the pull request is merged, or the issue is closed → the card moves to **DONE**;
+- the pull request is merged, or the issue is closed → the card moves to **REVIEW** too — never
+  to DONE: a verifier closes it (see [Who closes a card](#who-closes-a-card));
 - cards never move backwards on their own. This happens on every refresh (every minute)
   and whenever you run `tb sync`. A card a reviewer sent back stays in DOING until its pull
   request is updated after that.
@@ -511,7 +512,8 @@ tb --version
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
-| `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
+| `tb done ID [--force]` | DOING → REVIEW, REVIEW → DONE (only a verifier, never whoever did the work; TODO → DONE is refused) |
+| `tb config verifiers NAME,NAME` / `--off` · `tb config verifier-only on\|off` | names that may verify whatever their role · the verifier rule (on by default) — see [Who closes a card](#who-closes-a-card) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
@@ -828,6 +830,17 @@ tb office done 1 --as anna
 tb office done 1 --approve --as ben
 tb office config done-by --off
 ```
+
+**Who moves a card.** TODO: anyone files work. DOING: the workers — one agent session or many.
+REVIEW → DONE: **only an independent verifier** — a person (no agent harness in the identity),
+an agent started with `TB_ROLE=verifier` (or `reviewer`), or a name on `tb config verifiers`;
+never the card's owner or last holder. Any other agent is refused (`not_verifier`). Nothing
+reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the board, not
+the GitHub sync. Every move into DONE records who made it and the identity behind the name
+(harness, model, role, session, machine), shown by `tb show` and `tb log`. `--force` gets past
+both rules and is logged; `tb config verifier-only off` turns the verifier rule off for a board
+(logged; review-first stays). A role is self-asserted, like a name: this catches an honest
+mistake, not an attacker.
 
 `tb config done-by anna,ben` says who may close a card: tb then refuses to move a card into
 DONE as anybody else, and names the people to ask. It guards **every** way into DONE, so

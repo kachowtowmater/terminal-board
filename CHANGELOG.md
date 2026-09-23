@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Only a verifier moves REVIEW to DONE, enforced by tb (breaking — see UPGRADING.md)
+
+An audit of real boards found cards moved `todo -> done` and `doing -> done` directly, builders
+and orchestrators moving their own REVIEW cards to DONE, and the GitHub sync closing cards with
+no verifier at all. The role flow is now enforced in `Store::transition`, the one function every
+column change goes through (CLI, full-screen board, GitHub sync):
+
+- **Nothing reaches DONE except from REVIEW.** `tb done` on a TODO card and `tb move ID done`
+  from TODO or DOING are refused with the new stable `--json` code `not_from_review` and the
+  command to run instead. `--force` gets past it, logged as a `force` event
+  (`closed #N from todo, skipping review`).
+- **REVIEW -> DONE only by a verifier.** An agent (a harness in its recorded identity) needs
+  `TB_ROLE=verifier` or `reviewer`, or its name on the new `tb config verifiers NAME,NAME`;
+  a person (no harness) always qualifies. Anyone else is refused with the new code
+  `not_verifier`, naming `TB_ROLE=verifier` and `tb config verifiers`. The self-approval rule
+  still applies on top: a verifier never closes its own work. On by default;
+  `tb config verifier-only off` turns it off per board, logged in the board's own log
+  (`verifier-only on -> off`). `tb config verifiers` changes are logged the same way.
+- **GitHub sync lands in REVIEW, never DONE.** A merged PR or a closed issue moves its card
+  to REVIEW with an event saying so (`PR gh#20 merged → review (a verifier moves it to done)`);
+  a card already in REVIEW is left for its verifier, and a card a reviewer sent back stays in
+  DOING for its owner.
+- **The trace.** Every move into DONE carries the actor and the full identity (harness, model,
+  role, session, host) in `tb show`, `tb log` and `--json` — pinned by a test.
+- `tb done ID --approve` is unchanged: it records a check by anyone who did not do the work,
+  leaves the card in REVIEW, and is not a way into DONE.
+- Docs: a "Who moves a card" section in docs/AGENTS.md (`tb guide`), the AGENTS.md snippet,
+  the Claude Code skill, docs/HUMANS.md and the README, so an agent told "read it and follow
+  it" learns the structure.
+
 ### A pre/post-change hook: this machine's own gate on a move (A1)
 
 A board can now ASK for a gate on every column change — but a board is a file people copy,

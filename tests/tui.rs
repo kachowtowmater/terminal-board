@@ -632,7 +632,7 @@ fn board_without_problems_has_no_warning_colour() {
         s.add(t, "", &["one".into()], "me").unwrap();
     }
     s.take(2, "me").unwrap();
-    s.done(3, "me").unwrap();
+    s.done_forced(3, "me").unwrap(); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
     s.add("later", "", &[], "me").unwrap();
     let mut app = App::new(s.snapshot().unwrap(), "me");
     app.agents = AgentsState::Agents(parse_agents(AGENTS, Some(PANES)).unwrap());

@@ -124,9 +124,11 @@ fn lifecycle_and_errors() {
     assert!(s.done(id, "me").unwrap_err().to_string().contains("tb move"));
     let d = s.drop_card(id, "me").unwrap();
     assert_eq!((d.column.as_str(), d.owner), ("todo", None));
-    // plain todo straight to done
+    // plain todo straight to done: refused — nothing reaches done except from review
     let p = s.add("plain", "", &[], "me").unwrap();
-    assert_eq!(s.done(p, "me").unwrap().column, "done");
+    let e = s.done(p, "me").unwrap_err();
+    assert_eq!(e.1.to_string(), "not_from_review", "{e}");
+    assert_eq!(s.card(p).unwrap().column, "todo");
     let snap = s.snapshot().unwrap();
     assert_eq!(snap.last_note.get(&id).map(String::as_str), Some("halfway"));
     assert!(snap.last_event_at.get(&id).is_some_and(|ts| *ts > 0), "last event ts present: {:?}", snap.last_event_at);

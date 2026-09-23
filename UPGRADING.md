@@ -1,3 +1,60 @@
+# Upgrading to 3.0.0
+
+3.0.0 changes **who may move a card into DONE**. Nothing was renamed or removed; boards open
+unchanged and the JSON contract is still `"v": 1`. Three things that used to succeed are now
+refused or behave differently — every one has a way through.
+
+## 1. Nothing reaches DONE except from REVIEW
+
+**Before.** `tb done ID` on a TODO card, and `tb move ID done` from TODO or DOING, moved it
+straight to DONE.
+
+**Now.** Refused, for everyone, with code `not_from_review`:
+`#3 is in todo — nothing reaches done except from review: take it first ('tb take 3'), then
+'tb done 3' moves it to review; a verifier moves it to done (or --force, logged)`.
+
+**Escape hatch.** `--force`, logged as a `force` event on the card. Better: take the card,
+`tb done` it into REVIEW, and let a verifier close it.
+
+## 2. REVIEW -> DONE only by a verifier (default ON)
+
+**Before.** Anyone who had not done the work could move a REVIEW card to DONE — including the
+orchestrator that dispatched it, or a builder agent.
+
+**Now.** An **agent** — an actor whose recorded identity has a harness (Claude Code, omp, …;
+`TB_HARNESS` sets it explicitly) — is refused with code `not_verifier` unless:
+
+- it runs with `TB_ROLE=verifier` (or `reviewer`), or
+- its name is on the board's list: `tb config verifiers rv-1,rv-2`.
+
+A **person** (a plain terminal, no harness) always qualifies. The never-approve-your-own-work
+rule still applies on top of both.
+
+**The default is ON.** To keep the 2.x behaviour on a board: `tb config verifier-only off`
+(logged in the board's own log; `on` turns it back). The switch covers only this rule —
+section 1 stays. `--force` also gets past it, logged (`closed #N with no verifier role`).
+
+```sh
+TB_ROLE=verifier tb next --review --as rv-1   # a verifier claims and closes review work
+tb config verifiers rv-1,rv-2                  # or name them on the board
+tb config verifier-only off                    # or turn the rule off for this board
+```
+
+`tb done ID --approve` is unchanged: anyone who did not do the work may record a check, and
+the card stays in REVIEW.
+
+## 3. GitHub sync moves a closed issue or merged PR to REVIEW, not DONE
+
+**Before.** `tb sync` (and the board's refresh) moved a card to DONE when its PR merged or its
+issue closed — with no verifier.
+
+**Now.** It moves the card to REVIEW with an event saying why
+(`issue gh#21 closed → review (a verifier moves it to done)`), and leaves a card already in
+REVIEW alone; a verifier moves it to DONE. `sync --json` never reports a move `to: "done"`.
+A card a reviewer sent back stays in DOING for its owner.
+
+---
+
 # Upgrading to 2.0.0
 
 Nothing was renamed or removed in 2.0.0, and your boards open unchanged. The JSON contract is
