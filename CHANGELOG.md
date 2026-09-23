@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### `tb boards archive` / `restore`: retire a board without moving files by hand (#80)
+
+Until now the only way to retire a board — a scratch board, a finished project — was to move
+`boards/<name>.db` and its sidecars aside by hand: undiscoverable, and `tb boards` kept
+listing dead boards forever. Two earlier attempts at this command were sent back and closed:
+the store underneath it let `restore` racing `tb NAME add` destroy the restored cards in 55 of
+55 dangerous rounds, and `archive` racing short-lived writers lose acknowledged writes and
+resurrect an empty board. Built on the board-file lifetime lock above (#112), which closes
+both races by construction instead of by retrying.
+
+- `tb boards archive NAME` moves the board's file (with its WAL folded back in) into
+  `~/.local/state/terminal-board/archive/<name>@<stamp>.db` and prints the one command that
+  restores it. `tb boards restore NAME` moves the newest archive of that name back, byte for
+  byte. `tb boards --archived` lists what is archived, with card counts read without touching
+  the files. Nothing is ever deleted — `tb boards rm` does not exist (`tb rm ID` already
+  deletes a *card*), and there is no archive key on the `B` picker (a switcher with no
+  confirmation surface); an archived board simply stops appearing in `tb boards` and the
+  picker until restored.
+- Both verbs hold `store::lock_for_move` — the EXCLUSIVE half of #112's board-file lock —
+  across the whole operation, from the first look at the file through the last one moved: no
+  `Store::open` can be mid-open, mid-write, or about to (re)create the file while either runs.
+  `restore` places the file with `store::link_into_place` (hard-link, then unlink the source),
+  so it is refused rather than ever clobbering a board a racing `add` just created, and refuses
+  the same way when a stray `-wal`/`-shm` already sits at the destination.
+- New `--json` refusal codes: `default_board` (`archive` refused — that is the board a bare
+  `tb` opens right now), `board_exists` (`restore` refused — a live board, or a stray sidecar,
+  is already at that name), `no_archive` (`restore` refused — no archived board has that
+  name). Archiving is also refused under `TB_DB` (`db_pinned`, as `tb boards` already refuses
+  board names there) and while another process holds the board open (`board_busy`, #112's
+  code, naming the process to close).
+- Documented in README, `docs/HUMANS.md`, `docs/AGENTS.md` and `docs/JSON.md`.
+
 ### Column growth is round-robin, not first-come-first-served
 
 Reported from using the board: *"the todo, doing, review and done boards are not evenly

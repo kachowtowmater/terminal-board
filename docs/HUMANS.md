@@ -172,6 +172,23 @@ On the board, `B` opens the board picker: every board with its counts, `enter` s
 the one you choose without quitting, `esc` cancels. (`TB_DB` pins one file, so the picker
 says so instead of offering a choice.)
 
+**Retiring a board.** `tb boards archive NAME` moves a board you are done with out of the way
+— a scratch board, a finished project — without deleting anything: it prints the exact command
+that brings it back.
+
+```sh
+tb boards archive old-project   # moves it aside, prints the restore line
+tb boards --archived            # what is archived, with its card counts
+tb boards restore old-project   # brings it back exactly as it was
+```
+
+An archived board disappears from `tb boards` and the `B` picker (there is no archive key on
+the picker — bring it back from the command line first) until you restore it. You cannot
+archive the board plain `tb` opens right now, or a board `TB_DB` pins; `tb boards restore`
+refuses onto a board that already exists, so a restore can never overwrite one. There is no
+`tb boards rm` — `tb rm ID` already deletes a *card* — so nothing archive touches is ever
+deleted; once you are sure, remove the file yourself from the path `tb boards archive` printed.
+
 ## GitHub
 
 Each board can show one GitHub repository: open pull requests with CI status, issues with

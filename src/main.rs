@@ -25,7 +25,7 @@ Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
+Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
 GitHub  github [--refresh] | github repos | sync
 Agents  agents
@@ -274,12 +274,22 @@ enum Cmd {
         rm: Option<i64>,
     },
     /// List boards. `--default` alone shows the board plain `tb` opens; `--default NAME`
-    /// saves it; `--default --clear` goes back to the built-in `default`.
+    /// saves it; `--default --clear` goes back to the built-in `default`. `archive NAME` /
+    /// `restore NAME` retire or bring back one; `--archived` lists what is archived.
     Boards {
-        #[arg(long = "default", value_name = "NAME", num_args = 0..=1)]
+        #[arg(long = "default", value_name = "NAME", num_args = 0..=1, conflicts_with = "what")]
         default: Option<Option<String>>,
         #[arg(long, requires = "default")]
         clear: bool,
+        /// `archive` or `restore` (omit to list boards)
+        #[arg(value_name = "VERB")]
+        what: Option<String>,
+        /// The board to archive or restore
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        /// List archived boards instead of live ones
+        #[arg(long, conflicts_with_all = ["what", "name", "default"])]
+        archived: bool,
     },
     /// Make a board with a kind's settings, or with another board's.
     New {
@@ -844,6 +854,81 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
     Ok(())
 }
 
+/// `tb boards`'s two verbs and `--archived`. Retiring a board is a MOVE the user can undo:
+/// `archive` puts the file in `archive/` and prints the one line that restores it; nothing
+/// deletes a board (`tb rm ID` already deletes a CARD, so `tb boards rm` would be a dangerous
+/// near-miss — deliberately not offered).
+fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, json_out: bool) -> Result<(), BoardError> {
+    match (what, name) {
+        (None, _) if archived => list_archived(json_out),
+        (None, None) => list_boards(json_out),
+        (None, Some(n)) => Err(BoardError(format!(
+            "'tb boards {n}' is not a command — 'tb boards archive {n}' or 'tb boards restore {n}'? 'tb boards' lists them"
+        ), Code::UnknownCommand)),
+        (Some(v @ ("archive" | "restore")), None) => Err(BoardError(format!(
+            "'tb boards {v}' needs a board name — e.g. 'tb boards {v} scratch' · 'tb boards' lists them"
+        ), Code::ArgRequired)),
+        (Some("archive"), Some(n)) => {
+            let to = boards::archive(n)?;
+            if json_out {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "board": n, "archived": to.display().to_string(), "restore": format!("tb boards restore {n}")}))
+                );
+            } else {
+                say!("archived '{n}' -> {}", to.display());
+                say!("restore it with 'tb boards restore {n}'");
+            }
+            Ok(())
+        }
+        (Some("restore"), Some(n)) => {
+            let (from, to) = boards::restore(n)?;
+            if json_out {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "board": n, "path": to.display().to_string(), "from": from.display().to_string()}))
+                );
+            } else {
+                say!("restored '{n}' from {} -> {}", from.display(), to.display());
+                say!("open it with 'tb {n}'");
+            }
+            Ok(())
+        }
+        (Some(v), _) => Err(BoardError(format!(
+            "unknown 'tb boards' command '{v}' — use 'tb boards', 'tb boards --archived', 'tb boards archive NAME' or 'tb boards restore NAME'"
+        ), Code::UnknownCommand)),
+    }
+}
+
+/// `tb boards --archived`: what `tb boards archive` retired, with card counts read without
+/// touching the files, so a restore returns the board exactly as it was.
+fn list_archived(json_out: bool) -> Result<(), BoardError> {
+    let rows = boards::archived();
+    if json_out {
+        let v: Vec<_> = rows
+            .iter()
+            .map(|a| {
+                let n = |i: usize| a.counts.map_or(serde_json::Value::Null, |c| json!(c[i]));
+                json!({"name": a.name, "archived_at": a.archived_at(), "path": a.path.display().to_string(),
+                       "todo": n(0), "doing": n(1), "review": n(2), "done": n(3)})
+            })
+            .collect();
+        println!("{}", pretty(&v));
+    } else if rows.is_empty() {
+        say!("no archived boards — 'tb boards archive NAME' retires one (it is moved, never deleted)");
+    } else {
+        for a in &rows {
+            let counts = match a.counts {
+                Some(c) => format!("todo {:<3} doing {:<3} review {:<3} done {}", c[0], c[1], c[2], c[3]),
+                None => "counts unavailable".to_string(),
+            };
+            say!("  {:<16} archived {}  {counts}", a.name, a.archived_at());
+        }
+        say!("in {} — bring one back with 'tb boards restore NAME'", boards::archive_dir().display());
+    }
+    Ok(())
+}
+
 /// `tb boards --default` (show) · `--default NAME` (save) · `--default --clear` (back to the
 /// built-in `default`): which board plain `tb` opens. A per-user choice kept in the
 /// machine-local settings (`machine`), never in a board file. `TB_BOARD` still beats it for
@@ -1112,7 +1197,10 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         };
         return new_board(name, kind.as_deref(), from.as_deref(), &actor, cli.json);
     }
-    if let Some(Cmd::Boards { default, clear }) = &cli.cmd {
+    if let Some(Cmd::Boards { default, clear, what, name, archived }) = &cli.cmd {
+        if what.is_some() || name.is_some() || *archived {
+            return boards_cmd(what.as_deref(), name.as_deref(), *archived, cli.json);
+        }
         return match default {
             Some(name) => default_board_cmd(name.as_deref(), *clear, cli.json),
             None => list_boards(cli.json),

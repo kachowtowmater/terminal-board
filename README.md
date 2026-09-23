@@ -306,6 +306,24 @@ On the board, `B` opens the board picker: the same rows as `tb boards` — name,
 and the default board marked — and `enter` switches to the one you choose without quitting
 `tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
+**Retiring a board.** `tb boards archive NAME` moves a board out of the way — a finished
+project, a scratch board — without deleting anything: it prints the one command that brings it
+back.
+
+```sh
+tb boards archive home       # moves it aside; prints "tb boards restore home"
+tb boards --archived         # what is archived, with the card counts it had
+tb boards restore home       # brings it back byte for byte
+```
+
+An archived board disappears from `tb boards` and the `B` picker until restored — the picker
+has no archive key of its own, a one-keystroke file move is a footgun, so retiring one is a
+command-line action. Archiving is refused for the board plain `tb` opens right now and while
+`TB_DB` pins one file; restoring is refused onto a board that already exists, so it can never
+overwrite one. There is deliberately no `tb boards rm` — `tb rm ID` already deletes a *card* —
+so nothing this command touches is ever deleted; remove the file yourself, from the path
+`tb boards archive` printed, once you are sure.
+
 ## Assigning a card
 
 `tb next` and `tb take ID` both make the CALLER the owner — an orchestrator can only tell an

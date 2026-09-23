@@ -8,9 +8,9 @@
 //! `Store` lives; a command that moves or replaces a board file (`lock_for_move`) takes the
 //! EXCLUSIVE half across the whole operation, so it waits for every live reader/writer and none
 //! can arrive mid-move. `link_into_place` is the other half: placing a file back without ever
-//! clobbering one a racing writer just created. Nothing here adds a new command — this is the
-//! primitive a future `archive`/`restore` (and anything else that retires or revives a board
-//! file) is built on.
+//! clobbering one a racing writer just created. This primitive is what `crate::boards::archive`
+//! and `crate::boards::restore` (#80) are built on — anything else that retires or revives a
+//! board file must use it too, never a plain `rename`.
 
 use crate::lock;
 use rusqlite::types::Type;
@@ -123,6 +123,13 @@ pub enum Code {
     /// progress) without getting the shared lock, or a command that moves/replaces a board
     /// file waited out every reader/writer without getting the exclusive one.
     BoardBusy,
+    /// `tb boards archive` refused: `NAME` is the board a bare `tb` opens right now.
+    DefaultBoard,
+    /// `tb boards restore` refused: a live board (or a stray `-wal`/`-shm`) is already at that
+    /// name.
+    BoardExists,
+    /// `tb boards restore` refused: no archived board has that name.
+    NoArchive,
     /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
     /// unrecognized subcommands caught at the parser level, wrong arity, etc.
     Usage,
@@ -163,6 +170,9 @@ impl Code {
             Code::IoError => "io_error",
             Code::TerminalError => "terminal_error",
             Code::BoardBusy => "board_busy",
+            Code::DefaultBoard => "default_board",
+            Code::BoardExists => "board_exists",
+            Code::NoArchive => "no_archive",
             Code::Usage => "usage",
             Code::Unknown => "unknown",
         }
