@@ -516,6 +516,9 @@ tb --version
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
 | `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
+| `tb config hook NAME` / `hook-after NAME` / `--off` | ask this machine to gate (or, after the fact, hear about) every move — see [Hooks](#hooks-this-machines-own-gate-on-a-move) |
+| `tb trust NAME -- COMMAND ARGS…` / `--sha256 HEX` / `--off` | record, confirm or forget what NAME runs on this machine; `tb trust` alone lists them |
+| `tb move\|done\|take\|next\|drop … --break-glass "why"` | skip this board's pre-change hook, logged on the card and the board |
 | `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
 | `tb drop ID [--force]` | give a card back to TODO (`--force` for someone else's) |
@@ -867,6 +870,49 @@ against a repository and never fetches a URL.**
 with that label, the same honest-mistake shape `done-by` already has: names and labels are
 **self-asserted**, `--force` gets past it and is logged, and the GitHub sync is exempt (a
 merged PR closing its card is already evidence, not a person). `--off` turns it off again.
+
+### Hooks: this machine's own gate on a move
+
+A board is a file people copy, mail and check into a repository — a command written inside it
+would be code that runs when someone else opens that file. So a board can only ASK for a gate
+by NAME; what that name runs, and whether this particular machine is willing to run it, lives
+in `~/.config/terminal-board/config.json` (override with `TB_CONFIG`) and is decided fresh on
+every machine that opens the board.
+
+<!-- no-test -->
+```sh
+tb config hook approve
+tb trust approve -- /usr/local/bin/check-move.sh
+tb trust approve --sha256 <the hash tb just printed>
+tb trust
+tb take 1
+tb take 1 --break-glass "approve is down, ops said go"
+tb config hook --off
+```
+
+`tb config hook NAME` (pre-change) and `tb config hook-after NAME` (post-change) name the
+event; `tb trust NAME -- COMMAND ARGS…` records what NAME runs on THIS machine and prints the
+file it resolved to and that file's sha256 — the hook stays **untrusted** until
+`tb trust NAME --sha256 HEX` echoes that hash back, so nothing is trusted blind and no step
+needs a terminal (agents run this too). `tb trust` alone lists every hook this machine knows,
+and its state: `trusted`, `NOT TRUSTED`, `MISSING` (the file moved or is gone), `CHANGED`
+(re-hashed and it no longer matches) or `UNSAFE` (the command, or the settings file, is
+writable by someone other than its owner). Every run is re-resolved and re-hashed first.
+
+Before a card changes column, the pre-change hook gets one line of JSON on standard input —
+`{"v":1,"event":"pre-change","board":"work","card":{…},"from":"doing","to":"review",
+"actor":"bot-1","ts":1790000000,"forced":false,"reason":null}` (`card` is the very object
+`tb show --json` prints) — and has 10 seconds (`tb trust NAME --timeout SECS` to change it) to
+exit 0 or the change is refused: a non-zero exit (its last line of output becomes the refusal's
+`hint`), a timeout, an untrusted/changed/missing hook, or one this machine has never heard of
+all refuse it the same way, and **nothing is written**. `--force` never skips a hook — the
+proposal it is handed says `"forced": true` either way. The one door past it is
+`--break-glass "why"` on `move`/`done`/`take`/`next`/`drop`, which skips the ask and is
+recorded instead: a `break-glass` event on the card and a row in the board's own log, so a
+broken hook can never brick a board, and never silently. `tb sync` (the GitHub evidence sync)
+is exempt by an internal origin, never by the actor name — it writes down what a merged PR or
+a closed issue already says, not a person or agent proposing a change. `hook-after` runs once
+the change has already landed; its answer is recorded (`tb show ID`) but never acted on.
 
 ### Rework rounds and a closing note
 

@@ -12,6 +12,7 @@
 //! and `crate::boards::restore` (#80) are built on — anything else that retires or revives a
 //! board file must use it too, never a plain `rename`.
 
+use crate::hooks;
 use crate::lock;
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -29,6 +30,7 @@ pub mod closing;
 pub mod bulk;
 pub mod display;
 pub mod due;
+pub mod gate;
 pub mod kinds;
 pub mod links;
 pub mod order;
@@ -133,6 +135,9 @@ pub enum Code {
     /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
     /// unrecognized subcommands caught at the parser level, wrong arity, etc.
     Usage,
+    /// A pre-change hook (`config hook`, `crate::hooks`) refused the change, could not be run,
+    /// is not trusted on this machine, or this machine does not know it.
+    HookRefused,
     /// Every failure path that predates this vocabulary, or that does not yet warrant its own
     /// symbol. A consumer that meets it falls back to `error` and the exit status, exactly as
     /// it would for a code it does not recognize.
@@ -174,6 +179,7 @@ impl Code {
             Code::BoardExists => "board_exists",
             Code::NoArchive => "no_archive",
             Code::Usage => "usage",
+            Code::HookRefused => "hook_refused",
             Code::Unknown => "unknown",
         }
     }
@@ -1491,6 +1497,9 @@ impl Store {
         all.extend(self.kind_settings()?);
         all.extend(self.rules_settings()?);
         all.extend(self.access_settings()?);
+        // hooks (store/gate.rs, crate::hooks): listed once the board asks for one, so a board
+        // that asks for none lists exactly what it always did
+        all.extend(self.hook_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1932,7 +1941,12 @@ impl Store {
 
     /// Atomically take the oldest todo card.
     pub fn next(&mut self, actor: &str) -> Result<Card> {
-        self.claim(None, actor)
+        self.next_bg(actor, None)
+    }
+
+    /// `next` with `--break-glass "why"`: see `move_opts_bg`.
+    pub fn next_bg(&mut self, actor: &str, break_glass: Option<&str>) -> Result<Card> {
+        self.claim(None, actor, break_glass)
     }
 
     /// Atomically claim the top unclaimed, unblocked REVIEW card that `actor` did not author.
@@ -1990,7 +2004,12 @@ impl Store {
 
     /// Atomically take a specific todo card.
     pub fn take(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.claim(Some(id), actor)
+        self.take_bg(id, actor, None)
+    }
+
+    /// `take` with `--break-glass "why"`: see `move_opts_bg`.
+    pub fn take_bg(&mut self, id: i64, actor: &str, break_glass: Option<&str>) -> Result<Card> {
+        self.claim(Some(id), actor, break_glass)
     }
 
     /// `tb assign ID NAME`: hand a specific TODO card straight to `owner`, without `actor`
@@ -2004,13 +2023,13 @@ impl Store {
         if owner.is_empty() {
             return err(format!("name is empty — try 'tb assign {id} bob'"), Code::ArgRequired);
         }
-        self.transition(Change::Assign { id, owner }, actor, false)
+        self.transition(Change::Assign { id, owner }, actor, false, HookGate::Normal)
     }
 
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
     /// both win the same card.
-    fn claim(&mut self, id: Option<i64>, actor: &str) -> Result<Card> {
-        self.transition(Change::Claim(id), actor, false)
+    fn claim(&mut self, id: Option<i64>, actor: &str, break_glass: Option<&str>) -> Result<Card> {
+        self.transition(Change::Claim(id), actor, false, HookGate::of(break_glass))
     }
 
     /// The card `next` / `take` claims: the named one (it must be in TODO), or the top
@@ -2180,23 +2199,47 @@ impl Store {
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, false, None)
+        self.move_card(id, column, actor, false, None, None)
     }
 
     /// `move_to` that lets the author approve their own REVIEW card; logged as a `force` event.
     pub fn move_to_forced(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, column, actor, true, None)
+        self.move_card(id, column, actor, true, None, None)
+    }
+
+    /// `move_to`, exempt from the pre/post-change hook by an internal ORIGIN — never by the
+    /// actor name (an actor asking `--as github` is refused before this, in `main.rs`). tb's
+    /// own GitHub sync is the only caller: it writes down what a merged PR or a closed issue
+    /// already says, not a person or agent proposing a change, so it is not who a hook exists
+    /// to gate.
+    pub fn move_sync(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
+        self.transition(Change::Move { id, column, reason: None }, actor, false, HookGate::Sync)
     }
 
     /// `move_to` with every option: `reason` is required (and only allowed) when a REVIEW
     /// card goes back to DOING.
     pub fn move_opts(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
-        self.move_card(id, column, actor, force, reason)
+        self.move_opts_bg(id, column, actor, force, reason, None)
+    }
+
+    /// `move_opts` with `--break-glass "why"`: skip the pre-change hook this board asks for,
+    /// applying the change anyway — logged on the card and on the board (`store::gate`), never
+    /// silently. `None`: behave exactly as `move_opts` (a hook, if any, decides as always).
+    pub fn move_opts_bg(
+        &mut self,
+        id: i64,
+        column: &str,
+        actor: &str,
+        force: bool,
+        reason: Option<&str>,
+        break_glass: Option<&str>,
+    ) -> Result<Card> {
+        self.move_card(id, column, actor, force, reason, break_glass)
     }
 
     /// Send a REVIEW card back to its owner in DOING with the reason (a `returned` event).
     pub fn send_back(&mut self, id: i64, reason: &str, actor: &str) -> Result<Card> {
-        self.move_card(id, "doing", actor, false, Some(reason))
+        self.move_card(id, "doing", actor, false, Some(reason), None)
     }
 
     /// Last `returned` event time per card (GitHub sync leaves those cards alone until
@@ -2216,17 +2259,22 @@ impl Store {
         author_of(&self.conn, &c)
     }
 
-    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>) -> Result<Card> {
-        self.transition(Change::Move { id, column, reason }, actor, force)
+    fn move_card(&mut self, id: i64, column: &str, actor: &str, force: bool, reason: Option<&str>, break_glass: Option<&str>) -> Result<Card> {
+        self.transition(Change::Move { id, column, reason }, actor, force, HookGate::of(break_glass))
     }
 
     /// EVERY column change goes through here — `next`/`take`, `move`/`done`/send-back (and the
-    /// GitHub sync, which calls `move_to`), and `drop` — from the CLI and the full-screen
-    /// board alike. One transaction (`BEGIN IMMEDIATE`), and one fixed order:
+    /// GitHub sync, which calls `move_sync`), and `drop` — from the CLI and the full-screen
+    /// board alike, via [`transition`](Self::transition), which asks the board's pre/post-change
+    /// hook (if any) around this. One transaction (`BEGIN IMMEDIATE`), and one fixed order:
     ///
     /// 1. what is asked: the card, the column it goes to, and the refusals that belong to the
-    ///    request itself (unknown column, a send-back without its reason, nothing to take);
-    ///    a change that changes nothing ends here;
+    ///    request itself (unknown column, a send-back without its reason, nothing to take); a
+    ///    change that changes nothing ends here. When `transition` asked a pre-change hook, its
+    ///    answer was about a SPECIFIC card in a SPECIFIC state — `snapshot`, carried straight
+    ///    through — so the freshly-read card here must still match it (id, column, owner) or
+    ///    the change is refused as "changed while the hook ran": an approval about a card that
+    ///    has since moved is never acted on.
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
     ///    or `--force`, logged) → self-approval (entering DONE from any column, by the card's
     ///    author, or
@@ -2235,11 +2283,16 @@ impl Store {
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
     ///    send-back). The first two are about WHO may touch the card; `done-by` and
     ///    `done-needs-note` are about closing it responsibly, so they come after — a person
-    ///    blocked by ownership or self-approval never even reaches the closing checks.
+    ///    blocked by ownership or self-approval never even reaches the closing checks. The
+    ///    pre-change hook itself is NOT one of these guards — it already ran, in `transition`,
+    ///    BEFORE any of them (see that function's doc comment for why) — the one thing this
+    ///    function does on its behalf is the `snapshot` mismatch check in step 1: the hook
+    ///    approved a specific (id, column, owner), and this function is what makes an approval
+    ///    about a card that has since changed count for nothing.
     /// 3. the change, then its events.
     ///
-    /// A new guard — and a hook on a change — belongs in step 2, after the ones that are there.
-    fn transition(&mut self, change: Change<'_>, actor: &str, force: bool) -> Result<Card> {
+    /// A new persona-independent guard (not a hook) belongs in step 2, after the ones there.
+    fn transition_inner(&mut self, change: Change<'_>, actor: &str, force: bool, snapshot: Option<(i64, &str, Option<&str>)>) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // 1. what is asked
         let (c, column, reason) = match change {
@@ -2295,6 +2348,19 @@ impl Store {
                 (c, column, reason)
             }
         };
+        // A pre-change hook (if `transition` asked one) approved a change to exactly this card
+        // in exactly this state — never a blank check. `probe` (outside the transaction) and
+        // the resolution above (inside it) can pick a DIFFERENT card for a bare `tb next` /
+        // `assign` if the board changed in between (a different TODO card now sorts first, or
+        // this one was just taken) — comparing the id catches that, not only the column/owner.
+        if let Some((exp_id, exp_col, exp_owner)) = snapshot {
+            if c.id != exp_id || c.column != exp_col || c.owner.as_deref() != exp_owner {
+                return err(
+                    "changed while the pre-change hook ran — retry",
+                    Code::Unknown,
+                );
+            }
+        }
         let id = c.id;
         let kind = match change {
             Change::Claim(_) => Kind::Claim,
@@ -2486,6 +2552,123 @@ impl Store {
         Ok(c)
     }
 
+    /// A plain read of the card a `change` is ABOUT, and the column it would move to — worked
+    /// out with the same selection logic `transition_inner` uses (`claim_target` takes any
+    /// `&Connection`, so calling it with `&self.conn` here needs no transaction), but outside
+    /// any transaction: this is what a pre-change hook is asked about, and asking it must never
+    /// hold the board's write lock (see `crate::hooks`'s doc comment). What `transition_inner`
+    /// resolves once it actually opens its transaction may differ if the board changed in
+    /// between — that is exactly what `snapshot`'s re-check in `transition_inner` is for.
+    fn probe(&self, change: Change<'_>) -> Result<(Card, String)> {
+        Ok(match change {
+            Change::Claim(id) => {
+                let target = Self::claim_target(&self.conn, id)?;
+                (get_card(&self.conn, target)?, "doing".to_string())
+            }
+            Change::Assign { id, .. } => {
+                let target = Self::claim_target(&self.conn, Some(id))?;
+                (get_card(&self.conn, target)?, "doing".to_string())
+            }
+            Change::Drop(id) => (get_card(&self.conn, id)?, "todo".to_string()),
+            Change::Move { id, column, .. } => {
+                // caught again, identically, once `transition_inner` opens its transaction —
+                // duplicated here only so a hook is never asked about a column that does not
+                // exist (nonsense input wastes a hook run and hands it a nonsense payload)
+                let column = column.to_ascii_lowercase();
+                if !COLUMNS.contains(&column.as_str()) {
+                    return err(format!(
+                        "unknown column '{column}' — use one of todo, doing, review, done: 'tb move {id} doing'"
+                    ), Code::InvalidValue);
+                }
+                (get_card(&self.conn, id)?, column)
+            }
+        })
+    }
+
+    /// The public face of [`transition_inner`](Self::transition_inner): asks the board's
+    /// pre-change hook (if any) BEFORE that function opens its write transaction, and its
+    /// post-change hook (if any) AFTER that transaction commits. See `crate::hooks` for why the
+    /// hook itself runs as a child process outside any lock, and `transition_inner`'s own doc
+    /// comment for the `snapshot` re-check that keeps a hook's answer honest.
+    ///
+    /// **Where the hook sits, and why not "last"**: a hook that says no is checked FIRST, before
+    /// `transition_inner`'s five guards (holder, self-approval, `done-by`, `done-needs-note`,
+    /// `done-needs-link`, the WIP cap) ever run — the opposite of "only once everything else
+    /// already allows it". The one thing that forces this is the deadlock rule: a hook is a
+    /// child process, and the only way to guarantee it never waits on a lock THIS process holds
+    /// is to ask it before that lock is taken at all — see `crate::hooks`'s doc comment. The
+    /// five guards stay authoritative regardless of order: `transition_inner` re-runs every one
+    /// of them for real, inside its own transaction, so a hook's "allowed" is necessary but
+    /// never sufficient — a change a hook approved can still be refused a moment later by the
+    /// WIP cap, the holder rule, or (via `snapshot`) by having simply changed underneath it. A
+    /// hook can never be used to bypass a guard; the only cost of asking it first is that a
+    /// change already doomed by an ordinary guard (an unknown column, a full board) sometimes
+    /// asks the hook anyway before failing — `probe` catches the cheapest of these (an unknown
+    /// column) so a hook is at least never handed nonsense, but it is not asked to re-derive
+    /// every refusal `transition_inner` would reach on its own.
+    ///
+    /// `gate` decides three things: whether a hook is asked at all (`HookGate::Sync` — tb's own
+    /// GitHub sync — and running INSIDE another hook are exempt by construction, never by actor
+    /// name), whether the pre-change hook actually runs or is skipped with `--break-glass`
+    /// (`HookGate::BreakGlass`, logged on the card and the board — `store::gate` — never
+    /// silently; refused outright when this board asks for no hook to break), and nothing about
+    /// the guards in `transition_inner`, which run exactly as they always did.
+    fn transition(&mut self, change: Change<'_>, actor: &str, force: bool, gate: HookGate<'_>) -> Result<Card> {
+        let live = !matches!(gate, HookGate::Sync) && !hooks::in_hook();
+        let pre_name = if live { self.hook(hooks::Event::PreChange)? } else { None };
+        let post_name = if live { self.hook(hooks::Event::PostChange)? } else { None };
+        if live && pre_name.is_none() && matches!(gate, HookGate::BreakGlass(_)) {
+            return Err(gate::no_gate_err());
+        }
+        let before = if pre_name.is_some() || post_name.is_some() { Some(self.probe(change)?) } else { None };
+        // (id, from-column, from-owner, the run to log once the change is committed) — kept
+        // only when a pre-change hook actually ran and approved; `None` for break-glass, sync,
+        // in-hook and "no hook configured" alike, so nothing extra is logged for any of them.
+        let mut approved: Option<(i64, String, Option<String>, hooks::Run)> = None;
+        // (hook name, why) — kept only for a break-glass that reaches a real change: logging it
+        // against a change the OTHER guards (holder, self-approval, WIP, …) went on to refuse
+        // anyway would be a false record that a gate was skipped when nothing moved at all.
+        let mut break_glass: Option<(String, String)> = None;
+        if let (Some(name), Some((card, to))) = (&pre_name, &before) {
+            match gate {
+                HookGate::BreakGlass(why) => break_glass = Some((name.clone(), why.to_string())),
+                HookGate::Normal | HookGate::Sync => {
+                    let payload = crate::contract::card_by_id(&*self, card.id)?;
+                    let payload = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+                    let text = hooks::payload(hooks::Event::PreChange, &self.name, &payload, &card.column, to, actor, now(), force, None);
+                    let run = hooks::fire(hooks::Event::PreChange, name, &text)?;
+                    approved = Some((card.id, card.column.clone(), card.owner.clone(), run));
+                }
+            }
+        }
+        let snapshot = approved.as_ref().map(|(id, col, owner, _)| (*id, col.as_str(), owner.as_deref()));
+        let result = self.transition_inner(change, actor, force, snapshot);
+        if let (Ok(c), Some((name, why))) = (&result, &break_glass) {
+            let _ = self.log_break_glass(c.id, actor, name, why);
+        }
+        if let (Ok(c), Some((_, _, _, run))) = (&result, &approved) {
+            // best-effort: the change itself already succeeded and must not be undone by a
+            // failure to write one more log line about it
+            let _ = self.log_hook(c.id, actor, &run.line());
+        }
+        if let (Ok(c), Some(name)) = (&result, &post_name) {
+            let card_v = crate::contract::card_by_id(&*self, c.id)
+                .ok()
+                .and_then(|p| serde_json::to_value(&p).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let from = before.as_ref().map(|(card, _)| card.column.as_str()).unwrap_or(c.column.as_str());
+            let text = hooks::payload(hooks::Event::PostChange, &self.name, &card_v, from, &c.column, actor, now(), force, None);
+            // a post-change hook never decides anything: a failure is a line to report, not a
+            // change to undo (`hooks::fire_after` already turns an Err into that line)
+            let line = match hooks::fire_after(name, &text) {
+                Ok(run) => run.line(),
+                Err(msg) => format!("{name} failed: {msg}"),
+            };
+            let _ = self.log_hook(c.id, actor, &line);
+        }
+        result
+    }
+
     /// Hard-delete a card with its checklist, links and events; logged on the board.
     pub fn delete_card(&mut self, id: i64, actor: &str) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2636,19 +2819,24 @@ impl Store {
 
     /// doing -> review; todo/review -> done.
     pub fn done(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.done_opts(id, actor, false)
+        self.done_opts(id, actor, false, None)
     }
 
     /// `done` with `--force`: see `move_to_forced`.
     pub fn done_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.done_opts(id, actor, true)
+        self.done_opts(id, actor, true, None)
     }
 
-    fn done_opts(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
+    /// `done` (or `done --force`) with `--break-glass "why"`: see `move_opts_bg`.
+    pub fn done_bg(&mut self, id: i64, actor: &str, force: bool, break_glass: Option<&str>) -> Result<Card> {
+        self.done_opts(id, actor, force, break_glass)
+    }
+
+    fn done_opts(&mut self, id: i64, actor: &str, force: bool, break_glass: Option<&str>) -> Result<Card> {
         let c = self.card(id)?;
         match c.column.as_str() {
-            "doing" => self.move_card(id, "review", actor, force, None),
-            "todo" | "review" => self.move_card(id, "done", actor, force, None),
+            "doing" => self.move_card(id, "review", actor, force, None, break_glass),
+            "todo" | "review" => self.move_card(id, "done", actor, force, None, break_glass),
             _ => err(format!(
                 "card #{id} is already done — reopen with 'tb move {id} todo'"
             ), Code::Unknown),
@@ -2656,20 +2844,24 @@ impl Store {
     }
 
     /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
-    /// `drop_card` with `--force`: the actor is not the owner but means it; logged.
     pub fn drop_card_forced(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.drop_card_inner(id, actor, true)
+        self.drop_card_inner(id, actor, true, None)
     }
 
     pub fn drop_card(&mut self, id: i64, actor: &str) -> Result<Card> {
-        self.drop_card_inner(id, actor, false)
+        self.drop_card_inner(id, actor, false, None)
+    }
+
+    /// `drop` (or `drop --force`) with `--break-glass "why"`: see `move_opts_bg`.
+    pub fn drop_card_bg(&mut self, id: i64, actor: &str, force: bool, break_glass: Option<&str>) -> Result<Card> {
+        self.drop_card_inner(id, actor, force, break_glass)
     }
 
     /// Back to todo, unowned. Someone else's DOING card is refused (the same hazard as moving
     /// it, see move_card) unless forced; the check, the `force` event and the drop are one
     /// transaction.
-    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool) -> Result<Card> {
-        self.transition(Change::Drop(id), actor, force)
+    fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool, break_glass: Option<&str>) -> Result<Card> {
+        self.transition(Change::Drop(id), actor, force, HookGate::of(break_glass))
     }
 }
 
@@ -2696,6 +2888,31 @@ enum Kind {
     Move,
     Drop,
     Assign,
+}
+
+/// How a change relates to the pre/post-change hook (`config hook`, `crate::hooks`) — see
+/// `Store::transition`. Every existing call site is `Normal`; the other two are opt-in and
+/// mutually exclusive by construction (one `Change` call carries exactly one `HookGate`).
+#[derive(Clone, Copy)]
+enum HookGate<'a> {
+    /// A person or agent, via the CLI or the full-screen board — a hook always runs.
+    Normal,
+    /// tb's own GitHub sync (`Store::move_sync`): an internal ORIGIN, never derived from the
+    /// actor name (`--as github` is refused before this, in `main.rs`) — it writes down what a
+    /// merged PR or a closed issue already says, not a person or agent proposing a change.
+    Sync,
+    /// `--break-glass "why"`: skip the pre-change hook this board asks for, and say why —
+    /// refused outright when this board asks for no hook (`store::gate::no_gate_err`).
+    BreakGlass(&'a str),
+}
+
+impl<'a> HookGate<'a> {
+    fn of(break_glass: Option<&'a str>) -> HookGate<'a> {
+        match break_glass {
+            Some(why) => HookGate::BreakGlass(why),
+            None => HookGate::Normal,
+        }
+    }
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.

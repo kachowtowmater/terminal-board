@@ -18,6 +18,7 @@ pub mod filter;
 pub mod fsperm;
 pub mod github;
 pub mod herdr;
+pub mod hooks;
 pub mod import;
 pub mod lock;
 pub mod machine;

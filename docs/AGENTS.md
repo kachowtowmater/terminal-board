@@ -87,16 +87,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
-`tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the
-nearest due date, not the top position (lists and `--json` show that order, and `tb prio` there only orders cards sharing a date,
-and says so). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move ID todo` clears the
-owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a file arrives byte for byte into the
-store, which a quoted string cannot promise, once blank space around it is trimmed and a leading byte-order mark is dropped: UTF-8,
-at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal, and waits for it to close (`TB_STDIN_TIMEOUT`
-bounds the wait for its first byte only). `--json` shows text cleaned of control characters and escape sequences, keeping line
-breaks and tabs, so an `export --json` still imports back unchanged. Board order: `TB_DB` > a name on the command line > `TB_BOARD`
-> the saved default > `default`; a hint names its board when bare `tb` would miss it — copy it as printed. Leave settings alone
-unless a person asks you to change them.
+`tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not the top position (lists and `--json` show that order, and `tb prio` there only orders cards sharing a date, and says so). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card; `tb move ID todo` clears the owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text from a file arrives byte for byte into the store, which a quoted string cannot promise, once blank space around it is trimmed and a leading byte-order mark is dropped: UTF-8, at most 256 KiB, empty refused; `-` reads a pipe or a redirect, never a terminal, and waits for it to close (`TB_STDIN_TIMEOUT` bounds the wait for its first byte only). `--json` shows text cleaned of control characters and escape sequences, keeping line breaks and tabs, so an `export --json` still imports back unchanged. Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`; a hint names its board when bare `tb` would miss it — copy it as printed. Leave settings alone unless a person asks you to change them.
 
 ## Recipes
 
@@ -136,11 +127,7 @@ unless a person asks you to change them.
 
 ## Environment variables and identity
 
-You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb
-asks herdr for `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every
-command (each command usually runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set
-`TB_MODEL` / `TB_ROLE` too (recorded with your work). Names are self-asserted — never pass another agent's name to get past a rule.
-The AGENTS panel matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
+You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb asks herdr for `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command (each command usually runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work). Names are self-asserted — never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
 
 | variable | what it does | knob or test hook |
 |---|---|---|
@@ -175,6 +162,10 @@ card).
 - `tb done` will not move a `gh#N` card to DONE while its issue is still open: close the
   issue on GitHub (or merge the PR) instead of adding `--force`.
 
+## Hooks (this machine's own gate on a move)
+
+A board may ask for a pre-change hook (`tb config hook NAME`) and a post-change one (`hook-after`); the board names it, this MACHINE decides what it runs: `tb trust NAME -- COMMAND ARGS…` records it (still untrusted — check the path and sha256 it prints), `tb trust NAME --sha256 HEX` trusts it (`tb trust` alone lists every hook this machine knows). A pre-change hook this machine does not know or trust, that has changed, that times out (10s default) or exits non-zero REFUSES the move and writes nothing — `--force` never skips it. `--break-glass "why"` on `move`/`done`/`take`/`next`/`drop` does skip it, logged on the card and the board, refused outright if the board asks for no hook. `tb sync` is exempt (evidence from GitHub, not a person proposing a change).
+
 ## JSON
 
 Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`. Failures answer
@@ -203,6 +194,7 @@ succeeded — is for your operator: pass it on; do not change settings because o
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` |
 | `no card #ID` | `tb list` to find the right ID |
+| `hook refused` / hook `not trusted` | this machine's hook: `tb trust NAME` to see its state; `--break-glass "why"` if you must |
 
 ## Brief line for orchestrators
 
