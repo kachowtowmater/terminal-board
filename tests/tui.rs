@@ -914,3 +914,51 @@ fn owner_text_style_still_follows_an_exact_match_despite_case_or_a_trailing_spac
     let (x, y) = pos(&screen, "wisp");
     assert!(buf[(x, y)].modifier.contains(Modifier::BOLD), "an exact match past an incidental trailing space still lends its status:\n{screen}");
 }
+
+// card #94: an idle agent that still holds a DOING card is the AGENTS panel's own "!"
+// warning row — one that falls below the fold of a clipped panel must still be named by the
+// closing line, not just folded into a bare count.
+
+#[test]
+fn a_hidden_idle_holder_is_named_in_the_closing_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(8).unwrap();
+    // "trouble" is seeded last, so it sorts last in board order (DOING, top to bottom) and
+    // is the row the panel's row cap pushes below the fold
+    for owner in ["h0", "h1", "h2", "h3", "h4", "h5", "h6", "h7", "trouble"] {
+        s.seed(&Seed { title: "fix login", desc: "", column: "doing", owner: Some(owner), age_secs: 0, due: None, checks: &[], notes: &[] })
+            .unwrap();
+    }
+    let agents =
+        parse_agents(r#"{"result":{"agents":[{"name":"trouble","agent":"claude","agent_status":"idle","pane_id":"w:p9"}]}}"#, None).unwrap();
+    let mut app = App::new(s.snapshot().unwrap(), "someone");
+    app.agents = AgentsState::Agents(agents);
+    let (screen, _) = render(&app, 140, 45);
+    // the AGENTS panel itself shows only the surviving rows — h0..h6, never "trouble" as a
+    // row of its own (it still appears once, as the owner text of its own DOING card box)
+    let panel = &screen[screen.find("AGENTS").expect(&screen)..];
+    assert!(!panel.contains("trouble"), "sanity: the row itself is really clipped away:\n{panel}");
+    let closing = panel.lines().find(|l| l.contains("more")).expect(panel);
+    assert!(closing.contains("idle, holds card"), "a hidden idle holder must be named, not just counted: {closing}");
+}
+
+/// A board with no idle holder hidden below the fold keeps the closing line's old, plain
+/// shape — the fix only adds text when there is something to name, never by default.
+#[test]
+fn the_closing_line_is_unchanged_when_nothing_hidden_is_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.set_wip(8).unwrap();
+    for owner in ["h0", "h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8"] {
+        s.seed(&Seed { title: "fix login", desc: "", column: "doing", owner: Some(owner), age_secs: 0, due: None, checks: &[], notes: &[] })
+            .unwrap();
+    }
+    let mut app = App::new(s.snapshot().unwrap(), "someone");
+    app.agents = AgentsState::Unavailable("herdr not available".into());
+    let (screen, _) = render(&app, 140, 45);
+    let panel = &screen[screen.find("AGENTS").expect(&screen)..];
+    let closing = panel.lines().find(|l| l.contains("more")).expect(panel);
+    assert!(!closing.contains("idle"), "no idle holder is hidden: {closing}");
+    assert!(closing.contains("+2 more here") && !closing.contains('·'), "the plain, unmodified shape: {closing}");
+}

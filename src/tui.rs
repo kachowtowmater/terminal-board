@@ -2249,16 +2249,31 @@ pub(crate) fn close_clipped(mut lines: Vec<Line<'static>>, app: &App, height: us
     }
     let hidden = r.here.len().saturating_sub(height - 1);
     let n = r.elsewhere.len();
+    // an idle agent that still holds a card is the panel's own "!" warning row (card #94):
+    // one of those must never go quiet just because it fell below the fold. The rows kept
+    // above are untouched (someone holding a card already sorts before someone holding
+    // none, board order first) — this only makes sure the closing line says when one of the
+    // rows it swallowed was a problem, the same way it already says how many were swallowed.
+    let shown = (height - 1).min(r.here.len());
+    let idle_hidden = r.here[shown..].iter().filter(|row| row.idle_holder()).count();
+    let warn = if idle_hidden > 0 { format!(" · {idle_hidden} idle, holds card") } else { String::new() };
     // (at least one actor is hidden: the lines only outnumber the rows when the actors do)
     let texts = if n == 0 {
-        vec![format!(" +{hidden} more here"), format!(" +{hidden} more")]
+        vec![format!(" +{hidden} more here{warn}"), format!(" +{hidden} more here"), format!(" +{hidden} more{warn}"), format!(" +{hidden} more")]
     } else {
-        vec![format!(" +{hidden} more here · +{n} elsewhere"), format!(" +{hidden} more · +{n} elsewhere"), format!(" +{} more", hidden + n)]
+        vec![
+            format!(" +{hidden} more here · +{n} elsewhere{warn}"),
+            format!(" +{hidden} more here · +{n} elsewhere"),
+            format!(" +{hidden} more · +{n} elsewhere{warn}"),
+            format!(" +{hidden} more · +{n} elsewhere"),
+            format!(" +{} more{warn}", hidden + n),
+            format!(" +{} more", hidden + n),
+        ]
     };
     let last = texts.last().cloned().unwrap_or_default();
     let text = texts.into_iter().find(|t| t.chars().count() <= width).unwrap_or(last);
     lines.truncate(height - 1);
-    lines.push(Line::styled(text, dim()));
+    lines.push(Line::styled(text, if idle_hidden > 0 { red() } else { dim() }));
     lines
 }
 
