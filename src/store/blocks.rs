@@ -198,7 +198,11 @@ impl Store {
                 ));
             }
         }
+        // a write transaction from the start, consistent with every other write path (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick
+        // (`transaction_with_behavior` needs `&mut Connection`) — see `store.rs::add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute(
             "UPDATE cards SET blocked=?, blocked_on=?, blocked_until=? WHERE id=?",
             params![text, on, until, id],

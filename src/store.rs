@@ -1232,7 +1232,18 @@ impl Store {
                 (explicit.map(str::to_string), gh, title)
             }
         };
+        // `BEGIN IMMEDIATE`, not a deferred transaction (#85): this reads `bottom_of` and
+        // then writes the INSERT. A deferred transaction takes its SHARED (read) lock on the
+        // first statement and only asks to upgrade to a write lock on the INSERT — and SQLite
+        // does not run the busy handler for that upgrade, so two concurrent adds return
+        // SQLITE_BUSY ("database is locked") instantly instead of one of them waiting out the
+        // 10s busy_timeout. Starting the transaction as a write from the first statement makes
+        // the busy timeout apply, the way every other read-then-write path here now does.
+        // `add` is `&self` (not `&mut self`), so `transaction_with_behavior` is not available
+        // (it needs `&mut Connection`) — `unchecked_transaction` + an explicit ROLLBACK into a
+        // fresh BEGIN IMMEDIATE is the same trick `note` and `block` already use below.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let t = now();
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
@@ -1729,7 +1740,11 @@ impl Store {
         if text.is_empty() {
             return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"));
         }
+        // reads (the next idx) then writes: needs `BEGIN IMMEDIATE`, same reason as `add` (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick, not
+        // `transaction_with_behavior` (which needs `&mut Connection`) — see `add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let n: i64 = tx.query_row(
             "SELECT COALESCE(MAX(idx), 0) + 1 FROM checklist WHERE card_id=?",
             [id],
@@ -1753,7 +1768,9 @@ impl Store {
                 d.checklist.len()
             ));
         };
+        // a write transaction from the start, consistent with every other write path (#85)
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute("DELETE FROM checklist WHERE card_id=? AND idx=?", params![id, n])?;
         // two steps so the (card_id, idx) key never collides mid-update
         tx.execute(

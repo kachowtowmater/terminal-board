@@ -117,7 +117,11 @@ impl Store {
         self.card(id)?;
         let value = clean_value(value)?;
         let label = clean_label(label)?;
+        // reads (the next idx) then writes: needs `BEGIN IMMEDIATE`, same reason as `add` (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick
+        // (`transaction_with_behavior` needs `&mut Connection`) — see `store.rs::add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let n: i64 = tx.query_row("SELECT COALESCE(MAX(idx), 0) + 1 FROM links WHERE card_id=?", [id], |r| r.get(0))?;
         let ts = now();
         tx.execute(
@@ -135,7 +139,9 @@ impl Store {
         let Some(item) = links.iter().find(|l| l.idx == n) else {
             return err(format!("card #{id} has no link {n} (it has {}) — see 'tb show {id}'", links.len()));
         };
+        // a write transaction from the start, consistent with every other write path (#85)
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute("DELETE FROM links WHERE card_id=? AND idx=?", params![id, n])?;
         // two steps so the (card_id, idx) key never collides mid-update
         tx.execute("UPDATE links SET idx = -(idx - 1) WHERE card_id=? AND idx>?", params![id, n])?;

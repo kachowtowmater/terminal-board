@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Concurrent writers wait for the lock instead of failing instantly (#85)
+
+`tb add` (and several other write paths) opened a plain, deferred transaction that reads
+before it writes — `bottom_of`, finding the next position, then the INSERT. SQLite does not
+run the busy handler for a read-to-write lock UPGRADE, only for a fresh lock request, so two
+processes writing at once could both fail with "database is locked" straight away instead of
+one of them waiting out the 10s busy timeout. Measured: a storm of 20 rounds × 4 simultaneous
+`tb add` lost the large majority of writes to instant refusals.
+- Every write transaction now starts as `BEGIN IMMEDIATE`, taking the write lock on its first
+  statement so the busy timeout actually applies. An ordinary, uncontended write is unaffected
+  — there was never anything to wait for either way.
+
 ### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
 
 `--file -` (and `--desc-file -`) waited for standard input to close however long that took,
