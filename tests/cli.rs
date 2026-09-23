@@ -140,6 +140,11 @@ fn cli_wip_refusal_and_errors() {
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("doing is full (1/1:") && err.contains("finish #1 with 'tb done 1' first"), "{err}");
+    // #81: the same refusal under --json carries the stable `wip_full` code
+    let o = b.run(&["next", "--json"]);
+    assert!(!o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["code"], "wip_full", "{v}");
     let o = b.run(&["show", "77"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("tb list"));
@@ -276,8 +281,10 @@ fn missing_named_board_fails_instead_of_creating() {
     let o = run_at(&["demo-typo", "list", "--json"]);
     assert!(!o.status.success());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint", "code"]), "{}", v);
     assert!(v["hint"].as_str().unwrap().contains("create it with"), "{}", v);
+    // #81: the stable code for "the named board does not exist"
+    assert_eq!(v["code"], "no_board");
     // add DOES create the named board
     let o = run_at(&["demo-typo", "add", "docs: now it exists"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -319,7 +326,9 @@ fn blank_as_is_refused_not_silently_replaced() {
     let o = b.run(&["note", "1", "empty", "--as", "", "--json"]);
     assert!(!o.status.success());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint", "code"]), "{}", v);
+    // #81: the stable code for `--as ""`
+    assert_eq!(v["code"], "empty_actor");
     // nothing was written
     let show = b.ok(&["show", "1"]);
     assert!(!show.contains("empty") && !show.contains("spacey"), "no note landed: {show}");
@@ -336,9 +345,11 @@ fn parse_errors_answer_json_under_json_flag() {
     let o = b.run(&["show", "abc", "--json"]);
     assert_eq!(o.status.code(), Some(2), "usage errors exit 2");
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint", "code"]), "{}", v);
     assert_eq!(v["ok"], false);
     assert!(v["hint"].as_str().unwrap().contains("tb --help"), "{}", v);
+    // #81: the argument-error path carries `usage` (a parse failure, not a runtime refusal)
+    assert_eq!(v["code"], "usage");
     // missing argument
     let o = b.run(&["note", "1", "--json"]);
     assert_eq!(o.status.code(), Some(2));
@@ -348,16 +359,19 @@ fn parse_errors_answer_json_under_json_flag() {
     assert!(err.contains("<TEXT>"), "names the missing argument: {v}");
     assert!(err.starts_with("argument error: the following") && !err.contains("error: error"), "no repeated 'error:': {v}");
     assert!(hint.starts_with("usage: tb note <ID> <TEXT>") && hint.contains("tb --help"), "{v}");
+    assert_eq!(v["code"], "usage", "#81: {v}");
     // unknown flag (a bare unknown word stays the documented board-open behavior)
     let o = b.run(&["--frobnicate", "--json"]);
     assert_eq!(o.status.code(), Some(2));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert!(v["error"].as_str().unwrap().contains("argument error"), "{}", v);
+    assert_eq!(v["code"], "usage", "#81: {v}");
     // control: a runtime failure under --json keeps its exact shape and rc 1
     let o = b.run(&["done", "99", "--json"]);
     assert!(!o.status.success() && o.status.code().unwrap() == 1);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["hint"], "see 'tb list' for ids", "{}", v);
+    assert_eq!(v["code"], "no_card", "#81: a runtime refusal never carries `usage`: {v}");
     // negative control: without --json a parse failure stays plain on stderr, empty stdout
     // (the parser's full message and exit code 2, exactly as before)
     let o = b.run(&["show", "abc"]);
@@ -387,6 +401,13 @@ fn a_board_name_with_tb_db_is_refused() {
         assert!(!o.status.success(), "{args:?}");
         let err = String::from_utf8_lossy(&o.stderr).to_string();
         assert!(err.contains("TB_DB is set") && err.contains("unset TB_DB"), "{args:?}: {err}");
+        // #81: the same refusal under --json carries the stable `db_pinned` code
+        let mut jargs = args.clone();
+        jargs.push("--json");
+        let jo = b.run(&jargs);
+        assert!(!jo.status.success(), "{jargs:?}");
+        let v: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+        assert_eq!(v["code"], "db_pinned", "{jargs:?}: {v}");
     }
     // nothing mixed in: the pinned file holds only the default board's card
     let list = b.ok(&["list"]);

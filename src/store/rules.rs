@@ -15,7 +15,7 @@
 //! changes, sees it again on the copy too. Nothing here is a lock — it is a note to make sure
 //! the manual eventually gets read, not a gate on doing the work.
 
-use super::{err, Connection, Result, Store};
+use super::{Code, err, Connection, Result, Store};
 use rusqlite::OptionalExtension;
 
 impl Store {
@@ -34,7 +34,7 @@ impl Store {
                 if t.is_empty() {
                     return err(
                         "rules text is empty — 'tb config rules \"TEXT\"', or clear it with 'tb config rules --off'"
-                            .to_string(),
+                            .to_string(), Code::ArgRequired,
                     );
                 }
                 Some(t.to_string())

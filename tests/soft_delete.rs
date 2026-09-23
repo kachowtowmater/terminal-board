@@ -91,6 +91,8 @@ fn rm_edit_and_block_refuse_a_card_someone_else_holds() {
         assert_eq!(v["ok"], false, "{args:?}");
         assert_eq!(v["error"], "#1 is held by bot-1", "{args:?}");
         assert!(v["hint"].as_str().unwrap().contains("--force"), "{args:?}: {v}");
+        // #81: the holder rule's stable code
+        assert_eq!(v["code"], "not_owner", "{args:?}");
     }
     assert_eq!(b.json("reader", &["show", "1", "--json"]), before, "every refusal left the card exactly as it was");
 
@@ -325,6 +327,8 @@ fn check_and_prio_refuse_a_card_someone_else_holds() {
         assert_eq!(v["ok"], false, "{args:?}");
         assert_eq!(v["error"], "#1 is held by bot-1", "{args:?}");
         assert!(v["hint"].as_str().unwrap().contains("--force"), "{args:?}: {v}");
+        // #81: the holder rule's stable code
+        assert_eq!(v["code"], "not_owner", "{args:?}");
     }
     assert_eq!(b.json("reader", &["show", "1", "--json"]), before, "every refusal left the card exactly as it was");
     assert_eq!(b.json("reader", &["board", "--json"]), doing_before, "nothing moved anywhere on the board");

@@ -15,27 +15,51 @@ pub enum View {
 
 const TAB_HINT: &str = "   tab >";
 
-/// `GITHUB acme/widgets · 10 issues (6 free) · 1 PR (1 FAIL) · merged 7   tab >`
+/// `GITHUB acme/widgets · 10 issues (6 free) · 1 PR (1 FAIL) · merged 7   tab >`. A full page
+/// (20) is labelled the same way the tile and the one-line summary already are — long, else
+/// terse, else today's text, whichever fits the bar whole (#78): `20 PR newest` / `20+ PR` /
+/// `20 PR`, `(6 free in newest 20)` / `(6/20 free)` / `(6 free)`.
 pub(super) fn gh_bar(app: &App, width: usize) -> Line<'static> {
     let focused = app.focus == Focus::Github && app.view == View::Board;
     let base = if focused { bold().add_modifier(Modifier::REVERSED) } else { Style::default() };
-    let mut spans = vec![Span::styled(" GITHUB ", bold().patch(base))];
-    match (&app.gh.repo, &app.gh.snap) {
-        (None, _) => spans.push(Span::styled("no repo — enter to pick one", base)),
-        (Some(r), None) => spans.push(Span::styled(format!("{r} · {}", app.gh.error.clone().unwrap_or_else(|| "fetching...".into())), base)),
-        (Some(r), Some(s)) => {
-            let fac = github::factory(s, &app.snap.cards, app.snap.now);
-            spans.push(Span::styled(format!("{r} · {} issues ({} free) · {} PR", s.issues_open, fac.unclaimed, s.prs.len()), base));
-            if fac.failing > 0 {
-                spans.push(Span::styled(format!(" ({} ", fac.failing), base));
-                spans.push(Span::styled("FAIL", red().patch(base)));
-                spans.push(Span::styled(")", base));
+    let build = |label: github::PageLabel| -> Vec<Span<'static>> {
+        let mut spans = vec![Span::styled(" GITHUB ", bold().patch(base))];
+        match (&app.gh.repo, &app.gh.snap) {
+            (None, _) => spans.push(Span::styled("no repo — enter to pick one", base)),
+            (Some(r), None) => {
+                spans.push(Span::styled(format!("{r} · {}", app.gh.error.clone().unwrap_or_else(|| "fetching...".into())), base))
             }
-            spans.push(Span::styled(format!(" · merged {}", s.merged_today.len()), base));
+            (Some(r), Some(s)) => {
+                let fac = github::factory(s, &app.snap.cards, app.snap.now);
+                let free = match (label, s.issues.len() >= github::PAGE) {
+                    (github::PageLabel::Long, true) => format!("{} free{}", fac.unclaimed, github::issue_page(s.issues.len())),
+                    (github::PageLabel::Terse, true) => format!("{}/{} free", fac.unclaimed, github::PAGE),
+                    _ => format!("{} free", fac.unclaimed),
+                };
+                let prs = match (label, s.prs.len() >= github::PAGE) {
+                    (github::PageLabel::Long, true) => format!("{} PR newest", s.prs.len()),
+                    (github::PageLabel::Terse, true) => format!("{}+ PR", s.prs.len()),
+                    _ => format!("{} PR", s.prs.len()),
+                };
+                spans.push(Span::styled(format!("{r} · {} issues ({free}) · {prs}", s.issues_open), base));
+                if fac.failing > 0 {
+                    spans.push(Span::styled(format!(" ({} ", fac.failing), base));
+                    spans.push(Span::styled("FAIL", red().patch(base)));
+                    spans.push(Span::styled(")", base));
+                }
+                spans.push(Span::styled(format!(" · merged {}", s.merged_today.len()), base));
+            }
         }
-    }
-    spans.push(Span::styled(TAB_HINT, dim().patch(base)));
-    fit_line(spans, width)
+        spans.push(Span::styled(TAB_HINT, dim().patch(base)));
+        spans
+    };
+    let fits = |spans: &[Span<'static>]| spans.iter().map(|s| s.content.chars().count()).sum::<usize>() <= width;
+    let chosen = github::PageLabel::LABELLED
+        .into_iter()
+        .map(build)
+        .find(|spans| fits(spans))
+        .unwrap_or_else(|| build(github::PageLabel::None));
+    fit_line(chosen, width)
 }
 
 /// `AGENTS 3 here · 2 elsewhere (! bot-2 idle w/ card)   tab >`
@@ -137,11 +161,46 @@ pub(super) fn draw_dense_tiles(f: &mut Frame, app: &App, s: &github::GhSnapshot,
 const TIDY_TWO_COL: u16 = 56;
 
 /// The tidy block's stat rows: `ISSUES  12 open   5 new   7 free    MERGED   7 today` /
-/// `PRS      1 open   0 failing         MAIN CI  ok` (4 rows when narrower than 56).
+/// `PRS      1 open   0 failing         MAIN CI  ok` (4 rows when narrower than 56). A full
+/// page (20) is labelled the same way the tile and the one-line summary already are — long,
+/// else terse, else today's text (#78): `PRS  20 newest` / `PRS  20+` / `PRS  20 open`;
+/// `17/20 free` when only the terse form fits (a long form here would run `ISSUES` past its
+/// own row, so only the terse-shaped `N/20 free` is ever tried). Neither label is ever chosen
+/// if it would overflow the row's own budget — the two-col pad below (`TIDY_TWO_COL`) — and
+/// push MERGED / MAIN CI across; that budget is checked here, not left to the pad to enforce.
 fn tidy_stats(app: &App, s: &github::GhSnapshot, width: u16) -> Vec<Line<'static>> {
     let fac = github::factory(s, &app.snap.cards, app.snap.now);
-    let left1 = format!(" {:<7}{:>3} open {:>3} new {:>3} free", "ISSUES", s.issues_open, fac.new_today, fac.unclaimed);
-    let left2 = format!(" {:<7}{:>3} open {:>3} failing", "PRS", s.prs.len(), fac.failing);
+    let issues_row = |label: github::PageLabel| -> String {
+        let free = match (label, s.issues.len() >= github::PAGE) {
+            (github::PageLabel::Terse, true) => format!("{}/{} free", fac.unclaimed, github::PAGE),
+            _ => format!("{:>3} free", fac.unclaimed),
+        };
+        format!(" {:<7}{:>3} open {:>3} new {free}", "ISSUES", s.issues_open, fac.new_today)
+    };
+    let prs_row = |label: github::PageLabel| -> String {
+        let count = match (label, s.prs.len() >= github::PAGE) {
+            (github::PageLabel::Long, true) => github::pr_count(s.prs.len()),
+            (github::PageLabel::Terse, true) => format!("{}+", s.prs.len()),
+            _ => format!("{:>3} open", s.prs.len()),
+        };
+        format!(" {:<7}{count} {:>3} failing", "PRS", fac.failing)
+    };
+    // the pad in two-col mode is 36 wide (below); a labelled row longer than that would push
+    // MERGED / MAIN CI across instead of dropping the label, so it is measured here and
+    // rejected before it ever reaches the pad — the narrow (4-row) layout has no such pad, so
+    // its budget is the row's own render width.
+    let budget = if width >= TIDY_TWO_COL { 36usize } else { width as usize };
+    // ISSUES has no long form of its own: at this row's width a long form ("N free in newest
+    // 20") never fits anyway, so only the terse-shaped fraction is tried before the plain text.
+    let left1 = [issues_row(github::PageLabel::Terse), issues_row(github::PageLabel::None)]
+        .into_iter()
+        .find(|t| t.chars().count() <= budget)
+        .unwrap_or_else(|| issues_row(github::PageLabel::None));
+    let left2 = [github::PageLabel::Long, github::PageLabel::Terse]
+        .into_iter()
+        .map(prs_row)
+        .find(|t| t.chars().count() <= budget)
+        .unwrap_or_else(|| prs_row(github::PageLabel::None));
     let right1 = vec![Span::raw(format!("{:<9}{:>2} today", "MERGED", s.merged_today.len()))];
     let main = s.main_ci.as_ref().map(|c| c.state.clone()).unwrap_or_else(|| "-".into());
     let right2 = vec![

@@ -15,7 +15,7 @@
 //! DOING stays in position order (it is work in hand, not a queue) and DONE stays newest
 //! first: a finished card's date never orders anything.
 
-use super::{due, err, Card, Result, Store, COLUMNS};
+use super::{Code, due, err, Card, Result, Store, COLUMNS};
 use rusqlite::{Connection, OptionalExtension};
 use std::cmp::Ordering;
 
@@ -41,7 +41,7 @@ impl Sort {
         match value.trim().to_ascii_lowercase().as_str() {
             "position" => Ok(Sort::Position),
             "due" => Ok(Sort::Due),
-            _ => err(format!("unknown sort '{}' — use 'tb config sort position' or 'tb config sort due'", value.trim())),
+            _ => err(format!("unknown sort '{}' — use 'tb config sort position' or 'tb config sort due'", value.trim()), Code::InvalidValue),
         }
     }
 

@@ -175,19 +175,29 @@ fn golden_write_results_and_errors() {
     let v = json(&tb(&db, &["config", "wip", "4", "--json"]));
     assert_eq!(keys(&v), sorted(&["ok", "config"]));
     assert_eq!(keys(&v["config"]), sorted(&["key", "value"]));
-    // errors: ok=false, error, hint, non-zero exit
-    for bad in [vec!["show", "99"], vec!["rm", "99"], vec!["done", "99"], vec!["prio", "1", "sideways"], vec!["config", "nope", "1"]] {
+    // errors: ok=false, error, hint, code, non-zero exit (#81: `code` is additive, `v` stays 1)
+    for (bad, code) in [
+        (vec!["show", "99"], "no_card"),
+        (vec!["rm", "99"], "no_card"),
+        (vec!["done", "99"], "no_card"),
+        (vec!["prio", "1", "sideways"], "invalid_value"),
+        (vec!["config", "nope", "1"], "unknown_setting"),
+    ] {
         let mut args = bad.clone();
         args.push("--json");
         let o = tb(&db, &args);
         assert!(!o.status.success(), "{bad:?}");
         let v = json(&o);
-        assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{bad:?}");
+        assert_eq!(keys(&v), sorted(&["ok", "error", "hint", "code"]), "{bad:?}");
         assert_eq!(v["ok"], false);
         assert!(v["hint"].as_str().unwrap().contains("tb "), "hint names a command: {v}");
+        // #81: every --json failure carries a non-empty, stable `code` an agent can branch on
+        assert!(v["code"].as_str().is_some_and(|c| !c.is_empty()), "{bad:?}: {v}");
+        assert_eq!(v["code"], code, "{bad:?}: {v}");
     }
     let v = json(&tb(&db, &["rm", "99", "--json"]));
     assert!(v["hint"].as_str().unwrap().contains("tb list"));
+    assert_eq!(v["code"], "no_card");
 }
 
 #[test]

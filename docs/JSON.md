@@ -237,12 +237,12 @@ object; parse failures answer on stdout with the same shape and exit **2** (usag
 of 1 (runtime):
 
 ```json
-{ "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids" }
+{ "ok": false, "error": "no card #9", "hint": "see 'tb list' for ids", "code": "no_card" }
 ```
 
 An argument error names what is missing and gives the usage line, e.g. `tb note 1 --json` →
 `"error": "argument error: the following required arguments were not provided: <TEXT>"`,
-`"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"` (exit 2).
+`"hint": "usage: tb note <ID> <TEXT> — see 'tb --help' …"`, `"code": "usage"` (exit 2).
 
 `hint` always says what to run next, e.g. `doing is full (3/3)` → `finish one with 'tb done ID' first`,
 or `issue gh#11 still open on GitHub` → `… 'tb done 11 --force' to mark it done anyway`.
@@ -251,6 +251,61 @@ When the board was chosen **explicitly by name or `-b`**, the command in a hint 
 The name is left out only when a bare `tb` is certain to reach that board: it is the board
 plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
 picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
+
+### `code` — a stable symbol to branch on, never `error`'s prose
+
+`error` and `hint` are prose for a person: rewording either is not a breaking change, and has
+happened before (#25 changed argument errors from plain text to this JSON shape without
+bumping `"v"`). Before `code` existed, an agent that needed to tell "the card is held by
+someone else" from "no card #N" from "doing is full" apart had no choice but to substring-match
+that prose — freezing it into a de-facto contract. `code` is the real, stable contract: a
+lowercase snake_case symbol, present and non-empty on **every** `--json` failure object, runtime
+or argument error, on every command that can fail. It is carried on the error type itself
+(`store::BoardError`'s second field, `store::Code`), not re-derived from the message text, so
+adding a new failure path without a code is a compile error, not a runtime gap.
+
+**The vocabulary is OPEN.** New codes are added as tb grows; a consumer that meets one it does
+not recognize falls back to `error`'s text and the exit status — exactly as it must for any
+future addition. Once shipped, a code's spelling and meaning are a contract: never renamed,
+never reused for a different failure. `unknown` is the explicit catch-all — carried today by
+error paths that predate this vocabulary or that do not yet warrant their own symbol — and
+means exactly the same thing to a consumer as a code it has never seen: read `error`/`hint`.
+
+The five 2.0.0 refusals, pinned by golden tests:
+
+| code | refusal |
+|---|---|
+| `not_owner` | changing a DOING card held by another actor without `--force` (the holder rule) |
+| `db_pinned` | a board name given while `TB_DB` pins one file |
+| `no_board` | the named board does not exist |
+| `empty_actor` | `--as ""` |
+| `reason_required` | sending a REVIEW card back to DOING with no reason |
+
+Everyday failures:
+
+| code | refusal |
+|---|---|
+| `no_card` | no card with that id, on the board or in the archive |
+| `wip_full` | DOING is at the board's `wip` limit |
+| `invalid_board_name` | a board name that is not `[a-z0-9_-]{1,32}` |
+| `board_name_is_command` | a board name that collides with a command word |
+| `gh_issue_open` | `tb done` refused: the linked GitHub issue is still open |
+| `github_off` | a GitHub-only command run on a board with no `github` repo configured |
+| `github_error` | a GitHub API/network call failed |
+| `not_in_review` | an approval (`tb done --approve`) outside REVIEW |
+| `self_approve` | the actor who did the work tried to approve or review their own card (never-approve-your-own-work) |
+| `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
+| `done_needs_note` | `config done-needs-note` requires a fresh note before DONE |
+| `done_needs_link` | `config done-needs-link` requires a link with that label before DONE |
+| `arg_required` | a required argument or value was not given |
+| `unknown_command` | an unrecognized subcommand or command word |
+| `unknown_setting` | an unrecognized `tb config` key |
+| `invalid_value` | a value given for a recognized field/setting/flag is not one it accepts |
+| `db_error` | the database could not be opened, read or written (including "locked, try again") |
+| `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
+| `terminal_error` | the interactive TUI failed to start or run |
+| `usage` | a command-line argument failed to parse (clap): missing/extra/malformed flags, an unrecognized subcommand caught at the parser level, wrong arity |
+| `unknown` | the open-ended catch-all above |
 
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
@@ -292,14 +347,14 @@ Success (exit 0; `--dry-run` answers the same object with `"dry_run": true` and 
 
 ```json
 { "ok": false, "error": "2 problems in dates.json", "hint": "nothing was written; fix them and check again with 'tb edit --from dates.json --dry-run'",
-  "command": "edit", "source": "dates.json", "dry_run": false,
+  "code": "invalid_value", "command": "edit", "source": "dates.json", "dry_run": false,
   "problems": [ { "row": 250, "id": 41, "field": "due", "problem": "'2026-02-30' is not a real calendar date", "hint": "use YYYY-MM-DD, …" },
                 { "row": 251, "id": 97, "field": "id", "problem": "no card #97", "hint": "see 'tb list' for ids" } ] }
 ```
 
 A file that cannot be read at all (missing, not JSON, not cards, empty, too big, a terminal
-on `-`) is the usual `{ok:false,error,hint}`. One write transaction: a second import at the
-same moment waits, then runs whole.
+on `-`) is the usual `{ok:false,error,hint,code}`. One write transaction: a second import at
+the same moment waits, then runs whole.
 
 ## `tb export` — the whole board, with its history
 

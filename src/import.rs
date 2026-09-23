@@ -13,7 +13,7 @@
 //! is what keeps tomorrow's export importable today.
 
 use crate::store::due::DueDate;
-use crate::store::BoardError;
+use crate::store::{BoardError, Code};
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,11 +88,11 @@ const EDIT_FIELDS: [&str; 7] = ["id", "title", "tag", "gh_ref", "description", "
 pub fn rows_of(text: &str, mode: Mode, source: &str) -> Result<Vec<Value>, BoardError> {
     let again = format!("'tb {} {source} --dry-run'", mode.usage());
     let doc: Value = serde_json::from_str(text)
-        .map_err(|e| BoardError(format!("{source} is not valid JSON ({e}) — fix it, then check it with {again}")))?;
+        .map_err(|e| BoardError(format!("{source} is not valid JSON ({e}) — fix it, then check it with {again}"), Code::InvalidValue))?;
     let shape = || {
         BoardError(format!(
             "{source} is not a list of cards — give a JSON array of card objects, {{\"cards\": [...]}}, or the output of 'tb board --json' / 'tb show ID --json'; then check it with {again}"
-        ))
+        ), Code::InvalidValue)
     };
     let rows = match doc {
         Value::Array(rows) => rows,
@@ -117,7 +117,7 @@ pub fn rows_of(text: &str, mode: Mode, source: &str) -> Result<Vec<Value>, Board
         _ => return Err(shape()),
     };
     if rows.is_empty() {
-        return Err(BoardError(format!("{source} holds no cards — nothing to do; a row looks like {}", example(mode))));
+        return Err(BoardError(format!("{source} holds no cards — nothing to do; a row looks like {}", example(mode)), Code::InvalidValue));
     }
     Ok(rows)
 }
@@ -500,17 +500,17 @@ pub fn run(
                 .iter()
                 .map(|p| json!({"row": p.row, "id": p.id, "field": p.field, "problem": p.problem, "hint": hinted(&p.hint)}))
                 .collect();
-            let v = json!({"ok": false, "error": error, "hint": hinted(hint), "command": mode.as_str(), "source": shown, "dry_run": dry_run, "problems": rows});
+            let v = json!({"ok": false, "error": error, "hint": hinted(hint), "code": Code::InvalidValue.as_str(), "command": mode.as_str(), "source": shown, "dry_run": dry_run, "problems": rows});
             println!(
                 "{}",
                 serde_json::to_string_pretty(&crate::clean_json(&v)).unwrap_or_default()
             );
-            return Err(BoardError(REPORTED.to_string()));
+            return Err(BoardError(REPORTED.to_string(), Code::InvalidValue));
         }
         for p in &problems {
             eprintln!("{}", crate::text::sanitize(&hinted(&p.line())));
         }
-        return Err(BoardError(summary));
+        return Err(BoardError(summary, Code::InvalidValue));
     }
     let warnings = ignored_warnings(&results, mode);
     if json_out {
