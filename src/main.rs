@@ -1100,18 +1100,30 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
     let mut store = open_board(&name, creates)?;
     // a stored `tz` this build does not know must not be ignored silently: today then comes
-    // from this machine's zone, and every command says so until the setting is fixed
+    // from this machine's zone, and every command says so until the setting is fixed. Scoped
+    // to `store.notice_key()` (the one function that computes this — see its doc comment on
+    // `store::conn_notice_key`), so the full-screen board only ever drains warnings that are
+    // actually about itself, whatever shape the board's path was given in.
     if let Some(bad) = store.unknown_tz()? {
-        terminal_board::notice::push(format!(
+        let msg = format!(
             "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
-        ));
+        );
+        match store.notice_key() {
+            Some(k) => terminal_board::notice::push_for(&k, msg),
+            None => terminal_board::notice::push(msg),
+        }
     }
-    // before the full-screen board or `watch` takes over the terminal
-    print_warnings();
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
     let cmd = cli.cmd;
     let j = cli.json;
+    // before `watch` or plain/json output takes over the terminal. The one exception is the
+    // full-screen board: printing here would flash on the real screen for an instant and then
+    // be hidden behind the alternate screen it switches to, so it shows its own warnings in
+    // the status line as they arrive instead (see `tui::run`'s use of `App::reload`).
+    if !(cmd.is_none() && tty) {
+        print_warnings();
+    }
     let Some(cmd) = cmd else {
         if tty {
             return tui::run(store, &actor)

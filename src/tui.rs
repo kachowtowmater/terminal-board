@@ -459,6 +459,25 @@ impl App {
         if let Some(d) = &self.popup {
             self.popup = store.show(d.card.id).ok();
         }
+        // warnings raised opening (or, mid-session, re-opening) THIS board — a wide board
+        // file, a backup made before a schema upgrade — are shown here rather than only on
+        // stderr after the board exits, since the alternate screen hides stderr while it
+        // runs (card #83). Keyed to `store.notice_key()` — the one function that computes
+        // this (see its doc comment on `store::conn_notice_key`), the same one every
+        // `notice::push_for` about this connection already used — so a keyed drain only ever
+        // takes entries raised for this exact board, whatever shape its path was given in
+        // (relative, through a symlink, `..` in it, `TB_DB` passing one through unchanged):
+        // another board open in the same process (or, in the test binary, an unrelated test
+        // running at the same time against its own tempdir) can never leak into this status
+        // line. Only when the line is free: an unread one is never silently replaced by a
+        // later one, and anything still queued when the board exits is left for `main`'s own
+        // stderr print to catch, so a warning is never lost outright.
+        if self.status.is_none() {
+            let pending = store.notice_key().map(|k| crate::notice::take_unprinted_for(&k)).unwrap_or_default();
+            if !pending.is_empty() {
+                self.status = Some((pending.join(" · "), true));
+            }
+        }
     }
 
     fn report<T>(&mut self, r: crate::store::Result<T>, ok: impl FnOnce(&T) -> String) -> Option<T> {
@@ -1277,9 +1296,16 @@ impl App {
                 self.repos = RepoState::Idle;
                 self.repos_rx = None;
                 self.picker_msg = None;
+                // cleared first, so `reload` can surface a warning this open just raised (a
+                // wide file, a backup made upgrading an older board) instead of it sitting
+                // queued behind whatever the old board was last showing (card #83)
+                self.status = None;
+                self.status_until = None;
                 self.reload(store);
-                self.status = Some((format!("board: {}", row.name), false));
-                self.status_until = Some(Instant::now() + Duration::from_secs(3));
+                if self.status.is_none() {
+                    self.status = Some((format!("board: {}", row.name), false));
+                    self.status_until = Some(Instant::now() + Duration::from_secs(3));
+                }
             }
         }
     }
@@ -1886,8 +1912,11 @@ pub(crate) fn date_order_note(snap: &Snapshot, col: &str, room: usize) -> &'stat
     }
 }
 
+/// The live agent behind a card's owner TEXT — same exact-name rule the AGENTS panel roster
+/// uses (`herdr::exact_owner`), so a card is never coloured as if a near-miss pane held it
+/// (card #93).
 fn owner_agent<'a>(app: &'a App, card: &Card) -> Option<&'a Agent> {
-    herdr::find_owner(agent_list(app), card)
+    herdr::exact_owner(agent_list(app), card)
 }
 
 /// Does column `ci` in `area` need the dense (title-in-border) card style to fit?
@@ -2227,16 +2256,31 @@ pub(crate) fn close_clipped(mut lines: Vec<Line<'static>>, app: &App, height: us
     }
     let hidden = r.here.len().saturating_sub(height - 1);
     let n = r.elsewhere.len();
+    // an idle agent that still holds a card is the panel's own "!" warning row (card #94):
+    // one of those must never go quiet just because it fell below the fold. The rows kept
+    // above are untouched (someone holding a card already sorts before someone holding
+    // none, board order first) — this only makes sure the closing line says when one of the
+    // rows it swallowed was a problem, the same way it already says how many were swallowed.
+    let shown = (height - 1).min(r.here.len());
+    let idle_hidden = r.here[shown..].iter().filter(|row| row.idle_holder()).count();
+    let warn = if idle_hidden > 0 { format!(" · {idle_hidden} idle, holds card") } else { String::new() };
     // (at least one actor is hidden: the lines only outnumber the rows when the actors do)
     let texts = if n == 0 {
-        vec![format!(" +{hidden} more here"), format!(" +{hidden} more")]
+        vec![format!(" +{hidden} more here{warn}"), format!(" +{hidden} more here"), format!(" +{hidden} more{warn}"), format!(" +{hidden} more")]
     } else {
-        vec![format!(" +{hidden} more here · +{n} elsewhere"), format!(" +{hidden} more · +{n} elsewhere"), format!(" +{} more", hidden + n)]
+        vec![
+            format!(" +{hidden} more here · +{n} elsewhere{warn}"),
+            format!(" +{hidden} more here · +{n} elsewhere"),
+            format!(" +{hidden} more · +{n} elsewhere{warn}"),
+            format!(" +{hidden} more · +{n} elsewhere"),
+            format!(" +{} more{warn}", hidden + n),
+            format!(" +{} more", hidden + n),
+        ]
     };
     let last = texts.last().cloned().unwrap_or_default();
     let text = texts.into_iter().find(|t| t.chars().count() <= width).unwrap_or(last);
     lines.truncate(height - 1);
-    lines.push(Line::styled(text, dim()));
+    lines.push(Line::styled(text, if idle_hidden > 0 { red() } else { dim() }));
     lines
 }
 
@@ -3742,5 +3786,66 @@ mod look_tests {
         assert_eq!(date_order_note(&s, "todo", 6), "", "it is the first thing a narrow header gives up");
         assert_eq!(date_order_note(&s, "doing", 30), "");
         assert_eq!(date_order_note(&snap([None; 4], false), "todo", 30), "");
+    }
+}
+
+// A separate `mod` (not `look_tests`, above) so the doc comment on the module is about what
+// it actually covers; both compile into the same `--lib` test binary either way, run
+// multi-threaded by cargo's default harness. `crate::notice` is a process-wide static, but
+// every push and drain here is KEYED to a board's own tempdir path (see `notice::push_for` /
+// `take_unprinted_for`), and `tempfile::tempdir()` hands out a fresh, unique directory every
+// call — so this test's keys can never collide with another test's, in this module or any
+// other, running at the same time in the same process. An earlier version of this test drove
+// `App::reload` through the OLD unkeyed `notice::take_unprinted()`, which is exactly the
+// cross-test race that bit `tests/v1.rs::help_overlay_and_footer` in review: a notice pushed
+// by an unrelated concurrently-running test leaked into this board's status line. Keying by
+// path is what makes that structurally impossible now, not test-file discipline.
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    /// Warnings raised for THIS board must reach the status line while it is open — not only
+    /// stderr after it exits, which the alternate screen hides while it runs (card #83) — and
+    /// never a warning raised for a different board, however it got pushed.
+    #[test]
+    fn a_pending_warning_reaches_the_status_line_and_survives_a_board_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&dir.path().join("old.db")).unwrap();
+        let key = store.notice_key().unwrap();
+        let mut app = App::new(store.snapshot().unwrap(), "alice");
+        assert!(app.status.is_none());
+
+        // a notice already pending under this board's own key when it opens reaches the
+        // status line on the next reload (the same reload the run loop already calls every
+        // couple of seconds); one pushed under an unrelated key must never appear here —
+        // that is the cross-board leak a keyed drain exists to rule out
+        crate::notice::push_for(&key, "card-83-test-1: the board file is open to other users");
+        crate::notice::push_for("card-83-test-other-board", "must never reach a different board's status line");
+        app.reload(&store);
+        let (msg, is_err) = app.status.clone().expect("a pending warning must reach the status line, not only stderr after exit");
+        assert!(is_err, "a warning carries the weight of an error, not a quiet aside: {msg}");
+        assert!(msg.contains("card-83-test-1"), "{msg}");
+        assert!(!msg.contains("must never reach"), "a keyed drain must never take another board's entry: {msg}");
+        // it is shown once: a second reload with nothing new pending leaves it exactly as it
+        // was — an unread warning is never silently replaced
+        app.reload(&store);
+        assert_eq!(app.status.as_ref().unwrap().0, msg);
+
+        // switching board must not let its own "board: NAME" confirmation silently swallow a
+        // warning the new open just raised, before the next frame ever draws it
+        app.status = None;
+        let new_path = dir.path().join("new.db");
+        let new_key = crate::store::Store::open(&new_path).unwrap().notice_key().unwrap();
+        crate::notice::push_for(&new_key, "card-83-test-2: a warning raised opening the new board");
+        let row = crate::boards::BoardRow { name: "new".into(), is_default: false, counts: [0; 4], path: new_path };
+        app.switch_board(&row, &mut store);
+        let (msg2, is_err2) = app.status.clone().expect("the warning must win over the plain confirmation");
+        assert!(is_err2, "{msg2}");
+        assert!(msg2.contains("card-83-test-2"), "{msg2}");
+
+        // the other board's entry pushed above is still there, unread — a board that never
+        // gets rendered in this process must not lose its own warning either
+        let other = crate::notice::take_unprinted_for("card-83-test-other-board");
+        assert!(other.iter().any(|m| m.contains("must never reach")), "{other:?}");
     }
 }
