@@ -278,3 +278,137 @@ fn the_half_v_grid_keeps_first_cards_first() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// EVENNESS (card #113) — the report that came AFTER #131. Starvation ("everyone gets a
+// first card") was fixed; this pins the next promise: once everyone has a first card,
+// growth is round-robin, so a long column can no longer keep taking every card after that
+// while a short one sits at two or three. Same harness, same screen-reading, same
+// exclusions (FOCUS draws one card by design; under 40 columns cards are cut too far to
+// read on `main` as much as here) — only the property differs.
+//
+// THE PROPERTY:
+//
+// > No column shows two or more cards than another column that still has cards hidden.
+//
+// A column with nothing left hidden is exempt on purpose — it has handed its unused share
+// back, and there is nothing left for it to be behind on.
+
+/// THE EVENNESS PROPERTY.
+fn check_evenness(screen: &str, map: &[(i64, usize)], counts: [usize; 4], what: &str) {
+    let shown = shown_per_column(screen, map);
+    for a in 0..4 {
+        if counts[a] == 0 {
+            continue;
+        }
+        for b in 0..4 {
+            if b == a || counts[b] == 0 {
+                continue;
+            }
+            let hidden_b = counts[b] > shown[b];
+            assert!(
+                !(hidden_b && shown[a] >= shown[b] + 2),
+                "{what}: column {a} shows {} cards while column {b} shows {} and still has {} hidden — growth is round-robin, not first-come-first-grown:\n{screen}",
+                shown[a],
+                shown[b],
+                counts[b] - shown[b]
+            );
+        }
+    }
+}
+
+/// Drive one board through every layout, cursor and size, checking EVENNESS each time —
+/// the sibling of `sweep`, which checks starvation over the same boards.
+fn sweep_evenness(counts: [usize; 4], costs: [Cost; 4], layouts: &[&str], sizes: &[(u16, u16)]) {
+    let (_d, s) = board(counts, costs);
+    for layout in layouts {
+        s.set_layout(layout).unwrap();
+        for col in 0..4usize {
+            let mut app = App::new(s.snapshot().unwrap(), "alice");
+            app.reload(&s);
+            app.agents = AgentsState::Unavailable("herdr not available".into());
+            app.col = col;
+            let (map, real) = truth(&app);
+            for (w, h) in sizes {
+                if *w < MIN_WIDTH {
+                    continue;
+                }
+                let screen = render(&app, *w, *h);
+                if is_focus_view(&screen) {
+                    continue;
+                }
+                check_evenness(&screen, &map, real, &format!("{counts:?} {costs:?} {layout} {w}x{h} cursor={col}"));
+            }
+        }
+    }
+}
+
+/// 4. THE CARTESIAN, for evenness: every combination of four column counts, over every
+///    layout, cursor position and the same four sizes as the starvation cartesian. Same
+///    cost everywhere (Plain), because a uniform board already exercises the allocator —
+///    cost-driven imbalance gets its own fixture below, scoped to where an allocator can
+///    actually act on it.
+#[test]
+fn every_shape_of_board_grows_evenly() {
+    let sizes = [(60u16, 20u16), (80, 24), (100, 30), (126, 41)];
+    for a in [0usize, 1, 2, 30] {
+        for b in [0usize, 1, 2, 30] {
+            for c in [0usize, 1, 2, 30] {
+                for d in [0usize, 1, 2, 30] {
+                    sweep_evenness([a, b, c, d], [Cost::Plain; 4], &LAYOUTS, &sizes);
+                }
+            }
+        }
+    }
+}
+
+/// The owner's own report, pinned directly: "todo shows only 3, doing is like 2, review and
+/// done is showing like 8 or 10" — four populated columns on a pane tall and narrow enough
+/// to stack (`third-v`, `draw_sections`, where all four columns share one height), close to
+/// a real terminal size. Large, evenly-costed counts so nothing here is about content, only
+/// about the share-out.
+#[test]
+fn the_owners_report_is_now_even() {
+    let sizes = [(70u16, 45u16), (90, 50), (60, 60), (62, 62)];
+    for counts in [[40usize, 40, 40, 40], [3, 2, 40, 40], [40, 40, 3, 2], [10, 10, 40, 40]] {
+        sweep_evenness(counts, [Cost::Plain; 4], &["third-v"], &sizes);
+    }
+}
+
+/// EVENNESS, mixed cost — but only where a real allocation decision is made. `third-h`
+/// (`draw_rail`), `half-h` (`draw_board`), and `auto` when it picks either, give every
+/// column of a row (or the whole board) the exact SAME height by construction — the
+/// `Layout::horizontal`/`vertical` split never looks at a column's content, so there is no
+/// share to redistribute there at all. A gap between a column of short cards and one of tall
+/// cards at that EQUAL height is the cards, not a growth decision, is unrelated to this fix,
+/// and is already true on `main`. `third-v` (`draw_sections`) and `half-v` (`draw_grid`) are
+/// the two allocators this PR changes, and the only place the round-robin promise is
+/// actually made against cost, so this fixture — otherwise identical to the starvation
+/// property's `a_cheap_column_and_an_expensive_one_both_show_work` — is swept only there.
+#[test]
+fn a_cheap_column_and_an_expensive_one_grow_evenly_too() {
+    let sizes = [(60u16, 20u16), (100, 30), (160, 16)];
+    for (i, cheap) in COSTS.iter().enumerate() {
+        for dear in COSTS.iter().skip(i + 1) {
+            for counts in [[1usize, 1, 1, 1], [30, 1, 1, 1], [1, 30, 1, 30], [1, 1, 30, 2], [2, 30, 0, 1]] {
+                sweep_evenness(counts, [*cheap, *dear, *cheap, *dear], &["third-v", "half-v"], &sizes);
+                sweep_evenness(counts, [*dear, *cheap, *dear, *cheap], &["third-v", "half-v"], &sizes);
+            }
+        }
+    }
+}
+
+/// 5. THE GRID, for evenness, swept on its own (mirrors `the_half_v_grid_keeps_first_cards_first`):
+///    a row holds two columns and shares one height, so evenness there depends on the row
+///    growth in `draw_grid` charging for the FLOOR column's own next card, not the row's
+///    combined want.
+#[test]
+fn the_half_v_grid_grows_evenly() {
+    let sizes: Vec<(u16, u16)> =
+        [40u16, 60, 80, 100, 126, 160, 180, 200].iter().flat_map(|w| (10u16..=40).step_by(2).map(move |h| (*w, h))).collect();
+    for counts in [[80usize, 1, 1, 1], [1, 1, 1, 80], [1, 80, 1, 80], [80, 80, 1, 1], [3, 0, 0, 40], [1, 2, 3, 4]] {
+        for costs in [[Cost::Plain; 4], [Cost::Everything, Cost::Plain, Cost::Plain, Cost::Plain], [Cost::Plain, Cost::Due, Cost::Note, Cost::Blocked]] {
+            sweep_evenness(counts, costs, &["half-v"], &sizes);
+        }
+    }
+}

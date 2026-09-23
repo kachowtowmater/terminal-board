@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Column growth is round-robin, not first-come-first-served
+
+Reported from using the board: *"the todo, doing, review and done boards are not evenly
+spaced out. todo for the tb shows only 3 cards, doing is like 2, review and done is showing
+like 8 or 10."* A fair-share pass (above) already stopped a column showing zero while another
+showed several; it did not stop growth AFTER that from favouring whichever column wanted
+most, so a long column kept taking every extra card while a short one sat at two or three.
+- In the stacked view (`third-v`, and `auto` when it picks it) and on the `half-v` grid —
+  the two layouts where the four columns share a real, finite height budget — growth is now
+  round-robin: every column's 2nd card comes before any column's 3rd, its 3rd before any
+  4th, and so on, until a column runs out of cards or of room — at which point it hands its
+  unused share back to the columns still behind it rather than holding it.
+- `third-h`, `half-h`, and `auto` when it picks either already give every column the exact
+  same height by construction (nothing is shared out there to make uneven), so they are
+  unaffected.
+- A board that fits entirely renders exactly as it did before.
+
 ### Concurrent writers wait for the lock instead of failing instantly (#85)
 
 `tb add` (and several other write paths) opened a plain, deferred transaction that reads

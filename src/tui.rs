@@ -2024,6 +2024,26 @@ pub(crate) fn column_height(app: &App, ci: usize, width: u16, dense: bool) -> u1
     2 + h.iter().map(|x| x - u16::from(dense)).sum::<u16>()
 }
 
+/// How many cards column `ci` will ever draw, whatever height it is given — its own total,
+/// capped the same way `column_height` already is (at `MAX_VISIBLE_CARDS`).
+pub(crate) fn column_card_cap(app: &App, ci: usize, width: u16) -> usize {
+    card_box_heights(app, ci, width).len()
+}
+
+/// Rows column `ci` needs to show its first `k` cards boxed — frame, `k` boxes, and a
+/// `+N more` row when cards remain past `k`. The generalisation `column_height` (`k` = every
+/// card the column draws) and `column_min_one` (`k` = 1, always dense) both specialise: this
+/// is what the round-robin growth in `draw_sections` and `draw_grid` charges for a column's
+/// Kth card, one level at a time, rather than for everything it wants in one step.
+pub(crate) fn column_height_for(app: &App, ci: usize, width: u16, dense: bool, k: usize) -> u16 {
+    let h = card_box_heights(app, ci, width);
+    if h.is_empty() {
+        return 3;
+    }
+    let k = k.clamp(1, h.len());
+    2 + h[..k].iter().map(|x| x - u16::from(dense)).sum::<u16>() + u16::from(k < h.len())
+}
+
 /// Rows column `ci` needs to show ONE card as a dense box, plus a `+N more` row when it has
 /// others. This is the least a column can be given and still show work rather than a bare
 /// header, and it is what every non-empty column is guaranteed before any column gets more.
