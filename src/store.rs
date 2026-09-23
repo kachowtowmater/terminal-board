@@ -322,23 +322,37 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
 /// An `assigned` event's own `actor` column is who ASSIGNED the card (the orchestrator), not
 /// who now holds it — `transition`'s `Kind::Assign` arm logs it that way on purpose, so `tb
 /// show`/`tb log` can answer "who assigned this" and "who holds this" as two different
-/// questions. So for that kind the holder's name is read out of the event's `text` ("assigned
-/// to NAME", the exact text `Kind::Assign` writes) instead of `actor`. An earlier version of
-/// this function looked only at `taken` events, which meant a card reassigned by `tb assign`
-/// (no `taken` event at all) still named the PREVIOUS holder — wrongly refusing a genuine
-/// approval from whoever it was really reassigned to; `case9`/`case10` in tests/review.rs are
-/// that exact false-refusal, fixed.
+/// questions. So for that kind the holder's name is read out of the event's structured
+/// `assignee` column (written by `log_assign`) instead of `actor`.
+///
+/// `assignee` is a STRUCTURED field, never parsed out of `text` — #111: a reviewer showed that
+/// reading the holder by string-matching "assigned to NAME" out of the event's human-readable
+/// prose means changing only the write-site's wording (not on purpose, or not noticing this
+/// function also depends on it) silently stops the guard from recognizing the assignee at all,
+/// with no compiler error and no failing test, reopening the self-approval bypass on an
+/// assign-then-drop-then-force-move path. A structured column cannot be defeated by a reworded
+/// message: `mod tests`' `a_reworded_assign_event_does_not_change_who_last_held_the_card` pins
+/// exactly that — it rewrites an `assigned` event's `text` to something unrecognizable and
+/// checks the refusal is unchanged.
+///
+/// Migration: `assignee` is NULL on every `assigned` event written before this column existed
+/// (existing boards' only record of that holder is the old prose) — for those rows ONLY, this
+/// falls back to parsing `text` exactly as before, so an upgraded board's history is not
+/// silently forgotten. Every `assigned` event written from here on always sets `assignee`, and
+/// once it is set this never looks at `text` again.
 fn last_holder_of(conn: &Connection, id: i64) -> Result<Option<String>> {
-    let row: Option<(String, String, String)> = conn
+    let row: Option<(String, String, String, Option<String>)> = conn
         .query_row(
-            "SELECT kind, actor, text FROM events WHERE card_id=? AND kind IN ('taken','assigned') ORDER BY id DESC LIMIT 1",
+            "SELECT kind, actor, text, assignee FROM events WHERE card_id=? AND kind IN ('taken','assigned') ORDER BY id DESC LIMIT 1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(kind, actor, text)| {
+    Ok(row.and_then(|(kind, actor, text, assignee)| {
         if kind == "assigned" {
-            text.strip_prefix("assigned to ").map(str::to_string)
+            // the structured column, set by every `assigned` event `log_assign` writes; the
+            // text parse only ever runs for a pre-migration row that never got one
+            assignee.or_else(|| text.strip_prefix("assigned to ").map(str::to_string))
         } else {
             Some(actor)
         }
@@ -632,7 +646,8 @@ CREATE TABLE IF NOT EXISTS events (
     ts INTEGER NOT NULL,
     actor TEXT NOT NULL,
     kind TEXT NOT NULL,
-    text TEXT NOT NULL DEFAULT ''
+    text TEXT NOT NULL DEFAULT '',
+    assignee TEXT
 );
 CREATE INDEX IF NOT EXISTS events_card ON events(card_id, id);
 CREATE TABLE IF NOT EXISTS links (
@@ -830,6 +845,24 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    // migration: `assignee` on `events` (v2, #111) — the `assigned` event's holder, read
+    // directly by the self-approval guard (`last_holder_of`) instead of parsed out of `text`'s
+    // prose, so a reworded message can never change who the guard refuses. Existing `assigned`
+    // rows keep this NULL; `last_holder_of` still falls back to parsing their `text` for those
+    // (the only record they have), but every `assigned` event written from here on sets it,
+    // and it is the only thing the guard trusts once it is set.
+    let has_assignee: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name='assignee'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_assignee == 0 {
+        if let Err(e) = conn.execute_batch("ALTER TABLE events ADD COLUMN assignee TEXT") {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
     // migration: `blocked_on` / `blocked_until` (v2, `tb block --on … --until …`)
     blocks::migrate(conn)?;
     // migration: `links` on an `archived_cards` table made before links existed (v2, `tb link`)
@@ -855,29 +888,6 @@ fn is_board(conn: &Connection) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Run `migrate`, and keep a copy of an existing board before its schema changes.
-///
-/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
-///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
-///    never taken, and that is the end of it.
-/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
-///    from the decision to the commit:
-///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
-///      this board? A process that waited for the lock while another one upgraded the board
-///      finds nothing to do, and does nothing — no backup, no warning;
-///    - an existing board that would change is backed up first, through a second connection.
-///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
-///      the board, it reads the last COMMITTED state, and nobody can commit while this
-///      connection holds the write lock. So the copy is always the board as the older tb
-///      left it, and there is exactly one however many processes open the board at once;
-///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
-///      with nothing changed and refuses the command.
-///
-/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
-///
-/// It compares the schema before and after instead of keeping a list of migrations, so a
-/// migration written later, by anyone, in any style, is backed up without registering anything.
-///
 /// The ONE place `notice`'s board key is computed — `Store::path`/`notice_key` and every
 /// `notice::push_for` about THIS connection all call this, never re-derive their own guess
 /// from the pre-open `Path`. A hand-rolled `Path::display()` on that path missed a relative
@@ -907,6 +917,28 @@ fn needs_upgrade(conn: &Connection) -> Result<bool> {
     }
 }
 
+/// Run `migrate`, and keep a copy of an existing board before its schema changes.
+///
+/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
+///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
+///    never taken, and that is the end of it.
+/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
+///    from the decision to the commit:
+///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
+///      this board? A process that waited for the lock while another one upgraded the board
+///      finds nothing to do, and does nothing — no backup, no warning;
+///    - an existing board that would change is backed up first, through a second connection.
+///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
+///      the board, it reads the last COMMITTED state, and nobody can commit while this
+///      connection holds the write lock. So the copy is always the board as the older tb
+///      left it, and there is exactly one however many processes open the board at once;
+///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
+///      with nothing changed and refuses the command.
+///
+/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
+///
+/// It compares the schema before and after instead of keeping a list of migrations, so a
+/// migration written later, by anyone, in any style, is backed up without registering anything.
 fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
     let pending = {
         let tx = conn.unchecked_transaction()?;
@@ -1310,6 +1342,22 @@ impl Store {
         conn.execute(
             "INSERT INTO events(card_id, ts, actor, kind, text, actor_id) VALUES (?,?,?,?,?,?)",
             params![id, ts, actor, kind, text, actor_id],
+        )?;
+        Ok(())
+    }
+
+    /// Like `log`, for the one event kind (`assigned`) whose holder must survive a reworded
+    /// message: `assignee` carries the name in its OWN column, so `last_holder_of` (#111) never
+    /// has to parse it back out of `text`. `text` stays the same human-readable "assigned to
+    /// NAME" prose `tb show`/`tb log` already print — only what the self-approval guard reads
+    /// changes.
+    fn log_assign(conn: &Connection, id: i64, actor: &str, assignee: &str) -> Result<()> {
+        access::guard_actor(conn, actor)?;
+        let ts = now();
+        let actor_id = actors::stamp(conn, actor, ts)?;
+        conn.execute(
+            "INSERT INTO events(card_id, ts, actor, kind, text, actor_id, assignee) VALUES (?,?,?,?,?,?,?)",
+            params![id, ts, actor, "assigned", format!("assigned to {assignee}"), actor_id, assignee],
         )?;
         Ok(())
     }
@@ -2463,8 +2511,10 @@ impl Store {
             // logged under `actor` — who ran 'tb assign', i.e. who assigned it — never under
             // `owner` (who now holds it): that split is what lets `tb show`/`tb log` answer
             // "who assigned this" and "who holds this" as two different questions, the way
-            // every other event's `actor` column already answers "who did this".
-            Kind::Assign => Self::log(&tx, id, actor, "assigned", &format!("assigned to {}", owner.as_deref().unwrap_or("")))?,
+            // every other event's `actor` column already answers "who did this". `owner` here
+            // is who the card was JUST assigned to (see the `(Kind::Assign, _)` arm above), so
+            // it is always `Some` — `log_assign` writes it into its own structured column too.
+            Kind::Assign => Self::log_assign(&tx, id, actor, owner.as_deref().unwrap_or(""))?,
             Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
             Kind::Move => {
                 if block_cleared {
@@ -2852,6 +2902,62 @@ mod tests {
         assert_eq!(fmt_age(40 * 60), "40m");
         assert_eq!(fmt_age(3600 + 12 * 60), "1h12m");
         assert_eq!(fmt_age(2 * 86400 + 5), "2d");
+    }
+
+    /// #111: `last_holder_of` must read the ASSIGN holder out of the structured `assignee`
+    /// column, never out of the event's human-readable `text` — pinned by mutating only the
+    /// write-site's WORDING (never touching `assignee`) and checking the guard is unmoved.
+    ///
+    /// Reproduces the exact shape a reviewer used to reopen the old text-parsing bypass:
+    /// `b` is handed the card by an orchestrator (`assign`, not `take` — the vulnerable path,
+    /// since `taken` events already carry the holder in a real column, `actor`), `b` drops it,
+    /// and a third party moves the now-unowned card straight into review, the same shape as
+    /// `case6` in tests/review.rs — so `author_of` alone would name the mover, not `b`, and
+    /// only `last_holder_of` can still catch `b`.
+    #[test]
+    fn a_reworded_assign_event_does_not_change_who_last_held_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+        s.assign(id, "b", "orchestrator").unwrap();
+        s.drop_card(id, "b").unwrap();
+        assert_eq!(s.card(id).unwrap().column, "todo");
+        assert_eq!(s.card(id).unwrap().owner, None);
+        s.move_to(id, "review", "mover").unwrap();
+        assert_eq!(s.author(id).unwrap().as_deref(), Some("mover"), "author_of alone would miss b");
+        // simulate the write-site's wording changing — the exact mutation the reviewer used:
+        // only the message a person reads changes; the structured `assignee` column (what the
+        // guard now reads) is untouched
+        s.conn
+            .execute(
+                "UPDATE events SET text = 'handed off to b, go' WHERE card_id = ?1 AND kind = 'assigned'",
+                params![id],
+            )
+            .unwrap();
+        assert_eq!(last_holder_of(&s.conn, id).unwrap().as_deref(), Some("b"), "reads assignee, not text");
+        // end to end: b really held this card and must still be refused, whatever the assign
+        // event's prose says now
+        let r = s.done(id, "b");
+        assert!(r.is_err(), "a reworded assign event must not reopen the self-approval bypass: {r:?}");
+        assert!(r.unwrap_err().to_string().contains("you did this work"));
+        assert_eq!(s.card(id).unwrap().column, "review", "the card did not reach done");
+        // an uninvolved third party still approves fine, no --force needed
+        assert_eq!(s.done(id, "rev").unwrap().column, "done");
+    }
+
+    /// #111 migration: an `assigned` event written before the `assignee` column existed has
+    /// NULL there — its only record of the holder is the old "assigned to NAME" prose, and
+    /// `last_holder_of` must still fall back to parsing it, or an upgraded board would silently
+    /// forget every assignment made before the upgrade.
+    #[test]
+    fn a_pre_migration_assign_event_with_no_assignee_column_value_still_falls_back_to_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+        let id = s.add("widgets: fix the thing", "", &[], "lead").unwrap();
+        s.assign(id, "b", "orchestrator").unwrap();
+        // simulate a row written before this migration: assignee NULL, only the old prose
+        s.conn.execute("UPDATE events SET assignee = NULL WHERE card_id = ?1 AND kind = 'assigned'", params![id]).unwrap();
+        assert_eq!(last_holder_of(&s.conn, id).unwrap().as_deref(), Some("b"), "falls back to the old prose");
     }
 }
 
