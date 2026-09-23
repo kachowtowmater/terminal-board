@@ -401,11 +401,14 @@ fn board_keys(h: &Home, actor: &str, typed: &str) -> Output {
     } else {
         format!("script -q /dev/null {}", shell_quote(tb))
     };
-    // `a` opens the add form, the title is typed, Enter saves it, `q` quits. The pauses are
-    // needed because the board reads keys as they arrive rather than all at once. `timeout`
-    // bounds it so a board that never sees its quit key cannot hang the suite.
+    // The watchdog is perl's `alarm`, not `timeout`: macOS has no `timeout`, and the failure
+    // it produced was the worst kind — `sh: timeout: command not found` left the board
+    // unstarted, so the test read "a known name was refused" and pointed at the guard
+    // instead of at itself. `alarm` survives the `exec`, so the timer still bounds the board.
+    // `a` opens the add form, the title is typed, Enter saves it, `q` quits; the pauses are
+    // needed because the board reads keys as they arrive rather than all at once.
     let feed = format!(
-        "(sleep 2; printf a; sleep 1; printf %s {}; sleep 0.5; printf '\\r'; sleep 1.5; printf q; sleep 1) | timeout 25 {} 2>&1",
+        "(sleep 2; printf a; sleep 1; printf %s {}; sleep 0.5; printf '\\r'; sleep 1.5; printf q; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 25 {} 2>&1",
         shell_quote(typed),
         pty
     );
@@ -416,11 +419,14 @@ fn board_keys(h: &Home, actor: &str, typed: &str) -> Output {
         c.env_remove(k);
     }
     let o = c.output().unwrap();
-    // Proof that the board really ran and really quit. Without this, every assertion below
-    // is satisfied just as well by a board that never started: 124 is `timeout` killing it,
-    // and an empty pty means it drew nothing.
-    assert_ne!(o.status.code(), Some(124), "the board never took its quit key — it was killed by timeout");
-    assert!(!o.stdout.is_empty(), "the board drew nothing: it never started");
+    // Proof that the board really ran and really quit under its own key. Without this, every
+    // assertion below is satisfied just as well by a board that never started — which is
+    // exactly what happened twice while this test was being written. The pty is sized 0x0 so
+    // nothing legible is drawn, but entering and leaving the alternate screen is unmissable,
+    // and the second sequence is written only on a clean shutdown.
+    let seen = String::from_utf8_lossy(&o.stdout);
+    assert!(seen.contains("\x1b[?1049h"), "the board never opened: {seen:?}");
+    assert!(seen.contains("\x1b[?1049l"), "the board never took its quit key: {seen:?}");
     o
 }
 
