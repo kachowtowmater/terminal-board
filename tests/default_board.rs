@@ -402,6 +402,10 @@ fn the_manuals_state_the_precedence() {
     let readme = include_str!("../README.md");
     assert!(readme.contains("`TB_DB` > a board named on the command line > `TB_BOARD` > the saved default board > `default`"), "README states the precedence");
     assert!(include_str!("../docs/AGENTS.md").lines().count() <= 250, "the agent manual is over its line cap");
+    // the line cap counts lines, so it also needs a width: joining paragraphs into one long
+    // line would otherwise "fit" any amount of text under it
+    let widest = include_str!("../docs/AGENTS.md").lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    assert!(widest <= 280, "a docs/AGENTS.md line is {widest} characters — wrap it (the line cap is not met by joining lines)");
 }
 
 /// A settings file tb cannot READ at all is "nothing is set" for a command that did not ask

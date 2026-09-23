@@ -27,6 +27,7 @@ In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
+Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
 GitHub  github [--refresh] | github repos | sync
 Agents  agents
 Setup   setup [--yes] [--github R|--no-github] [--agents-md PATH] [--dry-run]
@@ -142,8 +143,16 @@ enum Cmd {
         /// Claim the top REVIEW card you did not do yourself, instead of a TODO card.
         #[arg(long)]
         review: bool,
+        /// Skip this board's pre-change hook, and say why (recorded on the card and the board).
+        #[arg(long = "break-glass", value_name = "WHY")]
+        break_glass: Option<String>,
     },
-    Take { id: i64 },
+    Take {
+        id: i64,
+        /// Skip this board's pre-change hook, and say why (recorded on the card and the board).
+        #[arg(long = "break-glass", value_name = "WHY")]
+        break_glass: Option<String>,
+    },
     /// Hand a specific TODO card straight to NAME, without taking it yourself: `take` done on
     /// someone else's behalf. Only a TODO card is a valid target — same restriction `take`
     /// has, and like `take` there is no `--force` to pull a card away from its current holder.
@@ -174,6 +183,9 @@ enum Cmd {
         reason: Option<String>,
         #[arg(long)]
         force: bool,
+        /// Skip this board's pre-change hook, and say why (recorded on the card and the board).
+        #[arg(long = "break-glass", value_name = "WHY")]
+        break_glass: Option<String>,
     },
     Done {
         id: i64,
@@ -183,6 +195,9 @@ enum Cmd {
         /// card still waits for its merge to reach done).
         #[arg(long, conflicts_with = "force")]
         approve: bool,
+        /// Skip this board's pre-change hook, and say why (recorded on the card and the board).
+        #[arg(long = "break-glass", value_name = "WHY", conflicts_with = "approve")]
+        break_glass: Option<String>,
     },
     Block {
         id: i64,
@@ -204,6 +219,9 @@ enum Cmd {
         /// Take someone else's DOING card back to todo (logged as its own event).
         #[arg(long)]
         force: bool,
+        /// Skip this board's pre-change hook, and say why (recorded on the card and the board).
+        #[arg(long = "break-glass", value_name = "WHY")]
+        break_glass: Option<String>,
     },
     Rm {
         id: i64,
@@ -260,6 +278,25 @@ enum Cmd {
         /// `tb config rules --file PATH`.
         #[arg(long = "file", value_name = "PATH", conflicts_with_all = ["value", "text"])]
         file: Option<std::path::PathBuf>,
+    },
+    /// This machine's trust store for hooks (`tb config hook`, `crate::hooks`). No name: list
+    /// every hook this machine knows. A name alone: its state. `NAME -- COMMAND ARG…`: record
+    /// what it runs (left UNTRUSTED — the file and digest are printed to check). `NAME --sha256
+    /// HEX`: confirm the digest just shown, so it may run. `NAME --off`: forget it.
+    Trust {
+        name: Option<String>,
+        /// The command and its arguments to record, after `--`.
+        #[arg(last = true)]
+        cmd: Vec<String>,
+        /// Confirm the digest `tb trust NAME` just showed, so this hook may run.
+        #[arg(long, value_name = "HEX", conflicts_with_all = ["cmd", "off"])]
+        sha256: Option<String>,
+        /// How long the hook may run before it is stopped and the change refused (default 10).
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        /// Forget this hook — this machine no longer knows it.
+        #[arg(long, conflicts_with_all = ["cmd", "sha256", "timeout"])]
+        off: bool,
     },
     /// Attach evidence to a card: a path, a sha or a URL, under a label (`tb show ID` lists
     /// them). tb only stores the text — it never reads, follows or fetches a link.
@@ -384,7 +421,7 @@ impl Cmd {
         !matches!(
             self,
             Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board { .. } | Cmd::Agents | Cmd::Guide | Cmd::New { .. }
-                | Cmd::Export { .. } | Cmd::Log { .. }
+                | Cmd::Export { .. } | Cmd::Log { .. } | Cmd::Trust { .. }
         )
     }
 }
@@ -412,6 +449,11 @@ fn changes_the_board(cmd: &Cmd) -> bool {
             // stale cache, which IS a write — it is refused by the read-only connection if it
             // gets that far, with the same wording.
             | Cmd::Github { refresh: false, .. }
+            // `tb trust` never touches the board file — it reads and writes THIS MACHINE's own
+            // settings (`~/.config/terminal-board/config.json`), the same file `--read-only`
+            // says nothing about. Gating it here would refuse recording a hook on a pane opened
+            // only to watch a board.
+            | Cmd::Trust { .. }
     )
 }
 
@@ -437,6 +479,7 @@ fn command_name(cmd: &Cmd) -> &'static str {
         Cmd::Mv { .. } => "tb mv",
         Cmd::New { .. } => "tb new",
         Cmd::Setup { .. } => "tb setup",
+        Cmd::Trust { .. } => "tb trust",
         _ => "that command",
     }
 }
@@ -1481,7 +1524,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
             }
         }
-        Cmd::Next { review: true } => {
+        Cmd::Next { review: true, .. } => {
             let card = store.next_review(&actor)?;
             let rules = first_time_rules(&store, &actor)?;
             let banner = rules.as_deref().map(|r| format!("this board's rules:\n{r}\n\n")).unwrap_or_default();
@@ -1495,8 +1538,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Next { .. } | Cmd::Take { .. } => {
             let is_next = matches!(cmd, Cmd::Next { .. });
             let card = match cmd {
-                Cmd::Take { id } => store.take(id, &actor)?,
-                _ => store.next(&actor)?,
+                Cmd::Take { id, break_glass } => store.take_bg(id, &actor, break_glass.as_deref())?,
+                Cmd::Next { break_glass, .. } => store.next_bg(&actor, break_glass.as_deref())?,
+                _ => unreachable!(),
             };
             // `tb take ID` is a deliberate, targeted pick — not the "first tb next" moment a
             // board's rules are meant to greet, so only `tb next` (either form) shows them.
@@ -1591,7 +1635,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Move { id, column, reason, force } => {
+        Cmd::Move { id, column, reason, force, break_glass } => {
             // An internal column name is resolved FIRST and always wins: a board that labels
             // one column with another's name (an older tb allowed it; `config label` now
             // refuses it) must never make the real column unreachable. Only a word that is no
@@ -1608,7 +1652,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if column.eq_ignore_ascii_case("done") {
                 guard_done(&store, id, force, &format!("move {id} done"))?;
             }
-            let c = store.move_opts(id, &column, &actor, force, reason.as_deref())?;
+            let c = store.move_opts_bg(id, &column, &actor, force, reason.as_deref(), break_glass.as_deref())?;
             let human = if reason.is_some() {
                 let round = store.show(id)?.round;
                 format!(
@@ -1620,7 +1664,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             };
             done_card(&store, j, id, human)?;
         }
-        Cmd::Done { id, force, approve } => {
+        Cmd::Done { id, force, approve, break_glass } => {
             if approve {
                 // every card, not only a gh# one: it records that somebody checked this and
                 // leaves the card in review (store/closing.rs)
@@ -1635,7 +1679,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             if store.card(id)?.column != "doing" {
                 guard_done(&store, id, force, &format!("done {id}"))?;
             }
-            let c = if force { store.done_forced(id, &actor)? } else { store.done(id, &actor)? };
+            let c = store.done_bg(id, &actor, force, break_glass.as_deref())?;
             let human = if c.column == "review" {
                 format!(
                     "#{id} is now in {} — close it with {} once verified",
@@ -1696,12 +1740,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
             done_card(&store, j, id, human)?;
         }
-        Cmd::Drop { id, force } => {
-            if force {
-                store.drop_card_forced(id, &actor)?;
-            } else {
-                store.drop_card(id, &actor)?;
-            }
+        Cmd::Drop { id, force, break_glass } => {
+            store.drop_card_bg(id, &actor, force, break_glass.as_deref())?;
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
         }
         Cmd::Rm { id, force } => {
@@ -2248,6 +2288,31 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("file-mode".into(), json!(store.file_mode_text()?))
                 }
+                // the pre/post-change hook (`crate::hooks`, store/gate.rs): the board stores a
+                // NAME only — what it runs, and whether this machine trusts it, is `tb trust`'s
+                // business, on the machine that opens the board, never this one's
+                (k @ ("hook" | "hook-after"), _) if off => {
+                    let event = if k == "hook" { terminal_board::hooks::Event::PreChange } else { terminal_board::hooks::Event::PostChange };
+                    store.set_hook(event, None, &actor)?;
+                    (k.into(), serde_json::Value::Null)
+                }
+                (k @ ("hook" | "hook-after"), value) => {
+                    let event = if k == "hook" { terminal_board::hooks::Event::PreChange } else { terminal_board::hooks::Event::PostChange };
+                    match value.as_deref() {
+                        Some(name) => {
+                            let saved = store.set_hook(event, Some(name), &actor)?;
+                            (k.into(), json!(saved))
+                        }
+                        None => {
+                            let name = store.hook(event)?;
+                            if !j {
+                                say!("{}", name.as_deref().unwrap_or("off"));
+                                return Ok(());
+                            }
+                            (k.into(), json!(name))
+                        }
+                    }
+                }
                 _ => {
                     return Err(BoardError(format!(
                         "unknown or incomplete setting '{key}' — use 'tb config wip 3', 'config github owner/repo', 'config theme dark|light'"
@@ -2320,6 +2385,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "actors is now {} — any other name is refused, so a typo cannot invent an agent; reads are never refused",
                         v.as_array().map(|a| a.iter().filter_map(|n| n.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                     ),
+                    (kk @ ("hook" | "hook-after"), serde_json::Value::Null) => say!("{kk} is off"),
+                    (kk @ ("hook" | "hook-after"), name) => say!(
+                        "{kk} is now {} — this machine (and any other that opens this board) must 'tb trust {}' it before it can run",
+                        name.as_str().unwrap_or(""), name.as_str().unwrap_or("")
+                    ),
                     (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }
@@ -2381,6 +2451,104 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 println!("{}", pretty(&v));
             } else if let Some(s) = &view.snap {
                 print_lines!("{}", github::text(s, &cards, view.error.as_deref(), 10, now));
+            }
+        }
+        Cmd::Trust { name: None, .. } => {
+            let mut entries = terminal_board::hooks::entries()?;
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            if j {
+                let arr: Vec<_> = entries
+                    .iter()
+                    .map(|(n, e)| {
+                        let st = terminal_board::hooks::state(e);
+                        json!({"name": n, "argv": e.argv, "path": e.path, "state": st.word(), "timeout_secs": e.timeout_secs})
+                    })
+                    .collect();
+                println!("{}", pretty(&json!({"ok": true, "hooks": arr})));
+            } else if entries.is_empty() {
+                say!("no hooks are recorded on this machine — 'tb trust NAME -- COMMAND' to add one");
+            } else {
+                for (n, e) in &entries {
+                    let st = terminal_board::hooks::state(e);
+                    say!("{:<16} {:<11} {}", n, st.word(), e.argv.join(" "));
+                }
+            }
+        }
+        Cmd::Trust { name: Some(name), off: true, .. } => {
+            let existed = terminal_board::hooks::forget(&name)?;
+            if j {
+                println!("{}", pretty(&json!({"ok": true, "name": name, "forgotten": existed})));
+            } else if existed {
+                say!("'{name}' forgotten — a board that still names it will refuse until it is trusted again");
+            } else {
+                say!("this machine did not know a hook called '{name}'");
+            }
+        }
+        Cmd::Trust { name: Some(name), sha256: Some(hex), timeout, .. } => {
+            let (path, digest) = terminal_board::hooks::confirm(&name, &hex)?;
+            if let Some(secs) = timeout {
+                terminal_board::hooks::set_timeout(&name, secs)?;
+            }
+            if j {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "name": name, "path": path.display().to_string(), "sha256": digest, "trusted": true}))
+                );
+            } else {
+                say!("'{name}' trusted: {} ({digest}) — it will run for events this board asks it for", path.display());
+            }
+        }
+        Cmd::Trust { name: Some(name), cmd, timeout, .. } if !cmd.is_empty() => {
+            let (path, digest) = terminal_board::hooks::record(&name, &cmd, timeout)?;
+            if j {
+                println!(
+                    "{}",
+                    pretty(&json!({"ok": true, "name": name, "path": path.display().to_string(), "sha256": digest, "trusted": false}))
+                );
+            } else {
+                say!(
+                    "'{name}' records {} — NOT yet trusted (you cannot trust what you were not shown). Check it, then: tb trust {name} --sha256 {digest}",
+                    path.display()
+                );
+            }
+        }
+        // `--timeout` alone: a new time limit for a hook already recorded — what the timeout
+        // refusal tells people to run. Its trust is kept: a time limit is not a new command.
+        Cmd::Trust { name: Some(name), timeout: Some(secs), .. } => {
+            terminal_board::hooks::set_timeout(&name, secs)?;
+            if j {
+                println!("{}", pretty(&json!({"ok": true, "name": name, "timeout_secs": secs})));
+            } else {
+                say!("'{name}' may now take {secs}s before it is stopped and the change refused");
+            }
+        }
+        Cmd::Trust { name: Some(name), .. } => {
+            let Some(e) = terminal_board::hooks::entry(&name)? else {
+                return Err(terminal_board::hooks::no_hook_err(&name));
+            };
+            let st = terminal_board::hooks::state(&e);
+            let now_digest = terminal_board::hooks::resolve(e.argv.first().map(String::as_str).unwrap_or_default())
+                .ok()
+                .and_then(|p| terminal_board::hooks::sha256::of_file(&p).ok());
+            if j {
+                println!(
+                    "{}",
+                    pretty(&json!({
+                        "ok": true, "name": name, "argv": e.argv, "path": e.path,
+                        "state": st.word(), "sha256": now_digest, "timeout_secs": e.timeout_secs
+                    }))
+                );
+            } else {
+                say!("{:<11} {}", st.word(), e.argv.join(" "));
+                match &st {
+                    terminal_board::hooks::State::Untrusted | terminal_board::hooks::State::Changed { .. } => {
+                        if let Some(d) = &now_digest {
+                            say!("{} — you cannot trust what you were not shown: tb trust {name} --sha256 {d}", e.path.as_deref().unwrap_or(""));
+                        }
+                    }
+                    terminal_board::hooks::State::Trusted => say!("will run for events a board asks it for"),
+                    terminal_board::hooks::State::Missing(why) | terminal_board::hooks::State::Unsafe(why) => say!("{why}"),
+                }
             }
         }
         Cmd::Boards { .. } | Cmd::Setup { .. } | Cmd::New { .. } => unreachable!("handled above"),
