@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
+
+`--file -` (and `--desc-file -`) waited for standard input to close however long that took,
+with no way to tell a producer that is merely slow to start from a pipe nobody will ever
+close — the worst outcome for an unattended agent loop. A named pipe named as the path had the
+same gap, and a plain `open()` on one with no writer blocked before any guard could even run.
+- `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only, on `-` and on a FIFO
+  path alike; unset (the default) or `0`, nothing changes — tb waits exactly as it always did,
+  including for a FIFO whose writer attaches a moment later. Nothing after the first byte is
+  ever timed, so a slow-but-real producer is never truncated.
+- Whole seconds, leniently parsed like tb's other read-only knobs (docs/AGENTS.md).
+
+### `tb log` shows a board's own trail, not only its cards'
+
+`tb mv` recorded `moved-out` on the board a card LEFT, but nothing ever printed it — the card
+simply vanished from that board's own history, though the destination board's `moved-in` was
+always readable via `tb show`. `tb log` now interleaves the board's own events (a move, a WIP
+change, a file-mode change, a soft-delete) with its card events, oldest first by the same
+clock.
+- `card_id` (and `actor_id`, when known) is `null` on a board-level row in `--json`; plain text
+  marks the row `board` where a card row shows `#ID`.
+
+### A locked database says so, not "check TB_DB"
+
+Every write that collided with another `tb` mid-write surfaced as `database error: database is
+locked — check TB_DB points at a writable file` — naming TB_DB even when it was never set, and
+telling you to check a file that was never the problem.
+- A contended write now says `database is locked — another tb is writing this board right now:
+  wait a moment and try again`. TB_DB is still named for a real path problem (cannot open,
+  read-only, …), but only when it is actually set.
+
 ### Evidence links: `tb link` and `tb config done-needs-link`
 
 A card is a unit of work; what proves it was done lives somewhere else — a file on disk, a
@@ -72,6 +103,35 @@ existing prompt for a column move or delete, and `y` takes the forced, logged pa
   `tb show`, and `tb take ID` / `tb move` / `tb done` still act on it directly.
 - Both settings are unset by default, so a board that sets nothing renders and behaves exactly
   as before.
+
+### `tb assign ID NAME` and a board's own `tb config rules`
+
+Two ways an orchestrator directs a board instead of just working it.
+
+- **`tb assign ID NAME`** hands a specific TODO card straight to `NAME`, without the caller
+  becoming its owner — `tb take` run on someone else's behalf, for an orchestrator that already
+  knows who should do what. It reaches this exact behaviour through the SAME transition and WIP
+  check `take`/`next`/`move` already share, on purpose: `NAME` becomes the card's owner and the
+  column moves to DOING, only from TODO (the same restriction `take` enforces, and like `take`
+  there is no `--force` to pull a card away from whoever already holds it — a card already held
+  is simply not a valid target). The event log keeps the two facts apart: its `actor` is whoever
+  ran `tb assign` (who assigned it), `cards.owner` is `NAME` (who now holds it) — a new `assigned`
+  event kind. A per-owner WIP cap, when one exists, sees it too: `assign` enters DOING through
+  the one check every other column change does.
+- **`tb config rules "TEXT"` / `--file PATH` / `--off`** is a board's own conventions — house
+  style, branch naming, who to ping — printed by `tb guide` and shown once to each agent,
+  automatically, the first `tb next` since the text was last set or changed. "Once" compares the
+  TEXT, not a boolean, in a `board_events` row (`rules-seen`) exactly like every other setting
+  change already logs itself: editing the rules makes them new again for everyone, including an
+  agent that saw the old wording, and the mark travels with the board file like the rest of its
+  history (copy it, and an agent who already saw a board's rules still has on the copy). Long
+  text goes through the same bounded file reader `--desc-file` uses (`src/textin.rs`): UTF-8, at
+  most 256 KiB, `-` for standard input, a terminal refused. `tb next --json` carries the text
+  once, in an additive `"rules"` field, so a `--json` consumer is shown it too, not only a
+  terminal.
+- A board that sets no rules renders and behaves exactly as before: `tb guide` prints unchanged,
+  and `tb next`/`tb take` carry no new field. `docs/AGENTS.md` stays at its 250-line cap by
+  rewording two existing lines instead of only adding.
 
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 

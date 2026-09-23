@@ -175,3 +175,30 @@ fn json_contract_points_at_the_schema_doc() {
     assert!(md.contains("ignore unknown\nfields and unknown event kinds") || md.contains("ignore unknown fields"), "the rule is stated");
     assert!(md.contains("docs/SCHEMA.md"), "the rule names the schema doc");
 }
+
+/// No `## ` heading appears twice in the same doc: a duplicate is a stray label — usually a
+/// merge that picked up the wrong heading line — and the section under the second occurrence
+/// becomes unreachable by name. (Found: docs/JSON.md had `## \`tb agents --json\`` twice, the
+/// first one actually the warnings section.)
+#[test]
+fn no_documentation_heading_is_duplicated() {
+    for (name, md) in [
+        ("README.md", include_str!("../README.md")),
+        ("docs/HUMANS.md", include_str!("../docs/HUMANS.md")),
+        ("docs/AGENTS.md", include_str!("../docs/AGENTS.md")),
+        ("docs/JSON.md", include_str!("../docs/JSON.md")),
+        ("docs/SCHEMA.md", include_str!("../docs/SCHEMA.md")),
+    ] {
+        let mut seen = std::collections::HashSet::new();
+        let mut in_code = false;
+        for line in md.lines() {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                continue;
+            }
+            if !in_code && line.starts_with("## ") {
+                assert!(seen.insert(line), "{name} has the heading {line:?} twice");
+            }
+        }
+    }
+}

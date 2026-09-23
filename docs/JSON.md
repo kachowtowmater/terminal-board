@@ -186,8 +186,8 @@ is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
-Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `link`, `move`,
-`done`, `block`, `drop`, `rm`, `prio`, `edit`.
+Every write command takes `--json`: `add`, `next`, `take`, `assign`, `note`, `check`, `link`,
+`move`, `done`, `block`, `drop`, `rm`, `prio`, `edit`.
 
 Success (exit 0) — the card after the change (for `rm`, the card as it was):
 
@@ -213,7 +213,17 @@ file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or
 terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
 `--desc-file`, note text with `--file`) is an argument error (exit 2).
 
+`assign ID NAME --json` answers the same `{ "ok": true, "card": … }` shape as `take` — `card.owner`
+is `NAME`, never the identity behind `--as`; who ran the assign is only in the event log (`kind:
+"assigned"`, `actor` is the assigner, `text` is `"assigned to NAME"`), not in this response.
+
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
+`config rules "TEXT"|--file PATH --json` returns `{ "ok": true, "config": { "key": "rules",
+"value": "TEXT" } }`; `--off` answers `"value": null`; `config rules --json` (no value) reads it
+the same way, `null` when unset. `tb next --json` (either form) adds one more field, **only the
+first time an agent is shown a board's current rules text**: `"rules": "TEXT"` alongside `"card"`
+— absent every other time, including every `--json` response from every other write command, so
+existing consumers see no new field until they ask `tb next` on a board that sets `rules`.
 `prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
 tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
 `config sort --json`, `config tz --json`, `config due-warn --json` and `config done-needs-link --json` (no value) read
@@ -241,8 +251,6 @@ When the board was chosen **explicitly by name or `-b`**, the command in a hint 
 The name is left out only when a bare `tb` is certain to reach that board: it is the board
 plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
 picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
-
-## Warnings — `"warnings": ["…"]`
 
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
@@ -332,6 +340,14 @@ same event fields `tb watch --events` streams, without the live stream's `from`/
 second; events are selected by their timestamp, so a history written out of order still
 answers "everything since Tuesday" correctly.
 
+Interleaved with the card events, oldest first by the same clock, are the board's own —
+`mv` leaving a `moved-out` behind on the board a card left (the moved-in half is a card
+event, and `tb show` on the new id prints it; the moved-out half has no card of its own to
+attach to), a WIP change, a file-mode change, a soft-delete: `card_id` is **`null`** on these
+rows, never a card's id repurposed to mean "the board" (`actor_id` is whatever it always is —
+null when nothing but the name is known). Plain text marks the same row `board` where a card
+row shows `#ID`. Previously nothing printed this half of a move's trail (#106).
+
 ## `tb list --done [--since DATE]`
 
 The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —
@@ -340,7 +356,7 @@ array of card objects, the same shape as `tb list --json`.
 
 `tb export`, `tb log` and `tb list` never write to the board file.
 
-## `tb agents --json`
+## Warnings — `"warnings": ["…"]`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
 `TB_DB` pins a file; the board file can be opened by other users; the board was backed up
@@ -455,4 +471,5 @@ the last accepted, `4102444799`) —
 a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
 `{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
 The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
-`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.
+`TB_NO_SETUP`, `TB_STDIN_TIMEOUT`) may stay lenient: a wrong value fails visibly where it is
+used, or — `TB_STDIN_TIMEOUT` — is simply not applied.

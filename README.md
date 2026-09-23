@@ -42,6 +42,8 @@ Is this healthy? No. Is it faster? Absolutely.
 - [Your first 5 minutes](#your-first-5-minutes)
 - [Keys](#keys)
 - [Boards](#boards)
+- [Assigning a card](#assigning-a-card)
+- [A board's own rules](#a-boards-own-rules)
 - [GitHub](#github)
 - [Agents](#agents)
 - [Command-line reference](#command-line-reference)
@@ -285,6 +287,44 @@ On the board, `B` opens the board picker: the same rows as `tb boards` — name,
 and the default board marked — and `enter` switches to the one you choose without quitting
 `tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
+## Assigning a card
+
+`tb next` and `tb take ID` both make the CALLER the owner — an orchestrator can only tell an
+agent to run one of them, which means the agent picks. `tb assign ID NAME` hands a specific
+card straight to NAME instead:
+
+<!-- no-test -->
+```sh
+tb add "ops: rotate API tokens"
+tb assign 3 alice
+```
+
+It is `tb take` for someone else: `alice` becomes the owner and the card moves to DOING, but
+the event log keeps the two facts apart — its `actor` is whoever ran `tb assign` (who
+assigned it), the card's `owner` is `alice` (who now holds it). Like `take`, it only reaches a
+card in TODO — there is no `--force` to pull a card away from whoever already holds it, so
+`tb assign` can never take someone's work out from under them. It counts against the
+board-wide WIP limit exactly as `take` does.
+
+## A board's own rules
+
+A board can carry its own conventions — house style, how to name a branch, who to ping —
+printed by `tb guide` and shown automatically to each agent once, the first `tb next` after
+the text is set or changed:
+
+<!-- no-test -->
+```sh
+tb config rules "branch names: fix/<issue>-<slug>; note before every stop"
+tb config rules                      # read it back
+tb config rules --file rules.md      # from a file, byte for byte (- = stdin)
+tb config rules --off                # clear it
+```
+
+Nothing is shown twice for the same text: an agent that has already seen the current wording
+is not shown it again on its next `tb next`, but editing the rules makes them new again for
+everyone, including agents who saw the old wording. A board that sets no rules behaves exactly
+as it always has — `tb guide` and `tb next` are unchanged.
+
 ## GitHub
 
 Terminal Board can show one GitHub repository per board: open pull requests with their CI
@@ -388,7 +428,8 @@ everyone: a progress note adds to a card, it does not take it over.
 ## Command-line reference
 
 Every command prints a short answer and, when something is wrong, says what to run next.
-Add `--json` to any command for machine-readable output.
+Add `--json` to any command for machine-readable output. `tb --help` prints a one-screen
+summary, one line per group, pointing here for the full flag reference.
 
 ```sh
 tb add "docs: fix typo in README"
@@ -424,6 +465,7 @@ tb --version
 | `tb next [--as NAME]` | take the top TODO card (atomic: two people never get the same one) |
 | `tb next --review [--as NAME]` | claim the top REVIEW card you did not do yourself (atomic too) |
 | `tb take ID` | take a specific TODO card |
+| `tb assign ID NAME` | hand a specific TODO card to NAME, without taking it yourself — see [Assigning a card](#assigning-a-card) |
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item (`--force` on someone else's held card, logged) |
 | `tb link ID VALUE --label LABEL` / `tb link ID --rm N` | attach evidence (a path, sha or URL) under a label, or remove one — see [Evidence links](#evidence-links) |
@@ -455,6 +497,7 @@ tb --version
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
 | `tb config card-line age\|due` | what a card line shows where the age is: the age (default), or the due date and the days left |
 | `tb config label COLUMN "TEXT"` / `--off` | a display name for `todo`, `doing`, `review` or `done` — **display only**; see [Due dates](#due-dates) |
+| `tb config rules "TEXT"` / `--file PATH` / `--off` | a board's own conventions — see [A board's own rules](#a-boards-own-rules) |
 | `tb github [--refresh]` / `tb github repos` / `tb sync` | GitHub snapshot / your repos / apply GitHub evidence now |
 | `tb agents` | who is on this board and the card each holds or reviews, then the other herdr agents |
 | `tb guide` | the manual for AI agents |
@@ -538,7 +581,12 @@ The text must be UTF-8 and at most 256 KiB (262144 bytes). Blank space around it
 everything between is kept exactly — tabs, blank lines, Windows line ends (a leading
 byte-order mark is dropped). An empty file is refused, so a forgotten pipe can never blank a
 description; `--desc ""` still clears one on purpose. With `-`, standard input has to be a
-pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing. Give the
+pipe or a redirect: on a terminal tb refuses at once instead of waiting for typing, and it
+otherwise waits for that pipe to close, however long that takes — a harness whose pipe never
+closes hangs there, so `TB_STDIN_TIMEOUT=SECONDS` bounds the wait for the FIRST byte only
+(unset, the default: wait forever; nothing after that first byte is ever timed, so a producer
+that is merely slow to start is never cut off). A path that is a FIFO with no writer is
+refused outright rather than risk the same hang inside opening it. Give the
 text once — `--desc` with `--desc-file`, or note text with `--file`, is an argument error.
 Control characters are stored as they are and removed whenever the text is shown, like any
 other card text.

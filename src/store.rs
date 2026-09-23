@@ -19,6 +19,7 @@ pub mod kinds;
 pub mod links;
 pub mod order;
 pub mod rounds;
+pub mod rules;
 pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -49,9 +50,39 @@ impl fmt::Display for BoardError {
 
 impl std::error::Error for BoardError {}
 
+/// SQLITE_BUSY (the whole file is locked) or SQLITE_LOCKED (a table is, inside a shared
+/// connection): both mean another connection holds the lock right now — nothing to do with
+/// whether the file itself is writable.
+fn is_contended(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// The hint for a real path problem (cannot open, read-only, no such file/directory, …):
+/// TB_DB is worth naming, but only when `tb_db` says it is actually set — otherwise it was
+/// never the pin, and naming it points at the wrong thing (#105). Never says "the board
+/// file": `position_error` already names the real file for a house message this same `From`
+/// impl also carries (`bad_position`'s FromSqlConversionFailure), and a second, vaguer file
+/// reference tacked onto that one is not just redundant — `position_guard.rs` pins that no
+/// refusal may print an unusable "the board file" placeholder in place of the real path.
+fn db_error_hint(tb_db: Option<&str>) -> String {
+    match tb_db {
+        Some(path) => format!("check TB_DB ({path}) points at a writable file"),
+        None => "check it is writable".to_string(),
+    }
+}
+
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
-        BoardError(format!("database error: {e} — check TB_DB points at a writable file"))
+        if is_contended(&e) {
+            // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
+            // the problem here, so it is not named (#105)
+            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string());
+        }
+        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())))
     }
 }
 
@@ -192,6 +223,13 @@ pub struct Event {
     /// The identity behind `actor` (`actors.id`, see `store::actors`); None when nothing but
     /// the name is known, and on every event written before identities were recorded.
     pub actor_id: Option<i64>,
+}
+
+/// One row of `Store::for_each_log_event`: a card event, or a board-level one (no card —
+/// `card_id` is `None` everywhere this is rendered). See `board_events` and #106.
+pub enum LogEvent {
+    Card(Event),
+    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64> },
 }
 
 /// An event with its database id (for `tb watch --events` resumption).
@@ -1056,6 +1094,7 @@ impl Store {
         all.extend(self.link_settings()?);
         all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
+        all.extend(self.rules_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1320,6 +1359,63 @@ impl Store {
         Ok(())
     }
 
+    /// Every event at or after `from_ts`, oldest first, card events interleaved with the
+    /// board's own log (`board_events` — a move's `moved-out` on the board a card left, a WIP
+    /// change, a file-mode change, a soft-delete, …), which otherwise has no command that
+    /// reads it (#106: a card moved off a board leaves a trail on that board nothing prints).
+    /// Two cursors, merged by timestamp, so this streams exactly like `for_each_event`.
+    pub fn for_each_log_event(&self, from_ts: i64, f: &mut dyn FnMut(LogEvent) -> Result<()>) -> Result<()> {
+        let mut cst = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut crows = cst.query([from_ts])?;
+        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut brows = bst.query([from_ts])?;
+
+        /// One `board_events` row, held between cursor advances (a named struct, not a
+        /// 5-tuple, so the type stays readable).
+        struct BoardRow {
+            ts: i64,
+            actor: String,
+            kind: String,
+            text: String,
+            actor_id: Option<i64>,
+        }
+
+        fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(row_event(r)?),
+                None => None,
+            })
+        }
+        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<BoardRow>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? }),
+                None => None,
+            })
+        }
+
+        let mut c_cur = next_card(&mut crows)?;
+        let mut b_cur = next_board(&mut brows)?;
+        loop {
+            let card_first = match (&c_cur, &b_cur) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(c), Some(b)) => c.ts <= b.ts,
+            };
+            if card_first {
+                f(LogEvent::Card(c_cur.take().unwrap()))?;
+                c_cur = next_card(&mut crows)?;
+            } else {
+                let BoardRow { ts, actor, kind, text, actor_id } = b_cur.take().unwrap();
+                f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
+                b_cur = next_board(&mut brows)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every event of one card, oldest first — the whole history an export carries, where
     /// `contract::card` carries only the last ten.
     pub fn all_events_of(&self, id: i64) -> Result<Vec<crate::contract::EventJ>> {
@@ -1488,6 +1584,20 @@ impl Store {
     /// Atomically take a specific todo card.
     pub fn take(&mut self, id: i64, actor: &str) -> Result<Card> {
         self.claim(Some(id), actor)
+    }
+
+    /// `tb assign ID NAME`: hand a specific TODO card straight to `owner`, without `actor`
+    /// (the one running the command) becoming its holder — `take` done on someone else's
+    /// behalf. Only a TODO card is a valid target (the same restriction `take` itself
+    /// enforces, and `take` has no `--force` to override it either), so this can never pull a
+    /// card away from whoever already holds it. The event log keeps the two facts separate:
+    /// its `actor` is who assigned the card, its new `owner` is who now holds it.
+    pub fn assign(&mut self, id: i64, owner: &str, actor: &str) -> Result<Card> {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            return err(format!("name is empty — try 'tb assign {id} bob'"));
+        }
+        self.transition(Change::Assign { id, owner }, actor, false)
     }
 
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
@@ -1723,6 +1833,13 @@ impl Store {
                 let target = Self::claim_target(&tx, id)?;
                 (get_card(&tx, target)?, "doing".to_string(), None)
             }
+            Change::Assign { id, .. } => {
+                // the same "must be TODO" check `take ID` makes (claim_target's Some(id) arm);
+                // reusing it keeps the refusal text identical, so an agent that has seen
+                // take's error recognizes assign's
+                let target = Self::claim_target(&tx, Some(id))?;
+                (get_card(&tx, target)?, "doing".to_string(), None)
+            }
             Change::Drop(id) => {
                 let c = get_card(&tx, id)?;
                 if c.column == "todo" && c.owner.is_none() {
@@ -1769,6 +1886,15 @@ impl Store {
             Change::Claim(_) => Kind::Claim,
             Change::Drop(_) => Kind::Drop,
             Change::Move { .. } => Kind::Move,
+            Change::Assign { .. } => Kind::Assign,
+        };
+        // who `assign` hands the card to — read out of `change` here (not inside the "3. the
+        // change" match below) because `column`/`c` are rebound by then; a WIP cap keyed on
+        // the HOLDER (not the actor issuing the command) must see this name too — see the
+        // note beside the WIP check below.
+        let assignee = match change {
+            Change::Assign { owner, .. } => Some(owner),
+            _ => None,
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
 
@@ -1849,7 +1975,16 @@ impl Store {
             let wip = wip_of(&tx)?;
             // `wip-counts-blocked no` (store/blocks.rs) discounts blocked DOING cards, up to
             // `wip` of them, so waiting for someone else does not stall the board — and
-            // blocking everything can still never hand out unlimited work
+            // blocking everything can still never hand out unlimited work.
+            //
+            // A per-owner cap belongs here too, the moment one exists: `tb assign` enters
+            // DOING through this exact check, on purpose, so a cap added later catches it for
+            // free — PROVIDED it is keyed on the card's new HOLDER (`assignee.unwrap_or(actor)`
+            // — `assignee` is `Some` only for `Kind::Assign`, in scope right here), never on
+            // `actor` alone. `actor` is who is issuing the command (the assigner); for
+            // `Kind::Assign` that is not who ends up holding the card, and a cap keyed on the
+            // wrong name would let an orchestrator assign straight past it — exactly the hole
+            // a per-owner limit exists to close.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
@@ -1858,6 +1993,11 @@ impl Store {
 
         // 3. the change, then its events
         let owner = match (kind, column.as_str()) {
+            // MUST come before the `Kind::Claim` arm below: assign sets the NAMED owner, not
+            // the actor running the command — that distinction (who assigned it vs. who now
+            // holds it) is the whole point of the command, and the event log carries both:
+            // `owner` here is who holds it, `actor` on the "assigned" event is who assigned it.
+            (Kind::Assign, _) => Some(assignee.expect("Kind::Assign always carries an owner").to_string()),
             (Kind::Claim, _) => Some(actor.to_string()),
             (_, "todo") => None,
             (_, "doing") => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
@@ -1883,6 +2023,11 @@ impl Store {
         }
         match kind {
             Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
+            // logged under `actor` — who ran 'tb assign', i.e. who assigned it — never under
+            // `owner` (who now holds it): that split is what lets `tb show`/`tb log` answer
+            // "who assigned this" and "who holds this" as two different questions, the way
+            // every other event's `actor` column already answers "who did this".
+            Kind::Assign => Self::log(&tx, id, actor, "assigned", &format!("assigned to {}", owner.as_deref().unwrap_or("")))?,
             Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
             Kind::Move => {
                 if block_cleared {
@@ -2096,6 +2241,12 @@ enum Change<'a> {
     Move { id: i64, column: &'a str, reason: Option<&'a str> },
     /// `drop`: back to TODO, unowned.
     Drop(i64),
+    /// `assign ID NAME`: TODO → DOING, owned by `owner` — never the actor running the
+    /// command. Only reaches a TODO card (the same restriction `claim_target` gives `take`,
+    /// and `take` itself has no `--force` to take a card away from its current holder
+    /// either), so the holder guard never needs a separate check here: a card already held
+    /// by someone is simply not a valid target, by construction.
+    Assign { id: i64, owner: &'a str },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2103,6 +2254,7 @@ enum Kind {
     Claim,
     Move,
     Drop,
+    Assign,
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.
@@ -2198,6 +2350,39 @@ pub fn fmt_clock(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #105: SQLITE_BUSY/SQLITE_LOCKED (another `tb` holds the write lock) reads nothing like
+    /// a real path problem (cannot open, read-only, …), and only the latter names TB_DB.
+    #[test]
+    fn a_locked_database_and_a_path_problem_get_different_messages() {
+        let locked = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::DatabaseBusy, extended_code: 5 },
+            Some("database is locked".to_string()),
+        );
+        let path_problem = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::CannotOpen, extended_code: 14 },
+            Some("unable to open database file".to_string()),
+        );
+        let locked_msg = BoardError::from(locked).0;
+        let path_msg = BoardError::from(path_problem).0;
+        assert_ne!(locked_msg, path_msg, "a lock and a path problem must not read the same");
+        assert!(locked_msg.contains("another tb is writing this board"), "{locked_msg}");
+        assert!(!locked_msg.contains("TB_DB"), "a lock is not a TB_DB problem: {locked_msg}");
+        // whether the path message names TB_DB depends on whether it is actually set — that
+        // exact rule is `the_tb_db_hint_names_it_only_when_set` below, via the pure function,
+        // so this does not assert on ambient process environment here
+        assert!(path_msg.starts_with("database error: unable to open database file"), "{path_msg}");
+    }
+
+    /// #105: TB_DB is named only when it is actually set — otherwise it was never the pin.
+    /// Never says "the board file": that placeholder is reserved for when the real file is
+    /// genuinely unknown (`position_guard.rs` pins it out of an actual refusal).
+    #[test]
+    fn the_tb_db_hint_names_it_only_when_set() {
+        assert_eq!(db_error_hint(None), "check it is writable");
+        assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
+        assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
 
     #[test]
     fn title_parsing() {
