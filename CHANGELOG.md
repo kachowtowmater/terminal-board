@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### TODO overflow count verified exact after #131/#147 (#108)
+
+Reported by the board owner: a 12-card TODO column said `+12 more` at a near-full-screen
+size, and growing the window did not change it — more hidden cards than the column could
+possibly be hiding. Reproduced against current `main`: it no longer happens. `card_box_heights`
+/ `column_height` (landed for #131, the round-robin growth of #147) already give a column the
+height it actually has rather than a stale or conservative estimate, and `draw_boxed`'s own
+`+N more` hint counts exactly what it did not draw.
+- Two new tests pin this rather than leave it to memory: the hint always equals `12 -
+  (titles actually drawn)` at half-h, third-h and third-v sizes, it is never the full 12, and
+  it shrinks (never holds still or grows) as a pane gets taller, down to the intentional
+  `MAX_VISIBLE_CARDS` floor of "+2 more" — not to zero, which is a cap by design, not a bug.
+
 ### `tb boards archive` / `restore`: retire a board without moving files by hand (#80)
 
 Until now the only way to retire a board — a scratch board, a finished project — was to move
