@@ -47,6 +47,9 @@ struct Cli {
     /// Machine-readable output
     #[arg(long, global = true)]
     json: bool,
+    /// Refuse every write: for watching a board you must not change.
+    #[arg(long = "read-only", global = true)]
+    read_only: bool,
     /// Board to use
     #[arg(short = 'b', long = "board", global = true, value_name = "NAME")]
     board: Option<String>,
@@ -373,6 +376,58 @@ impl Cmd {
             Cmd::List { .. } | Cmd::Show { .. } | Cmd::Boards { .. } | Cmd::Github { .. } | Cmd::Board { .. } | Cmd::Agents | Cmd::Guide | Cmd::New { .. }
                 | Cmd::Export { .. } | Cmd::Log { .. }
         )
+    }
+}
+
+/// Does this command change the board? An exhaustive match whose catch-all is `true`, so a
+/// command added later counts as a write until somebody says otherwise — the safe way round.
+/// (`writes()` above answers a different question: may this command CREATE the board file.)
+fn changes_the_board(cmd: &Cmd) -> bool {
+    !matches!(
+        cmd,
+        Cmd::List { .. }
+            | Cmd::Show { .. }
+            | Cmd::Board { .. }
+            | Cmd::Boards { .. }
+            | Cmd::Agents
+            | Cmd::Guide
+            | Cmd::Export { .. }
+            | Cmd::Log { .. }
+            | Cmd::Watch { .. }
+            // reading the settings is a read: `tb config` lists them and `tb config KEY`
+            // prints one. Only a VALUE (or `--off`) changes anything.
+            | Cmd::Config { key: None, .. }
+            | Cmd::Config { value: None, off: false, .. }
+            // `tb github repos` asks GitHub, not the board. Plain `tb github` may refresh a
+            // stale cache, which IS a write — it is refused by the read-only connection if it
+            // gets that far, with the same wording.
+            | Cmd::Github { refresh: false, .. }
+    )
+}
+
+/// The name a refusal shows for a command.
+fn command_name(cmd: &Cmd) -> &'static str {
+    match cmd {
+        Cmd::Add { .. } => "tb add",
+        Cmd::Note { .. } => "tb note",
+        Cmd::Check { .. } => "tb check",
+        Cmd::Move { .. } => "tb move",
+        Cmd::Done { .. } => "tb done",
+        Cmd::Block { .. } => "tb block",
+        Cmd::Drop { .. } => "tb drop",
+        Cmd::Rm { .. } => "tb rm",
+        Cmd::Restore { .. } => "tb restore",
+        Cmd::Prio { .. } => "tb prio",
+        Cmd::Edit { .. } => "tb edit",
+        Cmd::Config { .. } => "tb config",
+        Cmd::Next { .. } => "tb next",
+        Cmd::Take { .. } => "tb take",
+        Cmd::Sync => "tb sync",
+        Cmd::Import { .. } => "tb import",
+        Cmd::Mv { .. } => "tb mv",
+        Cmd::New { .. } => "tb new",
+        Cmd::Setup { .. } => "tb setup",
+        _ => "that command",
     }
 }
 
@@ -997,6 +1052,19 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             "--as is empty — pass your agent name, e.g. --as bot-1 (or drop the flag to use TB_AS/the pane's agent)".to_string(), Code::EmptyActor,
         ));
     }
+    // `--read-only` is the same switch as TB_READONLY, set for this process before any board
+    // is opened — the store reads it when it decides how to open the connection.
+    if cli.read_only {
+        std::env::set_var("TB_READONLY", "1");
+    }
+    let readonly = terminal_board::store::access::readonly_env();
+    if readonly {
+        if let Some(cmd) = cli.cmd.as_ref() {
+            if changes_the_board(cmd) {
+                return Err(terminal_board::store::access::refusal(command_name(cmd)));
+            }
+        }
+    }
     let actor = resolve_actor(cli.actor.as_deref());
     // `github` is the name tb's own GitHub sync acts under, and the store lets that name move
     // a card someone holds (its moves are evidence-driven). Nobody else may carry it: a write
@@ -1104,6 +1172,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // to `store.notice_key()` (the one function that computes this — see its doc comment on
     // `store::conn_notice_key`), so the full-screen board only ever drains warnings that are
     // actually about itself, whatever shape the board's path was given in.
+    //
+    // `config actors` is NOT checked here, and nothing else about access is either. It is
+    // enforced in `Store::log`, which every card change goes through — the full-screen board
+    // calls the store directly and would walk past a check at this layer. `tb config` stays
+    // ungated because it writes no card event, which is what lets a list nobody satisfies be
+    // corrected.
     if let Some(bad) = store.unknown_tz()? {
         let msg = format!(
             "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
@@ -1125,6 +1199,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         print_warnings();
     }
     let Some(cmd) = cmd else {
+        if tty && readonly {
+            return Err(BoardError(
+                "read-only mode: the full-screen board changes cards as you use it — watch with 'tb board', 'tb list' or 'tb watch --json' instead".to_string(),
+                terminal_board::store::Code::ReadOnly,
+            ));
+        }
         if tty {
             return tui::run(store, &actor)
                 .map_err(|e| BoardError(format!("terminal error: {e} — try 'tb list'"), Code::TerminalError));
@@ -1936,6 +2016,43 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     store.change_wip(n, &actor)?;
                     ("wip".into(), json!(n))
                 }
+                ("wip-per-owner", Some(value)) => {
+                    let n: i64 = value.trim().parse().map_err(|_| {
+                        BoardError(
+                            format!("wip-per-owner must be a number, got '{value}' — try 'tb config wip-per-owner 1' (0 turns it off)"),
+                            terminal_board::store::Code::InvalidValue,
+                        )
+                    })?;
+                    store.set_wip_per_owner(n, &actor)?;
+                    ("wip-per-owner".into(), json!(n))
+                }
+                ("wip-per-owner", None) => {
+                    let n = store.wip_per_owner()?;
+                    if !j {
+                        match n {
+                            0 => say!("wip-per-owner is off — one person may hold as many cards as the board's wip allows"),
+                            n => say!("{n}"),
+                        }
+                        return Ok(());
+                    }
+                    ("wip-per-owner".into(), json!(n))
+                }
+                ("actors", value) if off || value.is_some() => {
+                    let names = store.set_actors(if off { "" } else { value.as_deref().unwrap_or_default() }, &actor)?;
+                    ("actors".into(), json!(names))
+                }
+                ("actors", None) => {
+                    let names = store.actors_allowed()?;
+                    if !j {
+                        if names.is_empty() {
+                            say!("actors is off — any name may write to this board");
+                        } else {
+                            say!("{}", names.join(", "));
+                        }
+                        return Ok(());
+                    }
+                    ("actors".into(), json!(names))
+                }
                 ("layout", Some(value)) => {
                     store.set_layout(&value)?;
                     ("layout".into(), json!(store.layout()?))
@@ -2081,6 +2198,20 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         "sort is now due — TODO and REVIEW show the nearest due date first and 'tb next' takes it; cards without a date follow; equal dates keep their position"
                     ),
                     ("sort", _) => say!("sort is now position — every column is in position order and 'tb next' takes the top card"),
+                    ("wip-per-owner", n) if n.as_i64() == Some(0) => {
+                        say!("wip-per-owner is now off — one person may hold as many cards as the board's wip allows")
+                    }
+                    ("wip-per-owner", n) => say!(
+                        "wip-per-owner is now {} — nobody may hold more than that many DOING cards at once (the board's wip limit still applies to everyone together)",
+                        n.as_i64().unwrap_or_default()
+                    ),
+                    ("actors", v) if v.as_array().is_some_and(|a| a.is_empty()) => {
+                        say!("actors is now off — any name may write to this board")
+                    }
+                    ("actors", v) => say!(
+                        "actors is now {} — any other name is refused, so a typo cannot invent an agent; reads are never refused",
+                        v.as_array().map(|a| a.iter().filter_map(|n| n.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
                     (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }

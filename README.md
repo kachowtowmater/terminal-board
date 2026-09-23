@@ -244,6 +244,25 @@ In the GITHUB panel: ↑↓ select, `enter` on the repository line opens the rep
 **WIP limit.** DOING holds at most 3 cards by default ("work in progress" limit). When it is
 full, finish something first. Change it with `+`/`-` or `tb config wip 4`.
 
+**One card per person.** The limit above is for the whole board, so one busy agent can take
+every slot and leave everyone else locked out. `tb config wip-per-owner 1` adds a second,
+per-person cap: nobody holds more than that many DOING cards at once. Both limits apply — the
+board-wide one asks "is the board full?", this one asks "are you full?" — and both count a
+blocked card the same way, so `tb config wip-counts-blocked no` discounts it from each, capped
+by that limit's own number. `tb config wip-per-owner 0` turns it off.
+
+**Known names.** `tb config actors alice,bob` makes the board refuse an `--as` it does not
+know, so a mistyped name cannot quietly become a new agent. Names are matched without case or
+surrounding spaces. Cards already held by a name that is not on the list are left exactly as
+they are, and still shown — the list governs new work, not old. Reads are never refused, so a
+watcher needs no name. You cannot set a list that leaves you out, and `tb config` itself is
+never refused, so a list can always be corrected. `tb config actors --off` clears it.
+
+**Watching without touching.** `TB_READONLY=1`, or `--read-only` on any command, refuses every
+write with one clear line and changes nothing — for a viewer, a dashboard or a CI job that
+should only look. Reads all work as usual; the full-screen board is not offered, because its
+keys change cards, so use `tb board`, `tb list` or `tb watch --json` instead.
+
 ## Boards
 
 You can have as many boards as you like. `tb` opens the one called `default`. Give a name

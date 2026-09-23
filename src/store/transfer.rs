@@ -113,6 +113,8 @@ impl Store {
         forced: Option<&str>,
     ) -> Result<i64> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // the board it ARRIVES at keeps its own list of names
+        super::access::guard_actor(&tx, actor)?;
         let pos: i64 =
             tx.query_row(r#"SELECT COALESCE(MAX(position), -1) + 1 FROM cards WHERE "column"='todo'"#, [], |r| r.get(0))?;
         let t = now();
@@ -189,6 +191,9 @@ impl Store {
         // held until the delete commits. A concurrent `tb note` waits here and then finds the
         // card gone; a second `tb mv` of the same card does the same, instead of copying twice.
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // this writer builds its events by hand (it replays the card's history with the
+        // original actors), so it does not pass through `Store::log` and asks for itself
+        super::access::guard_actor(&tx, actor)?;
         let (card, checklist, events, links) = pack(&tx, id)?;
         let new_id = dest.receive(&from, &card, &checklist, &events, &links, actor, forced)?;
         // from here the card exists on the destination: a failure below leaves a duplicate,
