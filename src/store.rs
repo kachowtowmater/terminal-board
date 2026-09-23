@@ -722,11 +722,18 @@ fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
         return Err(e);
     }
     if let Some(backup) = backup {
-        crate::notice::push(format!(
-            "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
-            path.display(),
-            backup.display()
-        ));
+        // scoped to this board's own key (`path` here is the resolved file, the same string
+        // `Store::path` reports once open) — so only the board that raised this ever drains
+        // it, never a different board a concurrent `reload` or a different test happens to
+        // render next
+        crate::notice::push_for(
+            &path.display().to_string(),
+            format!(
+                "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+                path.display(),
+                backup.display()
+            ),
+        );
     }
     Ok(())
 }
@@ -812,13 +819,18 @@ fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
     if shared {
         return;
     }
-    crate::notice::push(format!(
-        "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
-        real.display(),
-        crate::fsperm::fmt_mode(mode),
-        config_cmd(path, "file-mode private"),
-        config_cmd(path, "file-mode shared"),
-    ));
+    // scoped to `real` — the resolved file `Store::path` reports once open — for the same
+    // reason `upgrade`'s backup notice is: only the board this is actually about ever drains it
+    crate::notice::push_for(
+        &real.display().to_string(),
+        format!(
+            "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
+            real.display(),
+            crate::fsperm::fmt_mode(mode),
+            config_cmd(path, "file-mode private"),
+            config_cmd(path, "file-mode shared"),
+        ),
+    );
 }
 
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).

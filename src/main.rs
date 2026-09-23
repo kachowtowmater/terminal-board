@@ -1100,11 +1100,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
     let mut store = open_board(&name, creates)?;
     // a stored `tz` this build does not know must not be ignored silently: today then comes
-    // from this machine's zone, and every command says so until the setting is fixed
+    // from this machine's zone, and every command says so until the setting is fixed. Scoped
+    // to this board's own key (its resolved file path) — same reason as store.rs's pushes:
+    // so the full-screen board only ever drains warnings that are actually about itself.
     if let Some(bad) = store.unknown_tz()? {
-        terminal_board::notice::push(format!(
+        let msg = format!(
             "this board's tz '{bad}' is not a time zone this version knows — 'today' is taken from this machine's zone until you set it again: 'tb config tz America/Los_Angeles' (or 'tb config tz local')"
-        ));
+        );
+        match store.path() {
+            Some(p) => terminal_board::notice::push_for(&p.display().to_string(), msg),
+            None => terminal_board::notice::push(msg),
+        }
     }
     // hints carry the board name only when it was chosen explicitly in this shell
     let explicit = explicit_board(positional.as_deref(), cli.board.as_deref());
