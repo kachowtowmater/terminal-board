@@ -136,10 +136,10 @@ A column shows as many cards as it has room for, and at most ten at a time; the 
 counted at the bottom of the column as `+12 more`. Scrolling with the arrow keys walks through
 them all, and the number in the column header is always the real total.
 
-This also stops one long column taking the whole board. In the stacked views (`third-h`,
-`half-h`) the four columns share one height, and each gets a fair share of it before any
-column takes a second helping — so forty finished cards in DONE can no longer push TODO down
-to a single line.
+This also stops one long column taking the whole board. Every view splits its space evenly:
+the four columns side by side are the same width, the 2x2 grid's two rows are the same
+height, and the stacked sections are too — however many cards each one holds. So sixty
+finished cards in DONE get exactly the room TODO gets, and can no longer push it down.
 
 ## Boards
 
