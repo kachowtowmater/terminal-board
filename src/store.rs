@@ -855,29 +855,6 @@ fn is_board(conn: &Connection) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Run `migrate`, and keep a copy of an existing board before its schema changes.
-///
-/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
-///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
-///    never taken, and that is the end of it.
-/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
-///    from the decision to the commit:
-///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
-///      this board? A process that waited for the lock while another one upgraded the board
-///      finds nothing to do, and does nothing — no backup, no warning;
-///    - an existing board that would change is backed up first, through a second connection.
-///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
-///      the board, it reads the last COMMITTED state, and nobody can commit while this
-///      connection holds the write lock. So the copy is always the board as the older tb
-///      left it, and there is exactly one however many processes open the board at once;
-///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
-///      with nothing changed and refuses the command.
-///
-/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
-///
-/// It compares the schema before and after instead of keeping a list of migrations, so a
-/// migration written later, by anyone, in any style, is backed up without registering anything.
-///
 /// The ONE place `notice`'s board key is computed — `Store::path`/`notice_key` and every
 /// `notice::push_for` about THIS connection all call this, never re-derive their own guess
 /// from the pre-open `Path`. A hand-rolled `Path::display()` on that path missed a relative
@@ -907,6 +884,28 @@ fn needs_upgrade(conn: &Connection) -> Result<bool> {
     }
 }
 
+/// Run `migrate`, and keep a copy of an existing board before its schema changes.
+///
+/// 1. A dry run in a plain (deferred) transaction that is always rolled back. On an up-to-date
+///    board — every command, nearly every time — `migrate` is all no-ops, the write lock is
+///    never taken, and that is the end of it.
+/// 2. Otherwise ONE critical section, under the board's write lock (`BEGIN IMMEDIATE`), held
+///    from the decision to the commit:
+///    - probe under the lock (inside a savepoint that is undone): would `migrate` still change
+///      this board? A process that waited for the lock while another one upgraded the board
+///      finds nothing to do, and does nothing — no backup, no warning;
+///    - an existing board that would change is backed up first, through a second connection.
+///      `VACUUM INTO` cannot run inside a transaction, and it does not have to: it only READS
+///      the board, it reads the last COMMITTED state, and nobody can commit while this
+///      connection holds the write lock. So the copy is always the board as the older tb
+///      left it, and there is exactly one however many processes open the board at once;
+///    - then `migrate`, and COMMIT. A backup that cannot be written ends the transaction
+///      with nothing changed and refuses the command.
+///
+/// The lock is SQLite's own, so a process that dies holding it leaves nothing stale.
+///
+/// It compares the schema before and after instead of keeping a list of migrations, so a
+/// migration written later, by anyone, in any style, is backed up without registering anything.
 fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
     let pending = {
         let tx = conn.unchecked_transaction()?;
