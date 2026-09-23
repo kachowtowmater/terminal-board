@@ -1,6 +1,121 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 — 2026-09-23
+
+3.0.0 is about trust: who may move a card, what a machine is willing to run, and a record
+of who did the work. It also makes the full-screen board split its space evenly, and adds
+deadline boards, evidence links, board archiving, bulk import and export. Several commands
+that used to succeed are now **refused**, which is why this is a major version. Each
+refusal says what to run instead, and each has a way through.
+**[UPGRADING.md](https://github.com/kachowtowmater/terminal-board/blob/main/UPGRADING.md#upgrading-to-300)** covers every change with the command to run.
+Boards made by 2.x open unchanged. The JSON contract is still `"v": 1` (new fields only).
+
+### Highlights
+
+- **A pre-change hook, trusted by the machine and not by the board.** A board can ask for a
+  gate on every move by NAME. `tb trust NAME -- COMMAND` records what that name runs on this
+  machine, and nothing runs until you confirm its sha256 (`tb trust NAME --sha256 HEX`). A
+  refused, untrusted, changed or missing hook stops the move and nothing is written. Only
+  `--break-glass "why"` skips it, and that is logged.
+- **Who moved it, and as whom.** Every change records the name plus the identity behind it:
+  harness, model, role, session and machine. Claude Code, omp and pi are read automatically.
+  `tb show`, `tb log` and `--json` show it, so a bad batch of work can be traced back to the
+  session that wrote it.
+- **Only the holder touches a DOING card.** `rm`, `edit`, `block`, `check` and `prio` now
+  follow the same holder rule as `done`, `drop` and `move`. Two ways to approve your own work
+  were closed. `tb assign ID NAME` hands a card to someone, and `tb config wip-per-owner`,
+  `tb config actors` and `--read-only` cover shared boards.
+- **An even full-screen board.** Every view splits its space evenly, whatever the columns
+  hold. A long column shows ten cards at a time plus `+N more`, the arrow keys scroll through
+  the rest, and the column header always shows the real total.
+- **Deadline boards.** `tb new NAME --kind deadline` sets up a board in one step: due dates
+  that never shift a day (`--due`, `tz`, `due-warn`), a deadline queue (`tb config sort
+  due`), a mark on cards that are due soon, your own column names, `--on` / `--until` for
+  waiting, and a waiting lane. `a` and `e` on the board both take a due date.
+- **Boards you can retire and move between.** `tb boards archive` / `restore` retire a board
+  without deleting it. `tb boards --default` chooses the board plain `tb` opens. `tb mv ID
+  --to BOARD` moves a card with its history, and `tb list --all-boards` searches every board.
+- **Evidence, and data in and out.** `tb link` attaches a path, sha or URL to a card, and
+  `done-by`, `done-needs-link`, `done-needs-note` and `max-rounds` set what closing a card
+  requires. `tb import`, `tb edit --from`, `tb export --json|--csv` and `tb log` move whole
+  boards in and out.
+- **Safer files.** Board files are private (`0600`). A board is backed up before its schema
+  is upgraded, its lifetime is locked so an archive can never lose a write, and concurrent
+  writers wait their turn instead of failing.
+
+### Breaking changes
+
+Each item is one line here and has a full section in [UPGRADING.md](https://github.com/kachowtowmater/terminal-board/blob/main/UPGRADING.md#upgrading-to-300).
+
+- **Another agent's DOING card: `rm`, `edit`, `block`, `check` and `prio` are refused**
+  unless you hold it (they used to go through silently). *Do:* hold the card, or add
+  `--force` (logged). `tb note` stays open to everyone.
+- **Approving your own work is refused in two more cases.** One is moving your REVIEW card
+  back to TODO and then closing it. The other is dropping a card so that someone else moves
+  it to review. The author of a card is now its owner, not whoever moved it to REVIEW.
+  *Do:* have someone else close it, or `--force` (logged).
+- **The name `github` is reserved for tb's own sync.** A write under `--as github` is
+  refused. *Do:* use your own name. Reads still work.
+- **Eight more words are commands and can no longer be board names:** `assign`, `restore`,
+  `import`, `export`, `log`, `mv`, `link` and `trust`. *Do:* rename a board with one of those
+  names (its file is still there; UPGRADING shows the one-line `mv`). (`new` is a command too,
+  but it is still a valid board name.)
+- **`tb add -d` trims the blank space around a description**, like every other way to write
+  one. *Do:* nothing, unless a script relied on leading or trailing spaces.
+- **Control characters are removed from JSON text fields**, as they already were on screen.
+  Tabs and line breaks are kept. *Do:* nothing, unless a consumer read raw escape bytes.
+- **`TB_NOW` outside 2000-01-01 to 2100-01-01 is refused** instead of being written into a
+  board. *Do:* fix the test fixture that set it.
+- **Older boards report themselves.** A board made by an earlier tb has mode `0644`. It gets
+  one warning line on each command until you choose `tb config file-mode private` or
+  `shared`. Its first open by 3.0.0 also writes a backup, `<board>.db.before-3.0.0.<UTC
+  time>.bak`, before upgrading the schema. *Do:* run one of the two `file-mode` commands once
+  per board, and delete the backups when you no longer need a way back.
+
+### What's new at a glance
+
+- **Rules and trust:** pre/post-change hooks with `tb trust`, and `--break-glass`.
+  `tb config done-by`, `done-needs-link`, `done-needs-note` and `max-rounds` (`escalate`).
+  `tb config rules` sets a board's own conventions. `wip-per-owner`, `actors`,
+  `TB_READONLY` / `--read-only`.
+- **Cards:** `tb assign`, `tb link`, `--tag KEY`, `--desc-file` / `--file` (with `-` for
+  standard input, bounded by `TB_STDIN_TIMEOUT`), `tb config rm archive` + `tb restore`,
+  `tb mv --to BOARD`, and `--on` / `--until` on `tb block`, with auto-unblock when that card
+  is done.
+- **Boards:** `tb new --kind deadline` / `--from`, `tb boards --default`,
+  `tb boards archive` / `restore` / `--archived`, `tb list` filters and `--all-boards`,
+  `tb export`, `tb import`, `tb edit --from`, and `tb log` (which includes a board's own
+  events).
+- **Due dates:** `--due`, `tz`, `due-warn`, `sort due`, `card-line due`, column `label`s,
+  the waiting lane, and a due field in `a` and `e`.
+- **The screen:** an even split in every view, ten cards per column with `+N more` and
+  scrolling, warnings in the status line, and a footer that drops hints one at a time. The
+  AGENTS panel shows who is on *this* board and which card each holds. Tile lines are never
+  cut silently.
+- **Agents:** harness, model, role and session are recorded (Claude Code, omp and pi are
+  read automatically). `--json` failures have a stable `code`. The agent manual stays under
+  its line cap.
+- **Install and setup:** `install.sh --version 3.0.0` works with or without the `v`.
+  Re-running `tb setup --yes`, or upgrading with `install.sh --yes`, keeps a board's AGENTS
+  panel setting. `tb setup --dry-run` names an existing board rather than offering to create
+  it. `install.sh --uninstall` points out the PATH line it leaves behind.
+
+The sections below give each change in full.
+
+### Installer and setup: re-runs and upgrades keep what you chose
+
+- `tb setup --yes` (which `install.sh --yes` runs) now keeps the AGENTS panel as the board
+  already had it. Before, re-running setup, or upgrading with
+  `curl … | bash -s -- --yes`, hid a panel you had shown. A board that never chose still
+  gets the old default.
+- `tb setup --dry-run` on a board that already exists says `Would use the board 'NAME' (it
+  exists)`, not `Would create`.
+- `install.sh --version 3.0.0` works as well as `--version v3.0.0`. Before, it looked for a
+  release named `3.0.0`, which does not exist, and failed with `download failed`.
+- `install.sh --uninstall` names the `PATH` line it added to your shell's startup file and
+  leaves it where it is, so it removes nothing it did not put there. It also removes its own
+  record of agent snippets when no board was ever made.
+- `tests/install_test.sh` has a scenario for each of these.
 
 ### A pre/post-change hook: this machine's own gate on a move (A1)
 
