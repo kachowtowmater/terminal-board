@@ -43,7 +43,7 @@
 
 use super::archive::board_log;
 use super::links::LinkItem;
-use super::{get_card, now, Card, Result, Store};
+use super::{get_card, now, Card, Code, Result, Store};
 use rusqlite::{params, TransactionBehavior};
 
 /// What a move did: where the card came from, and the number it has now.
@@ -208,7 +208,7 @@ impl Store {
         cleared.map_err(|e| {
             super::BoardError(format!(
                 "#{id} was copied to '{to}' as #{new_id} but could not be removed from '{from}' ({e}) — the card is on BOTH boards; delete the old one with 'tb {from} rm {id}'"
-            ))
+            ), Code::DbError)
         })?;
         Ok(Moved {
             from_board: from,

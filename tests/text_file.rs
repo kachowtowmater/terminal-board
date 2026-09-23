@@ -108,7 +108,9 @@ fn json_refusal(o: &Output) -> (String, String) {
     assert_eq!(v["ok"], false, "{v}");
     let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["error", "hint", "ok"], "{v}");
+    assert_eq!(keys, ["code", "error", "hint", "ok"], "{v}");
+    // #81: every refusal reading text from a file/stdin carries the stable `io_error` code
+    assert_eq!(v["code"], "io_error", "{v}");
     (v["error"].as_str().unwrap().to_string(), v["hint"].as_str().unwrap().to_string())
 }
 

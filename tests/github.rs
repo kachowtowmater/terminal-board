@@ -643,7 +643,9 @@ esac
     let o = e.run(&["config", "github", "nobody-xyz/does-not-exist-123", "--json"], &gh);
     assert!(!o.status.success());
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(keys(&v), sorted(&["ok", "error", "hint"]), "{}", v);
+    assert_eq!(keys(&v), sorted(&["ok", "error", "hint", "code"]), "{}", v);
+    // #81: a failed GitHub API/network call carries the stable `github_error` code
+    assert_eq!(v["code"], "github_error");
     // an existing repo still saves (the ok script from Env covers it)
     let ok = e.fake_gh(&run_json("success"), false);
     assert!(e.run(&["config", "github", "acme/widgets"], &ok).status.success());

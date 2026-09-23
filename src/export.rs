@@ -20,7 +20,7 @@
 //! real stdout.
 
 use crate::contract::{self, CardJ};
-use crate::store::{Card, Result, Store};
+use crate::store::{Card, Code, Result, Store};
 use std::io::Write;
 
 /// What `tb export` writes.
@@ -41,7 +41,7 @@ fn wrote(r: std::io::Result<()>) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => Err(crate::store::BoardError(format!(
             "could not write the export: {e} — check there is room on the disk, or write it to a file"
-        ))),
+        ), Code::IoError)),
     }
 }
 
@@ -303,7 +303,7 @@ pub fn since_value(raw: &str, tz: Option<chrono_tz::Tz>, what: &str) -> Result<i
     let Some(date) = crate::store::due::parse_date(t) else {
         return crate::store::err(format!(
             "'{t}' is not a date — use YYYY-MM-DD, e.g. '{what} 2026-10-09' (or a unix second)"
-        ));
+        ), Code::InvalidValue);
     };
     let midnight = date.and_hms_opt(0, 0, 0).unwrap_or_default();
     let ts = match tz {

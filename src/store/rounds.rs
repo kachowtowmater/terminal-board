@@ -15,7 +15,7 @@
 //! finish the card (a `done` card is never escalate) or to raise or turn off `max-rounds`; a
 //! human is never blocked from acting on it, only from being handed it by accident.
 
-use super::{err, Connection, Result, Store};
+use super::{Code, err, Connection, Result, Store};
 use rusqlite::OptionalExtension;
 
 /// Longest accepted `max-rounds` value. Rework loops this long are not realistic; the bound
@@ -66,7 +66,7 @@ impl Store {
             Some(n) if (1..=MAX_MAX_ROUNDS).contains(&n) => self.set_config("max-rounds", &n.to_string()),
             Some(n) => err(format!(
                 "max-rounds must be 1-{MAX_MAX_ROUNDS}, got {n} — try 'tb config max-rounds 5'"
-            )),
+            ), Code::InvalidValue),
         }
     }
 

@@ -97,6 +97,11 @@ fn done_by_refuses_anyone_else_and_says_how_to_get_past_it() {
         format!("tb: only anna or ben may close a card on this board (carol is not on the list) — ask one of them to run 'tb done {one}', or 'tb done {one} --force' if you mean it (logged)")
     );
     assert_eq!(b.column(one), "review", "nothing moved");
+    // #81: the same refusal under --json carries the stable `done_by_restricted` code
+    let jo = b.as_who("carol", &["done", &one.to_string(), "--json"]);
+    assert!(!jo.status.success());
+    let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+    assert_eq!(jv["code"], "done_by_restricted");
     // a name on the list may close it, whatever case it is typed in
     b.ok_as("ANNA", &["done", &one.to_string()]);
     assert_eq!(b.column(one), "done");
@@ -141,6 +146,11 @@ fn a_name_on_the_list_still_cannot_close_its_own_work() {
     let e = b.refused("anna", &["done", &id.to_string()]);
     assert_eq!(e, "tb: you did this work — ask another person or agent to review it", "the older rule answers first");
     assert_eq!(b.column(id), "review");
+    // #81: never-approve-your-own-work carries the stable `self_approve` code
+    let jo = b.as_who("anna", &["done", &id.to_string(), "--json"]);
+    assert!(!jo.status.success());
+    let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+    assert_eq!(jv["code"], "self_approve");
     b.ok_as("ben", &["done", &id.to_string()]);
     assert_eq!(b.column(id), "done");
     // the author rule is about the OWNER (#86), so a list name that merely moved the card may close it
@@ -196,6 +206,11 @@ fn approve_records_who_checked_a_card_and_leaves_it_in_review() {
     let todo = b.json(&["list", "--json"]).as_array().unwrap().len() as i64;
     let e = b.refused("carol", &["done", &todo.to_string(), "--approve"]);
     assert!(e.contains("is not in review") && e.contains(&format!("'tb move {todo} review'")), "{e}");
+    // #81: an approval outside REVIEW carries the stable `not_in_review` code
+    let jo = b.as_who("carol", &["done", &todo.to_string(), "--approve", "--json"]);
+    assert!(!jo.status.success());
+    let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+    assert_eq!(jv["code"], "not_in_review");
     // `done-by` does not gate a check: noting "I looked at this" is not closing it
     b.ok(&["config", "done-by", "anna"]);
     b.ok_as("carol", &["done", &plain.to_string(), "--approve"]);
@@ -318,6 +333,11 @@ fn done_needs_note_off_by_default_on_refuses_without_a_fresh_note() {
         format!("tb: this board needs a closing note before DONE (config done-needs-note) — 'tb note {two} \"what you checked\"', then 'tb done {two}' again, or 'tb done {two} --force' to skip it (logged)")
     );
     assert_eq!(b.column(two), "review", "nothing moved");
+    // #81: the closing-note gate carries the stable `done_needs_note` code
+    let jo = b.as_who("carol", &["done", &two.to_string(), "--json"]);
+    assert!(!jo.status.success());
+    let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+    assert_eq!(jv["code"], "done_needs_note");
     b.ok(&["note", &two.to_string(), "looks right, tests pass"]);
     b.ok_as("carol", &["done", &two.to_string()]);
     assert_eq!(b.column(two), "done");

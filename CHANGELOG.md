@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### `--json` failures carry a stable `code`
+
+Every `--json` failure was `{"ok":false,"error":"…","hint":"…"}` — two prose strings and no
+symbol anywhere, so an agent that needed to tell "the card is held by someone else" from "no
+card #N" from "doing is full" apart had to substring-match English that embeds card ids, agent
+names and counts. Rewording any message would have silently broken every such caller.
+- A third field, `"code"`, is a stable lowercase snake_case symbol on every `--json` failure
+  object — runtime and argument errors alike, on every command that can fail. It is carried on
+  the error type itself, so a new failure path without one is a compile error, not a runtime gap.
+- The vocabulary is open (docs/JSON.md has the full table and the five 2.0.0 refusals it pins);
+  an unrecognized code means the same as one from a future tb: read `error`/`hint`.
+- Additive only: `"v"` stays 1, `error` and `hint` keep their current meaning and wording.
+
 ### `TB_STDIN_TIMEOUT` bounds the wait for `-` (or a FIFO)'s first byte
 
 `--file -` (and `--desc-file -`) waited for standard input to close however long that took,
