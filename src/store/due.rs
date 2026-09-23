@@ -10,7 +10,7 @@
 //! `days_left` counts whole calendar days, never seconds / 86400 — a day with a DST change
 //! is 23 or 25 hours long.
 
-use super::{err, get_card, now, Card, Result, Store};
+use super::{Code, err, get_card, now, Card, Result, Store};
 use chrono::{NaiveDate, TimeZone};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
@@ -65,7 +65,7 @@ impl DueDate {
         } else {
             format!("'{t}' is not a date")
         };
-        err(format!("{what} — use YYYY-MM-DD, e.g. '{example}' (or --due none to clear it)"))
+        err(format!("{what} — use YYYY-MM-DD, e.g. '{example}' (or --due none to clear it)"), Code::InvalidValue)
     }
 
     pub fn as_str(&self) -> &str {
@@ -79,7 +79,7 @@ pub fn parse_tz(name: &str) -> Result<chrono_tz::Tz> {
         err(format!(
             "unknown time zone '{}' — use an IANA name, e.g. 'tb config tz America/Los_Angeles' (or 'tb config tz local')",
             name.trim()
-        ))
+        ), Code::InvalidValue)
     })
 }
 
@@ -185,7 +185,7 @@ impl Store {
 
     pub fn set_due_warn(&self, n: i64) -> Result<()> {
         if !(0..=MAX_DUE_WARN).contains(&n) {
-            return err(format!("due-warn must be 0-{MAX_DUE_WARN} days — try 'tb config due-warn 3'"));
+            return err(format!("due-warn must be 0-{MAX_DUE_WARN} days — try 'tb config due-warn 3'"), Code::InvalidValue);
         }
         self.set_config("due-warn", &n.to_string())
     }

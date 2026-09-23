@@ -41,6 +41,9 @@ fn send_back_needs_a_reason_keeps_the_owner_and_counts_rounds() {
     let v = json(&o);
     assert_eq!(v["error"], "say why it goes back");
     assert_eq!(v["hint"], format!("'tb move {id} doing \"what to fix\"'"));
+    // #81: a stable machine-readable code alongside the prose — the 2.0.0 refusal for a
+    // missing send-back reason
+    assert_eq!(v["code"], "reason_required");
     assert_eq!(s.card(id).unwrap().column, "review");
     let o = tb(&db, gh, "rev", &["move", &ids, "doing", "  "]);
     assert!(!o.status.success());

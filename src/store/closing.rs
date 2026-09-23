@@ -24,7 +24,7 @@
 //! later. It follows the same bargain as `done-by`: `--force` gets past it and is logged, and
 //! `github` is exempt (a merged PR is its own trace).
 
-use super::{err, Card, Connection, Event, Result, Store};
+use super::{Code, err, Card, Connection, Event, Result, Store};
 use rusqlite::{params, OptionalExtension};
 
 /// Longest tag, in characters — the width a card line budgets for one.
@@ -38,16 +38,16 @@ pub fn clean_tag(raw: &str, example: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     if tag.is_empty() {
-        return err(format!("the tag is empty — give one, e.g. '{example}' (or --tag none to clear it)"));
+        return err(format!("the tag is empty — give one, e.g. '{example}' (or --tag none to clear it)"), Code::ArgRequired);
     }
     let n = tag.chars().count();
     if n > TAG_MAX {
-        return err(format!("that tag is {n} characters, the limit is {TAG_MAX} — shorten it: '{example}'"));
+        return err(format!("that tag is {n} characters, the limit is {TAG_MAX} — shorten it: '{example}'"), Code::InvalidValue);
     }
     if let Some(bad) = tag.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == ' ')) {
         return err(format!(
             "a tag holds letters, digits, spaces, hyphens and underscores — '{bad}' is none of those: '{example}'"
-        ));
+        ), Code::InvalidValue);
     }
     Ok(Some(tag))
 }
@@ -88,7 +88,7 @@ pub(super) fn not_allowed(id: i64, actor: &str, names: &[String]) -> super::Boar
     super::BoardError(format!(
         "only {} may close a card on this board ({actor} is not on the list) — ask one of them to run 'tb done {id}', or 'tb done {id} --force' if you mean it (logged)",
         names.join(" or ")
-    ))
+    ), Code::DoneByRestricted)
 }
 
 /// May `actor` move a card into DONE? `github` is exempt: its moves are evidence-driven
@@ -147,7 +147,7 @@ pub(super) fn needs_note(conn: &Connection, id: i64) -> Result<bool> {
 pub(super) fn no_note_err(id: i64) -> super::BoardError {
     super::BoardError(format!(
         "this board needs a closing note before DONE (config done-needs-note) — 'tb note {id} \"what you checked\"', then 'tb done {id}' again, or 'tb done {id} --force' to skip it (logged)"
-    ))
+    ), Code::DoneNeedsNote)
 }
 
 impl Store {
@@ -165,12 +165,12 @@ impl Store {
         let names = parse_names(list);
         if names.is_empty() {
             return err(
-                "say who may close a card — 'tb config done-by anna,ben', or 'tb config done-by --off' to let anyone".to_string(),
+                "say who may close a card — 'tb config done-by anna,ben', or 'tb config done-by --off' to let anyone".to_string(), Code::ArgRequired,
             );
         }
         for n in &names {
             if n.chars().count() > 32 || n.contains(char::is_whitespace) && n.split_whitespace().count() > 4 {
-                return err(format!("'{n}' does not look like a name — 'tb config done-by anna,ben'"));
+                return err(format!("'{n}' does not look like a name — 'tb config done-by anna,ben'"), Code::InvalidValue);
             }
         }
         self.set_config("done-by", &names.join(","))?;
@@ -191,7 +191,7 @@ impl Store {
                 return err(format!(
                     "'{}' is not on|off — 'tb config done-needs-note on' requires a note before DONE",
                     value.trim()
-                ))
+                ), Code::InvalidValue)
             }
         };
         self.set_config("done-needs-note", if on { "on" } else { "off" })?;
@@ -224,10 +224,10 @@ impl Store {
         if c.column != "review" {
             return err(format!(
                 "#{id} is not in review — an approval records a review pass; move it there first: 'tb move {id} review'"
-            ));
+            ), Code::NotInReview);
         }
         if self.author(id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
-            return err(format!("you did this work — ask another person or agent to approve #{id}"));
+            return err(format!("you did this work — ask another person or agent to approve #{id}"), Code::SelfApprove);
         }
         // the text says what happened; what the card waits for next depends on the card
         let waits = if c.gh_ref.is_some() { "done waits for the merge" } else { "it stays in review" };

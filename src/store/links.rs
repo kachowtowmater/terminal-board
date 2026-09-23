@@ -26,7 +26,7 @@
 //! browser is trusting external text on its own — tb's job stops at storing and displaying it
 //! safely, the same boundary every other free-text field already has.
 
-use super::{err, now, Connection, Result, Store};
+use super::{Code, err, now, Connection, Result, Store};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
@@ -41,16 +41,16 @@ pub const VALUE_MAX: usize = 2000;
 pub fn clean_label(raw: &str) -> Result<String> {
     let label = crate::text::sanitize(raw).split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
     if label.is_empty() {
-        return err("the label is empty — try '--label brief' (or 'verdict', 'commit', or any word that names the evidence)".to_string());
+        return err("the label is empty — try '--label brief' (or 'verdict', 'commit', or any word that names the evidence)".to_string(), Code::ArgRequired);
     }
     let n = label.chars().count();
     if n > LABEL_MAX {
-        return err(format!("that label is {n} characters, the limit is {LABEL_MAX} — shorten it"));
+        return err(format!("that label is {n} characters, the limit is {LABEL_MAX} — shorten it"), Code::InvalidValue);
     }
     if let Some(bad) = label.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == ' ')) {
         return err(format!(
             "a label holds letters, digits, spaces, hyphens and underscores — '{bad}' is none of those"
-        ));
+        ), Code::InvalidValue);
     }
     Ok(label)
 }
@@ -62,11 +62,11 @@ pub fn clean_label(raw: &str) -> Result<String> {
 pub fn clean_value(raw: &str) -> Result<String> {
     let value = raw.trim().to_string();
     if value.is_empty() {
-        return err("the link is empty — try 'tb link ID PATH|SHA|URL --label brief'".to_string());
+        return err("the link is empty — try 'tb link ID PATH|SHA|URL --label brief'".to_string(), Code::ArgRequired);
     }
     let n = value.chars().count();
     if n > VALUE_MAX {
-        return err(format!("that link is {n} characters, the limit is {VALUE_MAX}"));
+        return err(format!("that link is {n} characters, the limit is {VALUE_MAX}"), Code::InvalidValue);
     }
     Ok(value)
 }
@@ -106,7 +106,7 @@ pub(super) fn has_label(conn: &Connection, id: i64, label: &str) -> Result<bool>
 pub(super) fn missing_link_err(id: i64, label: &str) -> super::BoardError {
     super::BoardError(format!(
         "#{id} has no link labeled '{label}' — attach one first: 'tb link {id} PATH|SHA|URL --label {label}', or 'tb done {id} --force' if you mean it (logged)"
-    ))
+    ), Code::DoneNeedsLink)
 }
 
 impl Store {
@@ -137,7 +137,7 @@ impl Store {
     pub fn remove_link(&self, id: i64, n: i64, actor: &str) -> Result<()> {
         let links = self.links_of(id)?;
         let Some(item) = links.iter().find(|l| l.idx == n) else {
-            return err(format!("card #{id} has no link {n} (it has {}) — see 'tb show {id}'", links.len()));
+            return err(format!("card #{id} has no link {n} (it has {}) — see 'tb show {id}'", links.len()), Code::Unknown);
         };
         // a write transaction from the start, consistent with every other write path (#85)
         let tx = self.conn.unchecked_transaction()?;

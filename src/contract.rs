@@ -3,7 +3,7 @@
 
 use crate::herdr::Agent;
 use crate::store::links::LinkItem;
-use crate::store::{Card, Result, Store, COLUMNS};
+use crate::store::{Card, Code, Result, Store, COLUMNS};
 use serde::Serialize;
 
 /// Schema version of every JSON object below.
@@ -291,11 +291,12 @@ pub fn agents(list: &[Agent], snap: &crate::store::Snapshot) -> Vec<AgentJ> {
     here.chain(elsewhere).collect()
 }
 
-/// `{"ok":false,"error":…,"hint":…}` from an error message shaped "what — what to do".
-pub fn error(msg: &str) -> serde_json::Value {
+/// `{"ok":false,"error":…,"hint":…,"code":…}` from an error message shaped "what — what to
+/// do" and the stable symbol carried on the `BoardError` it came from (`docs/JSON.md`).
+pub fn error(msg: &str, code: Code) -> serde_json::Value {
     let (e, hint) = match msg.split_once(" — ") {
         Some((e, h)) => (e.trim().to_string(), h.trim().to_string()),
         None => (msg.trim().to_string(), "see 'tb --help'".to_string()),
     };
-    serde_json::json!({"ok": false, "error": e, "hint": hint})
+    serde_json::json!({"ok": false, "error": e, "hint": hint, "code": code.as_str()})
 }

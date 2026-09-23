@@ -38,7 +38,7 @@
 //! file. A link into a directory that does not exist, and a chain that never ends, are
 //! refused: tb creates the settings file through a link, never directories.
 
-use crate::store::{BoardError, Result};
+use crate::store::{BoardError, Code, Result};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -126,7 +126,7 @@ fn update_at(settings: &Path, change: impl FnOnce(&mut Map<String, Value>)) -> R
                 "{} is a symbolic link into a directory that does not exist ({}) — create that directory, or point TB_CONFIG somewhere else",
                 settings.display(),
                 dir.display()
-            )));
+            ), Code::IoError));
         }
         create_private_dir(&dir).map_err(|e| cannot("create the directory for", &target, &dir, e))?;
     }
@@ -182,9 +182,12 @@ enum Unusable {
 
 impl From<Unusable> for BoardError {
     fn from(u: Unusable) -> BoardError {
-        BoardError(match u {
-            Unusable::Unreadable(m) | Unusable::NotSettings(m) => m,
-        })
+        BoardError(
+            match u {
+                Unusable::Unreadable(m) | Unusable::NotSettings(m) => m,
+            },
+            Code::IoError,
+        )
     }
 }
 
@@ -305,11 +308,14 @@ fn lock_path(target: &Path) -> PathBuf {
 }
 
 fn cannot(what: &str, target: &Path, dir: &Path, e: std::io::Error) -> BoardError {
-    BoardError(format!(
-        "cannot {what} {}: {e} — check that {} is writable, or point TB_CONFIG at another file",
-        target.display(),
-        dir.display()
-    ))
+    BoardError(
+        format!(
+            "cannot {what} {}: {e} — check that {} is writable, or point TB_CONFIG at another file",
+            target.display(),
+            dir.display()
+        ),
+        Code::IoError,
+    )
 }
 
 /// Is `path` itself a symbolic link (dangling or not)?
@@ -328,14 +334,14 @@ fn resolve_target(path: &Path) -> Result<PathBuf> {
             return Ok(p);
         }
         let to = std::fs::read_link(&p).map_err(|e| {
-            BoardError(format!("cannot follow the symbolic link {}: {e} — fix the link, or point TB_CONFIG at the real file", p.display()))
+            BoardError(format!("cannot follow the symbolic link {}: {e} — fix the link, or point TB_CONFIG at the real file", p.display()), Code::IoError)
         })?;
         p = if to.is_absolute() { to } else { parent_of(&p).join(to) };
     }
     Err(BoardError(format!(
         "{} is a symbolic link that never ends (a loop, or more than 40 links) — fix the link, or point TB_CONFIG at the real file",
         path.display()
-    )))
+    ), Code::IoError))
 }
 
 fn write_atomically(target: &Path, dir: &Path, text: &str) -> Result<()> {
@@ -403,7 +409,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 mod lock {
     use super::{create_private_dir, Duration, Path};
     use std::time::Instant;
-    use crate::store::{BoardError, Result};
+    use crate::store::{BoardError, Code, Result};
     use std::os::unix::io::AsRawFd;
 
     /// Holds the lock until it is dropped (or the process ends).
@@ -429,7 +435,7 @@ mod lock {
             BoardError(format!(
                 "cannot lock the settings file: {e} at {} — check that folder is writable, or point TB_CONFIG at another file",
                 path.display()
-            ))
+            ), Code::IoError)
         })?;
         let start = Instant::now();
         loop {
@@ -441,14 +447,14 @@ mod lock {
                 return Err(BoardError(format!(
                     "cannot lock the settings file: {e} at {} — point TB_CONFIG at a file on a normal filesystem",
                     path.display()
-                )));
+                ), Code::IoError));
             }
             if start.elapsed() >= wait {
                 return Err(BoardError(format!(
                     "another tb has been writing the settings for {}s — wait for it to finish and try again (if nothing is running, a process is stuck holding {})",
                     wait.as_secs(),
                     path.display()
-                )));
+                ), Code::IoError));
             }
             std::thread::sleep(Duration::from_millis(5 + (std::process::id() % 11) as u64));
         }

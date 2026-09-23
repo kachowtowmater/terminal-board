@@ -181,15 +181,22 @@ fn from_copies_the_settings_and_never_the_cards() {
 fn tb_new_refuses_with_the_command_to_run_and_writes_nothing() {
     let h = Home::new();
     h.ok(&["new", "filings", "--kind", "deadline"]);
-    for (args, want) in [
-        (vec!["new", "filings"], "board 'filings' already exists"),
-        (vec!["new", "x", "--kind", "law"], "unknown kind 'law' — tb knows default and deadline"),
-        (vec!["new", "y", "--from", "nope"], "no board 'nope' to copy — boards: filings"),
-        (vec!["new", "Filings"], "is not a command or a valid board name"),
-        (vec!["new", "z", "--from", "z"], "'z' cannot copy itself"),
+    for (args, want, code) in [
+        (vec!["new", "filings"], "board 'filings' already exists", "invalid_value"),
+        (vec!["new", "x", "--kind", "law"], "unknown kind 'law' — tb knows default and deadline", "invalid_value"),
+        (vec!["new", "y", "--from", "nope"], "no board 'nope' to copy — boards: filings", "no_board"),
+        (vec!["new", "Filings"], "is not a command or a valid board name", "invalid_board_name"),
+        (vec!["new", "z", "--from", "z"], "'z' cannot copy itself", "invalid_value"),
     ] {
         let e = h.refused(&args);
         assert!(e.contains(want), "{args:?}: {e}");
+        // #81: the same refusal under --json carries a stable code
+        let mut jargs = args.clone();
+        jargs.push("--json");
+        let jo = h.run(&jargs);
+        assert!(!jo.status.success(), "{jargs:?}");
+        let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+        assert_eq!(jv["code"], code, "{jargs:?}: {jv}");
     }
     let boards = h.ok(&["boards"]);
     assert!(boards.contains("filings") && !boards.contains(" x ") && !boards.contains(" y "), "nothing was created:\n{boards}");

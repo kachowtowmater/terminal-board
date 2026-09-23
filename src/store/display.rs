@@ -7,7 +7,7 @@
 //! here is the look tb always had, so a board that sets nothing renders byte for byte as before.
 
 use super::due::{self, DueCtx, DueInfo};
-use super::{err, Card, Result, Store, COLUMNS};
+use super::{Code, err, Card, Result, Store, COLUMNS};
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 
@@ -36,7 +36,7 @@ impl CardLine {
         match value.trim().to_ascii_lowercase().as_str() {
             "age" => Ok(CardLine::Age),
             "due" => Ok(CardLine::Due),
-            _ => err(format!("unknown card-line '{}' — use 'tb config card-line age' or 'tb config card-line due'", value.trim())),
+            _ => err(format!("unknown card-line '{}' — use 'tb config card-line age' or 'tb config card-line due'", value.trim()), Code::InvalidValue),
         }
     }
 }
@@ -48,7 +48,7 @@ pub fn column_named(typed: &str) -> Result<&'static str> {
         super::BoardError(format!(
             "unknown column '{}' — a label goes on todo, doing, review or done: 'tb config label review \"WITH REVIEWER\"'",
             typed.trim()
-        ))
+        ), Code::InvalidValue)
     })
 }
 
@@ -62,16 +62,16 @@ pub fn clean_label(column: &str, text: &str) -> Result<String> {
     if let Some(clash) = COLUMNS.iter().find(|c| label.trim().eq_ignore_ascii_case(c)) {
         return err(format!(
             "'{label}' is the name of a column, so it cannot be a label — every command takes {clash}; pick another word: 'tb config label {column} \"TEXT\"'"
-        ));
+        ), Code::InvalidValue);
     }
     if label.is_empty() {
         return err(format!(
             "the label is empty — set one with 'tb config label {column} \"TEXT\"' or clear it with 'tb config label {column} --off'"
-        ));
+        ), Code::ArgRequired);
     }
     let n = label.chars().count();
     if n > LABEL_MAX {
-        return err(format!("that label is {n} characters, the limit is {LABEL_MAX} — shorten it: 'tb config label {column} \"TEXT\"'"));
+        return err(format!("that label is {n} characters, the limit is {LABEL_MAX} — shorten it: 'tb config label {column} \"TEXT\"'"), Code::InvalidValue);
     }
     Ok(label)
 }

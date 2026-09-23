@@ -181,6 +181,11 @@ fn done_needs_link_refuses_done_until_a_matching_link_is_attached() {
         "{e}"
     );
     assert_eq!(b.json("lead", &["show", &two.to_string(), "--json"])["column"], "review", "nothing moved");
+    // #81: the evidence gate carries the stable `done_needs_link` code
+    let jo = b.run("carol", &["done", &two.to_string(), "--json"]);
+    assert!(!jo.status.success());
+    let jv: serde_json::Value = serde_json::from_slice(&jo.stdout).unwrap();
+    assert_eq!(jv["code"], "done_needs_link");
 
     // every way into DONE is guarded, exactly like `done-by`
     assert!(b.refused("carol", &["move", &two.to_string(), "done"]).contains("has no link labeled 'verdict'"));
