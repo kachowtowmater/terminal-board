@@ -87,6 +87,8 @@ const CARD: &[&str] = &[
     "blocked_on", "blocked_until", "recheck", "blocked_on_state",
     // who checked this card (`tb done ID --approve`), a record and not a permission
     "approved_by",
+    // evidence attached with `tb link` (additive; `[]` on a card with none)
+    "links",
     // sent back more times than `config max-rounds` allows (derived; false without a cap)
     "escalate",
 ];
@@ -148,6 +150,7 @@ fn golden_write_results_and_errors() {
         vec!["note", "1", "hi"],
         vec!["check", "1", "--add", "item"],
         vec!["check", "1", "1"],
+        vec!["link", "1", "docs/brief.md", "--label", "brief"],
         vec!["edit", "1", "--desc", "d"],
         vec!["prio", "2", "top"],
         vec!["block", "2", "#9"],

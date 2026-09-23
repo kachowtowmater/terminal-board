@@ -36,9 +36,31 @@ CREATE TABLE IF NOT EXISTS archived_cards (
     owner TEXT,
     card TEXT NOT NULL,
     checklist TEXT NOT NULL,
-    events TEXT NOT NULL
+    events TEXT NOT NULL,
+    links TEXT NOT NULL DEFAULT '[]'
 );
 "#;
+
+/// Add `links` to an `archived_cards` table created before links existed (the `reviewer` /
+/// `blocked_on` pattern: a board written by an older tb and one made fresh end up the same
+/// shape). A board that never archived has no table yet, so this is a no-op until it does.
+pub(super) fn migrate(conn: &Connection) -> Result<()> {
+    let has_table: i64 =
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='archived_cards'", [], |r| r.get(0))?;
+    if has_table == 0 {
+        return Ok(());
+    }
+    let has_links: i64 =
+        conn.query_row("SELECT COUNT(*) FROM pragma_table_info('archived_cards') WHERE name='links'", [], |r| r.get(0))?;
+    if has_links == 0 {
+        match conn.execute_batch("ALTER TABLE archived_cards ADD COLUMN links TEXT NOT NULL DEFAULT '[]'") {
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => return Err(e.into()),
+            Ok(()) => {}
+        }
+    }
+    Ok(())
+}
 
 /// What `remove_card` did.
 #[derive(Debug, Clone)]
@@ -229,13 +251,15 @@ impl Store {
             let card = rows_json(&tx, "SELECT * FROM cards WHERE id=?", id)?.into_iter().next().unwrap_or_default();
             let checklist = rows_json(&tx, "SELECT * FROM checklist WHERE card_id=? ORDER BY idx", id)?;
             let events = rows_json(&tx, "SELECT * FROM events WHERE card_id=? ORDER BY id", id)?;
+            let links = rows_json(&tx, "SELECT * FROM links WHERE card_id=? ORDER BY idx", id)?;
             tx.execute(
-                r#"INSERT INTO archived_cards(card_id, archived_at, archived_by, title, tag, "column", owner, card, checklist, events)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)"#,
-                params![id, now(), actor, c.title, c.tag, c.column, c.owner, to_json(&card), to_json(&checklist), to_json(&events)],
+                r#"INSERT INTO archived_cards(card_id, archived_at, archived_by, title, tag, "column", owner, card, checklist, events, links)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)"#,
+                params![id, now(), actor, c.title, c.tag, c.column, c.owner, to_json(&card), to_json(&checklist), to_json(&events), to_json(&links)],
             )?;
         }
         tx.execute("DELETE FROM checklist WHERE card_id=?", [id])?;
+        tx.execute("DELETE FROM links WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM events WHERE card_id=?", [id])?;
         tx.execute("DELETE FROM cards WHERE id=?", [id])?;
         let kind = if archive { "archive" } else { "delete" };
@@ -274,17 +298,17 @@ impl Store {
     /// plus one `restored` event. A card that was in DOING needs a free slot (the WIP limit).
     pub fn restore(&mut self, id: i64, actor: &str) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row: Option<(String, String, String, String)> = if has_archive(&tx)? {
+        let row: Option<(String, String, String, String, String)> = if has_archive(&tx)? {
             tx.query_row(
-                r#"SELECT card, checklist, events, "column" FROM archived_cards WHERE card_id=?"#,
+                r#"SELECT card, checklist, events, "column", links FROM archived_cards WHERE card_id=?"#,
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?
         } else {
             None
         };
-        let Some((card, checklist, events, column)) = row else {
+        let Some((card, checklist, events, column, links)) = row else {
             return err(format!("no archived card #{id} — see 'tb list --archived'"));
         };
         if tx.query_row("SELECT COUNT(*) FROM cards WHERE id=?", [id], |r| r.get::<_, i64>(0))? > 0 {
@@ -305,6 +329,10 @@ impl Store {
             serde_json::from_str(&checklist).map_err(|_| broken("checklist"))?;
         let events: Vec<serde_json::Map<String, serde_json::Value>> =
             serde_json::from_str(&events).map_err(|_| broken("history"))?;
+        // a row archived before links existed has the column's default '[]' — an empty list,
+        // never a parse failure
+        let links: Vec<serde_json::Map<String, serde_json::Value>> =
+            serde_json::from_str(&links).map_err(|_| broken("links"))?;
         card.insert("position".into(), serde_json::json!(bottom_of(&tx, &column)?));
         insert_json(&tx, "cards", &card)?;
         for item in &checklist {
@@ -312,6 +340,9 @@ impl Store {
         }
         for e in &events {
             insert_json(&tx, "events", e)?;
+        }
+        for l in &links {
+            insert_json(&tx, "links", l)?;
         }
         tx.execute("DELETE FROM archived_cards WHERE card_id=?", [id])?;
         Self::log(&tx, id, actor, "restored", "")?;

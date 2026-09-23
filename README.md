@@ -467,6 +467,7 @@ tb --version
 | `tb assign ID NAME` | hand a specific TODO card to NAME, without taking it yourself — see [Assigning a card](#assigning-a-card) |
 | `tb note ID "text"` / `tb note ID --file PATH` | add a note to the card's history |
 | `tb check ID N` / `--add TEXT` / `--rm N` | tick, add or remove a checklist item (`--force` on someone else's held card, logged) |
+| `tb link ID VALUE --label LABEL` / `tb link ID --rm N` | attach evidence (a path, sha or URL) under a label, or remove one — see [Evidence links](#evidence-links) |
 | `tb block ID "#N"` / `--clear` | mark blocked by something / unblock (`next` skips blocked cards) |
 | `tb block ID "text" --on NAME\|#ID --until DATE` | say who you wait on and when to look again — see [Waiting on something](#waiting-on-something) |
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
@@ -475,6 +476,7 @@ tb --version
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW/TODO → DONE (REVIEW → DONE only by someone else) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
+| `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
 | `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
 | `tb add … --tag KEY` / `tb edit ID --tag KEY\|none` | set the card's tag explicitly (digits, spaces and hyphens allowed) instead of guessing it from the title |
@@ -797,6 +799,31 @@ The GitHub sync is exempt — a merged PR closing its card is evidence, not a pe
 `tb done ID --approve` records that somebody **checked** a card and leaves it in REVIEW. It
 works on every card, not only one linked to an issue, and `done-by` does not gate it: noting
 "I looked at this" is not closing it. Each checker is listed once in JSON as `approved_by`.
+
+### Evidence links
+
+```sh
+tb evidence add "release: cut v2"
+tb evidence link 1 docs/release-notes.md --label brief
+tb evidence link 1 https://ci.example/run/42 --label verdict
+tb evidence show 1
+tb evidence config done-needs-link verdict
+tb evidence take 1
+tb evidence done 1
+tb evidence done 1 --as bob
+tb evidence config done-needs-link --off
+```
+
+A link is evidence for a card — a path, a git sha or a URL — under a label you choose
+(`brief`, `verdict`, `commit`, or anything else): `tb link ID VALUE --label LABEL` attaches
+one, `tb link ID --rm N` removes it and renumbers the rest, and `tb show ID` lists them all.
+**tb only stores and displays the text — it never reads a file there, never resolves a sha
+against a repository and never fetches a URL.**
+
+`tb config done-needs-link LABEL` refuses to move a card into DONE until it carries a link
+with that label, the same honest-mistake shape `done-by` already has: names and labels are
+**self-asserted**, `--force` gets past it and is logged, and the GitHub sync is exempt (a
+merged PR closing its card is already evidence, not a person). `--off` turns it off again.
 
 ### Rework rounds and a closing note
 
