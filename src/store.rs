@@ -2034,6 +2034,14 @@ impl Store {
             // `Kind::Assign` that is not who ends up holding the card, and a cap keyed on the
             // wrong name would let an orchestrator assign straight past it — exactly the hole
             // a per-owner limit exists to close.
+            //
+            // Card #110: PR #130 (wip-per-owner, open as of this comment) adds that cap as
+            // `access::room_for(&tx, holder)` with `holder = if kind == Kind::Claim { actor }
+            // else { c.owner.as_deref().unwrap_or(actor) }` — for `Kind::Assign`, `c.owner` is
+            // still `None` here (the card is still TODO), so that resolves to `actor`, not
+            // `assignee`, reproducing exactly the hole the paragraph above warns about.
+            // Whoever merges #130 should change that line to `assignee.unwrap_or(actor)` (it
+            // already covers `Kind::Claim`, where `assignee` is `None`) before closing #110.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
