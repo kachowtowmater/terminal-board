@@ -14,7 +14,8 @@ under the same name: `--as <your-name>` or `TB_AS=<your-name>`.
 | add / remove a checklist item | `tb check ID --add "text"` · `tb check ID --rm N` |
 | change title / description | `tb edit ID --title "tag: title"` · `tb edit ID --desc "Done = …"` |
 | stuck / unstuck | `tb block ID "#N or reason"` · `tb block ID --clear` |
-| finished (DOING → REVIEW); a verifier: REVIEW → DONE on someone else's card | `tb done ID` |
+| finished (DOING → REVIEW) | `tb done ID` |
+| a verifier: REVIEW → DONE on someone else's card | `TB_ROLE=verifier tb done ID` |
 | stop and hand it back (→ TODO) | `tb drop ID` |
 | move to any column (`done` only from REVIEW) | `tb move ID todo\|doing\|review\|done` |
 | send a REVIEW card back | `tb move ID doing "what to fix"` |

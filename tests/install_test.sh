@@ -103,6 +103,12 @@ new_home
 check "used download/v9.9.9" 'grep -q "download/v9.9.9/tb-test-target.tar.gz" "$SCRATCH/out"'
 check "installed to --prefix" '[ -x "$HOME/bin/tb" ]'
 
+echo "(c2) --version without the v still finds the release"
+new_home
+"$INSTALL" --yes --no-setup --no-build --version 9.9.9 >"$SCRATCH/out" 2>&1 || true
+check "used download/v9.9.9" 'grep -q "download/v9.9.9/tb-test-target.tar.gz" "$SCRATCH/out"'
+check "installed" 'cmp -s "$TB" "$TBBIN"'
+
 echo "(d) bad checksum with --no-build: refuses"
 new_home
 rc=0
@@ -165,6 +171,18 @@ new_home
 check "no board, no files" '[ ! -e "$HOME/.local/state/terminal-board" ] && [ ! -e "$HOME/A.md" ] && [ ! -e "$HOME/.claude" ]'
 check "summary says Would" 'grep -q "A real run would" "$SCRATCH/out" && grep -q "Would add the agent snippet" "$SCRATCH/out"'
 
+echo "(j2) re-running setup --yes keeps the board's own choices; dry-run on an existing board"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+"$TB" setup --yes --no-github --agents >/dev/null 2>&1
+"$TB" setup --yes --no-github >"$SCRATCH/out" 2>&1
+check "a shown AGENTS panel stays shown" 'grep -Eq "^agents-panel +shown$" <<<"$(tbcfg)"'
+"$TB" config agents-panel hidden >/dev/null 2>&1
+"$TB" setup --yes --no-github >/dev/null 2>&1
+check "a hidden one stays hidden" 'grep -Eq "^agents-panel +hidden$" <<<"$(tbcfg)"'
+"$TB" setup --dry-run --yes --no-github >"$SCRATCH/out" 2>&1
+check "dry-run names the existing board, not a new one" 'grep -q "Would use the board .default. (it exists)" "$SCRATCH/out" && ! grep -q "Would create the board" "$SCRATCH/out"'
+
 echo "(k) interactive (TB_TTY answers), every step skipped with enter"
 new_home
 "$INSTALL" --yes --no-setup >/dev/null 2>&1
@@ -182,6 +200,18 @@ check "skill question absent" '! grep -q "Install the Claude Code skill" "$SCRAT
 check "skip explained" 'grep -q "Claude Code not detected" "$SCRATCH/out"'
 check "one skip line, no ~/.claude created" '[ "$(grep -c "^ *- Claude Code skill" "$SCRATCH/out")" = 1 ] && [ ! -e "$HOME/.claude" ]'
 check "next answer reaches the snippet prompt" 'grep -q "terminal-board:start" "$HOME/NOTES.md"'
+
+echo "(k3) a yes/no answer at the snippet path prompt is never a file name"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+(cd "$HOME" && TB_TTY=$(answers '\n\ny\n~/A.md\n') "$TB" setup) >"$SCRATCH/out" 2>&1
+check "y is re-asked, with an example" 'grep -q "That asks for a path" "$SCRATCH/out"'
+check "no file named y" '[ ! -e "$HOME/y" ]'
+check "the path typed next is used" 'grep -q "terminal-board:start" "$HOME/A.md"'
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+(cd "$HOME" && TB_TTY=$(answers '\n\nno\n') "$TB" setup) >"$SCRATCH/out" 2>&1
+check "no skips the step" '[ ! -e "$HOME/no" ] && grep -q "agent snippet (.tb setup --agents-md PATH. later)" "$SCRATCH/out"'
 
 echo "(l) interactive: github yes, pick #1, skill yes, snippet path"
 new_home
@@ -202,6 +232,18 @@ check "binary removed" '[ ! -e "$TB" ]'
 check "skill removed" '[ ! -e "$HOME/.claude/skills/terminal-board" ]'
 check "snippet removed" '! grep -q "terminal-board:start" "$HOME/CLAUDE.md"'
 check "boards kept" '[ -f "$HOME/.local/state/terminal-board/boards/default.db" ]'
+
+echo "(m2) --uninstall names the PATH line it leaves, and removes nothing else"
+new_home
+"$INSTALL" --yes --no-setup >/dev/null 2>&1
+printf 'alias ll=ls\n\n# Terminal Board\nexport PATH="%s:$PATH"\n' "$HOME/.local/bin" >"$HOME/.bashrc"
+cp "$HOME/.bashrc" "$SCRATCH/bashrc.before"
+# a snippet recorded, but no board ever made: the record goes too
+mkdir -p "$HOME/.local/state/terminal-board" && echo "snippet=$HOME/X.md" >"$HOME/.local/state/terminal-board/install.conf"
+TB_TTY=/dev/null "$INSTALL" --uninstall --yes >"$SCRATCH/out" 2>&1
+check "says the PATH line is left" 'grep -q "left the PATH line in $HOME/.bashrc" "$SCRATCH/out"'
+check ".bashrc byte-for-byte unchanged" 'cmp -s "$HOME/.bashrc" "$SCRATCH/bashrc.before"'
+check "no install.conf left behind" '[ ! -e "$HOME/.local/state/terminal-board/install.conf" ]'
 
 echo "(n) first run: bare tb in a terminal offers setup; s skips and marks it done"
 if command -v expect >/dev/null 2>&1; then

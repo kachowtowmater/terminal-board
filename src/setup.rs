@@ -254,6 +254,7 @@ impl Wizard {
 
         step(1, "Board");
         let path = boards::path_for(board);
+        let existed = path.exists();
         let store = if dry {
             if path.exists() {
                 Some(Store::open(&path)?.named(board))
@@ -264,7 +265,8 @@ impl Wizard {
             Some(open(board)?)
         };
         note(&format!("board '{board}' ({})", path.display()));
-        self.did(format!("board '{board}' ready"), format!("Would create the board '{board}'"));
+        let would = if existed { format!("Would use the board '{board}' (it exists)") } else { format!("Would create the board '{board}'") };
+        self.did(format!("board '{board}' ready"), would);
 
         step(2, "GitHub");
         self.github(store.as_ref())?;
@@ -272,9 +274,15 @@ impl Wizard {
         step(3, "AGENTS panel");
         let herdr = crate::herdr::herdr_enabled();
         note(if herdr { "herdr found" } else { "herdr not found (optional: it powers the AGENTS panel)" });
+        // a board that already chose keeps its choice as the default, so re-running setup
+        // (or upgrading with `install.sh --yes`) never flips a panel the person had shown
+        let chosen = match &store {
+            Some(s) => s.panel_choice("agents-panel")?,
+            None => None,
+        };
         let show = match self.o.agents {
             Some(v) => v,
-            None => self.p.ask("Show the AGENTS panel (a live view of your herdr agents)?", herdr && !self.o.yes),
+            None => self.p.ask("Show the AGENTS panel (a live view of your herdr agents)?", chosen.unwrap_or(herdr && !self.o.yes)),
         };
         if let Some(s) = &store {
             if !dry {
@@ -318,10 +326,7 @@ impl Wizard {
         let target = match (&self.o.agents_md, self.o.agents) {
             (Some(p), _) => Some(p.clone()),
             (None, Some(false)) => None,
-            (None, _) => {
-                let t = self.p.text("Add the agent snippet to which AGENTS.md / CLAUDE.md? Path (enter = skip):");
-                (!t.is_empty()).then(|| expand(&t))
-            }
+            (None, _) => self.snippet_path(),
         };
         match target {
             Some(t) => {
@@ -341,6 +346,21 @@ impl Wizard {
         }
         self.summary();
         Ok(())
+    }
+
+    /// The snippet file, asked as a path. A yes/no answer is not a path: `n`/`no`/`s`/`skip`
+    /// skip the step like enter does, and `y`/`yes` asks again with an example (there is no
+    /// default file to say yes to), so neither ever becomes a file named `./y` or `./no`.
+    fn snippet_path(&mut self) -> Option<PathBuf> {
+        for _ in 0..3 {
+            let t = self.p.text("Add the agent snippet to which AGENTS.md / CLAUDE.md? Path (enter = skip):");
+            match t.to_ascii_lowercase().as_str() {
+                "" | "n" | "no" | "s" | "skip" => return None,
+                "y" | "yes" => note("That asks for a path: type the file to add it to, e.g. ./AGENTS.md or ~/CLAUDE.md, or press enter to skip."),
+                _ => return Some(expand(&t)),
+            }
+        }
+        None
     }
 
     fn github(&mut self, store: Option<&Store>) -> Result<()> {

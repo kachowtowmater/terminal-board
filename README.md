@@ -12,10 +12,19 @@ the live status of your agents.
 **What you get**
 
 - A four-column board you drive with the arrow keys: add, move, edit and finish cards.
-- Cards with descriptions, checklists and notes, so every piece of work has its own history.
+- Cards with descriptions, checklists, notes, due dates and evidence links, so every piece of
+  work has its own history.
+- A clear rule for who moves a card: anyone files work, the workers do it, and someone else
+  checks it before it is done. tb records who made each move and which agent session that was.
 - Your GitHub repo beside the board: open issues, pull requests, CI, and who is on what.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
+
+**New in 3.0.0:** only a verifier moves a card to DONE, and only from REVIEW. Only the holder
+touches a DOING card, and every change records the agent session behind it. A board can ask this machine for a hook that gates every move, and the
+machine decides whether to trust it. The full-screen board splits its space evenly. There are
+deadline boards, board archiving, and bulk import and export.
+[CHANGELOG](CHANGELOG.md#300--2026-09-23) · [upgrading from 2.x](UPGRADING.md#upgrading-to-300)
 
 ## Why does this exist?
 
@@ -33,11 +42,49 @@ and we never have to leave the place where we already spend twelve hours a day.
 
 Is this healthy? No. Is it faster? Absolutely.
 
+## A quick tour
+
+Each item links to its full section.
+
+- **The board.** Four columns: TODO → DOING → REVIEW → DONE. `tb` opens it full screen and
+  `tb list` prints it. Cards have a `tag: title`, a description, a checklist, notes and a
+  history. See [your first 5 minutes](#your-first-5-minutes) and [Keys](#keys).
+- **Sharing it.** Anyone files work, the workers take it with `tb next`, and only an
+  independent verifier moves a card from REVIEW to DONE. Nothing skips review. Only the holder
+  of a DOING card may change it, and nobody closes their own work (see
+  [Who moves a card](#who-moves-a-card)). `tb assign ID NAME` hands a card to someone,
+  and `wip-per-owner` stops one agent from taking every slot.
+- **Knowing who did it.** Each change records a name, plus the harness, model, role and
+  session behind it. Claude Code, omp and pi are read automatically. See
+  [Command-line reference](#command-line-reference).
+- **A machine's own gate.** A board can ask for a hook by name. Each machine decides what that
+  name runs and whether to trust it. A refused or untrusted hook stops the move. See
+  [Hooks](#hooks-this-machines-own-gate-on-a-move).
+- **Proof and rules.** Attach evidence to a card with `tb link`. `done-by`,
+  `done-needs-link`, `done-needs-note` and `max-rounds` set what closing a card needs. See
+  [Evidence links](#evidence-links) and
+  [Rework rounds](#rework-rounds-and-a-closing-note).
+- **Deadlines.** Due dates that never shift a day, a queue sorted by due date, and a mark on
+  cards that are due soon. `--on` / `--until` record what you are waiting for, and
+  `tb new NAME --kind deadline` sets it all up at once. See
+  [A deadline board in one command](#a-deadline-board-in-one-command).
+- **Many boards.** One file per board. `tb boards --default` picks the board plain `tb`
+  opens, `tb boards archive` retires one, and `tb mv ID --to BOARD` moves a card with its
+  history. See [Boards](#boards).
+- **Data in and out.** `tb import`, `tb edit --from`, `tb export --json|--csv`, `tb log`, and
+  `--json` on every command. See [For app developers](#for-app-developers-json).
+- **GitHub and agents beside the board.** Pull requests, issues and CI in one panel, and who
+  is working on which card in the other. See [GitHub](#github) and [Agents](#agents).
+- **Any pane size.** Six layouts, an even split in each, and long columns that scroll. See
+  [Layouts and themes](#layouts-and-themes).
+
 ## Contents
 
 - [Why does this exist?](#why-does-this-exist)
+- [A quick tour](#a-quick-tour)
 - [Requirements](#requirements)
 - [Install](#install)
+  - [Upgrading](#upgrading)
 - [Setup (`tb setup`)](#setup-tb-setup)
 - [Your first 5 minutes](#your-first-5-minutes)
 - [Keys](#keys)
@@ -47,6 +94,16 @@ Is this healthy? No. Is it faster? Absolutely.
 - [GitHub](#github)
 - [Agents](#agents)
 - [Command-line reference](#command-line-reference)
+  - [A deadline board in one command](#a-deadline-board-in-one-command)
+  - [Due dates](#due-dates)
+  - [Who moves a card](#who-moves-a-card)
+  - [Who closes a card](#who-closes-a-card)
+  - [Evidence links](#evidence-links)
+  - [Hooks: this machine's own gate on a move](#hooks-this-machines-own-gate-on-a-move)
+  - [Rework rounds and a closing note](#rework-rounds-and-a-closing-note)
+  - [Tags you choose](#tags-you-choose)
+  - [Waiting on something](#waiting-on-something)
+  - [Long columns](#long-columns)
 - [Layouts and themes](#layouts-and-themes)
 - [Where your data lives](#where-your-data-lives)
 - [Testing](#testing)
@@ -104,7 +161,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v1.0.0` | install that release instead of the latest |
+| `--version v3.0.0` | install that release instead of the latest (`3.0.0` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
@@ -133,6 +190,30 @@ cp target/release/tb ~/.local/bin/tb
 tb setup
 ```
 
+### Upgrading
+
+Run the same install command again. It replaces `tb` (and tells you which version it found),
+keeps your boards, and runs `tb setup` again, which keeps what you already chose: your GitHub
+repository and your AGENTS panel setting. To upgrade without being asked anything:
+
+<!-- no-test -->
+```sh
+curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/install.sh | bash -s -- --yes
+```
+
+What to expect the first time the new version opens a board made by an older one:
+
+- **A backup.** Before tb upgrades a board's schema, it copies the board next to itself as
+  `<board>.db.before-<version>.<UTC date-time>.bak` and says where. Delete the backups once
+  you are sure; [UPGRADING.md](UPGRADING.md#going-back-to-an-older-tb) shows how to go back.
+- **A one-time choice about file permissions.** A board made before 3.0.0 can be read by other
+  users (`0644`). tb prints one warning line about it on each command until you choose, once
+  per board: `tb config file-mode private` makes it `0600`, and `tb config file-mode shared`
+  keeps it as it is on purpose.
+
+Coming from 2.x, read [UPGRADING.md](UPGRADING.md#upgrading-to-300). Some commands that used
+to succeed are now refused, and each section there gives the way through.
+
 ## Setup (`tb setup`)
 
 `tb setup` is a short question-and-answer wizard. The installer runs it for you, and the
@@ -150,8 +231,9 @@ Terminal Board) defaults to **skip** and is only done after you say yes.
    sees your password or token). Then pick a repository from a numbered list or type
    `owner/repo`; it is checked on GitHub, saved and synced. If you skip, the GitHub panel is
    hidden; switch it on later with `R` on the board.
-3. **AGENTS panel.** Show the live view of your herdr agents? (The default is yes when
-   herdr is installed.)
+3. **AGENTS panel.** Show the live view of your herdr agents? The default is what this
+   board already chose, or yes when herdr is installed. `--yes` keeps the board's own choice,
+   so re-running setup or upgrading never hides a panel you turned on.
 4. **Claude Code skill.** Install a skill so Claude Code knows how to use the board
    (`~/.claude/skills/terminal-board/SKILL.md`). Skipped silently when there is no
    `~/.claude` directory; `tb setup --agents` asks anyway.
@@ -170,6 +252,10 @@ At the end you get a summary of what was done and what was skipped.
 | `--no-agents` | skip the agent extras and hide the AGENTS panel |
 | `--agents-md PATH` | add the agent instructions to this `AGENTS.md` / `CLAUDE.md` |
 | `--dry-run` | show what would happen, change nothing |
+
+Setup can be run as often as you like. It keeps a connected GitHub repository unless you
+ask to change it, replaces its block in an `AGENTS.md` instead of adding a second one, and
+remembers each file it wrote to so `install.sh --uninstall` can remove the block again.
 
 ```sh
 tb setup --dry-run --yes
@@ -202,8 +288,8 @@ tb take 2
 tb note 2 "kitchen done"
 tb check 2 1
 tb done 2
-tb next --review --as bob
-tb done 2 --as bob
+TB_ROLE=verifier tb next --review --as bob
+TB_ROLE=verifier tb done 2 --as bob
 tb
 ```
 
@@ -215,7 +301,7 @@ Press `?` on the board to see all keys at any time.
 
 | key | what it does |
 |---|---|
-| arrows | select a card (←→ column, ↑↓ card) |
+| arrows | select a card (←→ column, ↑↓ card; in the focus view ←→ card, ↑↓ column) |
 | `a` | add a card (`tag: title`, Enter, then an optional due date) |
 | `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
 | `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
@@ -459,6 +545,11 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 `tb config agents-panel shown|hidden`; print the same list with `tb agents`
 ([more](docs/HUMANS.md#watching-agents)).
 
+**Who moves what.** TODO: any agent files work. DOING: the workers. REVIEW → DONE: only an
+independent verifier (`TB_ROLE=verifier`, a name on `tb config verifiers`, or a person). A
+builder or orchestrator that runs `tb done` on a REVIEW card is refused (`not_verifier`) and
+should leave it for the verifier. See [Who moves a card](#who-moves-a-card).
+
 **Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
 `block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
 ahead anyway (each override is logged as its own `force` event). `tb note` stays open to
@@ -483,7 +574,7 @@ tb check 3 --rm 1
 tb block 1 "#3"
 tb block 1 --clear
 tb move 3 review
-tb done 3 --as bob
+TB_ROLE=verifier tb done 3 --as bob
 tb drop 1
 tb prio 1 top
 tb edit 1 --title "docs: write the install guide (v2)" --desc "cover macOS and Linux"
@@ -820,6 +911,43 @@ and the count is never pushed off; when not even its first word fits, the plain 
 `tb config label review` prints it; `--off` clears it. A column that the board orders by due
 date says `by due` in its header.
 
+### Who moves a card
+
+Every card follows the same path, and each step belongs to someone:
+
+| column | who moves a card there |
+|---|---|
+| **TODO** | anyone: people and agents file work (`tb add`) |
+| **DOING** | the workers, one agent session or many (`tb next`, `tb take`, `tb assign`) |
+| **REVIEW** | the worker, when finished (`tb done`), or the GitHub sync when its PR merges |
+| **DONE** | **only an independent verifier**, and only from REVIEW |
+
+A verifier is a person (no agent harness in the identity), an agent started with
+`TB_ROLE=verifier` (or `reviewer`), or a name on `tb config verifiers`. It is never the card's
+owner or its last holder. Nothing skips review: `tb move ID done` from TODO or DOING, the `d`
+key and the GitHub sync all stop at REVIEW.
+
+<!-- no-test -->
+```sh
+TB_ROLE=verifier tb next --review --as rv-1   # a verifier claims the top REVIEW card
+TB_ROLE=verifier tb done 7 --as rv-1           # ... and closes it; the move records the whole identity
+tb config verifiers rv-1,rv-2                  # a person names verifiers on the board
+tb config verifier-only off                    # a person turns the verifier rule off for this board
+```
+
+Any other agent is refused (`not_verifier`). Only a person changes `tb config verifiers` or
+`verifier-only`; an agent is refused (`person_only`), so an agent that was refused cannot add
+itself to the list. tb recognises an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude
+Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's
+record. A harness that exports none of these is not seen, and counts as a person.
+
+Every move into DONE records who made it and the identity behind the name (harness, model,
+role, session, machine). `tb show` shows it, `tb log` shows it on the line that moved the
+card into DONE, and every `tb log --json` row has it as `identity`. `--force` gets past both
+rules and is logged. `tb config verifier-only off` turns the verifier rule off for a board;
+the change is logged, and review-first still applies. A role is self-asserted, like a name,
+so this catches an honest mistake, not an attacker.
+
 ### Who closes a card
 
 ```sh
@@ -831,20 +959,6 @@ tb office done 1 --as anna
 tb office done 1 --approve --as ben
 tb office config done-by --off
 ```
-
-**Who moves a card.** TODO: anyone files work. DOING: the workers — one agent session or many.
-REVIEW → DONE: **only an independent verifier** — a person (no agent harness in the identity),
-an agent started with `TB_ROLE=verifier` (or `reviewer`), or a name on `tb config verifiers`;
-never the card's owner or last holder. Any other agent is refused (`not_verifier`). Only a person
-changes `tb config verifiers` or `verifier-only`: an agent is refused (`person_only`), so a refused
-agent cannot list itself. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen, and counts as a person. Nothing
-reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the board, not
-the GitHub sync. Every move into DONE records who made it and the identity behind the name
-(harness, model, role, session, machine), shown by `tb show`, by `tb log` on the line that moved
-the card into DONE, and as `identity` on every `tb log --json` row. `--force` gets past
-both rules and is logged; `tb config verifier-only off` turns the verifier rule off for a board
-(logged; review-first stays). A role is self-asserted, like a name: this catches an honest
-mistake, not an attacker.
 
 `tb config done-by anna,ben` says who may close a card: tb then refuses to move a card into
 DONE as anybody else, and names the people to ask. It guards **every** way into DONE, so
@@ -873,7 +987,7 @@ tb evidence show 1
 tb evidence config done-needs-link verdict
 tb evidence take 1
 tb evidence done 1
-tb evidence done 1 --as bob
+TB_ROLE=verifier tb evidence done 1 --as bob
 tb evidence config done-needs-link --off
 ```
 
@@ -961,7 +1075,7 @@ tb office config max-rounds 5
 tb office move 1 doing "add the rollback step"        # round 2 — shows r2
 tb office done 1 --as anna                             # doing -> review; column_since resets
 tb office note 1 "checked the rollback step, looks right"
-tb office done 1                                       # closes: a note was written this stay
+TB_ROLE=verifier tb office done 1                      # closes: a note was written this stay
 ```
 
 **`tb config done-needs-note on`** refuses to move a card into DONE until somebody has written
@@ -1035,11 +1149,13 @@ its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 
 ### Long columns
 
-Each column draws at most ten cards at a time and counts the rest as `+N more` at its foot —
-and in the stacked views, where the four columns share one height, every column gets a fair
-share of the room before any column takes more. One long column can no longer squeeze the
-others out. Arrow keys still reach every card, and the count in a column header is always the
-real total, whatever is hidden.
+Every view splits its space **evenly**: the four columns side by side, the 2 × 2 grid's rows
+and columns, and the stacked sections of the tall third, whatever each one holds. A column
+with twenty cards and one with two get the same room, so a long DONE column never pushes TODO
+off the screen. A column draws at most ten cards at a time and counts the rest as `+N more`
+at its foot. The arrow keys scroll through them, and the selected card is always on screen.
+The count in a column header is always the real total, whatever is hidden. An empty column
+keeps its box, and an empty TODO tells you how to add the first card.
 
 ## Layouts and themes
 
@@ -1072,14 +1188,17 @@ and your agents stacked on the right.
 </tr>
 </table>
 
-If something doesn't fit, it shrinks to a one-line bar instead of disappearing. Press
-`Tab` to open it full screen and `Esc` to come back.
+Every layout splits its space evenly between the columns, whatever they hold, and a long
+column scrolls instead of squeezing the others (see [Long columns](#long-columns)). If
+something doesn't fit, it shrinks to a one-line bar instead of disappearing. Press `Tab` to
+open it full screen and `Esc` to come back. Warnings, such as a board file other users can
+read, appear in the status line at the bottom.
 
 **Handy keys**
 
 - `L` pins a layout you like (press again to cycle, back to automatic).
 - `T` switches between the dark and light theme.
-- The arrow keys always move to whatever is next to you on screen.
+- The arrow keys always move to whatever is next to you on screen, and scroll a long column.
 
 <details>
 <summary>Exact sizes (for the curious)</summary>
@@ -1161,8 +1280,10 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 ```
 
 (or `./install.sh --uninstall` from a clone). This removes `tb`, the Claude Code skill and
-the agent-instruction blocks it added. It asks separately before deleting your boards (the
-default is to keep them).
+the agent-instruction blocks it added, and nothing else. It asks separately before deleting
+your boards (the default is to keep them). If the installer added a `PATH` line to your
+shell's startup file, uninstall leaves it there and tells you which file it is in; remove the
+two lines under `# Terminal Board` yourself if you want.
 
 ## For app developers (JSON)
 
@@ -1196,7 +1317,7 @@ your login.
 - [docs/AGENTS.md](docs/AGENTS.md) — the agent manual, also `tb guide` (AI agents).
 - [docs/JSON.md](docs/JSON.md) — the JSON contract for scripts and apps.
 - [docs/SCHEMA.md](docs/SCHEMA.md) — the SQLite file as a read-only interface.
-- [UPGRADING.md](UPGRADING.md) — coming from 1.x: what is refused now, and the way through.
+- [UPGRADING.md](UPGRADING.md) — coming from 2.x (or 1.x): what is refused now, and the way through.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
 
 ## License

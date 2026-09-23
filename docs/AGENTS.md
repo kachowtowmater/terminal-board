@@ -58,7 +58,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | mark it stuck, and on what | `tb block ID "#12"` · `tb block ID "waiting for the fee" --on #12 --until 2026-10-09` |
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
-| finished your work (DOING → REVIEW), or — as a verifier — checked someone else's (REVIEW → DONE) | `tb done ID` |
+| finished your work (DOING → REVIEW), or — as a verifier — checked someone else's (REVIEW → DONE) | `tb done ID` · a verifier: `TB_ROLE=verifier tb done ID` |
 | another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n |
 | record that you checked a card, without closing it (any card; stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
@@ -233,8 +233,8 @@ tb block 1 "#2"
 tb block 1 --clear
 tb prio 2 top
 tb done 1
-tb next --review --as bob
-tb done 1 --as bob
+TB_ROLE=verifier tb next --review --as bob
+TB_ROLE=verifier tb done 1 --as bob
 tb take 2
 tb drop 2
 tb move 2 doing
