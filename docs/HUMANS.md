@@ -54,7 +54,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 
 | to | on the board | from the command line |
 |---|---|---|
-| add a card | `a`, type `tag: title`, Enter | `tb add "home: water the plants"` |
+| add a card | `a`, type `tag: title`, Enter, then an optional due date, Enter | `tb add "home: water the plants" --due 2026-10-09` |
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
 | edit title, due date and description | `e` (Tab moves to the next field, Enter saves) | `tb edit 3 --title "…" --due 2026-10-09 --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
@@ -252,7 +252,7 @@ Where each part comes from:
 
 | part | from |
 |---|---|
-| harness, session | picked up by itself: from what the harness exports (Claude Code does), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
+| harness, session | picked up by itself: from what the harness exports (Claude Code does; omp names itself but exports no session id or model), else — in a herdr pane — from what herdr knows about that pane. `TB_HARNESS` / `TB_SESSION` set them by hand |
 | model, role | **only** from `TB_MODEL` and `TB_ROLE`. No harness tells its child processes which model it runs, and tb does not guess: a wrong model written down as fact is worse than none |
 | machine | the first part of the host name, or `TB_HOST` |
 

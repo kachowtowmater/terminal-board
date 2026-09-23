@@ -405,10 +405,11 @@ fn board_keys(h: &Home, actor: &str, typed: &str) -> Output {
     // it produced was the worst kind — `sh: timeout: command not found` left the board
     // unstarted, so the test read "a known name was refused" and pointed at the guard
     // instead of at itself. `alarm` survives the `exec`, so the timer still bounds the board.
-    // `a` opens the add form, the title is typed, Enter saves it, `q` quits; the pauses are
-    // needed because the board reads keys as they arrive rather than all at once.
+    // `a` opens the add form, the title is typed, Enter moves to the (left empty) due-date
+    // step, a second Enter saves it, `q` quits; the pauses are needed because the board reads
+    // keys as they arrive rather than all at once.
     let feed = format!(
-        "(sleep 2; printf a; sleep 1; printf %s {}; sleep 0.5; printf '\\r'; sleep 1.5; printf q; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 25 {} 2>&1",
+        "(sleep 2; printf a; sleep 1; printf %s {}; sleep 0.5; printf '\\r'; sleep 0.5; printf '\\r'; sleep 1.5; printf q; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 25 {} 2>&1",
         shell_quote(typed),
         pty
     );
@@ -495,6 +496,11 @@ fn every_writing_key_on_the_board_honours_the_names_list() {
             app.handle_key(key(KeyCode::Char(c)), &mut s);
         }
         app.handle_key(key(KeyCode::Enter), &mut s);
+        if form == "a" {
+            // title -> due-date step (card #104); enter again with an empty date to reach
+            // the actual write (or refusal) the way a person just pressing enter twice would
+            app.handle_key(key(KeyCode::Enter), &mut s);
+        }
         app.mode = Mode::Normal;
     }
     assert_eq!(std::fs::read(&db).unwrap(), before, "a board key wrote for a name the board does not know");
@@ -508,6 +514,7 @@ fn every_writing_key_on_the_board_honours_the_names_list() {
         app.handle_key(key(KeyCode::Char(c)), &mut s);
     }
     app.handle_key(key(KeyCode::Enter), &mut s);
+    app.handle_key(key(KeyCode::Enter), &mut s); // due-date step, left empty
     assert_eq!(s.list().unwrap().len(), 3, "the board refused a name it knows");
 }
 

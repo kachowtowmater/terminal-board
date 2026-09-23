@@ -74,6 +74,7 @@ Every card change, oldest first per card (`ORDER BY ts, id`).
 | `kind` | TEXT | see the vocabulary below |
 | `text` | TEXT | detail (empty when the kind carries none) |
 | `actor_id` | INTEGER NULL FK → actors.id | the identity behind `actor` (harness, model, role, session, machine); NULL when nothing but the name is known, and on every event written before identities were recorded — nothing is back-filled |
+| `assignee` | TEXT NULL | `kind='assigned'` only: who the card was assigned to, structured (#111) — the self-approval guard reads this directly, never `text`, so a reworded message cannot change who it refuses. NULL for every other kind, and on an `assigned` row written before this column existed (the guard falls back to parsing `text` for those only). Not exposed in JSON — `text` already carries the same name for reading |
 
 Event `kind` vocabulary — **open set; new kinds may appear; ignore what you don't know**:
 
@@ -127,7 +128,7 @@ claim, not proof), cleaned of control characters, and at most 64 characters.
 |---|---|---|
 | `id` | INTEGER PK | what `actor_id` points at; never reused |
 | `actor` | TEXT | the display name, exactly as in `events.actor` |
-| `harness` | TEXT NULL | the agent harness, without its version (`claude-code`, …): `$TB_HARNESS`, else what the harness exports (`$AI_AGENT`, `$CLAUDECODE`), else herdr's record of the pane |
+| `harness` | TEXT NULL | the agent harness, without its version (`claude-code`, …): `$TB_HARNESS`, else what the harness exports (`$AI_AGENT`, `$CLAUDECODE`, `$OMPCODE` — checked before `$CLAUDECODE`, since omp sets that too as a compatibility flag), else herdr's record of the pane |
 | `model` | TEXT NULL | `$TB_MODEL` — only ever what was set explicitly; no harness exports it and tb never guesses it |
 | `role` | TEXT NULL | `$TB_ROLE` (orchestrator, coder, reviewer, …) — explicit only, like `model` |
 | `session` | TEXT NULL | the harness's session id: `$TB_SESSION`, else what the harness exports (`$CLAUDE_CODE_SESSION_ID`), else herdr's record of the pane. **Never a path:** a session reported as the path of a file is stored as the identifier inside the file's name, or else as `path-` + 12 hex digits (a hash of the path) |

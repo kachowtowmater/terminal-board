@@ -215,7 +215,7 @@ Press `?` on the board to see all keys at any time.
 | key | what it does |
 |---|---|
 | arrows | select a card (←→ column, ↑↓ card) |
-| `a` | add a card (`tag: title`) |
+| `a` | add a card (`tag: title`, Enter, then an optional due date) |
 | `e` | edit the card: title, due date, description (Tab moves to the next field; an empty date clears it) |
 | `x` | delete the card (asks y/n; names the holder of someone else's card; archives on an archive board) |
 | `enter` | open the card: description, checklist, history |

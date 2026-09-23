@@ -104,8 +104,15 @@ impl Identity {
     pub fn resolve(src: &Sources) -> Identity {
         let var = |k: &str| (src.var)(k).filter(|v| !v.trim().is_empty());
         let tb = |name: &str| var(&format!("TB_{name}")).or_else(|| var(&format!("TTYBOARD_{name}")));
+        // `OMPCODE` before `CLAUDECODE`: omp sets BOTH on its own child processes (`CLAUDECODE`
+        // is a compatibility flag omp raises for tools that only know to look for Claude Code,
+        // not an omp session id — card #90's fact-finding) — checking `OMPCODE` first is what
+        // keeps an omp session from being recorded as `claude-code`. Neither a session id nor a
+        // model name is exported by omp today (also #90); when one is, it slots into `session`
+        // /`model` the same way `CLAUDE_CODE_SESSION_ID` does.
         let mut harness = tb("HARNESS")
             .or_else(|| var("AI_AGENT").and_then(|v| harness_of(&v)))
+            .or_else(|| var("OMPCODE").map(|_| "omp".to_string()))
             .or_else(|| var("CLAUDECODE").map(|_| "claude-code".to_string()));
         let mut session = tb("SESSION").or_else(|| var("CLAUDE_CODE_SESSION_ID"));
         if harness.is_none() || session.is_none() {
@@ -389,6 +396,17 @@ mod tests {
         assert_eq!(resolve(&[("CLAUDECODE", "1")], None).harness.as_deref(), Some("claude-code"));
         assert_eq!(harness_of("some-tool"), Some("some-tool".into()));
         assert_eq!(harness_of("_agent"), None);
+    }
+
+    #[test]
+    fn omp_is_read_from_ompcode_even_though_omp_also_sets_claudecode() {
+        // OMPCODE alone names the harness
+        assert_eq!(resolve(&[("OMPCODE", "1")], None).harness.as_deref(), Some("omp"));
+        // omp sets CLAUDECODE too (its own compatibility flag, not a Claude Code session) —
+        // OMPCODE must still win, or an omp session is recorded as claude-code
+        assert_eq!(resolve(&[("OMPCODE", "1"), ("CLAUDECODE", "1")], None).harness.as_deref(), Some("omp"));
+        // without OMPCODE, CLAUDECODE is unchanged
+        assert_eq!(resolve(&[("CLAUDECODE", "1")], None).harness.as_deref(), Some("claude-code"));
     }
 
     #[test]
