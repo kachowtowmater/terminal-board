@@ -901,8 +901,12 @@ fn live_sized_board_keeps_one_card_style_and_readable_github() {
     }
 }
 
+/// Was `half_v_grid_sized_to_its_cards`, which pinned each grid row to its OWN fuller cell
+/// (TODO/DOING 26 rows, REVIEW/DONE 14). The rows now split evenly whatever they hold, so
+/// both are as tall as the grid's fullest cell (TODO's six 4-row boxes) — and the panels
+/// keep their floors out of what is left.
 #[test]
-fn half_v_grid_sized_to_its_cards() {
+fn half_v_grid_rows_are_even_and_fit_the_fullest_cell() {
     common::pin_clock();
     let (_d, _s, app) = setup_live();
     let screen = render(&app, 63, 73);
@@ -911,13 +915,18 @@ fn half_v_grid_sized_to_its_cards() {
     let ag = row_of(&screen, "AGENTS");
     assert!(ag - gh >= 14, "GITHUB got {} rows:\n{screen}", ag - gh);
     assert!(lines.len() - ag >= 4, "AGENTS squeezed:\n{screen}");
-    // each grid row is as tall as its fuller cell: REVIEW|DONE = frame + DONE's 3 boxes
+    // both grid rows the same height: frame + TODO's 6 boxes, the fullest cell
     let review = row_of(&screen, "REVIEW");
     let todo = row_of(&screen, "TODO (6)");
-    assert_eq!(gh - review, 2 + 3 * 4, "REVIEW/DONE row padded:\n{screen}");
     assert_eq!(review - todo, 2 + 6 * 4, "TODO/DOING row:\n{screen}");
-    // every issue row of the fixture is visible (12 issues + 1 PR)
-    assert_eq!(gh_row_titles(&screen).len(), 13, "\n{screen}");
+    assert_eq!(gh - review, review - todo, "REVIEW/DONE row as tall as TODO/DOING:\n{screen}");
+    // every issue row of the fixture (12 issues + 1 PR) is either drawn or counted
+    let drawn = gh_row_titles(&screen).len();
+    let more: usize = screen
+        .lines()
+        .find_map(|l| l.split("+").nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).filter(|_| l.contains("more issues")))
+        .unwrap_or(0);
+    assert_eq!(drawn + more, 13, "{drawn} rows drawn + {more} counted:\n{screen}");
 }
 
 #[test]
@@ -953,10 +962,13 @@ fn github_wide_tables_drop_columns_before_the_title() {
     let screen = render(&app, 63, 73);
     assert!(!screen.contains("LABELS") && !screen.contains("BRANCH"), "\n{screen}");
     assert!(screen.contains(" TITLE "), "\n{screen}");
-    // too narrow for a 30-char title even with every optional column gone: tidy rows
+    // too narrow for a 30-char title even with every optional column gone: tidy rows. (Any
+    // tidy issue row will do: the grid's rows split evenly now, so the grid is twice its
+    // fullest cell and the panel shows fewer rows here — the oldest, gh#501, is below its
+    // `+N more`.)
     app.snap.layout = "half-v".into();
     let screen = render(&app, 50, 70);
-    assert!(!screen.contains(" TITLE ") && screen.contains("ISSUE gh#501"), "\n{screen}");
+    assert!(!screen.contains(" TITLE ") && screen.contains("ISSUE gh#5"), "\n{screen}");
 }
 
 /// `cargo test --test layout -- --ignored --nocapture live_samples` prints the round-26 renders.
@@ -1056,19 +1068,17 @@ fn first_run_empty_states_show_hints() {
             assert!(screen.contains("press a to add a card"), "{shape}:\n{screen}");
             continue;
         }
-        if want == Shape::ThirdV {
-            // third-v folds an empty section into its header line, so there is no TODO box
-            // and no hint (unchanged); the quiet-repo text and the stats are there
-            assert!(!words.contains(&"press"), "{shape}: no TODO hint in this view:\n{screen}");
-        } else {
-            // the expected text is spelled out here on purpose: the test pins what the user
-            // reads, not a constant from the code under test
-            for word in "press a to add your first card".split(' ') {
-                assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
-            }
-            let at = words.iter().position(|w| *w == "press").expect(shape);
-            assert_eq!(&words[at..at + 4], ["press", "a", "to", "add"], "{shape}: hint starts whole:\n{screen}");
+        // third-v used to fold an empty section into its header line, so it had no TODO box
+        // and no hint. Its sections now split the height evenly whatever they hold, so an
+        // empty TODO gets a box like every other view — and owes the same whole hint.
+        //
+        // the expected text is spelled out here on purpose: the test pins what the user
+        // reads, not a constant from the code under test
+        for word in "press a to add your first card".split(' ') {
+            assert!(words.contains(&word), "{shape}: hint word '{word}' cut or missing:\n{screen}");
         }
+        let at = words.iter().position(|w| *w == "press").expect(shape);
+        assert_eq!(&words[at..at + 4], ["press", "a", "to", "add"], "{shape}: hint starts whole:\n{screen}");
         assert!(screen.contains("no open issues or PRs") || screen.contains("no open PRs or issues"), "{shape}: quiet-repo hint:\n{screen}");
         assert!(screen.contains("MAIN"), "{shape}: main CI stays visible:\n{screen}");
     }
