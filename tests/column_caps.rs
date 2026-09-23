@@ -11,6 +11,10 @@
 //!
 //! The rule that must never break: **a card that is not on screen always has a `+N more`
 //! saying so.**
+//!
+//! Columns that COST different amounts — a note, a block, a due mark, which are the things
+//! that actually change a card's height here — are swept in `tests/zz_rvd_property.rs`,
+//! along with the cartesian and randomised sweeps of the same invariant.
 mod common;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -35,25 +39,13 @@ const LAYOUTS: [&str; 6] = ["auto", "focus", "third-h", "third-v", "half-h", "ha
 /// A board with `[todo, doing, review, done]` cards in those columns; the title says which
 /// column a card belongs to, so a screen can be read back to "which columns show work".
 fn board_of(counts: [usize; 4]) -> (tempfile::TempDir, Store) {
-    board_of_mixed(counts, [false; 4])
-}
-
-/// `board_of`, but the flagged columns' cards carry a title long enough to wrap over
-/// several lines. What the allocator trades is COST, not count, so a column holding one
-/// cheap card beside one holding a single expensive card is its own shape.
-fn board_of_mixed(counts: [usize; 4], long: [bool; 4]) -> (tempfile::TempDir, Store) {
     common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     let mut s = Store::open(&dir.path().join("b.db")).unwrap();
     s.set_wip(99).unwrap();
     for (ci, col) in ["todo", "doing", "review", "done"].iter().enumerate() {
         for i in 1..=counts[ci] {
-            let title = if long[ci] {
-                format!("{col}{i} a title long enough that it wraps over several lines in any column this board can draw")
-            } else {
-                format!("{col}{i}")
-            };
-            let id = s.add(&title, "", &[], "alice").unwrap();
+            let id = s.add(&format!("{col}{i}"), "", &[], "alice").unwrap();
             if *col != "todo" {
                 s.move_to(id, col, "alice").unwrap();
             }
@@ -172,42 +164,6 @@ fn three_and_four_populated_columns_all_show_work() {
                         // and with real room, one column may not be the only one drawing
                         assert!(h < 24 || w < 80, "{counts:?} {layout} {w}x{h} cursor={col}: only column {} shows work:\n{screen}", showing[0]);
                     }
-                }
-            }
-        }
-    }
-}
-
-/// The same invariant where the columns cost DIFFERENT amounts: one column's single card
-/// wraps over several lines while its neighbour's is one line. An allocator that trades on
-/// count alone reads these as equal and starves the expensive one; an allocator that trades
-/// on a share of the height reads the cheap one as wanting little and starves it instead.
-#[test]
-fn a_cheap_column_and_an_expensive_one_both_show_work() {
-    for (counts, long) in [
-        ([1usize, 1, 1, 1], [false, true, false, true]),
-        ([1, 1, 1, 1], [true, false, true, false]),
-        ([1, 80, 1, 80], [false, true, false, true]),
-        ([80, 1, 80, 1], [true, false, true, false]),
-        ([1, 1, 1, 80], [true, false, false, false]),
-        ([10, 3, 5, 116], [false, true, false, false]),
-    ] {
-        let (_d, s) = board_of_mixed(counts, long);
-        for layout in LAYOUTS {
-            s.set_layout(layout).unwrap();
-            for col in 0..4usize {
-                let mut app = App::new(s.snapshot().unwrap(), "alice");
-                app.reload(&s);
-                app.agents = AgentsState::Unavailable("herdr not available".into());
-                app.col = col;
-                for (w, h) in [(60u16, 20u16), (60, 14), (80, 24), (100, 30), (126, 41)] {
-                    let screen = render(&app, w, h);
-                    if is_focus_view(&screen) {
-                        continue;
-                    }
-                    let per = cards_per_column(&screen, counts);
-                    let what = format!("{counts:?} long={long:?} {layout} {w}x{h} cursor={col}");
-                    assert_first_cards_before_second(per, counts, &what, &screen);
                 }
             }
         }

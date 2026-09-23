@@ -2054,16 +2054,23 @@ fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, i
     let last = (first + MAX_VISIBLE_CARDS).min(cards.len());
     let window = &cards[first..last];
     let mut lines = Vec::new();
-    let mut sel_end = 0;
+    let (mut sel_start, mut sel_end) = (0, 0);
     let mut ends = Vec::new();
     for (i, c) in window.iter().enumerate() {
+        if sel == Some(first + i) {
+            sel_start = lines.len();
+        }
         lines.extend(card_lines(app, c, sel == Some(first + i), inner.width as usize, false));
         ends.push(lines.len());
         if sel == Some(first + i) {
             sel_end = lines.len();
         }
     }
-    let offset = sel_end.saturating_sub(inner.height as usize);
+    // Scroll to the end of the selection — but never PAST ITS FIRST LINE, which is the one
+    // carrying `#id` and the title. A selected card taller than the rows it has used to
+    // scroll to its last line, so a one-row column showed the bare meta (`  0m`) and the
+    // card had no identity on screen at all: a card drawn is a card you can name.
+    let offset = sel_end.saturating_sub(inner.height as usize).min(sel_start);
     // this list scrolls too, so it owes the same `+N more` a boxed column gives: a card
     // nobody can see, with nothing saying it is there, is the one thing that must not happen
     let last_row = offset + inner.height as usize;

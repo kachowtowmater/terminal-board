@@ -867,6 +867,21 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     let spare = bh - (full[0] + full[1]).min(cap);
     let mut gh_h = gh_want.min(spare.saturating_sub(ag_min));
     let mut ag_h = ag_want.min(spare - gh_h);
+    // A panel with too few rows to draw becomes its 1-line bar, and that is settled HERE,
+    // before the rows are shared out. It used to be settled after, taking its row out of
+    // the bottom row of the grid — so a row given exactly enough for one card lost it again
+    // to the bars, and a column drew a box with nothing in it while the other row took a
+    // second card (80/1/1/1 at `half-v` 160x15..18, found in review). The invariant has to
+    // survive every row the body gives away, not just the ones the grid hands out.
+    let mut bars = (false, false);
+    if gh_on && gh_h < 5 {
+        bars.0 = true;
+        gh_h = 1.min(bh);
+    }
+    if ag_on && ag_h < 3 {
+        bars.1 = true;
+        ag_h = 1.min(bh - gh_h);
+    }
     let mut budget = bh - gh_h - ag_h;
 
     // Both rows keep their 2-row frame before anything else: the frame carries the column
@@ -923,21 +938,6 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         // a row still short of its first card leaves the spare rows to a row that is
         // already showing every card it has: padding, never an extra card
         grid[r] += budget;
-    }
-    // a panel too short to draw becomes its 1-line bar, and the row it stood in goes back
-    // to the cards — never MORE rows than the body has, even when there are none to take
-    let mut bars = (false, false);
-    if gh_on && gh_h < 5 {
-        let give = grid[1] + gh_h;
-        grid[1] = give.saturating_sub(1);
-        gh_h = give.min(1);
-        bars.0 = true;
-    }
-    if ag_on && ag_h < 3 {
-        let give = grid[1] + ag_h;
-        grid[1] = give.saturating_sub(1);
-        ag_h = give.min(1);
-        bars.1 = true;
     }
     let cols_h = grid[0] + grid[1];
     let top = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(Rect { height: grid[0], ..body });
