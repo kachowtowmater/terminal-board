@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### The edit form's "field not shown" notice is now shown at every height (#107)
+
+Found reviewing #125: `src/tui.rs` drew the "X not shown" notice for a pane too short for
+every field only `if !hidden.is_empty() && used < pad.height` — at exactly the heights where
+the fields shown already fill the pad to its last row (h=8 with one field, h=12 with two)
+`used == pad.height`, there is no free row, and the notice silently did not draw. The existing
+test only swept h=14, the same single-height gap that let an earlier crash through.
+
+- The notice now takes the last row on screen (over the bottom border of the last field's box)
+  when there is no free row below it, instead of being skipped — the same trade the card
+  column's own `+N more` hint already makes when it runs out of a dedicated row.
+- `a_short_pane_drops_fields_and_says_so` now sweeps every height from too-short-to-draw
+  through everything-fits (not one value), asserting the notice names exactly what is missing
+  at each one.
+
 ### TODO overflow count verified exact after #131/#147 (#108)
 
 Reported by the board owner: a 12-card TODO column said `+12 more` at a near-full-screen

@@ -3194,9 +3194,20 @@ fn draw_edit(f: &mut Frame, app: &App, form: &EditForm) {
         .map(|(_, n)| *n)
         .collect();
     let used = shown.len() as u16 * FORM_ROWS_PER_FIELD;
-    if !hidden.is_empty() && used < pad.height {
+    // a dropped field is never silent, at ANY height: when there is a free row below the
+    // last field, the notice takes it (unchanged from before); when there is not — every
+    // field slot is already at its own minimum, so there is no spare row to reserve without
+    // shrinking a box below the 3 rows a border+text+border needs — the notice instead takes
+    // the LAST row on screen, over the bottom border of the last field shown. That is the
+    // same trade the card column already makes for its own `+N more` hint (`draw_boxed`):
+    // one row of a box's border is a smaller loss than a field nobody is told about (card
+    // #107 — `used < pad.height` skipped the notice at exactly the heights, 8 and 12, where
+    // `used == pad.height` and no free row exists; the sole existing test only checked h=14,
+    // where a free row happens to exist, so the gap went uncaught).
+    if !hidden.is_empty() {
         let text = format!("{} not shown — make the pane taller (tab still reaches it)", hidden.join(" and "));
-        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + used, height: 1, ..pad });
+        let y = used.min(pad.height.saturating_sub(1));
+        f.render_widget(Paragraph::new(Line::styled(fit(&text, pad.width as usize), dim())), Rect { y: pad.y + y, height: 1, ..pad });
     }
 }
 
