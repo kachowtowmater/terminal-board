@@ -82,6 +82,35 @@ existing prompt for a column move or delete, and `y` takes the forced, logged pa
 - Both settings are unset by default, so a board that sets nothing renders and behaves exactly
   as before.
 
+### `tb assign ID NAME` and a board's own `tb config rules`
+
+Two ways an orchestrator directs a board instead of just working it.
+
+- **`tb assign ID NAME`** hands a specific TODO card straight to `NAME`, without the caller
+  becoming its owner — `tb take` run on someone else's behalf, for an orchestrator that already
+  knows who should do what. It reaches this exact behaviour through the SAME transition and WIP
+  check `take`/`next`/`move` already share, on purpose: `NAME` becomes the card's owner and the
+  column moves to DOING, only from TODO (the same restriction `take` enforces, and like `take`
+  there is no `--force` to pull a card away from whoever already holds it — a card already held
+  is simply not a valid target). The event log keeps the two facts apart: its `actor` is whoever
+  ran `tb assign` (who assigned it), `cards.owner` is `NAME` (who now holds it) — a new `assigned`
+  event kind. A per-owner WIP cap, when one exists, sees it too: `assign` enters DOING through
+  the one check every other column change does.
+- **`tb config rules "TEXT"` / `--file PATH` / `--off`** is a board's own conventions — house
+  style, branch naming, who to ping — printed by `tb guide` and shown once to each agent,
+  automatically, the first `tb next` since the text was last set or changed. "Once" compares the
+  TEXT, not a boolean, in a `board_events` row (`rules-seen`) exactly like every other setting
+  change already logs itself: editing the rules makes them new again for everyone, including an
+  agent that saw the old wording, and the mark travels with the board file like the rest of its
+  history (copy it, and an agent who already saw a board's rules still has on the copy). Long
+  text goes through the same bounded file reader `--desc-file` uses (`src/textin.rs`): UTF-8, at
+  most 256 KiB, `-` for standard input, a terminal refused. `tb next --json` carries the text
+  once, in an additive `"rules"` field, so a `--json` consumer is shown it too, not only a
+  terminal.
+- A board that sets no rules renders and behaves exactly as before: `tb guide` prints unchanged,
+  and `tb next`/`tb take` carry no new field. `docs/AGENTS.md` stays at its 250-line cap by
+  rewording two existing lines instead of only adding.
+
 ### Boards: a corrupt `position` is refused with the fix, never a database error
 
 A board file written by something other than tb can hold anything in `cards.position` (a

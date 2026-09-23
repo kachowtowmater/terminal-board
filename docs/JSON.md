@@ -186,8 +186,8 @@ is on the line — both are null when nothing but the name is known.
 
 ## Writes — `--json` results
 
-Every write command takes `--json`: `add`, `next`, `take`, `note`, `check`, `link`, `move`,
-`done`, `block`, `drop`, `rm`, `prio`, `edit`.
+Every write command takes `--json`: `add`, `next`, `take`, `assign`, `note`, `check`, `link`,
+`move`, `done`, `block`, `drop`, `rm`, `prio`, `edit`.
 
 Success (exit 0) — the card after the change (for `rm`, the card as it was):
 
@@ -213,7 +213,17 @@ file, a directory, not UTF-8, a NUL byte, empty, over 262144 bytes (256 KiB), or
 terminal on standard input (refused at once, never waited on). Text given twice (`--desc` with
 `--desc-file`, note text with `--file`) is an argument error (exit 2).
 
+`assign ID NAME --json` answers the same `{ "ok": true, "card": … }` shape as `take` — `card.owner`
+is `NAME`, never the identity behind `--as`; who ran the assign is only in the event log (`kind:
+"assigned"`, `actor` is the assigner, `text` is `"assigned to NAME"`), not in this response.
+
 `config KEY VALUE --json` returns `{ "ok": true, "config": { "key": "wip", "value": 4 } }`.
+`config rules "TEXT"|--file PATH --json` returns `{ "ok": true, "config": { "key": "rules",
+"value": "TEXT" } }`; `--off` answers `"value": null`; `config rules --json` (no value) reads it
+the same way, `null` when unset. `tb next --json` (either form) adds one more field, **only the
+first time an agent is shown a board's current rules text**: `"rules": "TEXT"` alongside `"card"`
+— absent every other time, including every `--json` response from every other write command, so
+existing consumers see no new field until they ask `tb next` on a board that sets `rules`.
 `prio --json` on a column that `sort due` orders by date adds `"note"`: position is only the
 tie-break there, and the note says where the card is now (`#5 is 6 of 7 in todo (was 7)`).
 `config sort --json`, `config tz --json`, `config due-warn --json` and `config done-needs-link --json` (no value) read

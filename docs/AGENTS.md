@@ -39,7 +39,7 @@ tb done ID                   # finished: DOING -> REVIEW
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
 | claim the top REVIEW card you did not do | `tb next --review --as NAME` |
-| take one specific TODO card | `tb take ID` |
+| take one specific TODO card, or hand it to someone else | `tb take ID` · `tb assign ID NAME` |
 | see every card, by column | `tb list` |
 | one card in full (brief, checklist, notes, history) | `tb show ID` |
 | the whole board as JSON | `tb board --json` |
@@ -132,6 +132,8 @@ unless a person asks you to change them.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused
   (`--force` overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — a note adds to a card, it
   does not take it over. `github` is tb's own sync: never act under it.
+- `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log splits who assigned it from who now holds
+  it. A board's rules (`tb config rules`) print with `tb guide` and show once, on your first `tb next` after they are set or changed.
 
 ## Environment variables and identity
 

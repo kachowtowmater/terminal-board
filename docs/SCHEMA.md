@@ -81,6 +81,7 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 |---|---|
 | `created` | — |
 | `taken` | — (the actor takes the card) |
+| `assigned` | `assigned to <name>` — `actor` is who ran `tb assign` (the assigner), `cards.owner` is `<name>` (who now holds it) |
 | `moved` | `<from> -> <to>` (e.g. `doing -> review`) |
 | `note` | the note text |
 | `check` | the checklist item ticked/unticked |
@@ -109,7 +110,7 @@ oldest first, `card_id` null — with `tb log` (docs/JSON.md):
 | `id` | INTEGER PK | monotonically increasing |
 | `ts` | INTEGER | unix seconds |
 | `actor` | TEXT | who did it |
-| `kind` | TEXT | `delete`, `wip`, `file-mode`, `archive`, `restore`, `rm` (the setting changed), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
+| `kind` | TEXT | `delete`, `wip`, `file-mode`, `archive`, `restore`, `rm` (the setting changed), `rules` (the rules text was set or cleared), `rules-seen` (an agent's first `tb next` since — `text` is the rules text shown), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
 | `text` | TEXT | detail |
 | `actor_id` | INTEGER NULL FK → actors.id | as `events.actor_id` |
 

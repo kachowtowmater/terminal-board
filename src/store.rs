@@ -19,6 +19,7 @@ pub mod kinds;
 pub mod links;
 pub mod order;
 pub mod rounds;
+pub mod rules;
 pub mod transfer;
 
 pub const COLUMNS: [&str; 4] = ["todo", "doing", "review", "done"];
@@ -1093,6 +1094,7 @@ impl Store {
         all.extend(self.link_settings()?);
         all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
+        all.extend(self.rules_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -1584,6 +1586,20 @@ impl Store {
         self.claim(Some(id), actor)
     }
 
+    /// `tb assign ID NAME`: hand a specific TODO card straight to `owner`, without `actor`
+    /// (the one running the command) becoming its holder — `take` done on someone else's
+    /// behalf. Only a TODO card is a valid target (the same restriction `take` itself
+    /// enforces, and `take` has no `--force` to override it either), so this can never pull a
+    /// card away from whoever already holds it. The event log keeps the two facts separate:
+    /// its `actor` is who assigned the card, its new `owner` is who now holds it.
+    pub fn assign(&mut self, id: i64, owner: &str, actor: &str) -> Result<Card> {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            return err(format!("name is empty — try 'tb assign {id} bob'"));
+        }
+        self.transition(Change::Assign { id, owner }, actor, false)
+    }
+
     /// `BEGIN IMMEDIATE` + compare-and-swap on the column, so two callers can never
     /// both win the same card.
     fn claim(&mut self, id: Option<i64>, actor: &str) -> Result<Card> {
@@ -1817,6 +1833,13 @@ impl Store {
                 let target = Self::claim_target(&tx, id)?;
                 (get_card(&tx, target)?, "doing".to_string(), None)
             }
+            Change::Assign { id, .. } => {
+                // the same "must be TODO" check `take ID` makes (claim_target's Some(id) arm);
+                // reusing it keeps the refusal text identical, so an agent that has seen
+                // take's error recognizes assign's
+                let target = Self::claim_target(&tx, Some(id))?;
+                (get_card(&tx, target)?, "doing".to_string(), None)
+            }
             Change::Drop(id) => {
                 let c = get_card(&tx, id)?;
                 if c.column == "todo" && c.owner.is_none() {
@@ -1863,6 +1886,15 @@ impl Store {
             Change::Claim(_) => Kind::Claim,
             Change::Drop(_) => Kind::Drop,
             Change::Move { .. } => Kind::Move,
+            Change::Assign { .. } => Kind::Assign,
+        };
+        // who `assign` hands the card to — read out of `change` here (not inside the "3. the
+        // change" match below) because `column`/`c` are rebound by then; a WIP cap keyed on
+        // the HOLDER (not the actor issuing the command) must see this name too — see the
+        // note beside the WIP check below.
+        let assignee = match change {
+            Change::Assign { owner, .. } => Some(owner),
+            _ => None,
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
 
@@ -1943,7 +1975,16 @@ impl Store {
             let wip = wip_of(&tx)?;
             // `wip-counts-blocked no` (store/blocks.rs) discounts blocked DOING cards, up to
             // `wip` of them, so waiting for someone else does not stall the board — and
-            // blocking everything can still never hand out unlimited work
+            // blocking everything can still never hand out unlimited work.
+            //
+            // A per-owner cap belongs here too, the moment one exists: `tb assign` enters
+            // DOING through this exact check, on purpose, so a cap added later catches it for
+            // free — PROVIDED it is keyed on the card's new HOLDER (`assignee.unwrap_or(actor)`
+            // — `assignee` is `Some` only for `Kind::Assign`, in scope right here), never on
+            // `actor` alone. `actor` is who is issuing the command (the assigner); for
+            // `Kind::Assign` that is not who ends up holding the card, and a cap keyed on the
+            // wrong name would let an orchestrator assign straight past it — exactly the hole
+            // a per-owner limit exists to close.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
@@ -1952,6 +1993,11 @@ impl Store {
 
         // 3. the change, then its events
         let owner = match (kind, column.as_str()) {
+            // MUST come before the `Kind::Claim` arm below: assign sets the NAMED owner, not
+            // the actor running the command — that distinction (who assigned it vs. who now
+            // holds it) is the whole point of the command, and the event log carries both:
+            // `owner` here is who holds it, `actor` on the "assigned" event is who assigned it.
+            (Kind::Assign, _) => Some(assignee.expect("Kind::Assign always carries an owner").to_string()),
             (Kind::Claim, _) => Some(actor.to_string()),
             (_, "todo") => None,
             (_, "doing") => Some(c.owner.clone().unwrap_or_else(|| actor.to_string())),
@@ -1977,6 +2023,11 @@ impl Store {
         }
         match kind {
             Kind::Claim => Self::log(&tx, id, actor, "taken", "")?,
+            // logged under `actor` — who ran 'tb assign', i.e. who assigned it — never under
+            // `owner` (who now holds it): that split is what lets `tb show`/`tb log` answer
+            // "who assigned this" and "who holds this" as two different questions, the way
+            // every other event's `actor` column already answers "who did this".
+            Kind::Assign => Self::log(&tx, id, actor, "assigned", &format!("assigned to {}", owner.as_deref().unwrap_or("")))?,
             Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
             Kind::Move => {
                 if block_cleared {
@@ -2190,6 +2241,12 @@ enum Change<'a> {
     Move { id: i64, column: &'a str, reason: Option<&'a str> },
     /// `drop`: back to TODO, unowned.
     Drop(i64),
+    /// `assign ID NAME`: TODO → DOING, owned by `owner` — never the actor running the
+    /// command. Only reaches a TODO card (the same restriction `claim_target` gives `take`,
+    /// and `take` itself has no `--force` to take a card away from its current holder
+    /// either), so the holder guard never needs a separate check here: a card already held
+    /// by someone is simply not a valid target, by construction.
+    Assign { id: i64, owner: &'a str },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2197,6 +2254,7 @@ enum Kind {
     Claim,
     Move,
     Drop,
+    Assign,
 }
 
 /// Rework round from a card's events: 1, plus one for every time it was sent back.
