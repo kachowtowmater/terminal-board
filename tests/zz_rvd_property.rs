@@ -412,3 +412,81 @@ fn the_half_v_grid_grows_evenly() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// THE TIE REGRESSION (card #113, round 2 of the rework) — a rank-tie loser must lose only
+// THIS round, not be written off. The first round-robin draft marked a floor column
+// permanently `stuck` the moment it failed to afford a level, even when the ONLY reason it
+// failed was that a same-cost peer, tied with it and processed first, had already spent the
+// shared budget — an artifact of iteration order, not a real incapacity. That let the peer
+// monopolise every later level while the "loser" sat frozen at its first card, which is
+// WORSE than `main`'s un-fixed behaviour for this exact shape (TODO=0, DOING=3, REVIEW=3,
+// DONE=3, `third-v`, 75x28, cursor on TODO): this branch gave DOING 3/3 while REVIEW and
+// DONE both sat at 1/3 — a monopoly — where `main` gave a strictly more even 2/2/1.
+//
+// `check_evenness` above is an aggregate bound (pairwise, "2+ ahead of a column with cards
+// still hidden") and DOES catch this shape once it is in the sweep — it just was not,
+// because the general cartesian only tries counts in {0, 1, 2, 30}, and a tie only bites at
+// 3+, when a level's cost is shared by more than one same-cost column. This is a second,
+// more DIRECT check on top: among columns that all cost the same AND all hold the same
+// total, nothing distinguishes one from another, so the spread between the most- and
+// least-shown must never exceed one card, full stop — no "it has nothing left hidden"
+// exemption needed, because with equal totals nobody reaches their own cap before a sibling
+// does. A fix that happened to satisfy the pairwise bound by some other accident still has
+// to pass this — it is a different measurement of the same failure, not a restatement of it.
+
+/// DIRECT: among POPULATED columns of equal cost and equal total, the most-shown and the
+/// least-shown are never more than one card apart.
+fn assert_no_monopoly(screen: &str, map: &[(i64, usize)], counts: [usize; 4], what: &str) {
+    let shown = shown_per_column(screen, map);
+    let populated: Vec<usize> = (0..4).filter(|&c| counts[c] > 0).collect();
+    let Some(&max_c) = populated.iter().max_by_key(|&&c| shown[c]) else { return };
+    let Some(&min_c) = populated.iter().min_by_key(|&&c| shown[c]) else { return };
+    assert!(
+        shown[max_c] <= shown[min_c] + 1,
+        "{what}: column {max_c} shows {} while equal-cost, equal-total column {min_c} shows only {} — one column is monopolising growth instead of the two rotating a tie: shown={shown:?} counts={counts:?}\n{screen}",
+        shown[max_c],
+        shown[min_c]
+    );
+}
+
+/// Sweep `assert_no_monopoly` the same way `sweep_evenness` sweeps `check_evenness`.
+fn sweep_no_monopoly(counts: [usize; 4], layouts: &[&str], sizes: &[(u16, u16)]) {
+    let (_d, s) = board(counts, [Cost::Plain; 4]);
+    for layout in layouts {
+        s.set_layout(layout).unwrap();
+        for col in 0..4usize {
+            let mut app = App::new(s.snapshot().unwrap(), "alice");
+            app.reload(&s);
+            app.agents = AgentsState::Unavailable("herdr not available".into());
+            app.col = col;
+            let (map, real) = truth(&app);
+            for (w, h) in sizes {
+                if *w < MIN_WIDTH {
+                    continue;
+                }
+                let screen = render(&app, *w, *h);
+                if is_focus_view(&screen) {
+                    continue;
+                }
+                assert_no_monopoly(&screen, &map, real, &format!("{counts:?} {layout} {w}x{h} cursor={col}"));
+            }
+        }
+    }
+}
+
+/// The named regression: the owner's rework repro, pinned directly, plus the same shape at
+/// a spread of heights around 75x28 — a level's budget runs out mid-level at different
+/// heights depending on layout and width, and a tie only shows itself exactly there, so a
+/// single fixed size is not enough to trust the fix generalises.
+#[test]
+fn a_same_cost_tie_does_not_let_one_column_monopolise_growth() {
+    let heights: Vec<u16> = (18u16..=40).collect();
+    let sizes: Vec<(u16, u16)> = heights.iter().flat_map(|&h| [(60u16, h), (75, h), (100, h)]).collect();
+    for counts in [[0usize, 3, 3, 3], [3, 3, 3, 3], [0, 0, 3, 3], [3, 3, 0, 3]] {
+        sweep_no_monopoly(counts, &["third-v", "half-v"], &sizes);
+    }
+    // the exact reported repro, named on its own so a regression here fails legibly without
+    // needing to read a generated `what` string out of the sweep above.
+    sweep_no_monopoly([0, 3, 3, 3], &["third-v"], &[(75, 28)]);
+}

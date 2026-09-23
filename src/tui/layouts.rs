@@ -703,10 +703,14 @@ const STACK_GH_ROWS: u16 = 8;
 ///
 /// Round 2 enforces it a level at a time: at each level it grows every column currently at
 /// the FLOOR (the lowest shown count among columns still wanting more) that can afford the
-/// next card, cheapest first — the same rule round 1 uses for first cards. A floor column
-/// that cannot afford it even first in line never will either (the budget only shrinks), so
-/// it drops out of the floor computation and stops blocking the columns behind it, exactly as
-/// an unservable column already does in round 1.
+/// next card, cheapest first — the same rule round 1 uses for first cards. Growth STOPS for
+/// this level only once the cheapest floor column, evaluated first and against the full
+/// remaining budget, still cannot afford it — the budget only shrinks from here, so nothing
+/// behind it ever will either. A column that loses only because a same-cost peer happened to
+/// spend the shared budget first is NOT written off: it is left at the floor and re-judged
+/// on the next pass, once that peer has moved on and the tie no longer applies. Card #113's
+/// own rework found the earlier draft did the opposite — permanently excluding a rank-tie
+/// loser let the winner monopolise every later level instead of the two rotating fairly.
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     let w = area.width;
     let order: Vec<usize> = std::iter::once(app.col).chain((0..4).filter(|c| *c != app.col)).collect();
@@ -741,10 +745,6 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     if all_served {
         let caps: [usize; 4] = std::array::from_fn(|c| column_card_cap(app, c, w));
         for dense in [true, false] {
-            // a column that could not afford its next card even first in line at its own
-            // floor (see below) — excluded from the floor from then on, in THIS style, so it
-            // hands its share back instead of blocking the columns still behind it.
-            let mut stuck = [false; 4];
             loop {
                 // how many cards column `c` shows at its CURRENT height, in this style — read
                 // back from `heights`, never tracked separately, so a column that grew in the
@@ -760,7 +760,7 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
                     }
                     lvl
                 });
-                let wanting: Vec<usize> = claimants().filter(|&c| shown[c] < caps[c] && !stuck[c]).collect();
+                let wanting: Vec<usize> = claimants().filter(|&c| shown[c] < caps[c]).collect();
                 if wanting.is_empty() {
                     break;
                 }
@@ -771,17 +771,27 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
                     .filter(|&c| shown[c] == floor)
                     .map(|c| (column_height_for(app, c, w, dense, floor + 1).saturating_sub(heights[c]), rank(c), c))
                     .collect();
-                // cheapest first, same as round 1: the column given the best possible shot at
-                // this level and still unable to afford it is genuinely out of room, not
-                // merely out-ordered — the budget only shrinks from here, so it never will.
+                // cheapest first, same as round 1: whoever is cheapest at the floor gets the
+                // best possible shot at this level. A TIE (equal cost) is not a verdict — it
+                // is only decided by whichever `left` this one pass happens to have when it
+                // is this column's turn, so a tied loser here is NOT marked out for good; it
+                // is simply left at the floor and re-judged fresh next iteration, once the
+                // winner has moved on and is no longer the one it is tied against. Only when
+                // NOBODY at the floor advances this pass — the cheapest of them shown unable
+                // to afford it even first in line, with nothing yet spent against it — does
+                // growth stop, because the budget only shrinks from here and nothing behind
+                // the floor can ever be let ahead of it.
                 asks.sort_unstable();
+                let mut moved = false;
                 for (cost, _, c) in asks {
                     if cost <= left {
                         heights[c] += cost;
                         left -= cost;
-                    } else {
-                        stuck[c] = true;
+                        moved = true;
                     }
+                }
+                if !moved {
+                    break;
                 }
             }
         }
@@ -1041,10 +1051,6 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         // how many cards column `ci` will ever draw, capped as `column_height` already is
         let caps: [usize; 4] = std::array::from_fn(|ci| if live(ci) { column_card_cap(app, ci, cw[ci % 2]) } else { 0 });
         for dense in [true, false] {
-            // a column that could not afford its next card even first in line at its own
-            // floor — excluded from the floor from then on, in THIS style, so it hands its
-            // share back instead of holding up the row (and its row-mate) behind it.
-            let mut stuck = [false; 4];
             loop {
                 // cards column `ci` shows at its row's CURRENT height, in this style — read
                 // back from `grid`, never tracked separately.
@@ -1059,7 +1065,7 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
                     }
                     lvl
                 });
-                let wanting: Vec<usize> = (0..4).filter(|&ci| shown[ci] < caps[ci] && !stuck[ci]).collect();
+                let wanting: Vec<usize> = (0..4).filter(|&ci| shown[ci] < caps[ci]).collect();
                 if wanting.is_empty() {
                     break;
                 }
@@ -1068,7 +1074,10 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
                 // height its floor column(s) need for their next card (a row-mate not itself
                 // at the floor already fits in the row's current height, so it costs nothing
                 // extra here — growing the row for its floor column is never denied on its
-                // row-mate's account).
+                // row-mate's account). A TIE between two rows (equal price) is not a verdict
+                // — see `draw_sections`' round 2 for why a tied loser is re-judged next
+                // iteration rather than written off; only a row that is cheapest here and
+                // still cannot be afforded, with nothing yet spent against it, stops growth.
                 let mut asks: Vec<(u16, usize)> = [0usize, 1]
                     .into_iter()
                     .filter_map(|r| {
@@ -1081,18 +1090,16 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
                     })
                     .collect();
                 asks.sort_unstable();
+                let mut moved = false;
                 for (cost, r) in asks {
                     if cost <= budget {
                         grid[r] += cost;
                         budget -= cost;
-                    } else {
-                        for k in 0..2 {
-                            let ci = 2 * r + k;
-                            if wanting.contains(&ci) && shown[ci] == floor {
-                                stuck[ci] = true;
-                            }
-                        }
+                        moved = true;
                     }
+                }
+                if !moved {
+                    break;
                 }
             }
         }
