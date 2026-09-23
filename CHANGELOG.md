@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### `a` can set a due date without dropping to the CLI (#104)
+
+Split out of #77: the `e` form gained a due field, but `a` stayed a one-line title prompt, so
+a card could only get a date by leaving the board. `a` now asks a second, optional question
+after the title — the smallest change that still gives full parity with `tb add --due` / the
+`e` form, and none for someone who never wants a date.
+
+- Enter on the title moves to a `due (YYYY-MM-DD, empty for none):` prompt; enter there with
+  nothing typed creates the card with no date (unchanged from before), a real date creates it
+  with that date, and a bad one refuses in the exact words `tb add --due` and the `e` form
+  already use (`DueDate::parse`) — the prompt stays open with what was typed so it can be
+  fixed. Esc at this step cancels the whole add, title included, matching esc everywhere else
+  in this app; it is not a way to skip only the date (enter on an empty prompt is).
+- Nothing is written until the date is checked: a refused date leaves no card and no title
+  behind, the same guarantee the `e` form gives.
+- One footer line, not a new floating form — `NO layout change`, and nothing here can drop a
+  field the way #107 could, because there is no field to drop.
+
 ### The edit form's "field not shown" notice is now shown at every height (#107)
 
 Found reviewing #125: `src/tui.rs` drew the "X not shown" notice for a pane too short for

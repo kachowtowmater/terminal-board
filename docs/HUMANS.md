@@ -54,7 +54,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 
 | to | on the board | from the command line |
 |---|---|---|
-| add a card | `a`, type `tag: title`, Enter | `tb add "home: water the plants"` |
+| add a card | `a`, type `tag: title`, Enter, then an optional due date, Enter | `tb add "home: water the plants" --due 2026-10-09` |
 | open it (description, checklist, history) | `enter` (`esc` closes) | `tb show 3` |
 | edit title, due date and description | `e` (Tab moves to the next field, Enter saves) | `tb edit 3 --title "…" --due 2026-10-09 --desc "…"` |
 | delete it | `x`, then `y` | `tb rm 3` |
