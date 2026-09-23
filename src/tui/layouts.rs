@@ -670,7 +670,7 @@ const STACK_GH_ROWS: u16 = 8;
 /// is either a boxed column (at least one card) or its 1-row header — never the unboxed list
 /// — and all boxed sections share one card style.
 ///
-/// # THE RULE THIS FUNCTION OBEYS
+/// # THE FIRST RULE THIS FUNCTION OBEYS — NO STARVATION
 ///
 /// **No column gets its Nth card while any populated column still has none, as long as that
 /// column's first card would fit at all.** First cards come before second cards, globally,
@@ -683,13 +683,34 @@ const STACK_GH_ROWS: u16 = 8;
 /// 1. **first cards**, cheapest first, so the most columns possible are served. A column
 ///    whose first card does not fit stays a one-row header, and a header carries its true
 ///    count, so nothing is hidden with nothing to say so;
-/// 2. **growth**, only once every column that can be served has been: an equal share each,
-///    then what nobody wants;
+/// 2. **growth**, only once every column that can be served has been — see the second rule,
+///    below;
 /// 3. **surplus**, so no blank band sits between the sections and the panels.
 ///
 /// A column skipped in round 1 can never be helped later: round 1 goes cheapest first, and
 /// the budget only shrinks, so if the cheapest unserved column did not fit then, nothing
 /// that comes after fits either.
+///
+/// # THE SECOND RULE THIS FUNCTION OBEYS — GROWTH IS ROUND-ROBIN
+///
+/// **No column shows its Nth card while a populated column that still has more to give is
+/// showing fewer than N-1.** Every column's 2nd card comes before any column's 3rd, its 3rd
+/// before any 4th, and so on — first cards fixed that at N=1 (the rule above), and round 2
+/// carries the same shape forward for every N after it. A column that runs out of cards, or
+/// of room for the next one, hands its unused share back to the columns still behind it
+/// rather than holding it: PR #131 made every column start even; this is what keeps them
+/// even as they grow.
+///
+/// Round 2 and round 3 (the "no blank band" padding after it) are `round_robin_grow` /
+/// `pad_most_behind` (src/tui.rs) — the ONE implementation of this rule, shared with
+/// `draw_grid`'s row growth, so the two allocators cannot drift the way they did across the
+/// rounds of review on card #113: first a rank-tie loser was written off for good instead
+/// of being re-judged next iteration (found at column granularity, fixed by sharing round
+/// 2's logic), then an even 50/50 split of the round-3 leftover let one row cross the
+/// "nothing left to show" boundary — cheap right there, because the true last card of a
+/// column needs no `+N more` reserve row — while its equally-entitled sibling got nothing
+/// (found at row granularity; fixed by handing the whole leftover to whichever group is
+/// furthest behind, never splitting it).
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     let w = area.width;
     let order: Vec<usize> = std::iter::once(app.col).chain((0..4).filter(|c| *c != app.col)).collect();
@@ -717,34 +738,35 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
     // cards beside an empty neighbour says nothing at all.
     let all_served = claimants().all(|c| heights[c] > 1);
 
-    // ROUND 2 — now, and only now, second and further cards: an equal share each before
-    // anybody takes what is left over. Skipping a column still at one row is right HERE and
-    // only here: round 1 has already served everyone whose first card fits.
-    let sharers = claimants().count().max(1) as u16;
-    for dense in [true, false] {
-        for share in [area.height / sharers, u16::MAX] {
-            for &c in &order {
-                if counts[c] == 0 || heights[c] == 1 || !all_served {
-                    continue;
-                }
-                let want = column_height(app, c, w, dense).min(share.max(heights[c]));
-                let add = want.saturating_sub(heights[c]).min(left);
-                heights[c] += add;
-                left -= add;
-            }
+    // ROUND 2 — round-robin growth (see the second rule above), only once every column that
+    // can be served has been. Two passes over the card style, dense first: dense is cheaper,
+    // so it buys the most LEVELS for the least height, and the non-dense pass only spends
+    // what dense growth left over — never at the cost of a level dense growth already gave.
+    // `shown` is seeded from round 1's dense (cheapest) sizing, then carried forward — see
+    // `round_robin_grow`'s doc for why it is never re-derived from height again.
+    let cap_of = |c: usize| column_card_cap(app, c, w);
+    let mut shown: [usize; 4] =
+        std::array::from_fn(|c| if counts[c] > 0 { shown_level(c, &|c| c, &heights, &cap_of, &|c, k| column_height_for(app, c, w, true, k)) } else { 0 });
+    if all_served {
+        for dense in [true, false] {
+            round_robin_grow(4, |c| c, &mut heights, &mut shown, &mut left, cap_of, |c, k| column_height_for(app, c, w, dense, k));
         }
     }
 
     // ROUND 3 — spare height must not sit as a blank band between sections and the panels
-    // (issue #4): stretch the LAST boxed section to absorb what is left. While a column is
-    // still waiting for its first card the surplus may only go to a section already showing
-    // EVERY card it has, where more rows can pad a box but can never conjure an Nth card in
-    // front of a column with none.
+    // (issue #4): the whole of it goes to whichever section is still furthest behind (never
+    // split — see `pad_most_behind`). While a column is still waiting for its first card the
+    // surplus may only go to a section already showing EVERY card it has, where more rows
+    // can pad a box but can never conjure an Nth card in front of a column with none.
     if left > 0 {
-        let padding_only = |c: usize| heights[c] >= column_height(app, c, w, true);
-        let room = |&&c: &&usize| counts[c] > 0 && heights[c] > 1 && (all_served || padding_only(c));
-        if let Some(&c) = order.iter().rev().find(room) {
-            heights[c] += left;
+        if all_served {
+            pad_most_behind(4, |c| c, &mut heights, &shown, &mut left, cap_of);
+        } else {
+            let padding_only = |c: usize| heights[c] >= column_height(app, c, w, true);
+            let room = |&&c: &&usize| counts[c] > 0 && heights[c] > 1 && padding_only(c);
+            if let Some(&c) = order.iter().rev().find(room) {
+                heights[c] += left;
+            }
         }
     }
     let boxed = |c: usize| counts[c] > 0 && heights[c] > 1;
@@ -900,14 +922,22 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         h(2 * r).max(h(2 * r + 1))
     };
     let full = [row_need(0, false), row_need(1, false)];
-    // THE RULE THIS SHARE-OUT OBEYS — the one `draw_sections` states in full above: no
-    // column gets its Nth card while any populated column still has none, as long as that
-    // column's first card would fit at all. A grid ROW sets one height for two columns, so
-    // its price for "a card in every column of it" is the dearer of the two; the cheaper
-    // row is served first, and only once every populated row has been does either grow.
-    // A proportional split cannot obey this — a row of cheap columns asks for little and
-    // so is handed little, which is how `[1, 1, 1, 80]` at 60x20 left TODO and DOING as
-    // bare 2-row frames while DONE drew four cards (found in review).
+    // THE RULES THIS SHARE-OUT OBEYS — the two `draw_sections` states in full above.
+    //
+    // First cards: no column gets its Nth card while any populated column still has none,
+    // as long as that column's first card would fit at all. A grid ROW sets one height for
+    // two columns, so its price for "a card in every column of it" is the dearer of the
+    // two; the cheaper row is served first, and only once every populated row has been does
+    // either grow. A proportional split cannot obey this — a row of cheap columns asks for
+    // little and so is handed little, which is how `[1, 1, 1, 80]` at 60x20 left TODO and
+    // DOING as bare 2-row frames while DONE drew four cards (found in review).
+    //
+    // Growth is round-robin: no COLUMN shows its Nth card while a populated column that
+    // still has more is showing fewer than N-1 — the same rule, at column granularity, even
+    // though a row can only be grown as a whole. Growing a row to the height its floor
+    // column needs never shortchanges that column's row-mate (height only ever grows), and
+    // if it lifts the row-mate past its own level too, that is a shared row's free bonus,
+    // not something either column is owed.
     let live = |ci: usize| !app.col_cards(ci).is_empty();
     let row_live = |r: usize| live(2 * r) || live(2 * r + 1);
     // 3 rows is what an empty column asks for: its frame and a blank interior.
@@ -970,29 +1000,29 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     // rather than quietly becoming a second card beside a column with none.
     let all_served = (0..2).all(|r| !row_live(r) || grid[r] >= row_one(r));
 
-    // ROUND 2 — second and further cards: an equal share each, then what the other row
-    // does not want, dense boxes before 4-row ones. Round 1 went cheapest-first so the
-    // most columns are served; growth goes the other way round, to whichever row has the
-    // most cards still to show, so a spare row lands where it draws something.
+    // ROUND 2 — round-robin growth, a level at a time (see above): every populated COLUMN's
+    // Kth card before any column's (K+1)th. `round_robin_grow` (src/tui.rs) is the same
+    // implementation `draw_sections` calls, with two COLUMNS grouped per ROW instead of one
+    // column per group — see its doc for why a tied row is re-judged next iteration rather
+    // than written off, and for why `shown` is carried forward rather than re-derived when
+    // the cost basis switches from dense to non-dense.
     let mut grow = [0usize, 1];
     if (row_need(1, false), row_live(1)) > (row_need(0, false), row_live(0)) {
         grow.swap(0, 1);
     }
+    let cap_of = |ci: usize| if live(ci) { column_card_cap(app, ci, cw[ci % 2]) } else { 0 };
     if all_served {
-        let half = (grid[0] + grid[1] + budget) / 2;
+        let mut shown: [usize; 4] = std::array::from_fn(|ci| {
+            if live(ci) { shown_level(ci, &|ci: usize| ci / 2, &grid, &cap_of, &|ci, k| column_height_for(app, ci, cw[ci % 2], true, k)) } else { 0 }
+        });
         for dense in [true, false] {
-            for share in [half, u16::MAX] {
-                for r in grow {
-                    let want = row_need(r, dense).min(share.max(grid[r]));
-                    let add = want.saturating_sub(grid[r]).min(budget);
-                    grid[r] += add;
-                    budget -= add;
-                }
-            }
+            round_robin_grow(4, |ci| ci / 2, &mut grid, &mut shown, &mut budget, cap_of, |ci, k| column_height_for(app, ci, cw[ci % 2], dense, k));
         }
-        // ROUND 3 — no blank band between the grid and the panels.
-        grid[0] += budget / 2;
-        grid[1] += budget - budget / 2;
+        // ROUND 3 — no blank band between the grid and the panels: the whole leftover goes
+        // to whichever row is still furthest behind (never split — see `pad_most_behind`,
+        // and why an even split is exactly what let one row cross the "nothing left to
+        // show" boundary for free while its sibling, just as entitled, got nothing).
+        pad_most_behind(4, |ci| ci / 2, &mut grid, &shown, &mut budget, cap_of);
     } else if let Some(r) = grow.into_iter().find(|&r| row_live(r) && grid[r] >= row_need(r, true)) {
         // a row still short of its first card leaves the spare rows to a row that is
         // already showing every card it has: padding, never an extra card
