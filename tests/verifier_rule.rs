@@ -130,7 +130,8 @@ fn an_agent_without_a_verifier_role_is_refused_review_to_done() {
     for args in [vec!["done", id.as_str()], vec!["move", id.as_str(), "done"]] {
         let (e, code) = b.refused(AGENT, "orch", &args);
         assert_eq!(code, "not_verifier", "{args:?}: {e}");
-        assert!(e.contains("TB_ROLE=verifier") && e.contains("tb config verifiers") && e.contains("claude-code with no role"), "{e}");
+        assert!(e.contains("TB_ROLE=verifier") && e.contains("claude-code with no role"), "{e}");
+        assert!(!e.contains("config verifiers"), "a refused agent is never shown how to list itself: {e}");
     }
     // a role that is not a verifier's is refused just the same
     let builder = [("CLAUDECODE", "1"), ("TB_ROLE", "builder")];
@@ -241,4 +242,80 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
     assert_eq!(code, "not_verifier");
     let (e, code) = b.refused(PERSON, "lead", &["config", "verifier-only", "maybe"]);
     assert_eq!(code, "invalid_value", "{e}");
+}
+
+#[test]
+fn codex_is_an_agent_too() {
+    // what `codex exec` hands its shell: none of AI_AGENT, CLAUDECODE or OMPCODE
+    let codex = [("CODEX_SESSION_ID", UUID), ("CODEX_THREAD_ID", "thread-9"), ("CODEX_SANDBOX", "seatbelt"), ("CODEX_CI", "1")];
+    let b = Board::new();
+    let id = b.in_review("m: codex closes it", "bot-1");
+    let (e, code) = b.refused(&codex, "cx", &["done", &id]);
+    assert_eq!(code, "not_verifier", "{e}");
+    assert!(e.contains("cx is codex with no role"), "{e}");
+    assert_eq!(b.column(&id), "review");
+    // with the role it closes, and the trace says codex with its session
+    let mut role = codex.to_vec();
+    role.push(("TB_ROLE", "verifier"));
+    b.ok(&role, "cx", &["done", &id]);
+    let show = b.json(&["show", &id]);
+    let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
+    assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(UUID)));
+}
+
+#[test]
+fn only_a_person_changes_who_verifies_or_whether_the_rule_applies() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
+    let id = b.in_review("n: an agent lists itself", "bot-1");
+    let (_, code) = b.refused(AGENT, "w2", &["done", &id]);
+    assert_eq!(code, "not_verifier");
+    // the refused agent cannot put itself on the list, clear it, or switch the rule off —
+    // not even an agent with a verifier role
+    for (env, args) in [
+        (AGENT, vec!["config", "verifiers", "rv-1,w2"]),
+        (AGENT, vec!["config", "verifiers", "--off"]),
+        (AGENT, vec!["config", "verifier-only", "off"]),
+        (VERIFIER, vec!["config", "verifiers", "rv-9"]),
+        (VERIFIER, vec!["config", "verifier-only", "off"]),
+    ] {
+        let (e, code) = b.refused(env, "w2", &args);
+        assert_eq!(code, "person_only", "{args:?}: {e}");
+        assert!(e.contains("only a person changes"), "{e}");
+    }
+    assert_eq!(b.json(&["config", "verifiers"])["config"]["value"], serde_json::json!(["rv-1"]), "the list is unchanged");
+    assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "on", "the rule is still on");
+    let (_, code) = b.refused(AGENT, "w2", &["done", &id]);
+    assert_eq!(code, "not_verifier", "and w2 still cannot close it");
+    // reading them stays open to everyone
+    assert_eq!(b.ok(AGENT, "w2", &["config", "verifier-only"]).trim(), "on");
+    // a person still changes both
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1,rv-2"]);
+    b.ok(PERSON, "lead", &["config", "verifier-only", "off"]);
+}
+
+#[test]
+fn tb_log_carries_the_identity_of_whoever_moved_a_card_to_done() {
+    let b = Board::new();
+    let id = b.in_review("o: the trace", "bot-1");
+    b.ok(VERIFIER, "rv-1", &["done", &id]);
+    // plain text: the line that moved the card into DONE says who, in full
+    let log = b.ok(PERSON, "lead", &["log"]);
+    let line = log.lines().find(|l| l.contains("review -> done")).unwrap_or_else(|| panic!("{log}"));
+    assert!(line.contains(&format!("(by rv-1 — claude-code model-x verifier session {UUID} on lab)")), "{line}");
+    // the other lines stay one short line each
+    assert!(!log.lines().any(|l| l.contains("doing -> review") && l.contains("(by ")), "{log}");
+    // --json: every row carries its identity inline
+    let rows: serde_json::Value = serde_json::from_str(&b.ok(PERSON, "lead", &["log", "--json"])).unwrap();
+    let moved = rows.as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
+    let who = &moved["identity"];
+    assert_eq!(
+        (who["actor"].as_str(), who["harness"].as_str(), who["model"].as_str(), who["role"].as_str(), who["session"].as_str(), who["host"].as_str()),
+        (Some("rv-1"), Some("claude-code"), Some("model-x"), Some("verifier"), Some(UUID), Some("lab")),
+        "{moved}"
+    );
+    assert_eq!(who["id"], moved["actor_id"]);
+    // a person's row has no identity to show
+    let created = rows.as_array().unwrap().iter().find(|e| e["kind"] == "created").cloned().unwrap();
+    assert!(created["identity"].is_null(), "{created}");
 }

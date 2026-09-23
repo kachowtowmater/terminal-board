@@ -110,6 +110,9 @@ pub enum Code {
     /// REVIEW -> DONE by an agent with no verifier role and not on `config verifiers`
     /// (store/verifier.rs).
     NotVerifier,
+    /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
+    /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
+    PersonOnly,
     /// `config done-needs-note` requires a note written during this stay before DONE.
     DoneNeedsNote,
     /// `config done-needs-link` requires a link with that label before DONE.
@@ -179,6 +182,7 @@ impl Code {
             Code::DoneByRestricted => "done_by_restricted",
             Code::NotFromReview => "not_from_review",
             Code::NotVerifier => "not_verifier",
+            Code::PersonOnly => "person_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::ArgRequired => "arg_required",
@@ -316,6 +320,82 @@ fn wip_full_err(conn: &Connection, doing: i64, wip: i64, actor: &str) -> BoardEr
 /// point at the right agent: a reviewer who pushes a stuck card into REVIEW does not inherit
 /// the work, and the worker who held the card cannot escape the rule by letting someone else
 /// move it.
+/// One guard on the way into DONE that a change does not satisfy: which rule, its refusal, and
+/// the `force` event text written when `--force` gets past it.
+pub(crate) struct DoneCheck {
+    pub rule: &'static str,
+    pub err: BoardError,
+    pub forced: String,
+}
+
+/// Every guard a move of card `c` into DONE by `actor` would fail, in the order
+/// `transition_inner` applies them (see its doc comment). The ONE list both the transition and
+/// the full-screen board's force prompt read, so they can never disagree about what a forced
+/// close skips.
+///
+/// - review-first (store/verifier.rs, rule 1): only from REVIEW — binds everyone.
+/// - self-approval: never the card's author or last holder. Every way into DONE is guarded,
+///   not just REVIEW -> DONE (#55, the LAUNDERING hole: moving a card out of review first must
+///   not be a way round it), and `last_holder_of` closes the DROPPED-WORK hole: a drop clears
+///   the owner, but the agent that held the card still did the work.
+/// - the verifier rule (store/verifier.rs, rule 2): an agent needs a verifier role or a place on
+///   `config verifiers`; a person always qualifies. Checked after self-approval: a verifier's own
+///   work is still its own work.
+/// - `done-by` (store/closing.rs): an honest-mistake stop, never security. `github` is exempt.
+/// - `done-needs-note` (store/closing.rs): a note written during the stay being left. `github`
+///   is exempt — a merged PR is its own trace.
+/// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
+fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
+    let id = c.id;
+    let mut v = Vec::new();
+    if c.column != "review" {
+        v.push(DoneCheck {
+            rule: "review first",
+            err: verifier::not_from_review(id, &c.column),
+            forced: format!("closed #{id} from {}, skipping review", c.column),
+        });
+    }
+    let self_approving = author_of(conn, c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
+        || last_holder_of(conn, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
+    if self_approving {
+        v.push(DoneCheck {
+            rule: "never approve your own work",
+            err: BoardError("you did this work — ask another person or agent to review it".to_string(), Code::SelfApprove),
+            forced: "approved own work".to_string(),
+        });
+    }
+    let who = actors::current();
+    if !verifier::may_verify(conn, actor, &who)? {
+        v.push(DoneCheck {
+            rule: "only a verifier closes",
+            err: verifier::not_verifier_err(id, actor, &who),
+            forced: format!("closed #{id} with no verifier role"),
+        });
+    }
+    if let Some(names) = closing::may_close(conn, actor)? {
+        v.push(DoneCheck { rule: "done-by", err: closing::not_allowed(id, actor, &names), forced: format!("closed #{id}, not on the done-by list") });
+    }
+    if actor != "github" && closing::needs_note(conn, id)? {
+        v.push(DoneCheck {
+            rule: "done-needs-note",
+            err: closing::no_note_err(id),
+            forced: format!("closed #{id} with no note since it entered {}", c.column),
+        });
+    }
+    if actor != "github" {
+        if let Some(label) = links::required_label(conn)? {
+            if !links::has_label(conn, id, &label)? {
+                v.push(DoneCheck {
+                    rule: "done-needs-link",
+                    err: links::missing_link_err(id, &label),
+                    forced: format!("closed #{id} without a link labeled {label}"),
+                });
+            }
+        }
+    }
+    Ok(v)
+}
+
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     if c.owner.is_some() {
         return Ok(c.owner.clone());
@@ -2263,6 +2343,17 @@ impl Store {
         Ok(())
     }
 
+    /// The guards `actor` moving card `id` into DONE would fail right now — (rule, code), in the
+    /// order `--force` would log them; empty when nothing stands in the way or the card is
+    /// already done. What the full-screen board names before it offers to force a close.
+    pub fn done_would_skip(&self, id: i64, actor: &str) -> Result<Vec<(&'static str, Code)>> {
+        let c = get_card(&self.conn, id)?;
+        if c.column == "done" {
+            return Ok(Vec::new());
+        }
+        Ok(done_checks(&self.conn, &c, actor)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+    }
+
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
         self.move_card(id, column, actor, false, None, None)
     }
@@ -2486,81 +2577,17 @@ impl Store {
         // a `dropped` event, not a `taken`/`assigned` one, so it does not erase this — and a
         // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
         // supersedes it, so a real reassignment is never falsely refused.
-        // Nothing reaches DONE except from REVIEW (store/verifier.rs, rule 1) — checked before
-        // the self-approval guard, so a `todo -> done` shortcut is named for what it is. It
-        // binds everyone, tb's own GitHub sync included (which only ever moves to REVIEW);
-        // `--force` gets past it and is logged, like every guard here.
-        if column == "done" && c.column != "done" && c.column != "review" {
-            if !force {
-                return Err(verifier::not_from_review(id, &c.column));
-            }
-            Self::log(&tx, id, actor, "force", &format!("closed #{id} from {}, skipping review", c.column))?;
-        }
+        // Every guard on the way into DONE, in one fixed order, from ONE list (`done_checks`):
+        // review-first → self-approval → the verifier rule → `done-by` → `done-needs-note` →
+        // `done-needs-link`. Each refuses unless `--force`, which logs one `force` event per
+        // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
+        // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
-                || last_holder_of(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
-            if self_approving {
+            for check in done_checks(&tx, &c, actor)? {
                 if !force {
-                    return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
+                    return Err(check.err);
                 }
-                Self::log(&tx, id, actor, "force", "approved own work")?;
-            }
-        }
-        // REVIEW -> DONE only by a verifier (store/verifier.rs, rule 2): an agent needs a
-        // verifier role (`TB_ROLE`) or a place on `config verifiers`; a person (no harness in
-        // the identity) always qualifies. On unless `config verifier-only off`. After the
-        // self-approval guard: a verifier's own work is still its own work.
-        if column == "done" && c.column != "done" {
-            let who = actors::current();
-            if !verifier::may_verify(&tx, actor, &who)? {
-                if !force {
-                    return Err(verifier::not_verifier_err(id, actor, &who));
-                }
-                Self::log(&tx, id, actor, "force", &format!("closed #{id} with no verifier role"))?;
-            }
-        }
-        // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
-        // never security: names are self-asserted, and `--force` is open to everyone (logged).
-        // It guards EVERY way into DONE, so moving a card out of review first is not a way
-        // round it. `github` is exempt, as it is for the holder rule.
-        if column == "done" && c.column != "done" {
-            if let Some(names) = closing::may_close(&tx, actor)? {
-                if !force {
-                    return Err(closing::not_allowed(id, actor, &names));
-                }
-                Self::log(&tx, id, actor, "force", &format!("closed #{id}, not on the done-by list"))?;
-            }
-        }
-        // a closing note (`config done-needs-note`, store/closing.rs) — off by default (a
-        // board that sets nothing is unchanged). "A note" means one written during the stay
-        // being left, not one from an earlier round: a note from round 1 must not silently
-        // satisfy round 3's close. `--force` is open to everyone and logged, exactly like the
-        // guards above; `github` is exempt — a merged PR is its own trace, the same reasoning
-        // as the holder and `done-by` exemptions.
-        if column == "done" && c.column != "done" && actor != "github" && closing::needs_note(&tx, id)? {
-            if !force {
-                return Err(closing::no_note_err(id));
-            }
-            Self::log(&tx, id, actor, "force", &format!("closed #{id} with no note since it entered {}", c.column))?;
-        }
-        // evidence gate (`config done-needs-link`, store/links.rs): a card may not reach DONE
-        // without a link carrying that label. Same shape as `done-by` and `done-needs-note`
-        // above it — checked right after them, so every DONE-entry gate (who may close it, did
-        // they leave a note, what it must carry) applies before the WIP guard below ever runs;
-        // `--force` is open to everyone and logged, and `github` is exempt, as it is for the
-        // holder rule, `done-by` and `done-needs-note`: a merged PR is already evidence, not a
-        // person claiming the card is done. Ordered after `done-needs-note` rather than before
-        // it only because that guard landed on main first — a board setting both sees whichever
-        // it is missing first hit here in that order, and each refusal names exactly one thing
-        // to fix, so a board that sets only one is never affected by this choice.
-        if column == "done" && c.column != "done" && actor != "github" {
-            if let Some(label) = links::required_label(&tx)? {
-                if !links::has_label(&tx, id, &label)? {
-                    if !force {
-                        return Err(links::missing_link_err(id, &label));
-                    }
-                    Self::log(&tx, id, actor, "force", &format!("closed #{id} without a link labeled {label}"))?;
-                }
+                Self::log(&tx, id, actor, "force", &check.forced)?;
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it

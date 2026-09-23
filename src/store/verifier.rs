@@ -20,7 +20,14 @@
 //!    unowned card whoever moved it into review — and never its last holder (`self_approve`).
 //!
 //! Rule 2 is on by default and can be turned off per board (`tb config verifier-only off`,
-//! logged on the board); rule 1 cannot. Both give way to `--force`, exactly as every other
+//! logged on the board); rule 1 cannot. Who is on `config verifiers`, and whether rule 2
+//! applies at all, are a person's settings: an agent that changes either is refused
+//! (`person_only`), or a refused agent could list itself and close the card a moment later.
+//!
+//! **What counts as an agent** is what `actors::Identity::resolve` detects: a harness named by
+//! `TB_HARNESS`, `AI_AGENT` (Claude Code, pi, …), `OMPCODE` (omp), the `CODEX_*` variables
+//! (codex), `CLAUDECODE`, or a herdr pane's record. A harness that exports none of these is
+//! not seen, and its actor counts as a person — the honest limit of a self-reported identity. Both give way to `--force`, exactly as every other
 //! guard does, and a forced move is logged as a `force` event naming the rule it skipped.
 //!
 //! Like every name in tb, a role is self-reported: this stops the honest mistake — an agent
@@ -56,10 +63,32 @@ pub(super) fn not_verifier_err(id: i64, actor: &str, who: &Identity) -> BoardErr
     };
     BoardError(
         format!(
-            "only a verifier moves #{id} from review to done — {actor} is {harness} with {role}. Leave it in review for an independent verifier: a session started with TB_ROLE=verifier, or a name on 'tb config verifiers NAME', or a person (or --force, logged)"
+            "only a verifier moves #{id} from review to done — {actor} is {harness} with {role}. Leave it in review for an independent verifier — a session started with TB_ROLE=verifier, or a person (or --force, logged)"
         ),
         Code::NotVerifier,
     )
+}
+
+/// The refusal when an agent changes a setting only a person may change: who may verify, and
+/// whether the verifier rule applies at all. Without it, an agent refused `not_verifier` could
+/// list itself (or turn the rule off) and close the card a moment later.
+pub(super) fn person_only_err(key: &str, actor: &str, who: &Identity) -> BoardError {
+    let harness = who.harness.as_deref().unwrap_or("an agent");
+    BoardError(
+        format!(
+            "only a person changes '{key}' — {actor} is {harness}, and an agent may not decide who verifies its own board's work. Ask the person who runs this board"
+        ),
+        Code::PersonOnly,
+    )
+}
+
+/// Refuse a change to `key` when this process is an agent.
+fn person_only(key: &str, actor: &str) -> Result<()> {
+    let who = super::actors::current();
+    if is_agent(&who) {
+        return Err(person_only_err(key, actor, &who));
+    }
+    Ok(())
 }
 
 /// Is this identity an agent? It is when a harness is on record — the one thing a plain
@@ -99,8 +128,10 @@ impl Store {
         verifier_only_of(&self.conn)
     }
 
-    /// `tb config verifier-only on|off`, logged on the board when it changes.
+    /// `tb config verifier-only on|off`, logged on the board when it changes. A person only:
+    /// an agent is refused (`person_only`).
     pub fn set_verifier_only(&self, value: &str, actor: &str) -> Result<bool> {
+        person_only("verifier-only", actor)?;
         let on = match value.trim().to_ascii_lowercase().as_str() {
             "on" | "yes" | "true" => true,
             "off" | "no" | "false" => false,
@@ -125,8 +156,10 @@ impl Store {
         verifiers_of(&self.conn)
     }
 
-    /// `anna,ben` sets the list; None clears it. Logged on the board when it changes.
+    /// `anna,ben` sets the list; None clears it. Logged on the board when it changes. A person
+    /// only: an agent is refused (`person_only`).
     pub fn set_verifiers(&self, list: Option<&str>, actor: &str) -> Result<Vec<String>> {
+        person_only("verifiers", actor)?;
         let names = match list {
             Some(l) => {
                 let names = super::closing::parse_names(l);
@@ -203,6 +236,10 @@ mod tests {
         assert!(e.0.contains("'tb take 4'"), "{}", e.0);
         let e = not_verifier_err(4, "bob", &who(Some("claude-code"), None));
         assert_eq!(e.1, Code::NotVerifier);
-        assert!(e.0.contains("TB_ROLE=verifier") && e.0.contains("config verifiers") && e.0.contains("claude-code with no role"), "{}", e.0);
+        assert!(e.0.contains("TB_ROLE=verifier") && e.0.contains("claude-code with no role"), "{}", e.0);
+        assert!(!e.0.contains("config verifiers"), "a refused agent is never told how to list itself: {}", e.0);
+        let e = person_only_err("verifiers", "bob", &who(Some("codex"), None));
+        assert_eq!(e.1, Code::PersonOnly);
+        assert!(e.0.contains("only a person changes 'verifiers'") && e.0.contains("bob is codex"), "{}", e.0);
     }
 }

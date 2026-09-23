@@ -110,12 +110,14 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 ## Who moves a card
 
 - **TODO** — any agent files work (`tb add`). **DOING** — the workers: one session or many, however the client runs them.
-- **REVIEW → DONE — only an independent verifier**: an agent started with `TB_ROLE=verifier` (or `reviewer`), a name on `tb config
-  verifiers`, or a person — never the card's owner or last holder. Any other agent is refused (`not_verifier`): leave the card in REVIEW.
+- **REVIEW → DONE — only an independent verifier**: an agent started with `TB_ROLE=verifier` (or `reviewer`), a name a person put on
+  `tb config verifiers`, or a person — never the card's owner or last holder. Any other agent is refused (`not_verifier`): leave it in REVIEW.
+  Only a person changes `tb config verifiers` / `verifier-only` (an agent gets `person_only`). tb sees an agent by its harness: `TB_HARNESS`,
+  `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), `CODEX_*` (codex), `CLAUDECODE`, or a herdr pane — anything else counts as a person.
 - Nothing reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the full-screen board, not `tb sync`.
-- Every move into DONE is traced: its event names the actor and the identity behind it (harness, model, role, session, host) in
-  `tb show`, `tb log` and `--json`. `--force` gets past both rules and is logged; a person may turn the verifier rule off per board
-  (`tb config verifier-only off`, logged). Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>`.
+- Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
+  (`identity` in `--json`). `--force` gets past both rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
+  Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>`.
 
 ## Rules
 
@@ -130,11 +132,10 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
   these catch an honest mistake — names, roles and labels are self-asserted — so never pass another agent's name, claim a role, or fake a link.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
-- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused
-  (`--force` overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — a note adds to a card, it
-  does not take it over. `github` is tb's own sync: never act under it.
-- `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log splits who assigned it from who now holds
-  it. A board's rules (`tb config rules`) print with `tb guide` and show once, on your first `tb next` after they are set or changed.
+- A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused (`--force`
+  overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — it adds to a card, it does not take it over.
+  `github` is tb's own sync: never act under it. `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log
+  splits who assigned it from who holds it. A board's rules (`tb config rules`) print with `tb guide` and show once, on your next `tb next` after they change.
 - A board may name a hook (`tb config hook NAME`): a command THIS machine runs before every move, once trusted (`tb trust NAME -- CMD`,
   then `tb trust NAME --sha256 HEX`; `tb trust` lists them). Unknown, untrusted, changed, timed out or failing, it REFUSES the move
   (`hook_refused`, nothing written); `--force` never skips it, `--break-glass "why"` does and is logged — only when a person says so.
@@ -173,8 +174,7 @@ If the board is connected to a repo (`tb config github` prints it): `tb github` 
 - A card with `gh#N` in its title follows GitHub: an open PR for issue N moves it to REVIEW, and so does a merged PR or a closed issue — never
   to DONE: a verifier closes it — and cards never move backwards. A card sent back from REVIEW stays in DOING until its PR is updated (a push, a
   comment) after the send-back. **Sync only moves cards someone took**: an unowned TODO card stays in TODO even when its PR is open — take it first.
-- Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR.
-- `gh#N` is case-insensitive (`GH#6`); `tb sync` reports a `gh#N` that matches nothing — `tb edit` it.
+- Name your branch after the issue (`fix/315-flags`) or write `Closes #315` in the PR. `gh#N` is case-insensitive (`GH#6`); `tb sync` reports a `gh#N` that matches nothing — `tb edit` it.
 - `tb done` will not move a `gh#N` card to DONE while its issue is still open: close the issue on GitHub (or merge the PR) instead of adding `--force`.
 
 ## JSON

@@ -19,13 +19,21 @@ column change goes through (CLI, full-screen board, GitHub sync):
   `not_verifier`, naming `TB_ROLE=verifier` and `tb config verifiers`. The self-approval rule
   still applies on top: a verifier never closes its own work. On by default;
   `tb config verifier-only off` turns it off per board, logged in the board's own log
-  (`verifier-only on -> off`). `tb config verifiers` changes are logged the same way.
+  (`verifier-only on -> off`). `tb config verifiers` changes are logged the same way. Both
+  are a person's settings: an agent changing either is refused with the new code `person_only`,
+  so a refused agent cannot list itself or switch the rule off.
+- **Agents tb recognises.** codex is now detected (`CODEX_SESSION_ID`, `CODEX_THREAD_ID`,
+  `CODEX_SANDBOX`, `CODEX_CI`; its session id is recorded), next to `TB_HARNESS`, `AI_AGENT`,
+  `OMPCODE`, `CLAUDECODE` and a herdr pane. A harness that exports none of these counts as a
+  person — the docs say so.
 - **GitHub sync lands in REVIEW, never DONE.** A merged PR or a closed issue moves its card
   to REVIEW with an event saying so (`PR gh#20 merged → review (a verifier moves it to done)`);
   a card already in REVIEW is left for its verifier, and a card a reviewer sent back stays in
   DOING for its owner.
 - **The trace.** Every move into DONE carries the actor and the full identity (harness, model,
-  role, session, host) in `tb show`, `tb log` and `--json` — pinned by a test.
+  role, session, host) in `tb show` / `show --json` `actors[]`; `tb log` prints it on the line
+  that moved a card into DONE, and every `tb log --json` row gains `identity` (additive) —
+  pinned by a test.
 - `tb done ID --approve` is unchanged: it records a check by anyone who did not do the work,
   leaves the card in REVIEW, and is not a way into DONE.
 - Docs: a "Who moves a card" section in docs/AGENTS.md (`tb guide`), the AGENTS.md snippet,

@@ -28,9 +28,15 @@ orchestrator that dispatched it, or a builder agent.
 - its name is on the board's list: `tb config verifiers rv-1,rv-2`.
 
 A **person** (a plain terminal, no harness) always qualifies. The never-approve-your-own-work
-rule still applies on top of both.
+rule still applies on top of both. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT`
+(Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr
+pane's record; a harness that exports none of these counts as a person.
 
-**The default is ON.** To keep the 2.x behaviour on a board: `tb config verifier-only off`
+Only a person changes `tb config verifiers` and `tb config verifier-only`: an agent is refused
+with code `person_only`, so an agent refused `not_verifier` cannot list itself or switch the
+rule off. Scripts that set these from inside an agent session must run them from a plain shell.
+
+**The default is ON.** To keep the 2.x behaviour on a board, a person runs `tb config verifier-only off`
 (logged in the board's own log; `on` turns it back). The switch covers only this rule —
 section 1 stays. `--force` also gets past it, logged (`closed #N with no verifier role`).
 

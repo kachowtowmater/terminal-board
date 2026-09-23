@@ -757,8 +757,7 @@ impl App {
                         Confirm::Delete(id) => self.remove_confirmed(id, false, store),
                         Confirm::DeleteHeld(id) => self.remove_confirmed(id, true, store),
                         Confirm::ForceDone(id) => {
-                            if self.is_own_review(id, store) {
-                                self.mode = approve_own(id);
+                            if self.ask_own_close(id, store) {
                                 return false;
                             }
                             let r = store.move_to(id, "done", &actor);
@@ -775,6 +774,11 @@ impl App {
                             }
                         }
                         Confirm::ApproveOwn(id) => {
+                            // asked again at the moment of the force: the prompt named what it
+                            // skips, and the verifier rule is never one of them
+                            if self.verifier_refuses(id, store) {
+                                return false;
+                            }
                             let r = store.move_to_forced(id, "done", &actor);
                             if self.report(r, |c| format!("#{} -> done (own work, logged)", c.id)).is_some() {
                                 self.reload(store);
@@ -994,6 +998,44 @@ impl App {
         github::still_open(snap, n).then_some(n)
     }
 
+    /// On this actor's own REVIEW card: ask before forcing a close, naming every rule the force
+    /// would skip (`Store::done_would_skip`, the same list the transition applies) — or, when
+    /// one of them is the verifier rule, refuse outright: no prompt hands an agent without a
+    /// verifier role a way past it. False when the card is not the actor's own review work, so
+    /// the ordinary move (and its ordinary refusals) applies.
+    fn ask_own_close(&mut self, id: i64, store: &Store) -> bool {
+        if !self.is_own_review(id, store) {
+            return false;
+        }
+        if self.verifier_refuses(id, store) {
+            return true;
+        }
+        match store.done_would_skip(id, &self.actor) {
+            Ok(skips) => self.mode = approve_own(id, &skips),
+            Err(e) => self.status = Some((e.to_string(), true)),
+        }
+        true
+    }
+
+    /// Would the verifier rule refuse this actor closing `id`? If so, say so on the status
+    /// line (true); a board that cannot tell reports that instead.
+    fn verifier_refuses(&mut self, id: i64, store: &Store) -> bool {
+        match store.done_would_skip(id, &self.actor) {
+            Ok(skips) if skips.iter().any(|(_, c)| *c == crate::store::Code::NotVerifier) => {
+                self.status = Some((
+                    format!("#{id} is your own work, and only a verifier closes a card — leave it in review for an independent verifier"),
+                    true,
+                ));
+                true
+            }
+            Ok(_) => false,
+            Err(e) => {
+                self.status = Some((e.to_string(), true));
+                true
+            }
+        }
+    }
+
     /// Is `id` a REVIEW card this actor authored (their own work)?
     fn is_own_review(&self, id: i64, store: &Store) -> bool {
         store.card(id).is_ok_and(|c| c.column == "review")
@@ -1038,8 +1080,7 @@ impl App {
                 };
                 return;
             }
-            if self.is_own_review(id, store) {
-                self.mode = approve_own(id);
+            if self.ask_own_close(id, store) {
                 return;
             }
         }
@@ -2204,10 +2245,12 @@ fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, i
 
 /// Trello-style: each card in its own box in the column colour; the selected one thick.
 /// The confirm line for approving your own REVIEW card (a solo person is not trapped).
-fn approve_own(id: i64) -> Mode {
+/// The force prompt on your own REVIEW card: it names every rule `y` gets past.
+fn approve_own(id: i64, skips: &[(&'static str, crate::store::Code)]) -> Mode {
+    let rules: Vec<&str> = skips.iter().map(|(r, _)| *r).collect();
     Mode::Confirm {
         action: Confirm::ApproveOwn(id),
-        prompt: "this is your work — approve it yourself? y/n".into(),
+        prompt: format!("this is your work — close it anyway, skipping: {}? y/n (logged)", rules.join(", ")),
     }
 }
 

@@ -50,10 +50,12 @@ TODO ──next/take──▶ DOING ──done──▶ REVIEW ──done──�
 **Who moves a card.** Anyone files work into TODO. The workers — one agent session or many, you
 decide — take it into DOING and finish it into REVIEW. Only an independent verifier moves it from
 REVIEW to DONE: you (a person — tb sees no agent harness), an agent started with
-`TB_ROLE=verifier` (or `reviewer`), or a name you list with `tb config verifiers rv-1,rv-2`; never
+`TB_ROLE=verifier` (or `reviewer`), or a name you list with `tb config verifiers rv-1,rv-2` (only a
+person may change that list or `verifier-only` — an agent is refused, `person_only`); never
 whoever did the work. Nothing reaches DONE except from REVIEW — not `tb move 3 done`, not `d` on a
 TODO card, not the GitHub sync. Every move into DONE records who made it and the identity behind
-the name (harness, model, role, session, machine) — `tb show 3` lists it. `--force` gets past the
+the name (harness, model, role, session, machine) — `tb show 3` lists it, and `tb log` prints it on
+the line that moved the card into DONE. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen, and counts as a person. `--force` gets past the
 rule and is logged; `tb config verifier-only off` lets any reviewer close a card on this board
 (still only from REVIEW, never their own work). Like every name in tb, a role is self-asserted:
 this stops an honest mistake, not someone set on getting round it.
@@ -79,7 +81,7 @@ is its **tag**), a description, a checklist, a history of notes, an owner and a 
 
 `tb config done-by anna,ben` names who may close a card; anyone else is refused, with the
 people to ask. It catches an honest mistake — names in tb are self-asserted, and `--force`
-gets past it (logged), as does answering `y` to the board's `approve your own work?` — so it
+gets past it (logged), as does answering `y` to the board's `close it anyway, skipping: …?` — so it
 is not a lock. `tb done 3 --approve` records that you checked a card without closing it, on
 any card. A board can also require evidence before DONE: `tb config done-needs-link verdict`
 refuses to close a card until it carries a link labeled `verdict`; `--off` turns it off again.
@@ -120,7 +122,8 @@ From the command line: `tb move 3 doing`, `tb done 3`, `tb drop 3` (back to TODO
 `tb prio 3 top`.
 
 Nobody approves their own work: `d` on a REVIEW card that is your own work asks
-`approve your own work? y/n` (the CLI refuses it and takes `--force`), and a card someone
+`this is your work — close it anyway, skipping: never approve your own work? y/n (logged)` — the prompt names every rule `y` gets past, and an agent without a verifier
+role is never offered it (the CLI refuses it and takes `--force`), and a card someone
 else holds in DOING is not yours to finish or drop — the board asks, the CLI needs
 `--force`. Both ways through are written into the card's history.
 

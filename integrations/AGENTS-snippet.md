@@ -30,7 +30,10 @@ error says what to run next. Full manual: `tb guide`.
 
 Who moves a card: TODO — any agent files work. DOING — the workers (one session or many).
 REVIEW → DONE — only an independent verifier: an agent started with `TB_ROLE=verifier`, a
-name on `tb config verifiers`, or a person; never whoever did the work. Nothing reaches DONE
-except from REVIEW (GitHub sync included), and every move into DONE records who made it
-(name, harness, model, role, session). Any other agent is refused (`not_verifier`): leave
-the card in REVIEW.
+name a person put on `tb config verifiers`, or a person; never whoever did the work. Nothing
+reaches DONE except from REVIEW (GitHub sync included), and every move into DONE records who
+made it (name, harness, model, role, session — `tb show`, `tb log`). Any other agent is
+refused (`not_verifier`): leave the card in REVIEW. Only a person changes `tb config
+verifiers` / `verifier-only` (an agent is refused, `person_only`). tb sees an agent by its
+harness (`TB_HARNESS`, `AI_AGENT`, `OMPCODE`, `CODEX_*`, `CLAUDECODE`, a herdr pane);
+anything else counts as a person.

@@ -18,7 +18,7 @@ tb drop ID                    # stopping: back to TODO
 tb block ID "#N"              # stuck
 ```
 
-Only an independent verifier (`TB_ROLE=verifier`, a name on `tb config verifiers`, or a person)
+Only an independent verifier (`TB_ROLE=verifier`, a name a person put on `tb config verifiers`, or a person)
 moves a card from REVIEW to DONE, and nothing reaches DONE any other way — see "Who moves a card"
 in the manual.
 

@@ -40,9 +40,11 @@ Errors always say what to run next. Add `--json` to any command for machine-read
 
 Who moves a card: TODO — anyone files work. DOING — the workers (one session or many).
 REVIEW → DONE — only an independent verifier: a session started with `TB_ROLE=verifier`
-(`TB_ROLE=verifier tb next --review --as <name>`), a name on `tb config verifiers`, or a
-person — never whoever did the work. Nothing reaches DONE except from REVIEW, and every move
-into DONE records who made it (name, harness, model, role, session). If you are not the
-verifier, `tb done` on a REVIEW card is refused (`not_verifier`): leave it for the verifier.
+(`TB_ROLE=verifier tb next --review --as <name>`), a name a person put on `tb config
+verifiers`, or a person — never whoever did the work. Nothing reaches DONE except from
+REVIEW, and every move into DONE records who made it (name, harness, model, role, session —
+`tb show`, `tb log`). If you are not the verifier, `tb done` on a REVIEW card is refused
+(`not_verifier`): leave it for the verifier. Do not change `tb config verifiers` or
+`verifier-only`: only a person may (an agent is refused, `person_only`).
 
 Run `tb guide` for the full agent manual (every command, recipes, GitHub, JSON).

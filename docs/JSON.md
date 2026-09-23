@@ -297,6 +297,7 @@ Everyday failures:
 | `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
 | `not_from_review` | a move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`): nothing reaches DONE except from REVIEW, whoever asks (`--force` gets past it, logged) |
 | `not_verifier` | REVIEW -> DONE by an agent (a harness in its identity) whose role (`TB_ROLE`) is not `verifier`/`reviewer` and whose name is not on `config verifiers`; on unless `config verifier-only off` |
+| `person_only` | an agent (a harness in its identity) tried to change `config verifiers` or `config verifier-only` — a person's settings |
 | `done_needs_note` | `config done-needs-note` requires a fresh note before DONE |
 | `done_needs_link` | `config done-needs-link` requires a link with that label before DONE |
 | `arg_required` | a required argument or value was not given |
@@ -398,8 +399,12 @@ otherwise run it. The stored card is unchanged; this is a property of the file.
 
 ## `tb log [--json] [--since DATE]` — the board's history
 
-`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text}` — the
-same event fields `tb watch --events` streams, without the live stream's `from`/`to`.
+`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text, identity}` —
+the same event fields `tb watch --events` streams, without the live stream's `from`/`to`.
+`identity` is the whole **identity** object behind `actor_id` (harness, model, role, session,
+host), inline because a log has no `actors[]` to look an id up in; `null` when none is known.
+In plain text, a move into DONE ends with `(by NAME — harness model role session … on host)`:
+the trace of who closed the card.
 `--since` takes `YYYY-MM-DD`, meaning **local midnight in the board's zone**, or a unix
 second; events are selected by their timestamp, so a history written out of order still
 answers "everything since Tuesday" correctly.
