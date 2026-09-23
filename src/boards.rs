@@ -554,20 +554,42 @@ pub fn db_pinned() -> bool {
 }
 
 /// The rows `tb boards` prints: every board on disk, counted. `TB_DB` pins one file, so it
-/// reports the one board it is.
+/// reports the one board it is (and, as always under `TB_DB`, is created on first read —
+/// nothing there can ever be archived, so there is no race to close).
 pub fn rows() -> Result<Vec<BoardRow>> {
     let def = default_name();
-    let names = if db_pinned() { vec![def.clone()] } else { list() };
-    names
+    if db_pinned() {
+        let path = path_for(&def);
+        let snap = Store::open(&path)?.named(&def).snapshot()?;
+        let mut counts = [0usize; 4];
+        for (i, c) in COLUMNS.iter().enumerate() {
+            counts[i] = snap.in_column(c).len();
+        }
+        return Ok(vec![BoardRow { name: def.clone(), is_default: true, counts, path }]);
+    }
+    // `list()` is a snapshot of the directory: a board archived in the window between that
+    // listing and here must simply stop appearing, never be recreated empty by a plain
+    // `Store::open` racing the move (#80/#112) — `open_if_exists` is the same atomic check
+    // `open_board` uses, and `Ok(None)` (filtered out) is exactly "archived just now, so not
+    // listed", which is already correct for one archived before `list()` ran.
+    list()
         .iter()
-        .map(|n| {
+        .filter_map(|n| {
             let path = path_for(n);
-            let snap = Store::open(&path)?.named(n).snapshot()?;
+            let store = match Store::open_if_exists(&path) {
+                Ok(Some(s)) => s.named(n),
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            };
+            let snap = match store.snapshot() {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
             let mut counts = [0usize; 4];
             for (i, c) in COLUMNS.iter().enumerate() {
                 counts[i] = snap.in_column(c).len();
             }
-            Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path })
+            Some(Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path }))
         })
         .collect()
 }

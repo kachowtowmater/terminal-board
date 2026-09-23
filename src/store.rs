@@ -1215,6 +1215,42 @@ impl Store {
         Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock })
     }
 
+    /// Like [`open`](Self::open), for a caller that must NEVER conjure a missing board:
+    /// `Ok(None)` when the file genuinely is not there, rather than `open`'s usual
+    /// create-if-missing.
+    ///
+    /// A plain `path.exists()` before calling `open` is NOT enough — it is a second,
+    /// unlocked look at the filesystem, so `archive`/`restore` (#80) can land in the gap
+    /// between that check finding the board there and `open` actually running, and `open`
+    /// unconditionally creates what it does not find. That gap is exactly door 1 from #112,
+    /// reopened one layer up: a command policy never allows to create a board (`tb NAME note`,
+    /// `tb NAME show`, …) would resurrect an empty one anyway, which then blocks `restore`
+    /// with "already exists" — the very failure this feature exists to remove. Measured: a
+    /// `note` writer racing `boards archive` resurrected an empty board in up to 19 of 100
+    /// rounds before this existed.
+    ///
+    /// The fix takes the SAME SHARED lock `open` takes, keeps it held across BOTH the
+    /// existence check and the call to `open` below (an `flock` process may hold any number
+    /// of SHARED guards on the same file without blocking itself, so re-taking it inside
+    /// `open` is not a second wait) — so no EXCLUSIVE `lock_for_move` can land in that gap
+    /// either. Degrades exactly like `open` when the lock file itself cannot be used
+    /// (`lock::Error::Io`): no lock, no gap-closing, the pre-#112 behavior.
+    pub fn open_if_exists(path: &Path) -> Result<Option<Store>> {
+        let on_disk = !path.as_os_str().is_empty() && path.as_os_str() != ":memory:";
+        if !on_disk {
+            return Self::open(path).map(Some);
+        }
+        let _hold = match lock::take(&lock::sibling(path), lock::Mode::Shared, lock_wait()) {
+            Ok(g) => Some(g),
+            Err(lock::Error::Busy(pids)) => return Err(lock_err("open", path, lock::Error::Busy(pids))),
+            Err(lock::Error::Io(_)) => None,
+        };
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Self::open(path).map(Some)
+    }
+
     /// The database file (None for an in-memory board).
     pub fn path(&self) -> Option<std::path::PathBuf> {
         conn_notice_key(&self.conn).map(std::path::PathBuf::from)

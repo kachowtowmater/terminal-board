@@ -745,12 +745,13 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
             }
             boards::validate(other)?;
             let path = boards::path_for(other);
-            if !path.exists() {
+            // atomic against a concurrent archive/restore (#80/#112) — see open_board
+            let Some(store) = Store::open_if_exists(&path)? else {
                 let all = boards::list();
                 let all = if all.is_empty() { "none yet".to_string() } else { all.join(", ") };
                 return Err(BoardError(format!("no board '{other}' to copy — boards: {all}"), Code::NoBoard));
-            }
-            Some(Store::open(&path)?.named(other))
+            };
+            Some(store.named(other))
         }
         None => None,
     };
@@ -794,27 +795,36 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 
 fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
-    if !path.exists() {
-        if create {
+    if create {
+        if !path.exists() {
             let store = Store::open(&path)?.named(name);
             warn!("created board '{name}'");
             return Ok(store);
         }
+        return Ok(Store::open(&path)?.named(name));
+    }
+    // A command not allowed to create a board (every one but `add`/`config`, on a named,
+    // non-default board): `Store::open_if_exists` checks under the SAME lock `archive`/
+    // `restore` hold across their whole move (#80/#112), so a concurrent one cannot land
+    // between "the board is there" and this actually opening it and resurrect an empty file
+    // that then blocks `restore` — a plain `path.exists()` here could, and once did (up to
+    // 19 of 100 rounds racing a `note`, before `open_if_exists` existed).
+    match Store::open_if_exists(&path)? {
+        Some(store) => Ok(store.named(name)),
         // A missing non-default board is a typo until shown otherwise: fail with the
         // existing boards and the create hint instead of acting on an empty phantom
         // (reads showed "no cards", `next`/`take` silently created it on disk).
         // (TB_DB pins one file per board name — no boards dir, no list, no gate.)
-        if name != boards::DEFAULT_BOARD && terminal_board::env("DB").is_none() {
+        None if name != boards::DEFAULT_BOARD && terminal_board::env("DB").is_none() => {
             let names = boards::list();
             let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
-            return Err(BoardError(format!(
+            Err(BoardError(format!(
                 "no board '{name}' — boards: {all} · create it with 'tb {name} add \"…\"'"
-            ), Code::NoBoard));
+            ), Code::NoBoard))
         }
         // the default board keeps today's behaviour: reads show it empty, writes create it
-        return Ok(Store::open(Path::new(":memory:"))?.named(name));
+        None => Ok(Store::open(Path::new(":memory:"))?.named(name)),
     }
-    Ok(Store::open(&path)?.named(name))
 }
 
 fn list_boards(json_out: bool) -> Result<(), BoardError> {
@@ -1051,22 +1061,27 @@ fn move_card(
             "#{id} is already on '{to}' — name the board it should go to, e.g. 'tb mv {id} --to home'"
         ), Code::InvalidValue));
     }
-    if !boards::path_for(to).exists() {
-        let names = boards::list();
-        let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
-        // the command names the DESTINATION board, so it is written unquoted: `with_board`
-        // rewrites a quoted `'tb …'` to carry the board the CURRENT command is on, which
-        // would turn this into a command for the wrong board
-        return Err(BoardError(format!(
-            "no board '{to}' — boards: {all} · a card only moves to a board that exists: make it first with  tb {to} add \"…\""
-        ), Code::NoBoard));
-    }
     // the holder rule, exactly as `tb rm` and `tb edit` apply it: a card somebody else holds
     // in DOING is not taken off their board by someone walking past. `--force` is offered
     // because the refusal offers it, and because a move is no more final than `tb rm --force`
     // — it is logged on the card, which survives at the far end, and on both boards' logs.
     let forced = store.holder_check(id, actor, force, &format!("move it to {to}"))?;
-    let mut dest = Store::open(&boards::path_for(to))?.named(to);
+    // atomic against a concurrent archive/restore of `to` (#80/#112): a plain exists() check
+    // here could land in the gap and, on a missing board, `Store::open` would resurrect an
+    // empty one to fail into — see open_board's doc comment for the full story.
+    let names_err = || {
+        let names = boards::list();
+        let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
+        // the command names the DESTINATION board, so it is written unquoted: `with_board`
+        // rewrites a quoted `'tb …'` to carry the board the CURRENT command is on, which
+        // would turn this into a command for the wrong board
+        BoardError(format!(
+            "no board '{to}' — boards: {all} · a card only moves to a board that exists: make it first with  tb {to} add \"…\""
+        ), Code::NoBoard)
+    };
+    let Some(mut dest) = Store::open_if_exists(&boards::path_for(to))?.map(|s| s.named(to)) else {
+        return Err(names_err());
+    };
     store.move_to_board(id, &mut dest, actor, forced.as_deref())
 }
 
@@ -1083,8 +1098,13 @@ fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> 
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut lines: Vec<String> = Vec::new();
     for name in &names {
-        let store = match Store::open(&boards::path_for(name)) {
-            Ok(s) => s.named(name),
+        // `names` is a snapshot of `boards_dir()` taken above: a board archived in the window
+        // between that listing and this read must be skipped, not recreated empty and read as
+        // if it had always been that (#80/#112) — `open_if_exists` is the same atomic check
+        // `open_board` uses.
+        let store = match Store::open_if_exists(&boards::path_for(name)) {
+            Ok(Some(s)) => s.named(name),
+            Ok(None) => continue,
             Err(e) => {
                 warn!("tb: board '{name}' could not be read ({e}) — skipped");
                 continue;
