@@ -23,7 +23,7 @@ table in [docs/JSON.md](docs/JSON.md)).
 | 6 | JSON text fields lose control characters | consumers that read raw escape bytes | nothing, usually |
 | 7 | older board files (`0644`) print a warning until you choose | everyone upgrading | `tb config file-mode private` or `shared`, once per board |
 | 8 | a backup is written before a board's schema is upgraded | everyone upgrading | delete the `.bak` files once you are sure |
-| 9 | `TB_NOW` outside 2000–2100 is refused | test harnesses | fix the fixture |
+| 9 | `TB_NOW` must be a plausible time | test harnesses | fix the fixture |
 | 10 | hooks: a board can ask this machine for a gate on every move | only boards that set `tb config hook` | `tb trust` the command on each machine |
 | 11 | `TB_DB` with `TB_BOARD` set now works (it was refused) | test harnesses | nothing |
 

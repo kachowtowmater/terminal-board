@@ -64,7 +64,8 @@ Each item is one line here and has a full section in [UPGRADING.md](https://gith
   one. *Do:* nothing, unless a script relied on leading or trailing spaces.
 - **Control characters are removed from JSON text fields**, as they already were on screen.
   Tabs and line breaks are kept. *Do:* nothing, unless a consumer read raw escape bytes.
-- **`TB_NOW` outside 2000-01-01 to 2100-01-01 is refused** instead of being written into a
+- **`TB_NOW` must be a plausible time** (whole seconds from 946684800, the start of 2000, up
+  to 4102444799); anything else is refused instead of being written into a
   board. *Do:* fix the test fixture that set it.
 - **Older boards report themselves.** A board made by an earlier tb has mode `0644`. It gets
   one warning line on each command until you choose `tb config file-mode private` or
