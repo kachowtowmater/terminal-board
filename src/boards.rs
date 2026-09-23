@@ -1,5 +1,5 @@
 //! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection,
-//! archive/restore (#80).
+//! archive/restore (#80), and deleting an archived board for good.
 
 use crate::store::{self, BoardError, Code, Result, Store, COLUMNS};
 use rusqlite::{Connection, OpenFlags};
@@ -234,8 +234,7 @@ pub fn path_for(name: &str) -> PathBuf {
 }
 
 /// Where `tb boards archive` puts a retired board: `~/.local/state/terminal-board/archive`.
-/// Nothing in tb ever deletes a board — an archived board is a file the user can restore, or
-/// remove themselves, whenever they are sure.
+/// Only an archived board can be deleted (`delete`): the archive is the undo window.
 pub fn archive_dir() -> PathBuf {
     state_dir().join("archive")
 }
@@ -473,6 +472,101 @@ pub fn restore(name: &str) -> Result<(PathBuf, PathBuf)> {
         BoardError(format!("cannot move {} to {}: {e} — check the state directory is writable", src.path.display(), dst.display()), Code::IoError)
     })?;
     Ok((src.path.clone(), dst))
+}
+
+/// What `delete` did: every file it removed, and the schema-upgrade backups of that board it
+/// left in place because `--backups` was not given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    pub removed: Vec<PathBuf>,
+    pub kept_backups: Vec<PathBuf>,
+}
+
+/// The schema-upgrade backups (`<file>.before-<version>.<stamp>.bak`, see `store`) of the
+/// board `name`: beside its archive files, and — only when no live board of that name exists,
+/// since they would be the live board's — beside its old file in the boards directory.
+fn backups_of(name: &str, with_live_dir: bool) -> Vec<PathBuf> {
+    let live = format!("{name}.db.before-");
+    let archived = format!("{name}@");
+    let dirs = if with_live_dir { vec![boards_dir(), archive_dir()] } else { vec![archive_dir()] };
+    let mut v: Vec<PathBuf> = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.filter_map(|e| e.ok()))
+        .filter(|e| {
+            let f = e.file_name().to_string_lossy().to_string();
+            let backup = f.ends_with(".bak") || f.ends_with(".bak.partial");
+            backup && (f.starts_with(&live) || (f.starts_with(&archived) && f.contains(".db.before-")))
+        })
+        .map(|e| e.path())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Delete an ARCHIVED board for good: every archive of `name` (`.db`, `-wal`, `-shm`), and its
+/// backups only when `backups` is set. The rules, all checked before anything is removed:
+/// only an archived board (a live one is refused, `board_live` — archive it first, the undo
+/// window); never the board a bare `tb` opens (`default_board`); never by an agent
+/// (`person_only`); and never a file another tb holds open — `store::lock_for_delete` is held
+/// on every archive file across the whole removal (`board_busy` past the wait). The caller
+/// asks the person to confirm first; this function does not.
+pub fn delete(name: &str, backups: bool) -> Result<Deleted> {
+    validate(name)?;
+    not_pinned("delete")?;
+    store::verifier::person_only_to(&format!("delete the board '{name}'"))?;
+    if name == default_name() {
+        return Err(BoardError(format!(
+            "'{name}' is the board a bare 'tb' opens — point TB_BOARD or 'tb boards --default' at another board first"
+        ), Code::DefaultBoard));
+    }
+    let live = boards_dir().join(format!("{name}.db"));
+    let all = archived();
+    let mine: Vec<ArchiveRow> = all.iter().filter(|a| a.name == name).cloned().collect();
+    if mine.is_empty() {
+        if live.is_file() {
+            return Err(BoardError(format!(
+                "'{name}' is a live board — archive it first: 'tb boards archive {name}' (that is the undo window), then 'tb boards delete {name}'"
+            ), Code::BoardLive));
+        }
+        return Err(no_archive_err(name, &all));
+    }
+    if backups && live.is_file() {
+        return Err(BoardError(format!(
+            "a live board '{name}' exists too, and the backups beside it may be its own — delete without --backups, or archive the live board first"
+        ), Code::BoardLive));
+    }
+    let _guards = mine.iter().map(|a| store::lock_for_delete(&a.path)).collect::<Result<Vec<_>>>()?;
+    let mut removed = Vec::new();
+    let mut rm = |p: PathBuf| -> Result<()> {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {
+                removed.push(p);
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(BoardError(format!("cannot delete {}: {e} — check the state directory is writable", p.display()), Code::IoError)),
+        }
+    };
+    for a in &mine {
+        rm(a.path.clone())?;
+        for ext in ["-wal", "-shm"] {
+            rm(PathBuf::from(format!("{}{ext}", a.path.display())))?;
+        }
+    }
+    let found = backups_of(name, !live.is_file());
+    let kept_backups = if backups {
+        for b in found {
+            rm(b)?;
+        }
+        Vec::new()
+    } else {
+        found
+    };
+    for a in &mine {
+        let _ = std::fs::remove_file(crate::lock::sibling(&a.path));
+    }
+    Ok(Deleted { removed, kept_backups })
 }
 
 fn move_with_sidecars(from: &Path, to: &Path) -> std::io::Result<()> {

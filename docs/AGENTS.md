@@ -81,7 +81,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | your work on every board | `tb list --all-boards --owner <your-name>` |
 | send a card to another board (it gets a NEW id there) | `tb mv ID --to BOARD` (`--force` for a card someone else holds, logged) |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
-| retire a board without deleting it, or bring one back; list what is archived | `tb boards archive NAME` (prints the restore line) · `tb boards restore NAME` · `tb boards --archived` |
+| retire a board without deleting it, or bring one back; list what is archived (deleting one is a person's call) | `tb boards archive NAME` (prints the restore line) · `tb boards restore NAME` · `tb boards --archived` |
 | make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |

@@ -25,7 +25,7 @@ Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
+Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
 Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
 GitHub  github [--refresh] | github repos | sync
@@ -312,21 +312,28 @@ enum Cmd {
     },
     /// List boards. `--default` alone shows the board plain `tb` opens; `--default NAME`
     /// saves it; `--default --clear` goes back to the built-in `default`. `archive NAME` /
-    /// `restore NAME` retire or bring back one; `--archived` lists what is archived.
+    /// `restore NAME` retire or bring back one; `--archived` lists what is archived;
+    /// `delete NAME` removes an archived board for good (asks first, or `--yes`).
     Boards {
         #[arg(long = "default", value_name = "NAME", num_args = 0..=1, conflicts_with = "what")]
         default: Option<Option<String>>,
         #[arg(long, requires = "default")]
         clear: bool,
-        /// `archive` or `restore` (omit to list boards)
+        /// `archive`, `restore` or `delete` (omit to list boards)
         #[arg(value_name = "VERB")]
         what: Option<String>,
-        /// The board to archive or restore
+        /// The board to archive, restore or delete
         #[arg(value_name = "NAME")]
         name: Option<String>,
         /// List archived boards instead of live ones
         #[arg(long, conflicts_with_all = ["what", "name", "default"])]
         archived: bool,
+        /// `delete`: do not ask (required when not on a terminal)
+        #[arg(long, requires = "what")]
+        yes: bool,
+        /// `delete`: also remove the board's schema-upgrade backups
+        #[arg(long, requires = "what")]
+        backups: bool,
     },
     /// Make a board with a kind's settings, or with another board's.
     New {
@@ -907,18 +914,25 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
     Ok(())
 }
 
-/// `tb boards`'s two verbs and `--archived`. Retiring a board is a MOVE the user can undo:
-/// `archive` puts the file in `archive/` and prints the one line that restores it; nothing
-/// deletes a board (`tb rm ID` already deletes a CARD, so `tb boards rm` would be a dangerous
-/// near-miss — deliberately not offered).
-fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, json_out: bool) -> Result<(), BoardError> {
+/// `tb boards delete`'s flags.
+#[derive(Clone, Copy)]
+struct BoardsDelete {
+    yes: bool,
+    backups: bool,
+}
+
+/// `tb boards`'s verbs and `--archived`. Retiring a board is a MOVE the user can undo:
+/// `archive` puts the file in `archive/` and prints the one line that restores it. `delete`
+/// removes only an ARCHIVED board, after a confirm (`tb rm ID` already deletes a CARD, so
+/// `tb boards rm` would be a dangerous near-miss — deliberately not offered).
+fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, del: BoardsDelete, json_out: bool) -> Result<(), BoardError> {
     match (what, name) {
         (None, _) if archived => list_archived(json_out),
         (None, None) => list_boards(json_out),
         (None, Some(n)) => Err(BoardError(format!(
             "'tb boards {n}' is not a command — 'tb boards archive {n}' or 'tb boards restore {n}'? 'tb boards' lists them"
         ), Code::UnknownCommand)),
-        (Some(v @ ("archive" | "restore")), None) => Err(BoardError(format!(
+        (Some(v @ ("archive" | "restore" | "delete")), None) => Err(BoardError(format!(
             "'tb boards {v}' needs a board name — e.g. 'tb boards {v} scratch' · 'tb boards' lists them"
         ), Code::ArgRequired)),
         (Some("archive"), Some(n)) => {
@@ -947,10 +961,53 @@ fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, json_out: 
             }
             Ok(())
         }
+        (Some("delete"), Some(n)) => delete_board(n, del, json_out),
         (Some(v), _) => Err(BoardError(format!(
-            "unknown 'tb boards' command '{v}' — use 'tb boards', 'tb boards --archived', 'tb boards archive NAME' or 'tb boards restore NAME'"
+            "unknown 'tb boards' command '{v}' — use 'tb boards', 'tb boards --archived', 'tb boards archive NAME', 'tb boards restore NAME' or 'tb boards delete NAME'"
         ), Code::UnknownCommand)),
     }
+}
+
+/// `tb boards delete NAME`: confirm, then `boards::delete`. On a terminal it asks; anywhere
+/// else (a pipe, a script, an agent, `--json`) it needs `--yes`, so nothing is ever deleted by
+/// a command that could not have shown the question to a person.
+fn delete_board(name: &str, del: BoardsDelete, json_out: bool) -> Result<(), BoardError> {
+    if !del.yes {
+        let interactive = !json_out && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+        if !interactive {
+            return Err(BoardError(format!(
+                "deleting a board cannot be undone, so it asks first — not on a terminal: add --yes ('tb boards delete {name} --yes')"
+            ), Code::ConfirmRequired));
+        }
+        eprint!("delete the archived board '{name}' for good? This cannot be undone [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            say!("kept '{name}' — nothing deleted");
+            return Ok(());
+        }
+    }
+    let done = boards::delete(name, del.backups)?;
+    if json_out {
+        let paths = |v: &[std::path::PathBuf]| v.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+        println!(
+            "{}",
+            pretty(&json!({"ok": true, "board": name, "removed": paths(&done.removed), "kept_backups": paths(&done.kept_backups)}))
+        );
+    } else {
+        say!("deleted '{name}' for good — removed:");
+        for p in &done.removed {
+            say!("  {}", p.display());
+        }
+        if !done.kept_backups.is_empty() {
+            say!("kept {} backup(s) of it — add --backups to delete them too:", done.kept_backups.len());
+            for p in &done.kept_backups {
+                say!("  {}", p.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `tb boards --archived`: what `tb boards archive` retired, with card counts read without
@@ -1260,9 +1317,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         };
         return new_board(name, kind.as_deref(), from.as_deref(), &actor, cli.json);
     }
-    if let Some(Cmd::Boards { default, clear, what, name, archived }) = &cli.cmd {
+    if let Some(Cmd::Boards { default, clear, what, name, archived, yes, backups }) = &cli.cmd {
         if what.is_some() || name.is_some() || *archived {
-            return boards_cmd(what.as_deref(), name.as_deref(), *archived, cli.json);
+            return boards_cmd(what.as_deref(), name.as_deref(), *archived, BoardsDelete { yes: *yes, backups: *backups }, cli.json);
         }
         return match default {
             Some(name) => default_board_cmd(name.as_deref(), *clear, cli.json),

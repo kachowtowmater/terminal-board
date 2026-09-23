@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Delete a board (`tb boards delete`, and archive/restore/delete in the `B` picker)
+
+- `tb boards delete NAME` removes an archived board for good: every archive of that name
+  (`.db`, `-wal`, `-shm`), and its schema-upgrade backups only with `--backups`. It lists
+  the files it removed. Only an archived board can be deleted, so archiving is the undo
+  window; a live board is refused (`board_live`). It asks on a terminal and needs `--yes`
+  elsewhere (`confirm_required`). It refuses the board plain `tb` opens, a board another tb
+  has open, and an agent (`person_only`). `--json` answers `{ok, board, removed, kept_backups}`.
+- The `B` picker lists archived boards under `archived`, and can archive (`a`), restore (`r`)
+  and delete (`d`) the selected board after a y/n question naming it, through the same
+  functions and rules as the command line.
+
 ## 3.0.0 — 2026-09-23
 
 3.0.0 is about trust: who may move a card, what a machine is willing to run, and a record

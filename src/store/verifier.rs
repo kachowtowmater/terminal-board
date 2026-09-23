@@ -91,6 +91,20 @@ fn person_only(key: &str, actor: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuse `what` (e.g. "delete a board") when this process is an agent: the same rule as the
+/// verifier settings — something an agent cannot undo is a person's call.
+pub fn person_only_to(what: &str) -> Result<()> {
+    let who = super::actors::current();
+    if is_agent(&who) {
+        let harness = who.harness.as_deref().unwrap_or("an agent");
+        return Err(BoardError(
+            format!("only a person may {what} — this is {harness}, an agent. Ask the person who runs this board"),
+            Code::PersonOnly,
+        ));
+    }
+    Ok(())
+}
+
 /// Is this identity an agent? It is when a harness is on record — the one thing a plain
 /// terminal (a person) never exports (`actors::Identity::resolve`).
 pub fn is_agent(who: &Identity) -> bool {

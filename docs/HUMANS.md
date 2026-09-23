@@ -196,12 +196,24 @@ tb boards --archived            # what is archived, with its card counts
 tb boards restore old-project   # brings it back exactly as it was
 ```
 
-An archived board disappears from `tb boards` and the `B` picker (there is no archive key on
-the picker — bring it back from the command line first) until you restore it. You cannot
-archive the board plain `tb` opens right now, or a board `TB_DB` pins; `tb boards restore`
-refuses onto a board that already exists, so a restore can never overwrite one. There is no
-`tb boards rm` — `tb rm ID` already deletes a *card* — so nothing archive touches is ever
-deleted; once you are sure, remove the file yourself from the path `tb boards archive` printed.
+An archived board leaves `tb boards` and moves to the bottom of the `B` picker, under
+`archived`, until you restore it. In the picker, `a` archives the selected board, `r` restores
+it and `d` deletes it, each after a y/n question that names the board. You cannot archive the
+board plain `tb` opens right now, or a board `TB_DB` pins; `tb boards restore` refuses onto a
+board that already exists, so a restore can never overwrite one.
+
+**Deleting a board.** Only an archived board can be deleted, so archiving is the undo window.
+Deleting cannot be undone:
+
+```sh
+tb boards delete old-project          # asks first; removes its .db, -wal and -shm
+tb boards delete old-project --yes    # the same, without asking (needed outside a terminal)
+```
+
+It says which files it removed. Schema-upgrade backups of the board are kept unless you add
+`--backups`. It refuses a live board (archive it first), the board plain `tb` opens, a board
+another `tb` has open, and an agent: deleting a board is a person's call. There is no
+`tb boards rm`, because `tb rm ID` already deletes a *card*.
 
 ## GitHub
 
