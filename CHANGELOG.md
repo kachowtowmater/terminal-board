@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Concurrent writers wait for the lock instead of failing instantly (#85)
+
+`tb add` (and several other write paths) opened a plain, deferred transaction that reads
+before it writes — `bottom_of`, finding the next position, then the INSERT. SQLite does not
+run the busy handler for a read-to-write lock UPGRADE, only for a fresh lock request, so two
+processes writing at once could both fail with "database is locked" straight away instead of
+one of them waiting out the 10s busy timeout. Measured: a storm of 20 rounds × 4 simultaneous
+`tb add` lost the large majority of writes to instant refusals.
+- Every write transaction now starts as `BEGIN IMMEDIATE`, taking the write lock on its first
+  statement so the busy timeout actually applies. An ordinary, uncontended write is unaffected
+  — there was never anything to wait for either way.
+
+### Two residual self-approval bypasses closed (#55)
+
+The never-approve-your-own-work rule keyed the self-approval check on the FROM column being
+REVIEW, and on the card's current owner or (once unowned) whoever last moved it into review.
+Two sequences got past that:
+- **Laundering**: the owner of a REVIEW card moved it back to TODO first (clearing the owner)
+  and closed it with a plain `tb done` — TODO → DONE skipped the check entirely. The guard now
+  fires on entering DONE from any column, the same shape `done-by` already uses.
+- **Dropped work**: an agent that held a card in DOING, dropped it (clearing the owner), and
+  let someone else move the now-unowned card into review was no longer recognized as the
+  author. A new signal — who most recently held the card, by `tb next`/`tb take` OR `tb
+  assign` — closes this without weakening a genuine third-party approval: a fresh claim or
+  assignment to a different agent still supersedes the dropped one, so a real reassignment
+  (including through `tb assign`, which logs no `taken` event) is never falsely refused.
+- Two further sequences from the same review (a stray space around `--as` smuggling the same
+  actor past the guard; a hand-run impersonating `github`) were already closed by #103 and by
+  the CLI's existing `github`-actor refusal — locked in with regression tests here.
+
 ### `--json` failures carry a stable `code`
 
 Every `--json` failure was `{"ok":false,"error":"…","hint":"…"}` — two prose strings and no

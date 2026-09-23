@@ -270,6 +270,40 @@ fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     })
 }
 
+/// Who most recently HELD this card in DOING, by EITHER route (`tb next`/`tb take`, a
+/// `taken` event, or `tb assign`, an `assigned` event) — unlike `author_of`, dropping the
+/// card does not erase this: a drop logs a `dropped` event, not a `taken`/`assigned` one, so
+/// the last holder stays on record until someone else claims or is assigned it. Used
+/// alongside `author_of` by the self-approval guard in `transition` to close the drop-then-
+/// reassign hole (#55): `author_of` alone forgets who held the card once it is dropped and
+/// unowned, and credits whoever happens to move the orphaned card into review instead.
+///
+/// An `assigned` event's own `actor` column is who ASSIGNED the card (the orchestrator), not
+/// who now holds it — `transition`'s `Kind::Assign` arm logs it that way on purpose, so `tb
+/// show`/`tb log` can answer "who assigned this" and "who holds this" as two different
+/// questions. So for that kind the holder's name is read out of the event's `text` ("assigned
+/// to NAME", the exact text `Kind::Assign` writes) instead of `actor`. An earlier version of
+/// this function looked only at `taken` events, which meant a card reassigned by `tb assign`
+/// (no `taken` event at all) still named the PREVIOUS holder — wrongly refusing a genuine
+/// approval from whoever it was really reassigned to; `case9`/`case10` in tests/review.rs are
+/// that exact false-refusal, fixed.
+fn last_holder_of(conn: &Connection, id: i64) -> Result<Option<String>> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT kind, actor, text FROM events WHERE card_id=? AND kind IN ('taken','assigned') ORDER BY id DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(kind, actor, text)| {
+        if kind == "assigned" {
+            text.strip_prefix("assigned to ").map(str::to_string)
+        } else {
+            Some(actor)
+        }
+    }))
+}
+
 pub(crate) fn err<T>(msg: impl Into<String>, code: Code) -> Result<T> {
     Err(BoardError(msg.into(), code))
 }
@@ -1376,7 +1410,18 @@ impl Store {
                 (explicit.map(str::to_string), gh, title)
             }
         };
+        // `BEGIN IMMEDIATE`, not a deferred transaction (#85): this reads `bottom_of` and
+        // then writes the INSERT. A deferred transaction takes its SHARED (read) lock on the
+        // first statement and only asks to upgrade to a write lock on the INSERT — and SQLite
+        // does not run the busy handler for that upgrade, so two concurrent adds return
+        // SQLITE_BUSY ("database is locked") instantly instead of one of them waiting out the
+        // 10s busy_timeout. Starting the transaction as a write from the first statement makes
+        // the busy timeout apply, the way every other read-then-write path here now does.
+        // `add` is `&self` (not `&mut self`), so `transaction_with_behavior` is not available
+        // (it needs `&mut Connection`) — `unchecked_transaction` + an explicit ROLLBACK into a
+        // fresh BEGIN IMMEDIATE is the same trick `note` and `block` already use below.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let t = now();
         let pos = bottom_of(&tx, "todo")?;
         tx.execute(
@@ -1873,7 +1918,11 @@ impl Store {
         if text.is_empty() {
             return err(format!("check item is empty — try 'tb check {id} --add \"write test\"'"), Code::ArgRequired);
         }
+        // reads (the next idx) then writes: needs `BEGIN IMMEDIATE`, same reason as `add` (#85).
+        // `&self`, so `unchecked_transaction` + the ROLLBACK/BEGIN IMMEDIATE trick, not
+        // `transaction_with_behavior` (which needs `&mut Connection`) — see `add_tagged`.
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         let n: i64 = tx.query_row(
             "SELECT COALESCE(MAX(idx), 0) + 1 FROM checklist WHERE card_id=?",
             [id],
@@ -1897,7 +1946,9 @@ impl Store {
                 d.checklist.len()
             ), Code::Unknown);
         };
+        // a write transaction from the start, consistent with every other write path (#85)
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
         tx.execute("DELETE FROM checklist WHERE card_id=? AND idx=?", params![id, n])?;
         // two steps so the (card_id, idx) key never collides mid-update
         tx.execute(
@@ -1959,7 +2010,8 @@ impl Store {
     ///    request itself (unknown column, a send-back without its reason, nothing to take);
     ///    a change that changes nothing ends here;
     /// 2. the guards, always in this order: the holder (leaving DOING needs the card's owner,
-    ///    or `--force`, logged) → self-approval (REVIEW → DONE by the card's author, or
+    ///    or `--force`, logged) → self-approval (entering DONE from any column, by the card's
+    ///    author, or
     ///    `--force`, logged) → `done-by` (entering DONE needs to be one of the named closers,
     ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
@@ -2060,14 +2112,30 @@ impl Store {
                 }
             }
         }
-        if kind == Kind::Move && column == "done" && c.column == "review" {
-            if let Some(author) = author_of(&tx, &c)? {
-                if author.eq_ignore_ascii_case(actor) {
-                    if !force {
-                        return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
-                    }
-                    Self::log(&tx, id, actor, "force", "approved own work")?;
+        // Every way into DONE is guarded, not just REVIEW -> DONE (#55, the LAUNDERING hole):
+        // the owner of a REVIEW card could move it back to TODO first — which clears the
+        // owner — and then close it with a plain `tb done`, which used to see `c.column ==
+        // "todo"` and skip this check entirely. `column == "done" && c.column != "done"` is
+        // the same shape `done-by` below already uses, for the same reason its comment gives:
+        // moving the card out of REVIEW first must not be a way round the guard.
+        //
+        // A second question closes the DROPPED-WORK hole (#55): `author_of` only sees the
+        // CURRENT owner, or — once unowned — whoever last moved the card into review. A drop
+        // clears the owner, so an agent that held the card in DOING, dropped it, and then let
+        // someone else move the now-unowned card into review stops being "the author" by that
+        // reading, even though it did the work. `last_holder_of` answers "who most recently
+        // HELD this card, by either `tb next`/`tb take` or `tb assign`" instead — a drop logs
+        // a `dropped` event, not a `taken`/`assigned` one, so it does not erase this — and a
+        // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
+        // supersedes it, so a real reassignment is never falsely refused.
+        if column == "done" && c.column != "done" {
+            let self_approving = author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor))
+                || last_holder_of(&tx, id)?.is_some_and(|a| a.eq_ignore_ascii_case(actor));
+            if self_approving {
+                if !force {
+                    return err("you did this work — ask another person or agent to review it", Code::SelfApprove);
                 }
+                Self::log(&tx, id, actor, "force", "approved own work")?;
             }
         }
         // who may close a card (`config done-by`, store/closing.rs) — an honest-mistake stop,
@@ -2129,6 +2197,14 @@ impl Store {
             // `Kind::Assign` that is not who ends up holding the card, and a cap keyed on the
             // wrong name would let an orchestrator assign straight past it — exactly the hole
             // a per-owner limit exists to close.
+            //
+            // Card #110: PR #130 (wip-per-owner, open as of this comment) adds that cap as
+            // `access::room_for(&tx, holder)` with `holder = if kind == Kind::Claim { actor }
+            // else { c.owner.as_deref().unwrap_or(actor) }` — for `Kind::Assign`, `c.owner` is
+            // still `None` here (the card is still TODO), so that resolves to `actor`, not
+            // `assignee`, reproducing exactly the hole the paragraph above warns about.
+            // Whoever merges #130 should change that line to `assignee.unwrap_or(actor)` (it
+            // already covers `Kind::Claim`, where `assignee` is `None`) before closing #110.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
