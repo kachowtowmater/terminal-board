@@ -108,6 +108,16 @@ fn explicit_names_still_win_over_the_pane() {
     assert_eq!(e.actor(&env, &[]), "tb-as");
 }
 
+/// #103: whichever source wins, the resolved actor is trimmed — `--as "anna "` and
+/// `TB_AS=" anna "` are recorded exactly like `--as anna`, so a later `--as "anna "` matches
+/// the name a plain `--as anna` stored.
+#[test]
+fn a_padded_name_resolves_trimmed_from_any_source() {
+    let e = Env::new();
+    assert_eq!(e.actor(&[], &["--as", "  padded-flag  "]), "padded-flag");
+    assert_eq!(e.actor(&[("TB_AS", " padded-env ")], &[]), "padded-env");
+}
+
 #[test]
 fn unnamed_or_unknown_pane_and_disabled_herdr_fall_back_to_login() {
     let e = Env::new();

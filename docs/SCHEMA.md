@@ -101,7 +101,8 @@ Event `kind` vocabulary — **open set; new kinds may appear; ignore what you do
 | `restored` | — (`tb restore ID` brought the card back) |
 
 ### board_events
-Board-level events (no card):
+Board-level events (no card). Read with `sqlite3` as below, or — interleaved with `events`,
+oldest first, `card_id` null — with `tb log` (docs/JSON.md):
 
 | column | type | meaning |
 |---|---|---|

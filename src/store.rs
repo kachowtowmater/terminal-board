@@ -49,9 +49,39 @@ impl fmt::Display for BoardError {
 
 impl std::error::Error for BoardError {}
 
+/// SQLITE_BUSY (the whole file is locked) or SQLITE_LOCKED (a table is, inside a shared
+/// connection): both mean another connection holds the lock right now — nothing to do with
+/// whether the file itself is writable.
+fn is_contended(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// The hint for a real path problem (cannot open, read-only, no such file/directory, …):
+/// TB_DB is worth naming, but only when `tb_db` says it is actually set — otherwise it was
+/// never the pin, and naming it points at the wrong thing (#105). Never says "the board
+/// file": `position_error` already names the real file for a house message this same `From`
+/// impl also carries (`bad_position`'s FromSqlConversionFailure), and a second, vaguer file
+/// reference tacked onto that one is not just redundant — `position_guard.rs` pins that no
+/// refusal may print an unusable "the board file" placeholder in place of the real path.
+fn db_error_hint(tb_db: Option<&str>) -> String {
+    match tb_db {
+        Some(path) => format!("check TB_DB ({path}) points at a writable file"),
+        None => "check it is writable".to_string(),
+    }
+}
+
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
-        BoardError(format!("database error: {e} — check TB_DB points at a writable file"))
+        if is_contended(&e) {
+            // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
+            // the problem here, so it is not named (#105)
+            return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string());
+        }
+        BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())))
     }
 }
 
@@ -192,6 +222,13 @@ pub struct Event {
     /// The identity behind `actor` (`actors.id`, see `store::actors`); None when nothing but
     /// the name is known, and on every event written before identities were recorded.
     pub actor_id: Option<i64>,
+}
+
+/// One row of `Store::for_each_log_event`: a card event, or a board-level one (no card —
+/// `card_id` is `None` everywhere this is rendered). See `board_events` and #106.
+pub enum LogEvent {
+    Card(Event),
+    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64> },
 }
 
 /// An event with its database id (for `tb watch --events` resumption).
@@ -1320,6 +1357,63 @@ impl Store {
         Ok(())
     }
 
+    /// Every event at or after `from_ts`, oldest first, card events interleaved with the
+    /// board's own log (`board_events` — a move's `moved-out` on the board a card left, a WIP
+    /// change, a file-mode change, a soft-delete, …), which otherwise has no command that
+    /// reads it (#106: a card moved off a board leaves a trail on that board nothing prints).
+    /// Two cursors, merged by timestamp, so this streams exactly like `for_each_event`.
+    pub fn for_each_log_event(&self, from_ts: i64, f: &mut dyn FnMut(LogEvent) -> Result<()>) -> Result<()> {
+        let mut cst = self
+            .conn
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut crows = cst.query([from_ts])?;
+        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut brows = bst.query([from_ts])?;
+
+        /// One `board_events` row, held between cursor advances (a named struct, not a
+        /// 5-tuple, so the type stays readable).
+        struct BoardRow {
+            ts: i64,
+            actor: String,
+            kind: String,
+            text: String,
+            actor_id: Option<i64>,
+        }
+
+        fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(row_event(r)?),
+                None => None,
+            })
+        }
+        fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<BoardRow>> {
+            Ok(match rows.next()? {
+                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? }),
+                None => None,
+            })
+        }
+
+        let mut c_cur = next_card(&mut crows)?;
+        let mut b_cur = next_board(&mut brows)?;
+        loop {
+            let card_first = match (&c_cur, &b_cur) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(c), Some(b)) => c.ts <= b.ts,
+            };
+            if card_first {
+                f(LogEvent::Card(c_cur.take().unwrap()))?;
+                c_cur = next_card(&mut crows)?;
+            } else {
+                let BoardRow { ts, actor, kind, text, actor_id } = b_cur.take().unwrap();
+                f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
+                b_cur = next_board(&mut brows)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every event of one card, oldest first — the whole history an export carries, where
     /// `contract::card` carries only the last ten.
     pub fn all_events_of(&self, id: i64) -> Result<Vec<crate::contract::EventJ>> {
@@ -2198,6 +2292,39 @@ pub fn fmt_clock(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #105: SQLITE_BUSY/SQLITE_LOCKED (another `tb` holds the write lock) reads nothing like
+    /// a real path problem (cannot open, read-only, …), and only the latter names TB_DB.
+    #[test]
+    fn a_locked_database_and_a_path_problem_get_different_messages() {
+        let locked = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::DatabaseBusy, extended_code: 5 },
+            Some("database is locked".to_string()),
+        );
+        let path_problem = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::CannotOpen, extended_code: 14 },
+            Some("unable to open database file".to_string()),
+        );
+        let locked_msg = BoardError::from(locked).0;
+        let path_msg = BoardError::from(path_problem).0;
+        assert_ne!(locked_msg, path_msg, "a lock and a path problem must not read the same");
+        assert!(locked_msg.contains("another tb is writing this board"), "{locked_msg}");
+        assert!(!locked_msg.contains("TB_DB"), "a lock is not a TB_DB problem: {locked_msg}");
+        // whether the path message names TB_DB depends on whether it is actually set — that
+        // exact rule is `the_tb_db_hint_names_it_only_when_set` below, via the pure function,
+        // so this does not assert on ambient process environment here
+        assert!(path_msg.starts_with("database error: unable to open database file"), "{path_msg}");
+    }
+
+    /// #105: TB_DB is named only when it is actually set — otherwise it was never the pin.
+    /// Never says "the board file": that placeholder is reserved for when the real file is
+    /// genuinely unknown (`position_guard.rs` pins it out of an actual refusal).
+    #[test]
+    fn the_tb_db_hint_names_it_only_when_set() {
+        assert_eq!(db_error_hint(None), "check it is writable");
+        assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
+        assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
 
     #[test]
     fn title_parsing() {
