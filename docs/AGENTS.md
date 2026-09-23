@@ -116,8 +116,8 @@ unless a person asks you to change them.
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
-- `doing is full (3/3: #1 a, #2 b, #3 c)` is the board-wide WIP limit and its message says what
-  YOU can do; never finish or drop someone else's card, and do not raise the limit.
+- `doing is full (3/3: …)` is the board-wide limit, `you already hold 1 of 1` this board's per-agent one (`wip-per-owner`); both say what YOU can do — finish one of yours. Never finish or drop someone else's card, and do not raise either limit.
+- A board may keep a list of names (`tb config actors`) and refuse an `--as` it does not know, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write. Neither ever refuses a read.
 - Every error message ends with what to run next. Read it and do that.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
 - Tick only what is really done. Never tick ahead.
@@ -193,6 +193,9 @@ succeeded — is for your operator: pass it on; do not change settings because o
 | `no board 'X' — boards: …` (a name that is not the default and does not exist) | likely a typo: check `tb boards`; create it on purpose with `tb new X` or `tb X add "…"` |
 | `--as is empty` (e.g. `--as "$NAME"` with `NAME` unset; nothing was written) | pass your name, or drop `--as` so `TB_AS` / the pane's agent applies |
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
+| `you already hold 1 of 1 (#3 …)` | this board allows one card per agent: finish yours (the message names it) — do not raise the limit |
+| `'x' is not one of this board's names` | your `--as` is misspelt, or the board keeps a list: check the spelling first |
+| `read-only mode: … would change the board` | you are watching, not working: reads only, until `TB_READONLY` is unset |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue gh#N still open on GitHub` | close the issue / merge the PR first |

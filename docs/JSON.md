@@ -428,6 +428,28 @@ without warnings is unchanged. Array results (`list`, `boards`, `agents`) and `w
 have no place for a field: read their warnings on stderr. A warning never changes the exit
 code, and its wording is for people: act on `ok` and the exit code, show `warnings` to someone.
 
+## Who may write
+
+- `tb config wip-per-owner N` — nobody may hold more than `N` DOING cards at once; `0` (the
+  default) turns it off. It is a SECOND limit beside the board-wide `wip`, and both must pass:
+  `wip` asks whether the board is full, `wip-per-owner` whether one person is. Each discounts
+  blocked cards under `wip-counts-blocked no`, capped by its own number, so blocking everything
+  can never hand out unlimited work at either level. The refusal names the cards you hold.
+- `tb config actors NAME,NAME,…` (`--off` clears) — a write whose `--as` is not on the list is
+  refused, so a typo cannot invent an agent. Matched trimmed and without case; the stored order
+  and spelling are kept. **Reads are never refused**, `tb config` is never refused (a list can
+  always be corrected), a list that leaves out the person setting it is refused, and the
+  `github` name tb's own sync writes under is always allowed. Cards already held by a name that
+  is not on the list are untouched and still listed.
+- `TB_READONLY=1` (or `--read-only`) — every write is refused with
+  `{"ok":false,"error":"read-only mode: \'tb add\' would change the board","hint":"unset TB_READONLY …"}`
+  and exit 1. Reads are unaffected. It is enforced at the database connection as well as at the
+  command, so a write cannot slip through; a board made by an older tb cannot be upgraded in
+  this mode and says so rather than failing obscurely.
+
+Both settings appear in `tb config` (and `tb config --json`) **only once set**, so a board that
+uses neither lists exactly what it always did.
+
 ## Filters — `tb list` and `tb board --json`
 
 `--tag`, `--owner`, `--blocked`, `--blocked-on`, `--due-before`, `--column` and `--group tag`.

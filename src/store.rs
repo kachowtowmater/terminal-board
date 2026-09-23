@@ -8,6 +8,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod access;
 pub mod actors;
 pub mod archive;
 pub mod blocks;
@@ -64,6 +65,12 @@ pub enum Code {
     NoCard,
     /// DOING is at the board's `wip` limit.
     WipFull,
+    /// One actor is at this board's `wip-per-owner` cap.
+    WipOwnerFull,
+    /// A write attempted while the board is open read-only (`TB_READONLY` / `--read-only`).
+    ReadOnly,
+    /// The actor is not on this board's `config actors` list.
+    UnknownActor,
     /// A board name that is not `[a-z0-9_-]{1,32}`.
     InvalidBoardName,
     /// A board name that collides with a command word.
@@ -118,6 +125,9 @@ impl Code {
             Code::ReasonRequired => "reason_required",
             Code::NoCard => "no_card",
             Code::WipFull => "wip_full",
+            Code::WipOwnerFull => "wip_owner_full",
+            Code::ReadOnly => "read_only",
+            Code::UnknownActor => "unknown_actor",
             Code::InvalidBoardName => "invalid_board_name",
             Code::BoardNameIsCommand => "board_name_is_command",
             Code::GhIssueOpen => "gh_issue_open",
@@ -187,6 +197,9 @@ fn db_error_hint(tb_db: Option<&str>) -> String {
 
 impl From<rusqlite::Error> for BoardError {
     fn from(e: rusqlite::Error) -> Self {
+        if access::is_readonly_error(&e) {
+            return access::refusal("that command");
+        }
         if is_contended(&e) {
             // the file is fine — another `tb` is mid-write and holds the lock; TB_DB is not
             // the problem here, so it is not named (#105)
@@ -832,6 +845,36 @@ fn is_board(conn: &Connection) -> Result<bool> {
 ///
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
+///
+/// The ONE place `notice`'s board key is computed — `Store::path`/`notice_key` and every
+/// `notice::push_for` about THIS connection all call this, never re-derive their own guess
+/// from the pre-open `Path`. A hand-rolled `Path::display()` on that path missed a relative
+/// input, `TB_DB` passing one through, a path with `..` in it, or the same board opened a
+/// second time under a spelling that resolves the same way but is not byte-identical — SQLite
+/// resolves the connection's OWN filename once, consistently, and both sides just ask it for
+/// that same answer, so a push and its later drain can never disagree, whatever the input
+/// looked like. `conn.path()` is available the instant `Connection::open` returns, which is
+/// always after the file exists (`create_board` creates it first) — so this never needs to
+/// canonicalise a not-yet-created path by hand, the one thing that cannot be done portably.
+fn conn_notice_key(conn: &Connection) -> Option<String> {
+    conn.path().filter(|p| !p.is_empty()).map(str::to_string)
+}
+
+/// Would `migrate` change this board's schema? Asked on a READ-ONLY connection, where the
+/// upgrade itself cannot run: a probe that only reads.
+fn needs_upgrade(conn: &Connection) -> Result<bool> {
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))?;
+    if tables == 0 {
+        return Ok(true);
+    }
+    // every column the current code reads, in one probe: a missing one means an old schema
+    let probe = conn.query_row(&format!("SELECT {CARD_COLS} FROM cards LIMIT 1"), [], |_| Ok(()));
+    match probe {
+        Ok(()) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(_) => Ok(true),
+    }
+}
+
 fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
     let pending = {
         let tx = conn.unchecked_transaction()?;
@@ -866,11 +909,18 @@ fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
         return Err(e);
     }
     if let Some(backup) = backup {
-        crate::notice::push(format!(
-            "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
-            path.display(),
-            backup.display()
-        ));
+        // keyed via `conn_notice_key`, not `path.display()` — see its doc comment: only the
+        // board that raised this ever drains it, whatever the input path looked like
+        if let Some(key) = conn_notice_key(conn) {
+            crate::notice::push_for(
+                &key,
+                format!(
+                    "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+                    path.display(),
+                    backup.display()
+                ),
+            );
+        }
     }
     Ok(())
 }
@@ -956,13 +1006,18 @@ fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
     if shared {
         return;
     }
-    crate::notice::push(format!(
-        "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
-        real.display(),
-        crate::fsperm::fmt_mode(mode),
-        config_cmd(path, "file-mode private"),
-        config_cmd(path, "file-mode shared"),
-    ));
+    // keyed via `conn_notice_key`, not `real.display()` — see its doc comment on `upgrade`
+    let Some(key) = conn_notice_key(conn) else { return };
+    crate::notice::push_for(
+        &key,
+        format!(
+            "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
+            real.display(),
+            crate::fsperm::fmt_mode(mode),
+            config_cmd(path, "file-mode private"),
+            config_cmd(path, "file-mode shared"),
+        ),
+    );
 }
 
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).
@@ -1004,8 +1059,33 @@ impl Store {
         // the file every later refusal names (`position_error`): where the board really is,
         // whether it was named by `TB_DB`, by `-b NAME`, by `TB_BOARD` or by the saved default
         remember_board_file(on_disk.then_some(real.as_path()));
-        let mut conn = Connection::open(&real)?;
+        // In read-only mode the DATABASE is opened read-only. There are eighty-odd write
+        // sites in this crate, and a list of them is a list somebody forgets to add to; this
+        // way a write that slips past the command layer fails at SQLite instead of landing.
+        // (See `store::access`. The command layer refuses first, with a better message.)
+        let readonly = access::readonly_env();
+        let mut conn = if readonly && on_disk {
+            use rusqlite::OpenFlags;
+            Connection::open_with_flags(&real, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?
+        } else {
+            Connection::open(&real)?
+        };
         conn.busy_timeout(Duration::from_secs(10))?;
+        if readonly {
+            // a read-only connection cannot upgrade the schema; say so plainly rather than
+            // failing later in SQLite's own words
+            conn.execute_batch("PRAGMA foreign_keys=ON")?;
+            if on_disk && needs_upgrade(&conn)? {
+                return Err(BoardError(
+                    format!(
+                        "board '{}' was made by an older tb and needs an upgrade, which read-only mode cannot do — run any command without TB_READONLY (or --read-only) once, then read it",
+                        real.display()
+                    ),
+                    Code::ReadOnly,
+                ));
+            }
+            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into() });
+        }
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
         upgrade(&mut conn, &real, on_disk)?;
@@ -1019,7 +1099,14 @@ impl Store {
 
     /// The database file (None for an in-memory board).
     pub fn path(&self) -> Option<std::path::PathBuf> {
-        self.conn.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from)
+        conn_notice_key(&self.conn).map(std::path::PathBuf::from)
+    }
+
+    /// The key `notice` warnings about this board are pushed and drained under (see
+    /// `conn_notice_key`) — the same connection, so it is the same string `path()` reports,
+    /// every time, for any input path shape.
+    pub fn notice_key(&self) -> Option<String> {
+        conn_notice_key(&self.conn)
     }
 
     /// Changes whenever another connection commits (for `watch`).
@@ -1053,7 +1140,17 @@ impl Store {
     }
 
     /// Every card event is written here, so this is where it gets its identity (`actor_id`).
+    /// EVERY change to a card writes an event through here, from the CLI, the full-screen
+    /// board, an import, a move between boards and tb's own GitHub sync alike. So this is
+    /// where `config actors` is enforced: a check at the command layer is a check with a door
+    /// next to it (the board called `add` directly and walked straight past one), and the
+    /// same argument that put read-only at the connection puts this at the event.
+    ///
+    /// The actor checked here is the one really doing the writing, not the ambient `--as`,
+    /// which is what makes tb's own `github` sync exempt by ORIGIN rather than by whoever
+    /// happened to type `tb sync`.
     fn log(conn: &Connection, id: i64, actor: &str, kind: &str, text: &str) -> Result<()> {
+        access::guard_actor(conn, actor)?;
         let ts = now();
         let actor_id = actors::stamp(conn, actor, ts)?;
         conn.execute(
@@ -1239,6 +1336,7 @@ impl Store {
         all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
         all.extend(self.rules_settings()?);
+        all.extend(self.access_settings()?);
         // `file-mode` is listed only when there is something to say (a file other users can
         // open, or one kept shared on purpose): a private board's listing is unchanged
         all.extend(self.file_mode_setting()?.map(|v| ("file-mode".to_string(), v)));
@@ -2155,26 +2253,25 @@ impl Store {
             // `wip` of them, so waiting for someone else does not stall the board — and
             // blocking everything can still never hand out unlimited work.
             //
-            // A per-owner cap belongs here too, the moment one exists: `tb assign` enters
-            // DOING through this exact check, on purpose, so a cap added later catches it for
-            // free — PROVIDED it is keyed on the card's new HOLDER (`assignee.unwrap_or(actor)`
-            // — `assignee` is `Some` only for `Kind::Assign`, in scope right here), never on
-            // `actor` alone. `actor` is who is issuing the command (the assigner); for
-            // `Kind::Assign` that is not who ends up holding the card, and a cap keyed on the
-            // wrong name would let an orchestrator assign straight past it — exactly the hole
-            // a per-owner limit exists to close.
+            // The per-owner cap (`wip-per-owner`, store/access.rs) lives here too: `tb assign`
+            // enters DOING through this exact check, on purpose, so the cap catches it for
+            // free — PROVIDED it is keyed on the card's new HOLDER, never on `actor` alone.
+            // `actor` is who is issuing the command (the assigner); for `Kind::Assign` that is
+            // not who ends up holding the card, and a cap keyed on the wrong name would let an
+            // orchestrator assign straight past it — exactly the hole a per-owner limit exists
+            // to close. Hence `assignee.unwrap_or(actor)`: `assignee` is `Some` only for
+            // `Kind::Assign`, and for `Kind::Claim` it is `None`, so this is `actor` there.
+            // NOT `c.owner`, which is still `None` for an assign (the card is still TODO).
             //
-            // Card #110: PR #130 (wip-per-owner, open as of this comment) adds that cap as
-            // `access::room_for(&tx, holder)` with `holder = if kind == Kind::Claim { actor }
-            // else { c.owner.as_deref().unwrap_or(actor) }` — for `Kind::Assign`, `c.owner` is
-            // still `None` here (the card is still TODO), so that resolves to `actor`, not
-            // `assignee`, reproducing exactly the hole the paragraph above warns about.
-            // Whoever merges #130 should change that line to `assignee.unwrap_or(actor)` (it
-            // already covers `Kind::Claim`, where `assignee` is `None`) before closing #110.
+            // Board-wide first, then per-owner: the board-wide message names every holder, so
+            // a board that is simply full says so once, rather than telling one agent it is
+            // personally over a cap that would not have mattered. Each gate discounts blocked
+            // cards by its OWN number (store/access.rs), so they compose as independent limits.
             let (counted, doing) = blocks::doing_counts(&tx, wip)?;
             if counted >= wip {
                 return Err(wip_full_err(&tx, doing, wip, actor));
             }
+            access::room_for(&tx, assignee.unwrap_or(actor))?;
         }
 
         // 3. the change, then its events
@@ -2250,6 +2347,10 @@ impl Store {
 
     /// Reorder a card within its column: `top`, `bottom`, `up`, `down`.
     pub fn reorder(&mut self, id: i64, how: &str, actor: &str) -> Result<Card> {
+        // a reorder that moves nothing writes no event, so it would never reach the check in
+        // `log`: ask here, so a name the board does not know is refused consistently rather
+        // than being told a no-op succeeded
+        access::guard_actor(&self.conn, actor)?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let c = get_card(&tx, id)?;
         // `prio` edits POSITION, so it walks the column in position order whatever the board
@@ -2597,5 +2698,109 @@ mod tests {
         assert_eq!(fmt_age(40 * 60), "40m");
         assert_eq!(fmt_age(3600 + 12 * 60), "1h12m");
         assert_eq!(fmt_age(2 * 86400 + 5), "2d");
+    }
+}
+
+/// `conn_notice_key` must agree with itself across the input shapes that broke the earlier,
+/// hand-rolled version (`Path::display()` on the pre-open path): a push during `Store::open`
+/// and a later drain via `Store::notice_key()` both call it on the SAME open connection, so
+/// they can never disagree — these tests prove that for the shapes that matter, not just the
+/// plain absolute path every other test already uses.
+///
+/// `#[cfg(unix)]`: `report_wide_file` (what these trigger) is itself unix-only (`fsperm::mode_of`
+/// returns `None` off unix, so it never fires there) — nothing here is testing something that
+/// exists on other platforms. `cargo check --target x86_64-pc-windows-gnu` (the project's
+/// windows gate) does not compile test code at all (no `--tests`/`--all-targets`), so this
+/// module never needs to type-check there either.
+///
+/// No test here mutates process-global state (`std::env::set_current_dir` / `set_var`): a
+/// "relative path" is built by walking up from `std::env::current_dir()` with `..` segments
+/// back down into a fresh tempdir, never by changing the process's actual cwd — this test
+/// binary runs `#[test]` fns on multiple threads at once, and a real chdir would be exactly
+/// the class of cross-test hazard this whole fix exists to remove. `TB_DB` pointing at a
+/// relative file is not tested separately: `boards::path_for` does zero transformation on it
+/// (`PathBuf::from(the_raw_string)`, read from the source), so at the `Store::open` level it
+/// is the identical scenario the relative-path test already covers.
+#[cfg(all(test, unix))]
+mod notice_key_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Create `path` (and its parent directories) as a file mode 0644 — "already existed,
+    /// world-readable" — the shape `report_wide_file` reports on, deterministically, without
+    /// depending on the process umask the way a freshly-`Store::open`-ed file's mode would.
+    fn seed_wide_file(path: &Path) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(path, b"").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    /// Open `path` and assert the wide-file notice it raises is found under exactly the key
+    /// `notice_key()` reports for that same store — the property this whole module checks.
+    fn assert_key_round_trips(path: &Path) {
+        let store = Store::open(path).unwrap();
+        let key = store.notice_key().expect("an on-disk board always has a key");
+        let pending = crate::notice::take_unprinted_for(&key);
+        assert!(
+            pending.iter().any(|m| m.contains("is open to other users")),
+            "push (inside Store::open) and drain (notice_key(), right after) must agree on the \
+             key for {path:?} — got key {key:?}, pending {pending:?}"
+        );
+    }
+
+    #[test]
+    fn a_relative_board_path() {
+        // walk up from cwd to `/` with `..`, then back down into a fresh tempdir — a genuine
+        // relative Path (no leading `/`) that resolves to the same file as `dir.path()`,
+        // without ever touching the process's actual current directory
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ups = "../".repeat(cwd.components().filter(|c| matches!(c, std::path::Component::Normal(_))).count());
+        let target = dir.path().join("relative.db");
+        let rel = PathBuf::from(format!("{ups}{}", target.strip_prefix("/").unwrap().display()));
+        assert!(!rel.is_absolute(), "sanity: the input really is relative: {rel:?}");
+        seed_wide_file(&target);
+        assert_key_round_trips(&rel);
+    }
+
+    #[test]
+    fn a_path_with_dotdot_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("board.db");
+        seed_wide_file(&target);
+        // absolute, but not the shortest form: a `..` segment that only cancels out once
+        // resolved, the same shape a hand-typed `--db ../shared/../work/board.db` would take
+        let messy = dir.path().join("sub").join("..").join("board.db");
+        assert_key_round_trips(&messy);
+    }
+
+    #[test]
+    fn a_path_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.db");
+        let link = dir.path().join("link.db");
+        seed_wide_file(&real_file);
+        std::os::unix::fs::symlink(&real_file, &link).unwrap();
+        assert_key_round_trips(&link);
+    }
+
+    #[test]
+    fn the_same_board_opened_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("board.db");
+        seed_wide_file(&target);
+        let store1 = Store::open(&target).unwrap();
+        let key1 = store1.notice_key().unwrap();
+        drop(store1);
+        let store2 = Store::open(&target).unwrap();
+        let key2 = store2.notice_key().unwrap();
+        assert_eq!(key1, key2, "the same file opened twice must key identically");
+        // the notice the FIRST open raised is still sitting there, findable under that same
+        // key, exactly as a `reload()` on either store would find it
+        let pending = crate::notice::take_unprinted_for(&key1);
+        assert!(pending.iter().any(|m| m.contains("is open to other users")), "{pending:?}");
     }
 }

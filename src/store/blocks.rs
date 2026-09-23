@@ -160,7 +160,7 @@ pub(super) fn on_done(tx: &Connection, done_id: i64, actor: &str) -> Result<Vec<
 /// hand out unlimited work: DOING can never exceed twice the limit, whatever anyone blocks.
 pub(super) fn doing_counts(tx: &Connection, wip: i64) -> Result<(i64, i64)> {
     let doing: i64 = tx.query_row(r#"SELECT COUNT(*) FROM cards WHERE "column"='doing'"#, [], |r| r.get(0))?;
-    if !wip_counts_blocked_off(tx)? {
+    if !counts_blocked_off(tx)? {
         return Ok((doing, doing));
     }
     let blocked: i64 = tx.query_row(
@@ -171,7 +171,7 @@ pub(super) fn doing_counts(tx: &Connection, wip: i64) -> Result<(i64, i64)> {
     Ok((doing - blocked.min(wip.max(0)), doing))
 }
 
-fn wip_counts_blocked_off(conn: &Connection) -> Result<bool> {
+pub(super) fn counts_blocked_off(conn: &Connection) -> Result<bool> {
     let v: Option<String> =
         conn.query_row("SELECT value FROM config WHERE key='wip-counts-blocked'", [], |r| r.get(0)).optional()?;
     Ok(v.is_some_and(|v| v.trim().eq_ignore_ascii_case("no")))
@@ -235,7 +235,7 @@ impl Store {
 
     /// `wip-counts-blocked yes|no` — `yes` (the default) is today's behaviour.
     pub fn wip_counts_blocked(&self) -> Result<bool> {
-        Ok(!wip_counts_blocked_off(&self.conn)?)
+        Ok(!counts_blocked_off(&self.conn)?)
     }
 
     pub fn set_wip_counts_blocked(&self, value: &str) -> Result<bool> {

@@ -238,6 +238,9 @@ impl Store {
     pub fn remove_card(&mut self, id: i64, actor: &str, force: bool) -> Result<Removed> {
         let archive = self.rm_mode()? == RM_ARCHIVE;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // a DELETE writes no card event (the card's events go with it), so it would never
+        // reach the check in `Store::log`: ask here, like the other hand-written writers
+        crate::store::access::guard_actor(&tx, actor)?;
         let c = get_card(&tx, id)?;
         let forced = holder_guard(&tx, &c, actor, force, if archive { "archive it" } else { "delete it" })?;
         let verb = if archive { "archived" } else { "deleted" };
