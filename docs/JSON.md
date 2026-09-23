@@ -297,7 +297,7 @@ Everyday failures:
 | `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
 | `not_from_review` | a move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`): nothing reaches DONE except from REVIEW, whoever asks (`--force` gets past it, logged) |
 | `not_verifier` | REVIEW -> DONE by an agent (a harness in its identity) whose role (`TB_ROLE`) is not `verifier`/`reviewer` and whose name is not on `config verifiers`; on unless `config verifier-only off` |
-| `person_only` | an agent (a harness in its identity) tried to change `config verifiers` or `config verifier-only` — a person's settings |
+| `person_only` | an agent (a harness in its identity) tried to change `config verifiers` or `config verifier-only` — a person's settings — or to `tb boards delete` |
 | `done_needs_note` | `config done-needs-note` requires a fresh note before DONE |
 | `done_needs_link` | `config done-needs-link` requires a link with that label before DONE |
 | `arg_required` | a required argument or value was not given |
@@ -308,9 +308,11 @@ Everyday failures:
 | `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
 | `terminal_error` | the interactive TUI failed to start or run |
 | `board_busy` | a board file could not be locked: something else has it open, or is moving it, past the wait |
-| `default_board` | `tb boards archive` refused: that is the board a bare `tb` opens right now |
+| `default_board` | `tb boards archive` / `delete` refused: that is the board a bare `tb` opens right now |
 | `board_exists` | `tb boards restore` refused: a live board (or a stray `-wal`/`-shm`) is already at that name |
-| `no_archive` | `tb boards restore` refused: no archived board has that name |
+| `no_archive` | `tb boards restore` / `delete` refused: no archived board has that name |
+| `board_live` | `tb boards delete` refused: that name is a live board — archive it first (with `--backups`: a live board of that name exists, and the backups may be its own) |
+| `confirm_required` | `tb boards delete` without `--yes`, not on a terminal (or with `--json`) |
 | `usage` | a command-line argument failed to parse (clap): missing/extra/malformed flags, an unrecognized subcommand caught at the parser level, wrong arity |
 | `hook_refused` | a pre-change hook (`config hook`, `tb trust`) refused the change, could not be run, is untrusted or changed, or this machine does not know it |
 | `hook_race` | a pre-change hook allowed the change, but the card changed while the hook ran (someone else took or moved it), so nothing was written — retry the command; the hook is asked again |
@@ -554,6 +556,7 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 - `tb github repos --json` — `[{name_with_owner, description, pushed_at, is_private, own}]`.
 - `tb boards archive NAME --json` (#80) — `{ok:true, board, archived, restore}`: `archived` is the full path the board's file was moved to, `restore` is the exact `tb boards restore NAME` command that undoes it. Refusals (`{ok:false,error,hint,code}`): the board plain `tb` opens now (`default_board`), under `TB_DB` (`db_pinned`), an unknown board (`no_board`), a name that is not a board name (`invalid_board_name`/`board_name_is_command`), or the board open in another process (`board_busy`). Nothing is ever deleted; the file that moved is byte-identical to what was live.
 - `tb boards restore NAME --json` — `{ok:true, board, path, from}`: `path` is where it landed (the boards directory), `from` is the archive file it came from. Refusals: a live board (or a stray `-wal`/`-shm`) already at that name (`board_exists`), no archived board with that name (`no_archive`), under `TB_DB` (`db_pinned`), or the destination held busy past the wait (`board_busy`).
+- `tb boards delete NAME --yes --json` — `{ok:true, board, removed, kept_backups}`: `removed` is every file deleted (each archive of that name: `.db`, and `-wal`/`-shm` when there), `kept_backups` the board's schema-upgrade backups left in place (empty with `--backups`, which deletes them). Refusals: no `--yes` (`confirm_required`), a live board (`board_live`), no archived board of that name (`no_archive`), the board plain `tb` opens (`default_board`), an agent (`person_only`), the file open in another process (`board_busy`), under `TB_DB` (`db_pinned`), a name that is not a board name.
 - `tb boards --archived --json` — `[{name, archived_at, path, todo, doing, review, done}]`, oldest archive of a name first (the newest — what `restore` takes — is last for that name). `archived_at` is `"YYYY-MM-DD HH:MM"`, local time when it was archived. Card counts are `null` when the file cannot be read; reading them never changes the file (checked: `md5`/`sha256` identical before and after any number of `--archived` calls).
 
 ## Environment variables

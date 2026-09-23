@@ -69,7 +69,7 @@ Each item links to its full section.
   `tb new NAME --kind deadline` sets it all up at once. See
   [A deadline board in one command](#a-deadline-board-in-one-command).
 - **Many boards.** One file per board. `tb boards --default` picks the board plain `tb`
-  opens, `tb boards archive` retires one, and `tb mv ID --to BOARD` moves a card with its
+  opens, `tb boards archive` retires one (`delete` removes an archived one), and `tb mv ID --to BOARD` moves a card with its
   history. See [Boards](#boards).
 - **Data in and out.** `tb import`, `tb edit --from`, `tb export --json|--csv`, `tb log`, and
   `--json` on every command. See [For app developers](#for-app-developers-json).
@@ -403,13 +403,18 @@ tb boards --archived         # what is archived, with the card counts it had
 tb boards restore home       # brings it back byte for byte
 ```
 
-An archived board disappears from `tb boards` and the `B` picker until restored — the picker
-has no archive key of its own, a one-keystroke file move is a footgun, so retiring one is a
-command-line action. Archiving is refused for the board plain `tb` opens right now and while
-`TB_DB` pins one file; restoring is refused onto a board that already exists, so it can never
-overwrite one. There is deliberately no `tb boards rm` — `tb rm ID` already deletes a *card* —
-so nothing this command touches is ever deleted; remove the file yourself, from the path
-`tb boards archive` printed, once you are sure.
+An archived board leaves `tb boards` and is listed at the bottom of the `B` picker, under
+`archived`, until restored. In the picker `a` archives, `r` restores and `d` deletes the
+selected board, each after a y/n question naming it. Archiving is refused for the board plain
+`tb` opens right now and while `TB_DB` pins one file; restoring is refused onto a board that
+already exists, so it can never overwrite one.
+
+**Deleting a board.** `tb boards delete NAME` removes an *archived* board for good (its `.db`,
+`-wal` and `-shm`; its schema-upgrade backups only with `--backups`) and lists what it removed.
+Archiving first is the undo window: a live board is refused. It asks on a terminal and needs
+`--yes` anywhere else. It refuses the board plain `tb` opens, a board another `tb` has open,
+and an agent. There is deliberately no `tb boards rm`, because `tb rm ID` already deletes a
+*card*.
 
 ## Assigning a card
 

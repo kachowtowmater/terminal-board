@@ -142,6 +142,11 @@ pub enum Code {
     BoardExists,
     /// `tb boards restore` refused: no archived board has that name.
     NoArchive,
+    /// `tb boards delete` refused: the name is a live board, not an archived one — archive it
+    /// first (the archive is the undo window).
+    BoardLive,
+    /// `tb boards delete` refused: not on a terminal and `--yes` was not given.
+    ConfirmRequired,
     /// A command-line argument failed to parse (clap): missing/extra/malformed flags,
     /// unrecognized subcommands caught at the parser level, wrong arity, etc.
     Usage,
@@ -196,6 +201,8 @@ impl Code {
             Code::DefaultBoard => "default_board",
             Code::BoardExists => "board_exists",
             Code::NoArchive => "no_archive",
+            Code::BoardLive => "board_live",
+            Code::ConfirmRequired => "confirm_required",
             Code::Usage => "usage",
             Code::HookRefused => "hook_refused",
             Code::HookRace => "hook_race",
@@ -1232,6 +1239,13 @@ fn lock_err(doing: &str, path: &Path, e: lock::Error) -> BoardError {
 /// `/proc/locks`).
 pub fn lock_for_move(path: &Path) -> Result<lock::Guard> {
     lock::take(&lock::sibling(path), lock::Mode::Exclusive, lock_wait()).map_err(|e| lock_err("move", path, e))
+}
+
+/// The same EXCLUSIVE lock as `lock_for_move`, for a command that DELETES the file at `path`:
+/// it waits for every `Store::open` on it to close, and refuses (naming the holder where it
+/// can) past the wait, so a board another tb still has open is never removed under it.
+pub fn lock_for_delete(path: &Path) -> Result<lock::Guard> {
+    lock::take(&lock::sibling(path), lock::Mode::Exclusive, lock_wait()).map_err(|e| lock_err("delete", path, e))
 }
 
 /// Place `from` at `to` without ever clobbering an existing file there: hard-link `from` into

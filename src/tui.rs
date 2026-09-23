@@ -96,7 +96,7 @@ pub enum Mode {
     AddCheck { id: i64, buf: String },
     /// Repo picker (`R`): typed filter and selected row (row 0 = "none").
     Picker { filter: String, sel: usize },
-    /// Board picker (`B`): the selected row in `App::boards`.
+    /// Board picker (`B`): the selected row — `App::boards` first, then `App::archived_boards`.
     Boards { sel: usize },
     /// Popup for a GitHub PR (`pr`=true) or issue.
     GhItem { pr: bool, number: i64 },
@@ -182,6 +182,19 @@ pub enum Confirm {
     /// holder, so `y` is the forced, logged path — like `NotMine`, but for `check`/`prio`
     /// instead of a column move.
     NotMineWrite(i64, HeldWrite),
+    /// Board picker: archive the named live board.
+    ArchiveBoard(String),
+    /// Board picker: bring the named archived board back.
+    RestoreBoard(String),
+    /// Board picker: delete the named ARCHIVED board for good.
+    DeleteBoard(String),
+}
+
+/// A row of the board picker.
+enum Picked {
+    Live(crate::boards::BoardRow),
+    Archived(String),
+    None,
 }
 
 /// A queue-order or checklist write the store applies no guard to itself (like `note`, `check`
@@ -349,6 +362,9 @@ pub struct App {
     pub picker_msg: Option<String>,
     /// Board picker rows (`tb boards`), re-read from disk each time `B` opens the overlay.
     pub boards: Vec<crate::boards::BoardRow>,
+    /// Board picker: archived boards, one row per name (its newest archive), listed after
+    /// the live ones.
+    pub archived_boards: Vec<crate::boards::ArchiveRow>,
     /// Keyboard focus and the selected row inside each panel.
     pub focus: Focus,
     pub gh_sel: usize,
@@ -398,6 +414,7 @@ impl App {
             repos_rx: None,
             picker_msg: None,
             boards: Vec::new(),
+            archived_boards: Vec::new(),
             focus: Focus::Columns,
             gh_sel: 0,
             ag_sel: 0,
@@ -701,7 +718,7 @@ impl App {
                 }
             }
             Mode::Boards { sel } => {
-                let last = self.boards.len().saturating_sub(1);
+                let last = (self.boards.len() + self.archived_boards.len()).saturating_sub(1);
                 match key.code {
                     // esc leaves everything exactly as it was
                     KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
@@ -709,11 +726,14 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') => self.mode = Mode::Boards { sel: (sel + 1).min(last) },
                     KeyCode::Home => self.mode = Mode::Boards { sel: 0 },
                     KeyCode::End => self.mode = Mode::Boards { sel: last },
-                    KeyCode::Enter => {
-                        if let Some(row) = self.boards.get(sel.min(last)).cloned() {
-                            self.switch_board(&row, store);
+                    KeyCode::Enter => match self.picked(sel.min(last)) {
+                        Picked::Live(row) => self.switch_board(&row, store),
+                        Picked::Archived(name) => {
+                            self.status = Some((format!("'{name}' is archived — r restores it, d deletes it for good"), false))
                         }
-                    }
+                        Picked::None => {}
+                    },
+                    KeyCode::Char(c @ ('a' | 'r' | 'd')) => self.ask_board_action(c, sel.min(last)),
                     _ => {}
                 }
             }
@@ -748,6 +768,10 @@ impl App {
                     KeyCode::End => self.help_scroll = self.help_max.get(),
                     _ => {}
                 }
+            }
+            Mode::Confirm { action, .. } if matches!(action, Confirm::ArchiveBoard(_) | Confirm::RestoreBoard(_) | Confirm::DeleteBoard(_)) => {
+                let yes = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+                self.board_action_confirmed(action, yes);
             }
             Mode::Confirm { action, .. } => {
                 self.mode = Mode::Normal;
@@ -786,6 +810,7 @@ impl App {
                             }
                         }
                         Confirm::NotMineWrite(id, write) => self.commit_forced_write(id, write, store),
+                        Confirm::ArchiveBoard(_) | Confirm::RestoreBoard(_) | Confirm::DeleteBoard(_) => {}
                     }
                 } else {
                     self.status = Some(("cancelled".into(), false));
@@ -1351,9 +1376,91 @@ impl App {
             Ok(rows) => {
                 let sel = rows.iter().position(|b| b.name == self.snap.board).unwrap_or(0);
                 self.boards = rows;
+                // one row per archived name: its newest archive (the one `restore` takes)
+                let mut archived = crate::boards::archived();
+                archived.reverse();
+                archived.dedup_by(|a, b| a.name == b.name);
+                archived.reverse();
+                self.archived_boards = archived;
                 self.mode = Mode::Boards { sel };
             }
         }
+    }
+
+    /// The board picker's row `i`: a live board, then the archived ones.
+    fn picked(&self, i: usize) -> Picked {
+        if let Some(row) = self.boards.get(i) {
+            return Picked::Live(row.clone());
+        }
+        match self.archived_boards.get(i - self.boards.len()) {
+            Some(a) => Picked::Archived(a.name.clone()),
+            None => Picked::None,
+        }
+    }
+
+    /// `a` / `r` / `d` in the board picker: a y/n question naming the board. The rules are the
+    /// CLI's, checked again by the same `boards` functions when the answer is yes; the ones
+    /// the picker can see from here are said now, without asking.
+    fn ask_board_action(&mut self, key: char, sel: usize) {
+        let refuse = |app: &mut App, msg: String| app.status = Some((msg, true));
+        let (action, prompt) = match (key, self.picked(sel)) {
+            ('a', Picked::Live(row)) if row.name == self.snap.board => {
+                return refuse(self, format!("you are on '{}' — switch to another board first, then archive it", row.name));
+            }
+            ('a', Picked::Live(row)) => {
+                let p = format!("archive board '{}'? You can restore it later. y/n", row.name);
+                (Confirm::ArchiveBoard(row.name), p)
+            }
+            ('r', Picked::Archived(name)) => {
+                let p = format!("restore archived board '{name}'? y/n");
+                (Confirm::RestoreBoard(name), p)
+            }
+            ('d', Picked::Archived(name)) => {
+                let p = format!("delete archived board '{name}' for good? This cannot be undone. y/n");
+                (Confirm::DeleteBoard(name), p)
+            }
+            ('d', Picked::Live(row)) => {
+                return refuse(self, format!("'{}' is a live board — archive it first (a), then delete it", row.name));
+            }
+            ('r', Picked::Live(row)) => return refuse(self, format!("'{}' is not archived — nothing to restore", row.name)),
+            ('a', Picked::Archived(name)) => return refuse(self, format!("'{name}' is already archived")),
+            _ => return,
+        };
+        self.mode = Mode::Confirm { action, prompt };
+    }
+
+    /// The answer to a board picker question: on yes, run it through the same `boards`
+    /// function the CLI uses; either way, go back to the picker, re-read from disk.
+    fn board_action_confirmed(&mut self, action: Confirm, yes: bool) {
+        let name = match &action {
+            Confirm::ArchiveBoard(n) | Confirm::RestoreBoard(n) | Confirm::DeleteBoard(n) => n.clone(),
+            _ => return,
+        };
+        let status = if !yes {
+            ("cancelled".to_string(), false)
+        } else {
+            let r = match action {
+                Confirm::ArchiveBoard(_) => crate::boards::archive(&name).map(|_| format!("archived '{name}' — r restores it")),
+                Confirm::RestoreBoard(_) => crate::boards::restore(&name).map(|_| format!("restored '{name}'")),
+                _ => crate::boards::delete(&name, false).map(|d| format!("deleted '{name}' for good ({} file(s))", d.removed.len())),
+            };
+            match r {
+                Ok(msg) => (msg, false),
+                Err(e) => (e.to_string(), true),
+            }
+        };
+        self.open_boards();
+        if let Mode::Boards { .. } = self.mode {
+            let at = self
+                .boards
+                .iter()
+                .position(|b| b.name == name)
+                .or_else(|| self.archived_boards.iter().position(|a| a.name == name).map(|i| i + self.boards.len()));
+            if let Some(sel) = at {
+                self.mode = Mode::Boards { sel };
+            }
+        }
+        self.status = Some(status);
     }
 
     /// Enter in the board picker: open that board's file in place of the running one — no
@@ -3187,7 +3294,7 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("T", "dark / light theme"),
         ("L", "view: auto, focus, third-h, third-v, half-h, half-v"),
         ("A / G", "show / hide AGENTS / GITHUB"),
-        ("B", "boards: switch to another board without quitting"),
+        ("B", "boards: switch without quitting; a archive, r restore, d delete"),
         ("R", "pick the GitHub repo"),
         ("?", "this help"),
     ]),
@@ -3517,8 +3624,14 @@ const BOARD_COLS: [(&str, u16); 4] = [("TODO", 4), ("DOING", 5), ("REVIEW", 6), 
 /// The name column is never narrower than its own header.
 const BOARD_NAME_HEAD: &str = "BOARD";
 /// The overlay's bottom hint, longest form first; the widest one that fits is used.
-const BOARD_HINTS: [&str; 3] =
-    [" up/down select · enter switch · esc cancel ", " enter switch · esc cancel ", " esc "];
+const BOARD_HINTS: [&str; 4] = [
+    " up/down select · enter switch · a archive · r restore · d delete · esc cancel ",
+    " enter switch · a archive · r restore · d delete · esc ",
+    " enter switch · esc cancel ",
+    " esc ",
+];
+/// The line between the live boards and the archived ones.
+const BOARD_ARCHIVED_HEAD: &str = "archived";
 
 /// Which count columns fit in `w` cells, and how wide the name column is then. `longest` is
 /// the longest board name. Widths are the marker (2), the name, each kept count column, and
@@ -3547,12 +3660,19 @@ fn boards_width(longest: u16) -> u16 {
 }
 
 /// The `B` board picker: the rows of `tb boards` — name, todo/doing/review/done, `*` on the
-/// default board — with the current board bold. An overlay like the `?` help: it never moves
-/// the board underneath, and it scrolls (with the selection) when the pane is too short.
+/// default board — with the current board bold, then (under an `archived` line, dim) the
+/// archived boards, which `r` restores and `d` deletes. An overlay like the `?` help: it never
+/// moves the board underneath, and it scrolls (with the selection) when the pane is too short.
 fn draw_boards(f: &mut Frame, app: &App, sel: usize) {
     use ratatui::widgets::{Cell, Row, Table};
-    let longest = app.boards.iter().map(|b| b.name.chars().count()).max().unwrap_or(0) as u16;
-    let area = centered(f.area(), boards_width(longest), app.boards.len() as u16 + 3);
+    let live_n = app.boards.len();
+    let arch_n = app.archived_boards.len();
+    let names = app.boards.iter().map(|b| &b.name).chain(app.archived_boards.iter().map(|a| &a.name));
+    // the `archived` line is laid out like a name, so it is never cut
+    let head_w = if arch_n > 0 { BOARD_ARCHIVED_HEAD.len() } else { 0 };
+    let longest = names.map(|n| n.chars().count()).chain([head_w]).max().unwrap_or(0) as u16;
+    let lines = live_n + arch_n + usize::from(arch_n > 0);
+    let area = centered(f.area(), boards_width(longest), lines as u16 + 3);
     if area.width < 10 || area.height < 4 {
         return;
     }
@@ -3567,15 +3687,15 @@ fn draw_boards(f: &mut Frame, app: &App, sel: usize) {
     let inner = b.inner(area);
     f.render_widget(b, area);
     let pad = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
-    if app.boards.is_empty() {
+    if live_n + arch_n == 0 {
         let lines: Vec<Line> = wrap_words("no boards yet", pad.width as usize).into_iter().map(Line::raw).collect();
         f.render_widget(Paragraph::new(lines), pad);
         return;
     }
     let (keep, name_w) = boards_plan(pad.width, longest);
-    let sel = sel.min(app.boards.len() - 1);
+    let sel = sel.min(live_n + arch_n - 1);
     let sel_st = bold().add_modifier(Modifier::REVERSED);
-    let rows: Vec<Row> = app
+    let mut rows: Vec<Row> = app
         .boards
         .iter()
         .enumerate()
@@ -3597,6 +3717,23 @@ fn draw_boards(f: &mut Frame, app: &App, sel: usize) {
             }
         })
         .collect();
+    if arch_n > 0 {
+        let head = if name_w as usize >= BOARD_ARCHIVED_HEAD.len() { BOARD_ARCHIVED_HEAD } else { "" };
+        rows.push(Row::new([Cell::from(""), Cell::from(head)]).style(dim()));
+        for (j, a) in app.archived_boards.iter().enumerate() {
+            let i = live_n + j;
+            let marker = if i == sel { ">" } else { " " };
+            let mut cells = vec![Cell::from(marker), Cell::from(fit(&a.name, name_w as usize))];
+            for (k, (_, w)) in BOARD_COLS.iter().enumerate() {
+                if keep[k] {
+                    let n = a.counts.map_or("-".to_string(), |c| c[k].to_string());
+                    cells.push(Cell::from(format!("{n:>w$}", w = *w as usize)));
+                }
+            }
+            let row = Row::new(cells);
+            rows.push(if i == sel { row.style(sel_st) } else { row.style(dim()) });
+        }
+    }
     // a header is shown whole or not at all — never half of one
     let name_head = if name_w >= BOARD_NAME_HEAD.len() as u16 { BOARD_NAME_HEAD } else { "" };
     let mut head = vec![Cell::from(""), Cell::from(name_head)];
@@ -3609,7 +3746,9 @@ fn draw_boards(f: &mut Frame, app: &App, sel: usize) {
     }
     // scroll with the selection: the header stays, the rows below it slide
     let body_h = inner.height.saturating_sub(1) as usize;
-    let off = (sel + 1).saturating_sub(body_h.max(1));
+    // the `archived` line sits between the two lists, so an archived row is one line lower
+    let line = sel + usize::from(sel >= live_n);
+    let off = (line + 1).saturating_sub(body_h.max(1));
     let rows: Vec<Row> = rows.into_iter().skip(off).collect();
     let table = Table::new(rows, widths).header(Row::new(head).style(bold())).column_spacing(1);
     f.render_widget(table, pad);

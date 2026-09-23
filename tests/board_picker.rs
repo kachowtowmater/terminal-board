@@ -193,7 +193,15 @@ fn board_picker_lists_switches_in_place_and_cancels() {
     assert_eq!(app.snap.cards.len(), 1);
 }
 
-const HINTS: [&str; 3] = ["up/down select · enter switch · esc cancel", "enter switch · esc cancel", "esc"];
+/// The picker's bottom hint, longest first. The first two name the archive/restore/delete keys
+/// (`a`/`r`/`d`) the picker gained with board deletion; a narrow pane still falls back to the
+/// short forms it always had.
+const HINTS: [&str; 4] = [
+    "up/down select · enter switch · a archive · r restore · d delete · esc cancel",
+    "enter switch · a archive · r restore · d delete · esc",
+    "enter switch · esc cancel",
+    "esc",
+];
 
 /// The overlay's inner rows, found by its ` Boards ` title and cut to its own box, plus the
 /// bottom border row that carries the hint.
