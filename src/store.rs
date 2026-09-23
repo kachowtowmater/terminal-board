@@ -845,6 +845,21 @@ fn is_board(conn: &Connection) -> Result<bool> {
 ///
 /// It compares the schema before and after instead of keeping a list of migrations, so a
 /// migration written later, by anyone, in any style, is backed up without registering anything.
+///
+/// The ONE place `notice`'s board key is computed — `Store::path`/`notice_key` and every
+/// `notice::push_for` about THIS connection all call this, never re-derive their own guess
+/// from the pre-open `Path`. A hand-rolled `Path::display()` on that path missed a relative
+/// input, `TB_DB` passing one through, a path with `..` in it, or the same board opened a
+/// second time under a spelling that resolves the same way but is not byte-identical — SQLite
+/// resolves the connection's OWN filename once, consistently, and both sides just ask it for
+/// that same answer, so a push and its later drain can never disagree, whatever the input
+/// looked like. `conn.path()` is available the instant `Connection::open` returns, which is
+/// always after the file exists (`create_board` creates it first) — so this never needs to
+/// canonicalise a not-yet-created path by hand, the one thing that cannot be done portably.
+fn conn_notice_key(conn: &Connection) -> Option<String> {
+    conn.path().filter(|p| !p.is_empty()).map(str::to_string)
+}
+
 /// Would `migrate` change this board's schema? Asked on a READ-ONLY connection, where the
 /// upgrade itself cannot run: a probe that only reads.
 fn needs_upgrade(conn: &Connection) -> Result<bool> {
@@ -894,11 +909,18 @@ fn upgrade(conn: &mut Connection, path: &Path, on_disk: bool) -> Result<()> {
         return Err(e);
     }
     if let Some(backup) = backup {
-        crate::notice::push(format!(
-            "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
-            path.display(),
-            backup.display()
-        ));
+        // keyed via `conn_notice_key`, not `path.display()` — see its doc comment: only the
+        // board that raised this ever drains it, whatever the input path looked like
+        if let Some(key) = conn_notice_key(conn) {
+            crate::notice::push_for(
+                &key,
+                format!(
+                    "{} was written by an older tb: it was backed up to {} before its schema was upgraded — to go back, see \"Going back to an older tb\" in UPGRADING.md",
+                    path.display(),
+                    backup.display()
+                ),
+            );
+        }
     }
     Ok(())
 }
@@ -984,13 +1006,18 @@ fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
     if shared {
         return;
     }
-    crate::notice::push(format!(
-        "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
-        real.display(),
-        crate::fsperm::fmt_mode(mode),
-        config_cmd(path, "file-mode private"),
-        config_cmd(path, "file-mode shared"),
-    ));
+    // keyed via `conn_notice_key`, not `real.display()` — see its doc comment on `upgrade`
+    let Some(key) = conn_notice_key(conn) else { return };
+    crate::notice::push_for(
+        &key,
+        format!(
+            "{} is open to other users (mode {}) — make it private with {}, or keep it that way with {}",
+            real.display(),
+            crate::fsperm::fmt_mode(mode),
+            config_cmd(path, "file-mode private"),
+            config_cmd(path, "file-mode shared"),
+        ),
+    );
 }
 
 /// Seed spec for test fixtures (explicit column, age, checklist, notes).
@@ -1072,7 +1099,14 @@ impl Store {
 
     /// The database file (None for an in-memory board).
     pub fn path(&self) -> Option<std::path::PathBuf> {
-        self.conn.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from)
+        conn_notice_key(&self.conn).map(std::path::PathBuf::from)
+    }
+
+    /// The key `notice` warnings about this board are pushed and drained under (see
+    /// `conn_notice_key`) — the same connection, so it is the same string `path()` reports,
+    /// every time, for any input path shape.
+    pub fn notice_key(&self) -> Option<String> {
+        conn_notice_key(&self.conn)
     }
 
     /// Changes whenever another connection commits (for `watch`).
@@ -2664,5 +2698,109 @@ mod tests {
         assert_eq!(fmt_age(40 * 60), "40m");
         assert_eq!(fmt_age(3600 + 12 * 60), "1h12m");
         assert_eq!(fmt_age(2 * 86400 + 5), "2d");
+    }
+}
+
+/// `conn_notice_key` must agree with itself across the input shapes that broke the earlier,
+/// hand-rolled version (`Path::display()` on the pre-open path): a push during `Store::open`
+/// and a later drain via `Store::notice_key()` both call it on the SAME open connection, so
+/// they can never disagree — these tests prove that for the shapes that matter, not just the
+/// plain absolute path every other test already uses.
+///
+/// `#[cfg(unix)]`: `report_wide_file` (what these trigger) is itself unix-only (`fsperm::mode_of`
+/// returns `None` off unix, so it never fires there) — nothing here is testing something that
+/// exists on other platforms. `cargo check --target x86_64-pc-windows-gnu` (the project's
+/// windows gate) does not compile test code at all (no `--tests`/`--all-targets`), so this
+/// module never needs to type-check there either.
+///
+/// No test here mutates process-global state (`std::env::set_current_dir` / `set_var`): a
+/// "relative path" is built by walking up from `std::env::current_dir()` with `..` segments
+/// back down into a fresh tempdir, never by changing the process's actual cwd — this test
+/// binary runs `#[test]` fns on multiple threads at once, and a real chdir would be exactly
+/// the class of cross-test hazard this whole fix exists to remove. `TB_DB` pointing at a
+/// relative file is not tested separately: `boards::path_for` does zero transformation on it
+/// (`PathBuf::from(the_raw_string)`, read from the source), so at the `Store::open` level it
+/// is the identical scenario the relative-path test already covers.
+#[cfg(all(test, unix))]
+mod notice_key_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Create `path` (and its parent directories) as a file mode 0644 — "already existed,
+    /// world-readable" — the shape `report_wide_file` reports on, deterministically, without
+    /// depending on the process umask the way a freshly-`Store::open`-ed file's mode would.
+    fn seed_wide_file(path: &Path) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(path, b"").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    /// Open `path` and assert the wide-file notice it raises is found under exactly the key
+    /// `notice_key()` reports for that same store — the property this whole module checks.
+    fn assert_key_round_trips(path: &Path) {
+        let store = Store::open(path).unwrap();
+        let key = store.notice_key().expect("an on-disk board always has a key");
+        let pending = crate::notice::take_unprinted_for(&key);
+        assert!(
+            pending.iter().any(|m| m.contains("is open to other users")),
+            "push (inside Store::open) and drain (notice_key(), right after) must agree on the \
+             key for {path:?} — got key {key:?}, pending {pending:?}"
+        );
+    }
+
+    #[test]
+    fn a_relative_board_path() {
+        // walk up from cwd to `/` with `..`, then back down into a fresh tempdir — a genuine
+        // relative Path (no leading `/`) that resolves to the same file as `dir.path()`,
+        // without ever touching the process's actual current directory
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ups = "../".repeat(cwd.components().filter(|c| matches!(c, std::path::Component::Normal(_))).count());
+        let target = dir.path().join("relative.db");
+        let rel = PathBuf::from(format!("{ups}{}", target.strip_prefix("/").unwrap().display()));
+        assert!(!rel.is_absolute(), "sanity: the input really is relative: {rel:?}");
+        seed_wide_file(&target);
+        assert_key_round_trips(&rel);
+    }
+
+    #[test]
+    fn a_path_with_dotdot_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("board.db");
+        seed_wide_file(&target);
+        // absolute, but not the shortest form: a `..` segment that only cancels out once
+        // resolved, the same shape a hand-typed `--db ../shared/../work/board.db` would take
+        let messy = dir.path().join("sub").join("..").join("board.db");
+        assert_key_round_trips(&messy);
+    }
+
+    #[test]
+    fn a_path_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.db");
+        let link = dir.path().join("link.db");
+        seed_wide_file(&real_file);
+        std::os::unix::fs::symlink(&real_file, &link).unwrap();
+        assert_key_round_trips(&link);
+    }
+
+    #[test]
+    fn the_same_board_opened_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("board.db");
+        seed_wide_file(&target);
+        let store1 = Store::open(&target).unwrap();
+        let key1 = store1.notice_key().unwrap();
+        drop(store1);
+        let store2 = Store::open(&target).unwrap();
+        let key2 = store2.notice_key().unwrap();
+        assert_eq!(key1, key2, "the same file opened twice must key identically");
+        // the notice the FIRST open raised is still sitting there, findable under that same
+        // key, exactly as a `reload()` on either store would find it
+        let pending = crate::notice::take_unprinted_for(&key1);
+        assert!(pending.iter().any(|m| m.contains("is open to other users")), "{pending:?}");
     }
 }
