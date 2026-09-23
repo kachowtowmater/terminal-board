@@ -252,8 +252,6 @@ The name is left out only when a bare `tb` is certain to reach that board: it is
 plain `tb` opens (the saved default board, else `default`) and no `TB_BOARD` is set. A board
 picked by `TB_BOARD` or by the saved default travels with the environment, so its hints stay bare.
 
-## Warnings — `"warnings": ["…"]`
-
 ## `tb import FILE|-` and `tb edit --from FILE|-` — many cards from one file
 
 A **row is the card object above**, so `tb board --json` or `tb show ID --json` output can be
@@ -342,6 +340,14 @@ same event fields `tb watch --events` streams, without the live stream's `from`/
 second; events are selected by their timestamp, so a history written out of order still
 answers "everything since Tuesday" correctly.
 
+Interleaved with the card events, oldest first by the same clock, are the board's own —
+`mv` leaving a `moved-out` behind on the board a card left (the moved-in half is a card
+event, and `tb show` on the new id prints it; the moved-out half has no card of its own to
+attach to), a WIP change, a file-mode change, a soft-delete: `card_id` is **`null`** on these
+rows, never a card's id repurposed to mean "the board" (`actor_id` is whatever it always is —
+null when nothing but the name is known). Plain text marks the same row `board` where a card
+row shows `#ID`. Previously nothing printed this half of a move's trail (#106).
+
 ## `tb list --done [--since DATE]`
 
 The finished cards the board's DONE column shows (the last 24 hours), or — with `--since` —
@@ -350,7 +356,7 @@ array of card objects, the same shape as `tb list --json`.
 
 `tb export`, `tb log` and `tb list` never write to the board file.
 
-## `tb agents --json`
+## Warnings — `"warnings": ["…"]`
 
 Some things tb has to say without failing the command: `TB_BOARD` was ignored because
 `TB_DB` pins a file; the board file can be opened by other users; the board was backed up
@@ -465,4 +471,5 @@ the last accepted, `4102444799`) —
 a bad value is refused (exit 1) before anything is written, in plain text on stderr or as
 `{ "ok": false, "error": "TB_NOW is not a plausible unix second: '…'", "hint": "unset it, …" }`.
 The read-only variables (`TB_AS`, `TB_BOARD`, `TB_DB`, `TB_GH`, `TB_TTY`, `TB_NO_HERDR`,
-`TB_NO_SETUP`) may stay lenient: a wrong value fails visibly where it is used.
+`TB_NO_SETUP`, `TB_STDIN_TIMEOUT`) may stay lenient: a wrong value fails visibly where it is
+used, or — `TB_STDIN_TIMEOUT` — is simply not applied.
