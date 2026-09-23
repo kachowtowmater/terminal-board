@@ -76,8 +76,9 @@ override), never in the board: a copied board can ask for a gate, never say what
 - `Identity::resolve` now reads `PI_SESSION_ID` as the session and `PI_MODEL` as the model,
   the same way `CLAUDE_CODE_SESSION_ID` is read for Claude Code, but only when the harness
   resolved to `pi`: a stray `PI_MODEL` or `PI_SESSION_ID` under another harness is never taken.
-  `TB_SESSION` and `TB_MODEL` still win when set. pi's harness name was already read from
-  `AI_AGENT`.
+  Under pi, an inherited `CLAUDE_CODE_SESSION_ID` (a pi started from a Claude Code shell) is
+  never taken as pi's session. `TB_SESSION` and `TB_MODEL` still win when set. pi's harness
+  name was already read from `AI_AGENT`.
 
 ### `a` can set a due date without dropping to the CLI (#104)
 

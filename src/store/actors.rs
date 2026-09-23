@@ -119,9 +119,15 @@ impl Identity {
         // `AI_AGENT=pi`. They are only trusted once the harness is pi: another tool could set
         // the same plain-looking names, and nothing is attributed to pi unless pi is running.
         let is_pi = harness.as_deref() == Some("pi");
-        let mut session = tb("SESSION")
-            .or_else(|| var("CLAUDE_CODE_SESSION_ID"))
-            .or_else(|| is_pi.then(|| var("PI_SESSION_ID")).flatten());
+        // Under pi, the session is pi's own: pi hands its whole environment to its children, so
+        // a pi started from a Claude Code shell still carries `CLAUDE_CODE_SESSION_ID`, and that
+        // id belongs to the Claude session, not to this one.
+        let exported_session = if is_pi {
+            var("PI_SESSION_ID")
+        } else {
+            var("CLAUDE_CODE_SESSION_ID")
+        };
+        let mut session = tb("SESSION").or(exported_session);
         if harness.is_none() || session.is_none() {
             if let Some(rec) = var("HERDR_PANE_ID").and_then(|p| (src.pane)(p.trim())) {
                 harness = harness.or(rec.harness);
@@ -440,6 +446,28 @@ mod tests {
         assert_eq!(who.harness.as_deref(), Some("pi"));
         assert_eq!(who.session.as_deref(), Some("run-7"));
         assert_eq!(who.model.as_deref(), Some("model-x"));
+    }
+
+    #[test]
+    fn a_pi_started_from_a_claude_code_shell_records_pis_session_not_claudes() {
+        let inherited = [
+            ("AI_AGENT", "pi"),
+            ("PI_SESSION_ID", UUID),
+            ("PI_MODEL", "model-y"),
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "cc-session-1"),
+        ];
+        let who = resolve(&inherited, None);
+        assert_eq!(who.harness.as_deref(), Some("pi"));
+        assert_eq!(who.session.as_deref(), Some(UUID), "Claude's session id is not pi's");
+        assert_eq!(who.model.as_deref(), Some("model-y"));
+        // without pi's own id, Claude's is still not borrowed
+        let who = resolve(&inherited[..1].iter().chain(&inherited[3..]).copied().collect::<Vec<_>>(), None);
+        assert_eq!(who.session, None, "Claude's session id is not pi's");
+        // TB_SESSION still wins over both
+        let mut explicit = inherited.to_vec();
+        explicit.push(("TB_SESSION", "run-7"));
+        assert_eq!(resolve(&explicit, None).session.as_deref(), Some("run-7"));
     }
 
     #[test]

@@ -131,7 +131,7 @@ claim, not proof), cleaned of control characters, and at most 64 characters.
 | `harness` | TEXT NULL | the agent harness, without its version (`claude-code`, …): `$TB_HARNESS`, else what the harness exports (`$AI_AGENT`, `$CLAUDECODE`, `$OMPCODE` — checked before `$CLAUDECODE`, since omp sets that too as a compatibility flag), else herdr's record of the pane |
 | `model` | TEXT NULL | `$TB_MODEL`, else — only when `harness` resolved to `pi` — `$PI_MODEL`; every other harness gives tb nothing here, and tb never guesses it |
 | `role` | TEXT NULL | `$TB_ROLE` (orchestrator, coder, reviewer, …) — explicit only; no harness exports it |
-| `session` | TEXT NULL | the harness's session id: `$TB_SESSION`, else what the harness exports (`$CLAUDE_CODE_SESSION_ID`, or — only when `harness` resolved to `pi` — `$PI_SESSION_ID`), else herdr's record of the pane. **Never a path:** a session reported as the path of a file is stored as the identifier inside the file's name, or else as `path-` + 12 hex digits (a hash of the path) |
+| `session` | TEXT NULL | the harness's session id: `$TB_SESSION`, else what the harness exports (`$PI_SESSION_ID` when `harness` resolved to `pi`, else `$CLAUDE_CODE_SESSION_ID`; a pi started from a Claude Code shell inherits Claude's id, and pi never takes it), else herdr's record of the pane. **Never a path:** a session reported as the path of a file is stored as the identifier inside the file's name, or else as `path-` + 12 hex digits (a hash of the path) |
 | `host` | TEXT NULL | the machine (`$TB_HOST`, else the first label of its host name) |
 | `first_seen` | INTEGER | unix seconds of the first event this identity wrote |
 | `last_seen` | INTEGER | unix seconds of its latest event |
