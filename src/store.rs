@@ -403,17 +403,29 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
     Ok(v)
 }
 
+/// Who did the work on this card: its owner, or for an unowned card whoever moved it into
+/// review. A verifier that sends a card back (review -> todo, which clears the owner) and later
+/// moves it into review again is checking the work, not doing it: when someone else moved the
+/// card into review before, that move is skipped and the earlier mover is the author. A
+/// verifier that is the only one ever to move the card into review is still its author.
+/// A verifier here is a move whose recorded role is `verifier`/`reviewer`, or a name on
+/// `config verifiers`.
 fn author_of(conn: &Connection, c: &Card) -> Result<Option<String>> {
     if c.owner.is_some() {
         return Ok(c.owner.clone());
     }
-    let mover: Option<String> = conn
-        .query_row(
-            "SELECT actor FROM events WHERE card_id=? AND kind='moved' AND text LIKE '% -> review' ORDER BY id DESC LIMIT 1",
-            [c.id],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let listed = verifier::verifiers_of(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT e.actor, a.role FROM events e LEFT JOIN actors a ON a.id = e.actor_id
+         WHERE e.card_id=? AND e.kind='moved' AND e.text LIKE '% -> review' ORDER BY e.id DESC",
+    )?;
+    let movers: Vec<(String, Option<String>)> =
+        stmt.query_map([c.id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let is_verifier = |(actor, role): &(String, Option<String>)| {
+        role.as_deref().is_some_and(|r| verifier::ROLES.iter().any(|v| v.eq_ignore_ascii_case(r.trim())))
+            || listed.iter().any(|n| n.eq_ignore_ascii_case(actor.trim()))
+    };
+    let mover = movers.iter().find(|m| !is_verifier(m)).or(movers.first()).map(|(a, _)| a.clone());
     Ok(match mover {
         Some(a) if a != "github" => Some(a),
         _ => None,

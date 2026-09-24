@@ -319,3 +319,65 @@ fn tb_log_carries_the_identity_of_whoever_moved_a_card_to_done() {
     let created = rows.as_array().unwrap().iter().find(|e| e["kind"] == "created").cloned().unwrap();
     assert!(created["identity"].is_null(), "{created}");
 }
+
+/// A verifier that FAILS a card sends it back (review -> todo, which clears the owner). Once
+/// the worker has fixed it and sent it to review again, the same verifier closes it.
+#[test]
+fn a_verifier_that_failed_a_card_closes_it_after_the_fix() {
+    let b = Board::new();
+    let id = b.in_review("k: fail then fix", "bot-1");
+    b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
+    b.ok(AGENT, "bot-1", &["take", &id]);
+    b.ok(AGENT, "bot-1", &["done", &id]);
+    b.ok(VERIFIER, "rv-1", &["done", &id]);
+    assert_eq!(b.column(&id), "done");
+}
+
+/// The same verifier sends a card back and later returns it to review itself (the failure was
+/// ruled out of scope): moving it back is checking the work, not doing it, so the verifier
+/// still closes it — and the worker who built it still cannot.
+#[test]
+fn a_verifier_that_sent_a_card_back_and_returned_it_itself_still_closes_it() {
+    let b = Board::new();
+    let id = b.in_review("l: sent back, returned", "bot-1");
+    b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
+    b.ok(VERIFIER, "rv-1", &["move", &id, "review"]);
+    // the builder, even claiming the role, is still the author
+    let (e, code) = b.refused(VERIFIER, "bot-1", &["done", &id]);
+    assert_eq!(code, "self_approve", "the builder closed its own card: {e}");
+    assert_eq!(b.column(&id), "review");
+    let o = b.run(VERIFIER, "rv-1", &["done", &id]);
+    assert!(o.status.success(), "the verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+}
+
+/// A name on `config verifiers` (no role) is a verifier for this too.
+#[test]
+fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-2"]);
+    let id = b.in_review("m: listed verifier", "bot-1");
+    b.ok(AGENT, "rv-2", &["move", &id, "todo"]);
+    b.ok(AGENT, "rv-2", &["move", &id, "review"]);
+    let o = b.run(AGENT, "rv-2", &["done", &id]);
+    assert!(o.status.success(), "the listed verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+}
+
+/// A verifier that did the work is still refused, however the card got back to review: it
+/// held the card, or it is the only one that ever moved it into review.
+#[test]
+fn a_verifier_that_built_the_card_is_still_refused_after_a_send_back() {
+    let b = Board::new();
+    let id = b.in_review("n: verifier built it", "rv-1");
+    b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
+    b.ok(VERIFIER, "rv-1", &["move", &id, "review"]);
+    let (e, code) = b.refused(VERIFIER, "rv-1", &["done", &id]);
+    assert_eq!(code, "self_approve", "{e}");
+
+    let two = b.add("o: verifier routed it alone");
+    b.ok(VERIFIER, "rv-1", &["move", &two, "review"]);
+    let (e, code) = b.refused(VERIFIER, "rv-1", &["done", &two]);
+    assert_eq!(code, "self_approve", "{e}");
+    assert_eq!(b.column(&two), "review");
+}

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### A verifier that sent a card back can still close it
+
+- A verifier that failed a card (review -> todo, which clears the owner) and later moved it
+  back to review itself was refused its own close as "you did this work": for an unowned card
+  tb took whoever last moved it into review as its author. A move into review by a verifier
+  (role `verifier`/`reviewer`, or a name on `config verifiers`) no longer makes it the author
+  when someone else moved the card into review before; that earlier mover is the author. The
+  worker who built the card is still refused, and so is a verifier that held the card or is
+  the only one that ever moved it into review.
+
 ## 3.1.0 — 2026-09-23
 
 ### Highlights
