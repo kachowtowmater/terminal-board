@@ -19,7 +19,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use terminal_board::lock;
 use terminal_board::store::{self, Store};
 
 const ROLE: &str = "TB_LOCK_TEST_ROLE";
@@ -256,13 +257,19 @@ fn archive_vs_add() {
 }
 
 /// A board genuinely held open refuses a move, naming the process — and a killed holder
-/// leaves nothing stale: the wait it would have made a mover sit out ends the instant the
-/// process dies, well under the bound, because the lock is the kernel's.
+/// leaves nothing stale: once the process is dead the lock is free at the very first try,
+/// with no wait at all, because the lock is the kernel's and dies with its holder.
+///
+/// No wall clock: the holder says when it holds the board (a marker file) instead of
+/// the parent guessing with a sleep, and after `SIGKILL` the parent reaps it (`wait`) — the
+/// kernel has closed its files by then — and takes the lock with a ZERO wait. A lock that
+/// lingered after its holder died, for any time at all, fails that by assertion.
 #[test]
 fn a_held_open_board_refuses_a_move_and_a_killed_holder_frees_it_immediately() {
     if let (Ok(role), Ok(path)) = (std::env::var(ROLE), std::env::var(FILE).map(PathBuf::from)) {
         if role == "hold" {
             let _s = Store::open(&path).unwrap();
+            std::fs::write(path.with_extension("holding"), b"").unwrap();
             std::thread::sleep(Duration::from_secs(30));
             return;
         }
@@ -270,22 +277,23 @@ fn a_held_open_board_refuses_a_move_and_a_killed_holder_frees_it_immediately() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("held.db");
     seed(&path);
-    std::env::set_var("TB_LOCK_WAIT_MS", "300");
     let mut holder = spawn("a_held_open_board_refuses_a_move_and_a_killed_holder_frees_it_immediately", "hold", &path);
-    std::thread::sleep(Duration::from_millis(150)); // let it actually open and take the shared lock
-    let e = store::lock_for_move(&path).unwrap_err();
-    let msg = e.to_string();
+    // wait until the holder has the board open (and so the shared lock), however slow it is
+    while !path.with_extension("holding").exists() {
+        assert!(holder.try_wait().unwrap().is_none(), "the holder exited before it held the board");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::env::set_var("TB_LOCK_WAIT_MS", "300");
+    let refused = store::lock_for_move(&path);
+    std::env::remove_var("TB_LOCK_WAIT_MS");
+    let msg = refused.unwrap_err().to_string();
     assert!(msg.contains("still open in another process"), "{msg}");
     assert!(msg.contains(&format!("{}", holder.id())) || msg.contains("close whatever process"), "refusal did not name a process: {msg}");
-    // kill -9 it: the lock must release with the process, not linger for the rest of the wait
+    // kill -9 it and reap it: from here the lock must be free at once, not after any wait
     unsafe { libc::kill(holder.id() as i32, libc::SIGKILL) };
-    let start = Instant::now();
-    let g = store::lock_for_move(&path);
-    assert!(g.is_ok(), "the lock stayed busy after its holder was killed");
-    assert!(start.elapsed() < Duration::from_millis(300), "took {:?} — a killed holder should free the lock almost immediately", start.elapsed());
-    let _ = holder.kill();
     let _ = holder.wait();
-    std::env::remove_var("TB_LOCK_WAIT_MS");
+    let g = lock::take(&lock::sibling(&path), lock::Mode::Exclusive, Duration::ZERO);
+    assert!(g.is_ok(), "the lock was still held after its holder was killed and reaped");
 }
 
 /// `link_into_place` never clobbers: a file already at the destination is left exactly as it
