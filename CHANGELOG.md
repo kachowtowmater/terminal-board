@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### The board picker's `a`, `d` and `r` act at once
+
+- In the full-screen board picker (`B`), `a` archives, `d` deletes and `r` restores the
+  selected board on one keypress. There is no y/n question, and `d` works on a live board
+  too: it archives and deletes it in one go. A status line says what happened. Still
+  refused, on the status line: the board a bare `tb` opens, a board another `tb` has open,
+  and the board the picker is on (switch to another first). `tb boards delete` on the
+  command line is unchanged.
+
 ### Every column box shows the same number of whole cards
 
 On a small screen (about 60x30) the board looked off: a DOING card was drawn without its
