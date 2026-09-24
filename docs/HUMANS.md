@@ -203,11 +203,12 @@ tb boards restore old-project   # brings it back exactly as it was
 
 An archived board leaves `tb boards` and moves to the bottom of the `B` picker, under
 `archived`, until you restore it. In the picker, `a` archives the selected board, `r` restores
-it and `d` deletes it, each after a y/n question that names the board. You cannot archive the
+it and `d` deletes it (a live board too), each at once with no question; a status line says
+what happened. The board you are on is refused there: switch to another first. You cannot archive the
 board plain `tb` opens right now, or a board `TB_DB` pins; `tb boards restore` refuses onto a
 board that already exists, so a restore can never overwrite one.
 
-**Deleting a board.** Only an archived board can be deleted, so archiving is the undo window.
+**Deleting a board.** On the command line only an archived board can be deleted, so archiving is the undo window (the picker's `d` does both steps at once).
 Deleting cannot be undone:
 
 ```sh

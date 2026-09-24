@@ -413,7 +413,9 @@ tb boards restore home       # brings it back byte for byte
 
 An archived board leaves `tb boards` and is listed at the bottom of the `B` picker, under
 `archived`, until restored. In the picker `a` archives, `r` restores and `d` deletes the
-selected board, each after a y/n question naming it. Archiving is refused for the board plain
+selected board at once, with no question (`d` on a live board archives and deletes it in one
+go); a status line says what happened. The board the picker is on is refused there (switch to
+another first). Archiving is refused for the board plain
 `tb` opens right now and while `TB_DB` pins one file; restoring is refused onto a board that
 already exists, so it can never overwrite one.
 
