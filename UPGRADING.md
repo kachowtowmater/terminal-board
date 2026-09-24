@@ -1,3 +1,11 @@
+# Upgrading to 3.1.1
+
+Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.0.
+
+One change to know about: in the full-screen board picker (`B`), `a`, `d` and `r` now act on
+one keypress, with no y/n question, and `d` on a live board archives and deletes it in one go.
+`tb boards delete` on the command line still deletes only an archived board and still asks.
+
 # Upgrading to 3.1.0
 
 Nothing to do: 3.1.0 only adds `tb boards delete` and archive/restore/delete in the `B`

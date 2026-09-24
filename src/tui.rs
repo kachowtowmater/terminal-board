@@ -182,12 +182,16 @@ pub enum Confirm {
     /// holder, so `y` is the forced, logged path — like `NotMine`, but for `check`/`prio`
     /// instead of a column move.
     NotMineWrite(i64, HeldWrite),
-    /// Board picker: archive the named live board.
-    ArchiveBoard(String),
-    /// Board picker: bring the named archived board back.
-    RestoreBoard(String),
-    /// Board picker: delete the named ARCHIVED board for good.
-    DeleteBoard(String),
+}
+
+/// What a board picker key does, at once.
+enum BoardAct {
+    Archive,
+    Restore,
+    /// An archived board, for good.
+    Delete,
+    /// A live board: archived, then deleted for good.
+    DeleteLive,
 }
 
 /// A row of the board picker.
@@ -733,7 +737,7 @@ impl App {
                         }
                         Picked::None => {}
                     },
-                    KeyCode::Char(c @ ('a' | 'r' | 'd')) => self.ask_board_action(c, sel.min(last)),
+                    KeyCode::Char(c @ ('a' | 'r' | 'd')) => self.board_key(c, sel.min(last)),
                     _ => {}
                 }
             }
@@ -768,10 +772,6 @@ impl App {
                     KeyCode::End => self.help_scroll = self.help_max.get(),
                     _ => {}
                 }
-            }
-            Mode::Confirm { action, .. } if matches!(action, Confirm::ArchiveBoard(_) | Confirm::RestoreBoard(_) | Confirm::DeleteBoard(_)) => {
-                let yes = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-                self.board_action_confirmed(action, yes);
             }
             Mode::Confirm { action, .. } => {
                 self.mode = Mode::Normal;
@@ -810,7 +810,6 @@ impl App {
                             }
                         }
                         Confirm::NotMineWrite(id, write) => self.commit_forced_write(id, write, store),
-                        Confirm::ArchiveBoard(_) | Confirm::RestoreBoard(_) | Confirm::DeleteBoard(_) => {}
                     }
                 } else {
                     self.status = Some(("cancelled".into(), false));
@@ -1398,57 +1397,46 @@ impl App {
         }
     }
 
-    /// `a` / `r` / `d` in the board picker: a y/n question naming the board. The rules are the
-    /// CLI's, checked again by the same `boards` functions when the answer is yes; the ones
-    /// the picker can see from here are said now, without asking.
-    fn ask_board_action(&mut self, key: char, sel: usize) {
-        let refuse = |app: &mut App, msg: String| app.status = Some((msg, true));
-        let (action, prompt) = match (key, self.picked(sel)) {
-            ('a', Picked::Live(row)) if row.name == self.snap.board => {
-                return refuse(self, format!("you are on '{}' — switch to another board first, then archive it", row.name));
+    /// `a` / `r` / `d` in the board picker: done at once, no question — `a` archives, `d`
+    /// deletes (a live board is archived and deleted in one go), `r` restores — and a status
+    /// line says what happened. The rules are the CLI's, through the same `boards` functions:
+    /// the board a bare `tb` opens and a board another `tb` has open are refused, on the
+    /// status line. The board this picker is on is refused too (switch to another first): it
+    /// is the one board archiving would pull out from under the running `tb`.
+    fn board_key(&mut self, key: char, sel: usize) {
+        let (act, name) = match (key, self.picked(sel)) {
+            ('a' | 'd', Picked::Live(row)) if row.name == self.snap.board => {
+                let what = if key == 'a' { "archive" } else { "delete" };
+                self.status = Some((format!("you are on '{}' — switch to another board first, then {what} it", row.name), true));
+                return;
             }
-            ('a', Picked::Live(row)) => {
-                let p = format!("archive board '{}'? You can restore it later. y/n", row.name);
-                (Confirm::ArchiveBoard(row.name), p)
+            ('a', Picked::Live(row)) => (BoardAct::Archive, row.name),
+            ('d', Picked::Live(row)) => (BoardAct::DeleteLive, row.name),
+            ('d', Picked::Archived(name)) => (BoardAct::Delete, name),
+            ('r', Picked::Archived(name)) => (BoardAct::Restore, name),
+            ('r', Picked::Live(row)) => {
+                self.status = Some((format!("'{}' is not archived — nothing to restore", row.name), true));
+                return;
             }
-            ('r', Picked::Archived(name)) => {
-                let p = format!("restore archived board '{name}'? y/n");
-                (Confirm::RestoreBoard(name), p)
+            ('a', Picked::Archived(name)) => {
+                self.status = Some((format!("'{name}' is already archived — r restores it, d deletes it"), true));
+                return;
             }
-            ('d', Picked::Archived(name)) => {
-                let p = format!("delete archived board '{name}' for good? This cannot be undone. y/n");
-                (Confirm::DeleteBoard(name), p)
-            }
-            ('d', Picked::Live(row)) => {
-                return refuse(self, format!("'{}' is a live board — archive it first (a), then delete it", row.name));
-            }
-            ('r', Picked::Live(row)) => return refuse(self, format!("'{}' is not archived — nothing to restore", row.name)),
-            ('a', Picked::Archived(name)) => return refuse(self, format!("'{name}' is already archived")),
             _ => return,
         };
-        self.mode = Mode::Confirm { action, prompt };
-    }
-
-    /// The answer to a board picker question: on yes, run it through the same `boards`
-    /// function the CLI uses; either way, go back to the picker, re-read from disk.
-    fn board_action_confirmed(&mut self, action: Confirm, yes: bool) {
-        let name = match &action {
-            Confirm::ArchiveBoard(n) | Confirm::RestoreBoard(n) | Confirm::DeleteBoard(n) => n.clone(),
-            _ => return,
+        let deleted = |d: crate::boards::Deleted| format!("deleted '{name}' ({} file(s))", d.removed.len());
+        let r = match act {
+            BoardAct::Archive => crate::boards::archive(&name).map(|_| format!("archived '{name}' — r restores it")),
+            BoardAct::Restore => crate::boards::restore(&name).map(|_| format!("restored '{name}'")),
+            BoardAct::Delete => crate::boards::delete(&name, false).map(deleted),
+            // a live board: archived first (the same checks as `a`), then deleted for good
+            BoardAct::DeleteLive => crate::boards::archive(&name).and_then(|_| crate::boards::delete(&name, false)).map(deleted),
         };
-        let status = if !yes {
-            ("cancelled".to_string(), false)
-        } else {
-            let r = match action {
-                Confirm::ArchiveBoard(_) => crate::boards::archive(&name).map(|_| format!("archived '{name}' — r restores it")),
-                Confirm::RestoreBoard(_) => crate::boards::restore(&name).map(|_| format!("restored '{name}'")),
-                _ => crate::boards::delete(&name, false).map(|d| format!("deleted '{name}' for good ({} file(s))", d.removed.len())),
-            };
-            match r {
-                Ok(msg) => (msg, false),
-                Err(e) => (e.to_string(), true),
-            }
+        let status = match r {
+            Ok(msg) => (msg, false),
+            Err(e) => (e.to_string(), true),
         };
+        // back to the picker, re-read from disk, on the same board if it is still listed
         self.open_boards();
         if let Mode::Boards { .. } = self.mode {
             let at = self

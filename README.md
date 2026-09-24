@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.1.1:** on a small screen every column box shows whole cards, the same number in
+each, in a compact form when space is short. Several agents writing to a new board at once no
+longer fail with "database is locked", a verifier that sent a card back can close it once it
+is fixed, and in the `B` picker `a`, `d` and `r` archive, delete and restore at once, with no
+question. The screenshots below show the current layout.
+
 **New in 3.1.0:** `tb boards delete` removes an archived board for good, and the `B` picker
 can archive, restore and delete boards.
 
@@ -164,7 +170,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.1.0` | install that release instead of the latest (`3.1.0` works too) |
+| `--version v3.1.1` | install that release instead of the latest (`3.1.1` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
@@ -316,7 +322,7 @@ Press `?` on the board to see all keys at any time.
 | `+` / `-` | raise / lower the WIP limit (with DOING selected) |
 | `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
 | ↓ from the last card | into the GITHUB / AGENTS panels |
-| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores, `d` deletes an archived board (each asks y/n) |
+| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores and `d` deletes the selected board, at once (no question) |
 | `R` | pick the GitHub repository |
 | `G` / `A` | show or hide the GITHUB / AGENTS panel |
 | `L` | view: auto, focus, third-h, third-v, half-h, half-v |
@@ -408,7 +414,9 @@ tb boards restore home       # brings it back byte for byte
 
 An archived board leaves `tb boards` and is listed at the bottom of the `B` picker, under
 `archived`, until restored. In the picker `a` archives, `r` restores and `d` deletes the
-selected board, each after a y/n question naming it. Archiving is refused for the board plain
+selected board at once, with no question (`d` on a live board archives and deletes it in one
+go); a status line says what happened. The board the picker is on is refused there (switch to
+another first). Archiving is refused for the board plain
 `tb` opens right now and while `TB_DB` pins one file; restoring is refused onto a board that
 already exists, so it can never overwrite one.
 
@@ -1162,8 +1170,10 @@ its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 Every view splits its space **evenly**: the four columns side by side, the 2 × 2 grid's rows
 and columns, and the stacked sections of the tall third, whatever each one holds. A column
 with twenty cards and one with two get the same room, so a long DONE column never pushes TODO
-off the screen. A column fills its box with cards and counts the rest as `+N more` on the
-box's last row. The arrow keys scroll through them, and the selected card is always on screen.
+off the screen. A column fills its box with whole cards, with no fixed cap, and counts the rest
+as `+N more` on the box's last row. When space is short every box uses the same smaller card:
+a 3-row box, or one line (`#32 title…`) on a small screen, so equal boxes hold an equal
+number of cards. The arrow keys scroll through them, and the selected card is always on screen.
 The count in a column header is always the real total, whatever is hidden. An empty column
 keeps its box, and an empty TODO tells you how to add the first card.
 
