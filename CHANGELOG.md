@@ -12,6 +12,14 @@
   files, as before.
 - The settings file's directory is synced after the lock is released, not while it is held.
 
+### `*` in the board picker makes a board the default
+
+- In the board picker (`B`), `*` makes the selected board the default, the board a plain `tb`
+  opens, at once and with no question. It is saved where `tb boards --default NAME` saves it,
+  the `*` mark in the list moves, and a status line says so. `*` on the built-in `default`
+  goes back to it, like `--default --clear`. An archived board is refused (restore it
+  first). The picker's footer and the `?` help list the key.
+
 ### The board picker refuses a board another `tb` has open at once
 
 - In the board picker (`B`), `a` or `d` on a board another `tb` has open waited up to 10

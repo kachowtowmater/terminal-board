@@ -322,7 +322,7 @@ Press `?` on the board to see all keys at any time.
 | `+` / `-` | raise / lower the WIP limit (with DOING selected) |
 | `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
 | ↓ from the last card | into the GITHUB / AGENTS panels |
-| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores and `d` deletes the selected board, at once (no question) |
+| `B` | boards: switch to another board without quitting; in the picker `*` makes the selected board the default, `a` archives, `r` restores and `d` deletes it, at once (no question) |
 | `R` | pick the GitHub repository |
 | `G` / `A` | show or hide the GITHUB / AGENTS panel |
 | `L` | view: auto, focus, third-h, third-v, half-h, half-v |
@@ -373,7 +373,8 @@ tb boards
 
 **Choose the board plain `tb` opens.** `tb boards --default home` saves it: from then on
 `tb`, `tb add …`, `tb next` and every other command without a board name act on `home`, and
-`tb boards` and the board picker mark it with `*`.
+`tb boards` and the board picker mark it with `*`. In the picker (`B`), `*` does the same for
+the selected board, at once; `*` on `default` goes back to it.
 
 ```sh
 tb boards --default home     # plain tb now opens "home"
