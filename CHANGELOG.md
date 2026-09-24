@@ -10,6 +10,7 @@
 - **No more "database is locked" on a new board.** Several `tb` writing to a board that does
   not exist yet all succeed.
 - **A verifier that sent a card back can close it** once it is fixed.
+- New screenshots of every layout.
 - Fixes only: nothing needs doing to upgrade from 3.1.0.
 
 ### Every column box shows the same number of whole cards
@@ -61,6 +62,16 @@ info line while the other columns' cards were whole, some boxes had an empty row
   when someone else moved the card into review before; that earlier mover is the author. The
   worker who built the card is still refused, and so is a verifier that held the card or is
   the only one that ever moved it into review.
+
+### Smaller fixes, tests and screenshots
+
+- An empty `TB_READONLY` (`TB_READONLY=`) now means read-only is off, like unset, `0`, `no`
+  and `false`. It used to turn read-only mode on. The unit test for it no longer sets the
+  variable for the whole test process, where it made other tests' boards refuse writes (#181).
+- The killed-holder lock test waits on events instead of timing a kill against a fixed
+  300 ms bound, which failed on busy CI runners (#175).
+- The README's layout screenshots are re-shot on the current layout: every box showing
+  whole cards, and `+N more` (#179).
 
 ## 3.1.0 — 2026-09-23
 

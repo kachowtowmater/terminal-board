@@ -22,8 +22,8 @@ the live status of your agents.
 
 **New in 3.1.1:** on a small screen every column box shows whole cards, the same number in
 each, in a compact form when space is short. Several agents writing to a new board at once no
-longer fail with "database is locked", and a verifier that sent a card back can close it once
-it is fixed.
+longer fail with "database is locked", a verifier that sent a card back can close it once it
+is fixed, and the screenshots below show the current layout.
 
 **New in 3.1.0:** `tb boards delete` removes an archived board for good, and the `B` picker
 can archive, restore and delete boards.
