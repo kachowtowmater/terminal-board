@@ -1424,6 +1424,23 @@ impl App {
             }
             _ => return,
         };
+        // The board a bare `tb` opens: refused by `boards::archive` in its own words, which
+        // say "archive" — `d` says "delete".
+        if matches!(act, BoardAct::DeleteLive) && name == crate::boards::default_name() {
+            self.status = Some((format!("'{name}' is the board a bare 'tb' opens — delete another board, or point TB_BOARD elsewhere first"), true));
+            return;
+        }
+        // A board another `tb` has open: archive/restore would wait for it to close (up to
+        // 10 s) before refusing, the picker frozen and every key typed meanwhile landing on
+        // the re-read list. Look first, without waiting, and refuse at once by name.
+        // (Not for an archived board being deleted: nothing opens an archived file.)
+        let live = crate::lock::sibling(&crate::boards::path_for(&name));
+        if !matches!(act, BoardAct::Delete)
+            && matches!(crate::lock::take(&live, crate::lock::Mode::Exclusive, Duration::ZERO), Err(crate::lock::Error::Busy(_)))
+        {
+            self.status = Some((format!("'{name}' is open in another tb — close it there, then try again"), true));
+            return;
+        }
         let deleted = |d: crate::boards::Deleted| format!("deleted '{name}' ({} file(s))", d.removed.len());
         let r = match act {
             BoardAct::Archive => crate::boards::archive(&name).map(|_| format!("archived '{name}' — r restores it")),
