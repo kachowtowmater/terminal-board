@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 3.1.1 — 2026-09-24
+
+### Highlights
+
+- **Whole cards on small screens.** Every column box shows the same number of whole cards,
+  in a 3-row or one-line form when space is short, fills before `+N more`, and no longer
+  stops at ten cards.
+- **No more "database is locked" on a new board.** Several `tb` writing to a board that does
+  not exist yet all succeed.
+- **A verifier that sent a card back can close it** once it is fixed.
+- Fixes only: nothing needs doing to upgrade from 3.1.0.
 
 ### Every column box shows the same number of whole cards
 
@@ -41,6 +51,7 @@ info line while the other columns' cards were whole, some boxes had an empty row
   another process has the new file open at that moment. tb now retries the switch for up to
   the same 10 seconds it waits for any other write. A board that already exists was never
   affected. This was also why `restore_races_add_and_never_loses_a_card` failed now and then.
+
 ### A verifier that sent a card back can still close it
 
 - A verifier that failed a card (review -> todo, which clears the owner) and later moved it

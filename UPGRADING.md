@@ -1,3 +1,8 @@
+# Upgrading to 3.1.1
+
+Nothing to do: 3.1.1 is fixes only. Boards, commands and the JSON contract are unchanged from
+3.1.0.
+
 # Upgrading to 3.1.0
 
 Nothing to do: 3.1.0 only adds `tb boards delete` and archive/restore/delete in the `B`
