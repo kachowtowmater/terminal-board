@@ -23,7 +23,8 @@ the live status of your agents.
 **New in 3.1.1:** on a small screen every column box shows whole cards, the same number in
 each, in a compact form when space is short. Several agents writing to a new board at once no
 longer fail with "database is locked", a verifier that sent a card back can close it once it
-is fixed, and the screenshots below show the current layout.
+is fixed, and in the `B` picker `a`, `d` and `r` archive, delete and restore at once, with no
+question. The screenshots below show the current layout.
 
 **New in 3.1.0:** `tb boards delete` removes an archived board for good, and the `B` picker
 can archive, restore and delete boards.
@@ -321,7 +322,7 @@ Press `?` on the board to see all keys at any time.
 | `+` / `-` | raise / lower the WIP limit (with DOING selected) |
 | `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
 | ↓ from the last card | into the GITHUB / AGENTS panels |
-| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores, `d` deletes an archived board (each asks y/n) |
+| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores and `d` deletes the selected board, at once (no question) |
 | `R` | pick the GitHub repository |
 | `G` / `A` | show or hide the GITHUB / AGENTS panel |
 | `L` | view: auto, focus, third-h, third-v, half-h, half-v |

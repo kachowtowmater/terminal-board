@@ -10,8 +10,10 @@
 - **No more "database is locked" on a new board.** Several `tb` writing to a board that does
   not exist yet all succeed.
 - **A verifier that sent a card back can close it** once it is fixed.
+- **The board picker acts at once:** in `B`, `a` archives, `d` deletes and `r` restores the
+  selected board on one keypress, with no y/n question.
 - New screenshots of every layout.
-- Fixes only: nothing needs doing to upgrade from 3.1.0.
+- Nothing needs doing to upgrade from 3.1.0.
 
 ### The board picker's `a`, `d` and `r` act at once
 
