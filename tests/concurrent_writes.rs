@@ -136,7 +136,10 @@ fn concurrent_adds_on_a_new_board_all_succeed() {
 ///   that had to queue for a lock (even one of its own) fails instead of taking longer.
 ///
 /// `store_sleeps_only_through_the_wait_trace` below keeps a plain sleep from being added to
-/// the store where the trace cannot see it.
+/// the store where the trace cannot see it. What this covers is the store's write path, the
+/// one an `add` shares with every write; a lock wait that QUEUES is caught by
+/// `TB_LOCK_WAIT_MS=0`. The command layer in `src/main.rs` (what runs before the store is
+/// opened) is not traced: a sleep there is outside what this proves.
 #[test]
 fn single_process_add_stays_fast() {
     let b = Board::new();
@@ -161,9 +164,10 @@ fn single_process_add_stays_fast() {
     assert_eq!(cards.as_array().unwrap().len(), n as usize, "every add landed");
 }
 
-/// The store's waits are all visible to the trace: nothing under `src/store` (or the lock
-/// the store opens with) sleeps except through `waits::pause`, so a sleep added to the write
-/// path shows up in `single_process_add_stays_fast` instead of only making it slower.
+/// The store's waits are all visible to the trace: nothing in `src/store.rs` or `src/store/`
+/// sleeps except through `waits::pause`, so a sleep added to the store's write path shows up
+/// in `single_process_add_stays_fast` instead of only making it slower. (Test modules sleep
+/// on purpose and are not scanned: each file is read up to its `#[cfg(test)]`.)
 #[test]
 fn store_sleeps_only_through_the_wait_trace() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -174,7 +178,7 @@ fn store_sleeps_only_through_the_wait_trace() {
     let mut hits = Vec::new();
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap();
-        for (n, line) in text.lines().enumerate() {
+        for (n, line) in text.lines().enumerate().take_while(|(_, l)| l.trim() != "#[cfg(test)]") {
             let code = line.split("//").next().unwrap_or("");
             if code.contains("thread::sleep(") || code.contains("busy_timeout(") {
                 hits.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
