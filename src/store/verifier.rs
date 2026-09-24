@@ -18,6 +18,8 @@
 //!    `config verifiers` list, or a person — an actor with no agent harness in its identity.
 //!    The older guards still apply on top: never the card's author — its owner, or for an
 //!    unowned card whoever moved it into review — and never its last holder (`self_approve`).
+//!    A verifier that sends a card back and later returns it to review does not become its
+//!    author by that move (`store::author_of`).
 //!
 //! Rule 2 is on by default and can be turned off per board (`tb config verifier-only off`,
 //! logged on the board); rule 1 cannot. Who is on `config verifiers`, and whether rule 2
