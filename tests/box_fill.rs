@@ -14,6 +14,7 @@ mod common;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
+use terminal_board::github::GhSnapshot;
 use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
 use terminal_board::tui::{draw, App};
@@ -43,6 +44,9 @@ fn owners_board() -> (tempfile::TempDir, Store) {
             }
         }
     }
+    // a repo with nothing open, as on the real board: its GITHUB panel has two lines to say
+    s.set_github(Some("acme/widgets")).unwrap();
+    s.save_github(&Ok(GhSnapshot { repo: "acme/widgets".into(), fetched_at: terminal_board::store::now(), ..Default::default() })).unwrap();
     (dir, s)
 }
 
@@ -177,16 +181,19 @@ fn check(app: &App, layout: &str, w: u16, h: u16) {
     // equal boxes hold an equal number of cards
     let counts: Vec<usize> = shown_where_hidden.iter().map(|(_, n)| *n).collect();
     assert!(counts.windows(2).all(|p| p[0] == p[1]), "{at}: boxes with cards out of sight show different numbers {shown_where_hidden:?}:\n{all}");
-    // a panel under the 2x2 grid is its content, never padding, while cards are hidden
-    // (a grid across the whole width: its panels are below it, not beside it as in the rail)
-    let r = app.col_rects.get();
-    let grid = r[0].y != r[2].y && r[1].x + r[1].width == w;
-    if any_hidden && grid {
+    // a panel is its content, never padding, while cards are hidden — in every layout
+    if any_hidden {
         for name in ["GITHUB", "AGENTS"] {
             for (k, row) in panel_rows(&screen, name).iter().enumerate() {
                 assert!(!row.trim().is_empty(), "{at}: the {name} panel pads row {k} with nothing while cards are hidden:\n{all}");
             }
         }
+    }
+    // and no panel squeezes the columns below a readable width (a side rail at 60/80 cols
+    // left 10-cell boxes whose info lines were empty)
+    for (ci, _) in &drawn {
+        let r = app.col_rects.get()[*ci];
+        assert!(r.width >= 14, "{at}: column {ci} is {} cells wide:\n{all}", r.width);
     }
 }
 

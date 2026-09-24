@@ -20,9 +20,12 @@ info line while the other columns' cards were whole, some boxes had an empty row
   now, and the cap left empty rows above `+N more` in a tall box.
 - Stacked sections and the grid's two rows are now exactly equal in height. Leftover rows
   go to a GITHUB or AGENTS panel that has content for them, or stay below the boxes.
-- While cards are hidden, the GITHUB and AGENTS panels under the 2x2 grid take only their
-  content (the compact GitHub block, the agent rows), never empty padding rows. The rest
-  goes to the card boxes.
+- While cards are hidden, the GITHUB and AGENTS panels take only their content (the
+  compact GitHub block, the agent rows), never empty padding rows, in every layout. Under the
+  columns (grid, stack, half-h) the rows they give up go to the card boxes. In a side rail
+  the space below the panels stays empty.
+- A side rail that would leave the columns under 48 cells (third-h at 60 or 80 columns) is
+  not drawn: the columns take the full width and the panels become one-line bars below.
 - A tall window uses the 2x2 grid down to 48 columns (two 24-cell columns), where it used to
   stack four one-card sections from 62 columns down. In a wide view, four columns narrower
   than 14 cells (an 80x24 window with the side panels) become a 2x2 grid.

@@ -3911,7 +3911,21 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         (true, false) => 3,
     };
     let want_ag = wide && app.show_agents;
-    let (gh_h, ag_h, detail_h, gh_bar, ag_bar) = board_budget(area.height, gh_full, want_ag, wide, agent_rows);
+    let mut budget = board_budget(area.height, gh_full, want_ag, wide, agent_rows);
+    // Cards come first: when the columns would still hide cards, GITHUB gets only its
+    // CONTENT height (never padding rows) and the rows it gives up go to the columns.
+    let cols_h = |b: &(u16, u16, u16, bool, bool)| {
+        let bars = u16::from(b.3 || (!wide && app.show_github)) + u16::from(b.4 || (!wide && app.show_agents));
+        area.height.saturating_sub(2 + bars + b.0 + b.1 + b.2)
+    };
+    // (the compact GITHUB block then, sized to exactly what it draws)
+    let content = layouts::gh_compact_height(app, area.width);
+    let mut gh_compact = false;
+    if want_gh && content < budget.0 && layouts::cells_hide(app, &layouts::four_cells(Rect { height: cols_h(&budget), ..area })) {
+        budget = board_budget(area.height, content, want_ag, wide, agent_rows);
+        gh_compact = true;
+    }
+    let (gh_h, ag_h, detail_h, gh_bar, ag_bar) = budget;
     // narrow MEDIUM (< 100 cols): panels still show, as bars
     let gh_bar = gh_bar || (!wide && app.show_github);
     let ag_bar = ag_bar || (!wide && app.show_agents);
@@ -3952,7 +3966,11 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         i += 1;
     }
     if gh_h > 0 {
-        draw_github(f, app, rows[i]);
+        if gh_compact {
+            layouts::draw_gh_compact(f, app, rows[i]);
+        } else {
+            draw_github(f, app, rows[i]);
+        }
         i += 1;
     }
     if ag_h > 0 {
