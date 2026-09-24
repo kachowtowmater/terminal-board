@@ -98,6 +98,33 @@ fn concurrent_add_storm_all_succeed() {
     );
 }
 
+/// The same storm on a board that does not exist yet: every `add` opens a new file, and the
+/// switch into WAL mode (which SQLite does without its busy handler) used to fail with
+/// "database is locked" whenever two of them got there together. 20 rounds of 8 simultaneous
+/// adds, each round on a new board: every add must succeed and every card must be there.
+#[test]
+fn concurrent_adds_on_a_new_board_all_succeed() {
+    let rounds = 20;
+    let per_round = 8;
+    for round in 0..rounds {
+        let b = Board::new();
+        let children: Vec<_> = (0..per_round)
+            .map(|i| b.cmd("rv", &["add", &format!("r{round}c{i}: new board card")]).spawn().unwrap())
+            .collect();
+        for child in children {
+            let o = child.wait_with_output().unwrap();
+            assert!(
+                o.status.success(),
+                "round {round}: an add on a new board failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+        let list = b.ok("rv", &["list", "--json"]);
+        let cards: serde_json::Value = serde_json::from_str(&list).unwrap();
+        assert_eq!(cards.as_array().unwrap().len(), per_round, "round {round}: cards on the new board");
+    }
+}
+
 /// The ordinary case (#85): one process, nothing to contend with. `BEGIN IMMEDIATE` must not
 /// make an uncontended writer slower than a deferred transaction would — there is no lock to
 /// wait for either way, so the two behave the same when nobody else is writing.

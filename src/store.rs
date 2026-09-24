@@ -1193,6 +1193,32 @@ fn report_wide_file(conn: &Connection, path: &Path, real: &Path) {
     );
 }
 
+/// How long a connection waits for another `tb` to finish writing the same board.
+const BUSY_WAIT: Duration = Duration::from_secs(10);
+
+/// Put a board into WAL mode. The switch needs SQLite's exclusive lock on the file, and SQLite
+/// does not run the busy handler for it: while another `tb` has the file open it returns
+/// SQLITE_BUSY at once instead of waiting out `BUSY_WAIT`. That only happens on a board that
+/// is not in WAL mode yet — one being created — and every process that opens a new board
+/// races for it, so several `tb NAME add` started together on a new board used to fail with
+/// "database is locked". Retry the switch (it holds no lock between tries) until it succeeds or
+/// `BUSY_WAIT` runs out; once any process has made the switch it is recorded in the file and
+/// the pragma returns at once for everyone else.
+fn set_wal(conn: &Connection) -> Result<()> {
+    let deadline = std::time::Instant::now() + BUSY_WAIT;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        match conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)) {
+            Ok(_) => return Ok(()),
+            Err(e) if is_contended(&e) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// How long `Store::open` waits for a stuck EXCLUSIVE holder (a move that never finished) to
 /// let go, and how long `lock_for_move` waits for every SHARED holder (every open `Store` on
 /// that board) to close. Both bounded, both overridable in tests with `TB_LOCK_WAIT_MS` — the
@@ -1336,7 +1362,7 @@ impl Store {
         } else {
             Connection::open(&real)?
         };
-        conn.busy_timeout(Duration::from_secs(10))?;
+        conn.busy_timeout(BUSY_WAIT)?;
         if readonly {
             // a read-only connection cannot upgrade the schema; say so plainly rather than
             // failing later in SQLite's own words
@@ -1352,7 +1378,7 @@ impl Store {
             }
             return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock });
         }
-        let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        set_wal(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
         upgrade(&mut conn, &real, on_disk)?;
         if on_disk && !created {
