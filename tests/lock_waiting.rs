@@ -183,3 +183,87 @@ fn an_uncontended_take_creates_no_queue() {
     let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, [".board.db.lock"], "an uncontended take made files");
 }
+
+fn queue_of(file: &std::path::Path) -> std::path::PathBuf {
+    file.with_file_name(format!("{}.q", file.file_name().unwrap().to_str().unwrap()))
+}
+
+/// A waiter that is STOPPED (Ctrl-Z) at the head of the queue does not keep a free lock from
+/// everyone: it stops touching its ticket, and after a moment the next take passes it over.
+#[test]
+fn a_stopped_waiter_does_not_keep_a_free_lock_from_everyone() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let file = lock::sibling(&dir.path().join("board.db"));
+    let holder = lock::take(&file, Mode::Exclusive, Duration::ZERO).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "queued_child", "--nocapture"])
+        .env(QUEUE_CHILD, &file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    until_queued(&file, 1);
+    let pid = child.id().to_string();
+    assert!(std::process::Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
+    drop(holder); // the lock is free; the only waiter ahead is stopped
+    let t = std::time::Instant::now();
+    let got = lock::take(&file, Mode::Exclusive, Duration::from_secs(5));
+    let took = t.elapsed();
+    let _ = std::process::Command::new("kill").args(["-CONT", &pid]).status();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(got.is_ok(), "a stopped waiter kept a free lock from everyone for {took:?}: {:?}", got.err());
+    assert!(took < Duration::from_secs(3), "a free lock took {took:?} behind a stopped waiter");
+}
+
+/// Joining the queue never waits in the kernel: with its counter held (a process stopped
+/// inside that short window), a take still gives up within its own wait.
+#[test]
+fn a_held_queue_counter_does_not_hang_a_take() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let file = lock::sibling(&dir.path().join("board.db"));
+    let holder = lock::take(&file, Mode::Exclusive, Duration::ZERO).unwrap();
+    std::fs::create_dir_all(queue_of(&file)).unwrap();
+    let counter = lock::take(&queue_of(&file).join("next"), Mode::Exclusive, Duration::ZERO).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let r = lock::take(&file, Mode::Exclusive, Duration::from_millis(500));
+            let _ = tx.send((r.is_ok(), t.elapsed()));
+        });
+    }
+    let got = rx.recv_timeout(Duration::from_secs(5));
+    drop(counter);
+    drop(holder);
+    let (ok, took) = got.expect("a take hung on the queue's counter past its wait");
+    assert!(!ok, "the lock was held: the take cannot have got it");
+    assert!(took < Duration::from_secs(2), "a 500ms take took {took:?}");
+}
+
+/// A private ticket orphaned by a kill between creating and numbering it is removed once its
+/// process is gone.
+#[test]
+fn an_orphaned_private_ticket_is_cleaned_up() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let file = lock::sibling(&dir.path().join("board.db"));
+    std::fs::create_dir_all(queue_of(&file)).unwrap();
+    // a pid that is certainly gone: a child that has exited and been reaped
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let dead = c.id();
+    c.wait().unwrap();
+    let orphan = queue_of(&file).join(format!(".{dead}-ThreadId(1)"));
+    std::fs::write(&orphan, b"").unwrap();
+    let mine = queue_of(&file).join(format!(".{}-ThreadId(1)", std::process::id()));
+    std::fs::write(&mine, b"").unwrap();
+    // any take that queues cleans up on the way in
+    let holder = lock::take(&file, Mode::Exclusive, Duration::ZERO).unwrap();
+    let _ = lock::take(&file, Mode::Exclusive, Duration::from_millis(30));
+    drop(holder);
+    assert!(!orphan.exists(), "the orphan of a gone process is still there");
+    assert!(mine.exists(), "a private ticket of a live process was removed");
+}

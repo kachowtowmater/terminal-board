@@ -108,11 +108,18 @@ fn try_flock(file: &std::fs::File, flag: libc::c_int) -> Result<bool, Error> {
     }
 }
 
+/// How recently a waiter must have touched its ticket to hold its place. A waiter touches it
+/// on every poll (every few milliseconds); one that has not for this long is stopped (Ctrl-Z,
+/// SIGSTOP) or wedged, and is passed over — not removed: it keeps its ticket, and its place
+/// counts again the moment it polls again.
+const TICKET_FRESH: Duration = Duration::from_secs(1);
+
 /// The live tickets in `queue` that come before `before` (all of them for `None`), oldest
 /// first. A ticket is a file named by its number, held EXCLUSIVE by its waiter for as long as
-/// it waits: one that can be locked here belongs to a waiter that is gone — it gave up and
-/// crashed before removing it, or was killed — and is removed on the way, so a dead waiter
-/// never holds up the queue.
+/// it waits and touched on every poll. One that can be locked here belongs to a waiter that is
+/// gone — it gave up and crashed before removing it, or was killed — and is removed on the
+/// way; one still held but not touched for `TICKET_FRESH` belongs to a stopped waiter and is
+/// passed over. So neither a dead nor a stopped waiter holds up the queue, or a free lock.
 #[cfg(unix)]
 fn live_tickets(queue: &Path, before: Option<u64>) -> Vec<u64> {
     let Ok(rd) = std::fs::read_dir(queue) else { return Vec::new() };
@@ -131,11 +138,34 @@ fn live_tickets(queue: &Path, before: Option<u64>) -> Vec<u64> {
                 let _ = std::fs::remove_file(&path);
                 false
             }
-            Ok(false) => true,
+            // held: live if its waiter touched it lately, passed over (kept) if not
+            Ok(false) => f
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age < TICKET_FRESH),
             Err(_) => false,
         }
     });
     nums
+}
+
+/// Remove private tickets (`.PID-…`, a ticket not yet given its number) left by a process
+/// killed between creating one and numbering it — only once that process is gone.
+#[cfg(unix)]
+fn remove_orphans(queue: &Path) {
+    let Ok(rd) = std::fs::read_dir(queue) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix('.')).and_then(|n| n.split('-').next()).and_then(|p| p.parse::<i32>().ok()) else {
+            continue;
+        };
+        let gone = unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// A waiter's place in the queue: its ticket file, held EXCLUSIVE until it gets the lock or
@@ -145,7 +175,7 @@ fn live_tickets(queue: &Path, before: Option<u64>) -> Vec<u64> {
 struct Ticket {
     path: PathBuf,
     number: u64,
-    _file: std::fs::File,
+    file: std::fs::File,
 }
 
 #[cfg(unix)]
@@ -158,12 +188,14 @@ impl Drop for Ticket {
 /// Join the queue: the next number, taken under the queue's own short lock (`next`, which
 /// also holds the counter). The ticket is created and locked under a private name first and
 /// only then renamed to its number, so no one ever sees a numbered ticket that is not held.
-/// `None` when the queue cannot be used (a read-only directory): that only costs the order.
+/// `None` when the queue cannot be used (a read-only directory, or its counter held past
+/// `deadline` by a process stopped inside that window): that only costs the order.
 #[cfg(unix)]
-fn join_queue(queue: &Path) -> Option<Ticket> {
+fn join_queue(queue: &Path, deadline: std::time::Instant) -> Option<Ticket> {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::io::AsRawFd;
     std::fs::create_dir_all(queue).ok()?;
+    remove_orphans(queue);
     let private = queue.join(format!(".{}-{:?}", std::process::id(), std::thread::current().id()));
     let file = open_lock_file(&private, true).ok()?;
     if !matches!(try_flock(&file, libc::LOCK_EX), Ok(true)) {
@@ -171,11 +203,18 @@ fn join_queue(queue: &Path) -> Option<Ticket> {
         return None;
     }
     let mut counter = open_lock_file(&queue.join("next"), true).ok()?;
-    // held for a read, an increment and a rename: microseconds, so a blocking lock is fine
-    // here, and it is never held while waiting for the real lock
-    if unsafe { libc::flock(counter.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        let _ = std::fs::remove_file(&private);
-        return None;
+    // held for a read, an increment and a rename — microseconds — but still never waited on
+    // in the kernel: a process stopped inside that window must not hang every joiner, so it
+    // is tried, non-blocking, until the take's own deadline
+    loop {
+        match try_flock(&counter, libc::LOCK_EX) {
+            Ok(true) => break,
+            Ok(false) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+            _ => {
+                let _ = std::fs::remove_file(&private);
+                return None;
+            }
+        }
     }
     let mut text = String::new();
     let _ = counter.read_to_string(&mut text);
@@ -190,7 +229,7 @@ fn join_queue(queue: &Path) -> Option<Ticket> {
         let _ = std::fs::remove_file(&private);
         return None;
     }
-    Some(Ticket { path: queue.join(number.to_string()), number, _file: file })
+    Some(Ticket { path: queue.join(number.to_string()), number, file })
 }
 
 /// Take the lock on `path`, waiting at most `wait`.
@@ -205,7 +244,9 @@ fn join_queue(queue: &Path) -> Option<Ticket> {
 /// So a process that lets go and asks again at once (a loop of writes) goes to the back of the
 /// queue, and no waiter can lose the race for the lock again and again. A waiter that gives up
 /// removes its ticket; one that dies loses its hold on it with the process, and the next waiter
-/// to look skips and removes it. The uncontended take is one try, as it always was: no queue,
+/// to look skips and removes it; one that is stopped (Ctrl-Z) stops touching it and is passed
+/// over after `TICKET_FRESH`, so a free lock is never kept from everyone by a waiter that is
+/// not running. Joining the queue is itself bounded by `wait`. The uncontended take is one try, as it always was: no queue,
 /// no file created.
 #[cfg(unix)]
 pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
@@ -228,12 +269,17 @@ pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
     if wait.is_zero() {
         return Err(Error::Busy(holders(path)));
     }
-    let ticket = join_queue(&queue);
     let start = Instant::now();
+    let ticket = join_queue(&queue, start + wait);
     let mut n: u64 = 0;
     loop {
-        // my turn once nobody still waiting came before me (without a ticket: every poll)
-        let my_turn = ticket.as_ref().is_none_or(|t| live_tickets(&queue, Some(t.number)).is_empty());
+        // still here: keep my place (a ticket not touched for a while is passed over)
+        if let Some(t) = &ticket {
+            let _ = t.file.set_modified(std::time::SystemTime::now());
+        }
+        // my turn once nobody still waiting came before me (without a ticket: nobody at all)
+        let ahead = ticket.as_ref().map(|t| t.number);
+        let my_turn = live_tickets(&queue, ahead).is_empty();
         if my_turn && try_flock(&file, flag)? {
             // leaving the queue: `ticket` is dropped here, which removes it
             return Ok(Guard { file });
