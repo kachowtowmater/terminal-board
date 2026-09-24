@@ -20,6 +20,9 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.1.0:** `tb boards delete` removes an archived board for good, and the `B` picker
+can archive, restore and delete boards.
+
 **New in 3.0.0:** only a verifier moves a card to DONE, and only from REVIEW. Only the holder
 touches a DOING card, and every change records the agent session behind it. A board can ask this machine for a hook that gates every move, and the
 machine decides whether to trust it. The full-screen board splits its space evenly. There are
@@ -161,7 +164,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.0.0` | install that release instead of the latest (`3.0.0` works too) |
+| `--version v3.1.0` | install that release instead of the latest (`3.1.0` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
@@ -313,7 +316,7 @@ Press `?` on the board to see all keys at any time.
 | `+` / `-` | raise / lower the WIP limit (with DOING selected) |
 | `tab` / Shift+`tab` | go to the next / previous area: columns, GITHUB, AGENTS |
 | ↓ from the last card | into the GITHUB / AGENTS panels |
-| `B` | boards: switch to another board without quitting |
+| `B` | boards: switch to another board without quitting; in the picker `a` archives, `r` restores, `d` deletes an archived board (each asks y/n) |
 | `R` | pick the GitHub repository |
 | `G` / `A` | show or hide the GITHUB / AGENTS panel |
 | `L` | view: auto, focus, third-h, third-v, half-h, half-v |
@@ -631,6 +634,8 @@ tb --version
 | `tb boards` | list your boards |
 | `tb new NAME [--kind default\|deadline]` / `[--from BOARD]` | make a board with a kind's settings, or another board's (settings, not cards) — see [A deadline board in one command](#a-deadline-board-in-one-command) |
 | `tb boards --default [NAME]` / `--default --clear` | show, save or clear the board plain `tb` opens |
+| `tb boards archive NAME` / `restore NAME` / `--archived` | retire a board without deleting it / bring it back / list the archived ones — see [Boards](#boards) |
+| `tb boards delete NAME [--backups] [--yes]` | remove an archived board for good (a live board is refused; asks on a terminal, `--yes` elsewhere; a person only) |
 | `tb config [KEY VALUE]` | show or change settings (wip, theme, layout, github, github-panel, agents-panel; `rm delete\|archive`) |
 | `tb config tz ZONE\|local` / `tb config due-warn DAYS` | what "today" is for due dates / how early a date counts as `soon` (no value = print it) |
 | `tb config sort position\|due` | what orders the board and what `tb next` takes: the top position (default) or the nearest due date — see [Due dates](#due-dates) |
