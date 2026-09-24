@@ -73,60 +73,112 @@ impl Drop for Guard {
     }
 }
 
+/// The waiting room beside a lock file: `.board.db.lock` -> `.board.db.wait.lock`. Only a
+/// process that has to WAIT for the lock touches it, so it exists only where there was
+/// contention; like the lock file, its existence means nothing.
+fn waiting_room(lock_file: &Path) -> PathBuf {
+    let name = lock_file.file_name().and_then(|n| n.to_str()).unwrap_or("tb.lock");
+    let dir = lock_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    // `.board.db.lock` (what `sibling` names) -> `.board.db.wait.lock`
+    let base = name.strip_suffix(".lock").unwrap_or(name);
+    dir.join(format!("{base}.wait.lock"))
+}
+
 #[cfg(unix)]
-pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
-    use std::os::unix::io::AsRawFd;
+fn open_lock_file(path: &Path, create: bool) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
-    o.read(true).write(true).create(true).truncate(false);
+    o.read(true).write(true).create(create).truncate(false);
     {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
+    o.open(path)
+}
+
+/// One non-blocking try: `Ok(true)` got it, `Ok(false)` somebody else holds it.
+#[cfg(unix)]
+fn try_flock(file: &std::fs::File, flag: libc::c_int) -> Result<bool, Error> {
+    use std::os::unix::io::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), flag | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let e = std::io::Error::last_os_error();
+    if e.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(false)
+    } else {
+        Err(Error::Io(e))
+    }
+}
+
+/// Is any process waiting for this lock right now? Every waiter holds the waiting room SHARED
+/// for as long as it waits, so the room can be taken EXCLUSIVE only when nobody is in it.
+#[cfg(unix)]
+fn someone_waiting(room: &Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(f) = open_lock_file(room, false) else { return false };
+    match try_flock(&f, libc::LOCK_EX) {
+        Ok(true) => {
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+            false
+        }
+        Ok(false) => true,
+        Err(_) => false,
+    }
+}
+
+/// Take the lock on `path`, waiting at most `wait`.
+///
+/// Every try is non-blocking, on the calling thread: nothing is ever left blocked in the
+/// kernel, so a take that gives up leaves nothing behind — no thread, no open file, no queued
+/// request that could be granted the lock later.
+///
+/// Fair between waiters without a queue: a process that has to wait sits in a waiting room (a
+/// SHARED lock on a second file) while it polls. A newcomer that finds anyone in the room does
+/// not grab the lock the instant it is free — it joins the room and polls like the rest, each
+/// poll after a short sleep. So a process that lets go and asks again at once (a loop of
+/// writes) no longer wins every time over waiters that were asleep when the lock came free.
+#[cfg(unix)]
+pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
+    use std::time::Instant;
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(dir);
         }
     }
-    let file = o.open(path).map_err(Error::Io)?;
+    let file = open_lock_file(path, true).map_err(Error::Io)?;
     let flag = match mode {
         Mode::Shared => libc::LOCK_SH,
         Mode::Exclusive => libc::LOCK_EX,
     };
-    // The uncontended case, every time nobody else holds it: one non-blocking try, no thread.
-    if unsafe { libc::flock(file.as_raw_fd(), flag | libc::LOCK_NB) } == 0 {
+    let room_path = waiting_room(path);
+    // the ordinary case: nobody waiting, one try
+    if !someone_waiting(&room_path) && try_flock(&file, flag)? {
         return Ok(Guard { file });
-    }
-    let e = std::io::Error::last_os_error();
-    if e.kind() != std::io::ErrorKind::WouldBlock {
-        return Err(Error::Io(e));
     }
     if wait.is_zero() {
         return Err(Error::Busy(holders(path)));
     }
-    // Contended: wait IN THE KERNEL, not by polling. A waiter that sleeps between non-blocking
-    // tries is unfair: a process that lets go and takes the lock again at once (a loop of
-    // writes) wins every time the sleeping waiter is not looking, and under load the waiter can
-    // lose for its whole wait. A blocking `flock` is woken the moment the holder lets go.
-    // The blocking call runs on a helper thread so the wait stays bounded: past `wait` we give
-    // up, and should the helper get the lock later, its hand-off finds nobody listening, the
-    // file is dropped with the unsent message, and the lock is released at once.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let got = loop {
-            if unsafe { libc::flock(file.as_raw_fd(), flag) } == 0 {
-                break Ok(file);
-            }
-            let e = std::io::Error::last_os_error();
-            if e.kind() != std::io::ErrorKind::Interrupted {
-                break Err(e);
-            }
-        };
-        let _ = tx.send(got);
-    });
-    match rx.recv_timeout(wait) {
-        Ok(Ok(file)) => Ok(Guard { file }),
-        Ok(Err(e)) => Err(Error::Io(e)),
-        Err(_) => Err(Error::Busy(holders(path))),
+    // Wait in the room. A room that cannot be used (a read-only directory) only costs the
+    // fairness, never the lock: the polling below is the same either way.
+    let room = open_lock_file(&room_path, true).ok();
+    let mut in_room = false;
+    let start = Instant::now();
+    let mut n: u64 = 0;
+    loop {
+        if !in_room {
+            // SHARED never waits on other waiters; it can miss only while a newcomer holds the
+            // room EXCLUSIVE for the instant of its `someone_waiting` look, so try again next poll
+            in_room = room.as_ref().is_some_and(|r| matches!(try_flock(r, libc::LOCK_SH), Ok(true)));
+        }
+        n += 1;
+        std::thread::sleep(Duration::from_millis(2 + (std::process::id() as u64 + n * 7) % 9));
+        if try_flock(&file, flag)? {
+            // leaving the room: `room` is dropped here, which releases its SHARED lock
+            return Ok(Guard { file });
+        }
+        if start.elapsed() >= wait {
+            return Err(Error::Busy(holders(path)));
+        }
     }
 }
 
