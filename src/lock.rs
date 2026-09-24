@@ -73,15 +73,13 @@ impl Drop for Guard {
     }
 }
 
-/// The waiting room beside a lock file: `.board.db.lock` -> `.board.db.wait.lock`. Only a
-/// process that has to WAIT for the lock touches it, so it exists only where there was
-/// contention; like the lock file, its existence means nothing.
-fn waiting_room(lock_file: &Path) -> PathBuf {
+/// The queue beside a lock file: `.board.db.lock` -> `.board.db.lock.q/`. Only a process that
+/// has to WAIT for the lock touches it, so it exists only where there was contention; like the
+/// lock file, nothing in it means anything unless a live process holds it.
+fn queue_dir(lock_file: &Path) -> PathBuf {
     let name = lock_file.file_name().and_then(|n| n.to_str()).unwrap_or("tb.lock");
     let dir = lock_file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    // `.board.db.lock` (what `sibling` names) -> `.board.db.wait.lock`
-    let base = name.strip_suffix(".lock").unwrap_or(name);
-    dir.join(format!("{base}.wait.lock"))
+    dir.join(format!("{name}.q"))
 }
 
 #[cfg(unix)]
@@ -110,20 +108,89 @@ fn try_flock(file: &std::fs::File, flag: libc::c_int) -> Result<bool, Error> {
     }
 }
 
-/// Is any process waiting for this lock right now? Every waiter holds the waiting room SHARED
-/// for as long as it waits, so the room can be taken EXCLUSIVE only when nobody is in it.
+/// The live tickets in `queue` that come before `before` (all of them for `None`), oldest
+/// first. A ticket is a file named by its number, held EXCLUSIVE by its waiter for as long as
+/// it waits: one that can be locked here belongs to a waiter that is gone — it gave up and
+/// crashed before removing it, or was killed — and is removed on the way, so a dead waiter
+/// never holds up the queue.
 #[cfg(unix)]
-fn someone_waiting(room: &Path) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let Ok(f) = open_lock_file(room, false) else { return false };
-    match try_flock(&f, libc::LOCK_EX) {
-        Ok(true) => {
-            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
-            false
+fn live_tickets(queue: &Path, before: Option<u64>) -> Vec<u64> {
+    let Ok(rd) = std::fs::read_dir(queue) else { return Vec::new() };
+    let mut nums: Vec<u64> = rd
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u64>().ok())
+        .filter(|n| before.is_none_or(|b| *n < b))
+        .collect();
+    nums.sort_unstable();
+    nums.retain(|n| {
+        let path = queue.join(n.to_string());
+        let Ok(f) = open_lock_file(&path, false) else { return false };
+        match try_flock(&f, libc::LOCK_EX) {
+            // nobody holds it: a waiter that is gone. Remove it while holding it, so a waiter
+            // that is merely slow to look can never lose its place this way.
+            Ok(true) => {
+                let _ = std::fs::remove_file(&path);
+                false
+            }
+            Ok(false) => true,
+            Err(_) => false,
         }
-        Ok(false) => true,
-        Err(_) => false,
+    });
+    nums
+}
+
+/// A waiter's place in the queue: its ticket file, held EXCLUSIVE until it gets the lock or
+/// gives up — either way the ticket is removed, and should the process die first, the kernel
+/// lets go of it and the next look (`live_tickets`) removes it.
+#[cfg(unix)]
+struct Ticket {
+    path: PathBuf,
+    number: u64,
+    _file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Join the queue: the next number, taken under the queue's own short lock (`next`, which
+/// also holds the counter). The ticket is created and locked under a private name first and
+/// only then renamed to its number, so no one ever sees a numbered ticket that is not held.
+/// `None` when the queue cannot be used (a read-only directory): that only costs the order.
+#[cfg(unix)]
+fn join_queue(queue: &Path) -> Option<Ticket> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::io::AsRawFd;
+    std::fs::create_dir_all(queue).ok()?;
+    let private = queue.join(format!(".{}-{:?}", std::process::id(), std::thread::current().id()));
+    let file = open_lock_file(&private, true).ok()?;
+    if !matches!(try_flock(&file, libc::LOCK_EX), Ok(true)) {
+        let _ = std::fs::remove_file(&private);
+        return None;
+    }
+    let mut counter = open_lock_file(&queue.join("next"), true).ok()?;
+    // held for a read, an increment and a rename: microseconds, so a blocking lock is fine
+    // here, and it is never held while waiting for the real lock
+    if unsafe { libc::flock(counter.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        let _ = std::fs::remove_file(&private);
+        return None;
+    }
+    let mut text = String::new();
+    let _ = counter.read_to_string(&mut text);
+    let number: u64 = text.trim().parse().unwrap_or(0);
+    let placed = counter
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| counter.set_len(0))
+        .and_then(|_| counter.write_all((number + 1).to_string().as_bytes()))
+        .and_then(|_| std::fs::rename(&private, queue.join(number.to_string())));
+    unsafe { libc::flock(counter.as_raw_fd(), libc::LOCK_UN) };
+    if placed.is_err() {
+        let _ = std::fs::remove_file(&private);
+        return None;
+    }
+    Some(Ticket { path: queue.join(number.to_string()), number, _file: file })
 }
 
 /// Take the lock on `path`, waiting at most `wait`.
@@ -132,11 +199,14 @@ fn someone_waiting(room: &Path) -> bool {
 /// kernel, so a take that gives up leaves nothing behind — no thread, no open file, no queued
 /// request that could be granted the lock later.
 ///
-/// Fair between waiters without a queue: a process that has to wait sits in a waiting room (a
-/// SHARED lock on a second file) while it polls. A newcomer that finds anyone in the room does
-/// not grab the lock the instant it is free — it joins the room and polls like the rest, each
-/// poll after a short sleep. So a process that lets go and asks again at once (a loop of
-/// writes) no longer wins every time over waiters that were asleep when the lock came free.
+/// **First come, first served.** A process that has to wait takes a numbered ticket
+/// (`join_queue`) and tries the lock only once no live ticket is ahead of it; a newcomer that
+/// finds anyone queued takes a ticket too instead of grabbing the lock the moment it is free.
+/// So a process that lets go and asks again at once (a loop of writes) goes to the back of the
+/// queue, and no waiter can lose the race for the lock again and again. A waiter that gives up
+/// removes its ticket; one that dies loses its hold on it with the process, and the next waiter
+/// to look skips and removes it. The uncontended take is one try, as it always was: no queue,
+/// no file created.
 #[cfg(unix)]
 pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
     use std::time::Instant;
@@ -150,35 +220,29 @@ pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
         Mode::Shared => libc::LOCK_SH,
         Mode::Exclusive => libc::LOCK_EX,
     };
-    let room_path = waiting_room(path);
-    // the ordinary case: nobody waiting, one try
-    if !someone_waiting(&room_path) && try_flock(&file, flag)? {
+    let queue = queue_dir(path);
+    // the ordinary case: nobody queued, one try
+    if live_tickets(&queue, None).is_empty() && try_flock(&file, flag)? {
         return Ok(Guard { file });
     }
     if wait.is_zero() {
         return Err(Error::Busy(holders(path)));
     }
-    // Wait in the room. A room that cannot be used (a read-only directory) only costs the
-    // fairness, never the lock: the polling below is the same either way.
-    let room = open_lock_file(&room_path, true).ok();
-    let mut in_room = false;
+    let ticket = join_queue(&queue);
     let start = Instant::now();
     let mut n: u64 = 0;
     loop {
-        if !in_room {
-            // SHARED never waits on other waiters; it can miss only while a newcomer holds the
-            // room EXCLUSIVE for the instant of its `someone_waiting` look, so try again next poll
-            in_room = room.as_ref().is_some_and(|r| matches!(try_flock(r, libc::LOCK_SH), Ok(true)));
-        }
-        n += 1;
-        std::thread::sleep(Duration::from_millis(2 + (std::process::id() as u64 + n * 7) % 9));
-        if try_flock(&file, flag)? {
-            // leaving the room: `room` is dropped here, which releases its SHARED lock
+        // my turn once nobody still waiting came before me (without a ticket: every poll)
+        let my_turn = ticket.as_ref().is_none_or(|t| live_tickets(&queue, Some(t.number)).is_empty());
+        if my_turn && try_flock(&file, flag)? {
+            // leaving the queue: `ticket` is dropped here, which removes it
             return Ok(Guard { file });
         }
         if start.elapsed() >= wait {
             return Err(Error::Busy(holders(path)));
         }
+        n += 1;
+        std::thread::sleep(Duration::from_millis(1 + (std::process::id() as u64 + n * 7) % 4));
     }
 }
 
