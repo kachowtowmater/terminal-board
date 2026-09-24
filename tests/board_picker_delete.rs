@@ -71,8 +71,11 @@ fn select(app: &mut App, store: &mut Store, name: &str) {
     panic!("no picker row for '{name}':\n{}", render(app));
 }
 
+/// One keypress does it — no y/n, no "archive it first" (the owner: "just let the user press
+/// a and or d, don't ask anything follow up"). The picker stays open on the updated list,
+/// and one status line says what happened.
 #[test]
-fn the_picker_archives_restores_and_deletes_with_a_question_naming_the_board() {
+fn the_picker_archives_restores_and_deletes_on_one_keypress() {
     common::pin_clock();
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", dir.path());
@@ -83,6 +86,7 @@ fn the_picker_archives_restores_and_deletes_with_a_question_naming_the_board() {
     common::seed(&def, "alice").unwrap();
     drop(def);
     board("work").add("ops: rotate tokens", "", &[], "alice").unwrap();
+    board("scratch").add("a throwaway", "", &[], "alice").unwrap();
     board("old").add("done long ago", "", &[], "alice").unwrap();
     boards::archive("old").unwrap();
     assert_eq!(archives(dir.path(), "old").len(), 1);
@@ -90,59 +94,57 @@ fn the_picker_archives_restores_and_deletes_with_a_question_naming_the_board() {
     let mut store = board("default");
     let mut app = App::new(store.snapshot().unwrap(), "alice");
     app.reload(&store);
+    let in_picker = |app: &App, what: &str| {
+        assert!(matches!(app.mode, Mode::Boards { .. }), "{what}: a question or another mode instead of done: {:?}", app.mode);
+    };
 
     // --- the picker lists the archived board, under `archived`
     app.handle_key(key('B'), &mut store);
     let screen = render(&app);
     assert!(screen.contains("archived") && screen.contains("old"), "no archived row in the picker:\n{screen}");
 
-    // --- d on it asks, naming the board; n keeps it
+    // --- d on an archived board: deleted at once
     select(&mut app, &mut store, "old");
     app.handle_key(key('d'), &mut store);
+    in_picker(&app, "d on an archived board");
+    assert!(archives(dir.path(), "old").is_empty(), "d did not delete it");
     let screen = render(&app);
-    assert!(matches!(app.mode, Mode::Confirm { .. }), "d did not ask: {:?}", app.mode);
-    assert!(screen.contains("delete archived board 'old'"), "the question does not name the board:\n{screen}");
-    app.handle_key(key('n'), &mut store);
-    assert_eq!(archives(dir.path(), "old").len(), 1, "n deleted it");
-    assert!(matches!(app.mode, Mode::Boards { .. }), "n did not go back to the picker: {:?}", app.mode);
-
-    // --- d, y deletes it for good
-    select(&mut app, &mut store, "old");
-    app.handle_key(key('d'), &mut store);
-    app.handle_key(key('y'), &mut store);
-    assert!(archives(dir.path(), "old").is_empty(), "y did not delete it");
-    let screen = render(&app);
+    assert!(screen.contains("deleted 'old'"), "no status line saying so:\n{screen}");
     assert!(!screen.lines().any(|l| l.contains("  old ")), "the deleted board is still listed:\n{screen}");
 
-    // --- d on a live board is refused: archive it first
-    select(&mut app, &mut store, "work");
+    // --- d on a LIVE board: deleted at once too (archived and deleted in one go)
+    select(&mut app, &mut store, "scratch");
     app.handle_key(key('d'), &mut store);
-    assert!(!matches!(app.mode, Mode::Confirm { .. }), "d on a live board asked to delete it");
-    assert!(render(&app).contains("archive it first"), "no reason given:\n{}", render(&app));
-    assert!(boards::path_for("work").is_file(), "a live board was deleted");
+    in_picker(&app, "d on a live board");
+    assert!(!boards::path_for("scratch").exists(), "d did not delete the live board");
+    assert!(archives(dir.path(), "scratch").is_empty(), "d left an archive behind");
+    assert!(render(&app).contains("deleted 'scratch'"), "no status line:\n{}", render(&app));
 
-    // --- a archives the selected board, after a question naming it
+    // --- a archives at once
     select(&mut app, &mut store, "work");
     app.handle_key(key('a'), &mut store);
-    assert!(render(&app).contains("archive board 'work'"), "the question does not name the board:\n{}", render(&app));
-    app.handle_key(key('y'), &mut store);
+    in_picker(&app, "a");
     assert!(!boards::path_for("work").exists(), "a did not archive it");
     assert_eq!(archives(dir.path(), "work").len(), 1);
+    assert!(render(&app).contains("archived 'work'"), "no status line:\n{}", render(&app));
 
-    // --- r restores it
+    // --- r restores at once
     select(&mut app, &mut store, "work");
     app.handle_key(key('r'), &mut store);
-    assert!(render(&app).contains("restore archived board 'work'"), "the question does not name the board:\n{}", render(&app));
-    app.handle_key(key('y'), &mut store);
+    in_picker(&app, "r");
     assert!(boards::path_for("work").is_file(), "r did not restore it");
     assert!(archives(dir.path(), "work").is_empty());
+    assert!(render(&app).contains("restored 'work'"), "no status line:\n{}", render(&app));
     let back = board("work");
     assert_eq!(back.snapshot().unwrap().cards.len(), 1, "the restored board lost its card");
     drop(back);
 
-    // --- the board you are on is not archived from under you
-    select(&mut app, &mut store, "default");
-    app.handle_key(key('a'), &mut store);
-    assert!(!matches!(app.mode, Mode::Confirm { .. }), "asked to archive the board it is on");
-    assert!(boards::path_for("default").is_file());
+    // --- the board you are on (here also the default one) is refused, on the status line
+    for k in ['a', 'd'] {
+        select(&mut app, &mut store, "default");
+        app.handle_key(key(k), &mut store);
+        in_picker(&app, "a/d on the board you are on");
+        assert!(boards::path_for("default").is_file(), "{k} removed the board it is on");
+        assert!(render(&app).contains("switch to another board first"), "{k}: no reason given:\n{}", render(&app));
+    }
 }
