@@ -146,7 +146,7 @@ Select DOING and press `+` / `-`, or run `tb config wip 4`.
 
 ## When a column is long
 
-A column shows as many cards as it has room for, and at most ten at a time; the rest are
+A column shows as many cards as its box has room for, filling it; the rest are
 counted at the bottom of the column as `+12 more`. Scrolling with the arrow keys walks through
 them all, and the number in the column header is always the real total.
 

@@ -13,11 +13,16 @@ info line while the other columns' cards were whole, some boxes had an empty row
   or, when the boxes are too short for that, one line (`#32 title…  x`). Equal boxes
   then hold an equal number of cards.
 - A card is drawn whole or not at all. A box with cards out of sight ends in one
-  `+N more` line (`+N above · +N more` when scrolled), with no empty row above it. The
-  10-card cap per column stays. Rows under one-line cards in a box take the next cards, and
-  the selected card is always drawn in full.
-- Stacked sections and the grid's two rows are now exactly equal in height. A leftover row
-  goes to the GITHUB or AGENTS panel, not into a card box.
+  `+N more` line (`+N above · +N more` when scrolled), with no empty row above it. Rows
+  under the 3-row boxes take one-line cards, and the selected card is always drawn in full.
+- **No more ten-card cap per column:** every box fills its room with cards, in every layout.
+  The cap was there so a long DONE could not crowd the other columns. Equal boxes do that
+  now, and the cap left empty rows above `+N more` in a tall box.
+- Stacked sections and the grid's two rows are now exactly equal in height. Leftover rows
+  go to a GITHUB or AGENTS panel that has content for them, or stay below the boxes.
+- While cards are hidden, the GITHUB and AGENTS panels under the 2x2 grid take only their
+  content (the compact GitHub block, the agent rows), never empty padding rows. The rest
+  goes to the card boxes.
 - A tall window uses the 2x2 grid down to 48 columns (two 24-cell columns), where it used to
   stack four one-card sections from 62 columns down. In a wide view, four columns narrower
   than 14 cells (an 80x24 window with the side panels) become a 2x2 grid.

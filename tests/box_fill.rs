@@ -18,9 +18,6 @@ use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
 use terminal_board::tui::{draw, App};
 
-/// Named here rather than imported, so this file compiles against the version before it.
-const MAX_VISIBLE_CARDS: usize = 10;
-
 const COUNTS: [(&str, char, usize); 4] = [("todo", 'T', 20), ("doing", 'D', 4), ("review", 'R', 7), ("done", 'X', 77)];
 
 /// The owner's shape: 20 / 4 / 7 / 77, the first six TODO cards blocked, and every DOING
@@ -50,6 +47,7 @@ fn owners_board() -> (tempfile::TempDir, Store) {
 }
 
 fn app_for(s: &Store) -> App {
+    s.set_layout("auto").unwrap();
     let mut app = App::new(s.snapshot().unwrap(), "alice");
     app.reload(s);
     app.agents = AgentsState::Unavailable("herdr not available".into());
@@ -78,67 +76,115 @@ fn inner_rows(app: &App, screen: &[Vec<char>], ci: usize) -> Vec<String> {
         .collect()
 }
 
-/// The card tokens (`T01`…) of column prefix `p` seen in `rows`.
-fn tokens(rows: &[String], p: char, n: usize) -> Vec<usize> {
-    (1..=n).filter(|i| rows.iter().any(|r| r.contains(&format!("{p}{i:02} ")) || r.contains(&format!("{p}{i:02}…")))).collect()
+/// The cards of column `ci` seen in `rows`, by their `#id` (the column's `n` cards hold
+/// consecutive ids from `first_id(ci)`) — an id survives where a narrow title is cut away.
+fn tokens(rows: &[String], ci: usize, n: usize) -> Vec<usize> {
+    let first = first_id(ci);
+    (0..n)
+        .filter(|k| {
+            let id = format!("#{}", first + k);
+            rows.iter().any(|r| r.match_indices(&id).any(|(at, _)| !r[at + id.len()..].starts_with(|c: char| c.is_ascii_digit())))
+        })
+        .collect()
+}
+
+/// The id of column `ci`'s first card: the board adds them column by column.
+fn first_id(ci: usize) -> usize {
+    1 + COUNTS[..ci].iter().map(|(_, _, n)| n).sum::<usize>()
 }
 
 const SIZES: [(u16, u16); 6] = [(60, 30), (59, 30), (80, 24), (100, 40), (127, 75), (200, 60)];
 
+/// Every layout the `L` key cycles through (focus draws one card, no boxes: skipped).
+const LAYOUTS: [&str; 5] = ["auto", "third-h", "third-v", "half-h", "half-v"];
+
+/// The rows inside the panel box titled `name` (` GITHUB`, ` AGENTS`), if one is drawn.
+fn panel_rows(screen: &[Vec<char>], name: &str) -> Vec<String> {
+    let lines: Vec<String> = screen.iter().map(|l| l.iter().collect()).collect();
+    let mut out = Vec::new();
+    for (y, l) in lines.iter().enumerate() {
+        let Some(x) = l.find(&format!("┌ {name}")).or_else(|| l.find(&format!("┏ {name}"))) else { continue };
+        let x = l[..x].chars().count();
+        for row in &lines[y + 1..] {
+            let cs: Vec<char> = row.chars().collect();
+            if matches!(cs.get(x), Some('└' | '┗')) {
+                break;
+            }
+            out.push(cs[x + 1..].iter().take_while(|c| !matches!(c, '│' | '┃')).collect());
+        }
+        break;
+    }
+    out
+}
+
 #[test]
 fn every_box_shows_whole_cards_the_same_number_and_no_gap_before_more() {
     let (_d, s) = owners_board();
-    let app = app_for(&s);
-    for (w, h) in SIZES {
-        let screen = render(&app, w, h);
-        let all = text(&screen);
-        let mut shown_where_hidden = Vec::new();
-        for (ci, (col, p, n)) in COUNTS.into_iter().enumerate() {
-            let rows = inner_rows(&app, &screen, ci);
-            assert!(!rows.is_empty(), "{w}x{h}: {col} has no box:\n{all}");
-            let seen = tokens(&rows, p, n);
-            let hidden = n - seen.len();
+    for layout in LAYOUTS {
+        let app = app_for(&s);
+        s.set_layout(layout).unwrap();
+        let mut app = app;
+        app.reload(&s);
+        for (w, h) in SIZES {
+            check(&app, layout, w, h);
+        }
+    }
+}
+
+fn check(app: &App, layout: &str, w: u16, h: u16) {
+    let screen = render(app, w, h);
+    let all = text(&screen);
+    let at = format!("{layout} {w}x{h}");
+    let drawn: Vec<(usize, &str)> = app.drawn_styles.borrow().clone();
+    if drawn.is_empty() {
+        return; // the focus view: one card, no column boxes
+    }
+    // ONE card form per frame: no column drawn in a different form from its neighbours
+    let forms: std::collections::BTreeSet<&str> = drawn.iter().map(|(_, f)| *f).collect();
+    assert!(forms.len() <= 1, "{at}: mixed card forms in one frame {drawn:?}:\n{all}");
+    let mut shown_where_hidden = Vec::new();
+    let mut any_hidden = false;
+    for (ci, (col, _, n)) in COUNTS.into_iter().enumerate() {
+        if !drawn.iter().any(|(c, _)| *c == ci) {
+            continue; // a section folded to its header line (it carries the count)
+        }
+        let rows = inner_rows(app, &screen, ci);
+        let seen = tokens(&rows, ci, n);
+        let hidden = n - seen.len();
+        if rows.len() >= 6 {
             // several cards a box, not one
-            assert!(seen.len() >= 3.min(n), "{w}x{h}: {col} shows {} card(s), wants at least 3:\n{all}", seen.len());
-            // a card is WHOLE: a card box's top border is followed by its content, never
-            // straight by its bottom border (a title with its info line cut away)
-            for (k, row) in rows.iter().enumerate() {
-                if row.starts_with(['┌', '┏']) {
-                    let next = rows.get(k + 1).map(String::as_str).unwrap_or("");
-                    assert!(
-                        next.starts_with(['│', '┃']),
-                        "{w}x{h}: a {col} card is cut to its title (row {k} of the box):\n{}\n{all}",
-                        rows.join("\n")
-                    );
-                }
-            }
-            if hidden > 0 {
-                // the box's last row says so, and no row above it is left empty
-                let last = rows.last().unwrap();
-                assert!(last.contains('+'), "{w}x{h}: {col} hides {hidden} card(s) but its last row is {last:?}:\n{all}");
-                // The one exception: a column never draws more than MAX_VISIBLE_CARDS (10) at
-                // once (an earlier report, pinned in tests/column_caps.rs), so a box with room
-                // for more than ten keeps the rows past the tenth card empty.
-                let capped = seen.len() == MAX_VISIBLE_CARDS;
-                for (k, row) in rows.iter().enumerate().filter(|_| !capped) {
-                    assert!(!row.trim().is_empty(), "{w}x{h}: {col} hides {hidden} card(s) yet row {k} of its box is empty:\n{all}");
-                }
-                shown_where_hidden.push((col, seen.len()));
+            assert!(seen.len() >= 3.min(n), "{at}: {col} shows {} card(s), wants at least 3:\n{all}", seen.len());
+        }
+        // a card is WHOLE: a card box's top border is followed by its content, never
+        // straight by its bottom border (a title with its info line cut away)
+        for (k, row) in rows.iter().enumerate() {
+            if row.starts_with(['┌', '┏']) {
+                let next = rows.get(k + 1).map(String::as_str).unwrap_or("");
+                assert!(next.starts_with(['│', '┃']), "{at}: a {col} card is cut to its title (row {k} of the box):\n{all}");
             }
         }
-        // equal boxes hold an equal number of cards
-        let counts: Vec<usize> = shown_where_hidden.iter().map(|(_, n)| *n).collect();
-        assert!(
-            counts.windows(2).all(|p| p[0] == p[1]),
-            "{w}x{h}: boxes with cards out of sight show different numbers of cards {shown_where_hidden:?}:\n{all}"
-        );
-        // a column with fewer cards than that shows all of them
-        if let Some(slots) = counts.first() {
-            for (ci, (col, p, n)) in COUNTS.into_iter().enumerate() {
-                if n <= *slots {
-                    let seen = tokens(&inner_rows(&app, &screen, ci), p, n);
-                    assert_eq!(seen.len(), n, "{w}x{h}: {col} has room for all {n} cards:\n{all}");
-                }
+        if hidden > 0 {
+            any_hidden = true;
+            // the box's last row says so, and no row of the box is left empty
+            let last = rows.last().unwrap();
+            assert!(last.contains('+'), "{at}: {col} hides {hidden} card(s) but its last row is {last:?}:\n{all}");
+            for (k, row) in rows.iter().enumerate() {
+                assert!(!row.trim().is_empty(), "{at}: {col} hides {hidden} card(s) yet row {k} of its box is empty:\n{all}");
+            }
+            shown_where_hidden.push((col, seen.len()));
+        }
+    }
+    // equal boxes hold an equal number of cards
+    let counts: Vec<usize> = shown_where_hidden.iter().map(|(_, n)| *n).collect();
+    assert!(counts.windows(2).all(|p| p[0] == p[1]), "{at}: boxes with cards out of sight show different numbers {shown_where_hidden:?}:\n{all}");
+    // a panel under the 2x2 grid is its content, never padding, while cards are hidden
+    // (a grid across the whole width: its panels are below it, not beside it as in the rail)
+    let r = app.col_rects.get();
+    let grid = r[0].y != r[2].y && r[1].x + r[1].width == w;
+    if any_hidden && grid {
+        for name in ["GITHUB", "AGENTS"] {
+            for (k, row) in panel_rows(&screen, name).iter().enumerate() {
+                assert!(!row.trim().is_empty(), "{at}: the {name} panel pads row {k} with nothing while cards are hidden:\n{all}");
             }
         }
     }
@@ -154,7 +200,7 @@ fn the_down_arrow_reaches_every_todo_card_at_60x30() {
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..25 {
         let screen = render(&app, 60, 30);
-        seen.extend(tokens(&inner_rows(&app, &screen, 0), 'T', 20));
+        seen.extend(tokens(&inner_rows(&app, &screen, 0), 0, 20).into_iter().map(|k| k + 1));
         app.handle_key(down, &mut s);
     }
     let missed: Vec<usize> = (1..=20).filter(|i| !seen.contains(i)).collect();

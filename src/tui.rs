@@ -2127,8 +2127,7 @@ fn column_needs_dense(app: &App, ci: usize, area: Rect) -> bool {
 /// ever drawn in a different card form from its neighbours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardPlan {
-    /// Every column shows all of its first `MAX_VISIBLE_CARDS` cards whole, each as tall as
-    /// it is (`dense`: title in the box's top border, everywhere, when any column needs it).
+    /// Every column shows ALL of its cards whole, each as tall as it is (`dense`: title in the box's top border, everywhere, when any column needs it).
     Natural { dense: bool },
     /// Something would be cut short: every card is a 3-row box (title in its top border, the
     /// meta line inside) and every box holds the same number of them. Rows that cannot take
@@ -2139,22 +2138,15 @@ pub enum CardPlan {
     Line,
 }
 
-/// Rows the first `MAX_VISIBLE_CARDS` cards of column `ci` take as boxes `text_w` wide
-/// (dense: one row less each), plus the `+N more` row when there are more than that.
+/// Rows every card of column `ci` takes as boxes `text_w` wide (dense: one row less each).
 fn natural_rows(app: &App, ci: usize, text_w: usize, dense: bool) -> usize {
-    let cards = app.col_cards(ci);
-    let shown: usize = cards
-        .iter()
-        .take(MAX_VISIBLE_CARDS)
-        .map(|c| card_lines(app, c, false, text_w, true).len() + 2 - usize::from(dense))
-        .sum();
-    shown + usize::from(cards.len() > MAX_VISIBLE_CARDS)
+    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() + 2 - usize::from(dense)).sum()
 }
 
 /// THE CARD RULE, decided once per frame for all four boxes `cols` (column, box rect):
 ///
-/// 1. If every column can show its cards WHOLE (up to `MAX_VISIBLE_CARDS`) in their natural
-///    boxes, it does: `Natural`, dense everywhere when any column needs it.
+/// 1. If every column can show ALL its cards whole in their natural boxes, it does:
+///    `Natural`, dense everywhere when any column needs it — and then nothing is hidden.
 /// 2. Otherwise every box uses the SAME fixed card form, so equal boxes hold an equal number
 ///    of cards: 3-row boxes when the shortest box fits at least two of them and three cards
 ///    in all (the rows under the boxes take one-line cards, the last row `+N more`), else
@@ -2267,15 +2259,6 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, plan: CardPlan) 
     }
 }
 
-/// The most cards one column ever draws, however tall the pane is. Past this it shows
-/// `+N more`, the same hint a column that runs out of room already shows.
-///
-/// A board is read column by column, and a column of forty finished cards is not read at
-/// all — it is scrolled past. Ten is enough to see what is going on and short enough that
-/// no column can crowd out its neighbours in the stacked layouts, where the four columns
-/// share one height. (Reported by the owner: "the done has too many and it pushes everyone".)
-pub const MAX_VISIBLE_CARDS: usize = 10;
-
 /// The `+N more` hint, in the longest form that fits `width` cells: `+10 more`, then `+10`,
 /// then `+`. It shortens in WHOLE words like every other hint on the board — a cut `+10 mor`
 /// reads like a defect, and this is the line that promises nothing is hidden silently.
@@ -2288,19 +2271,13 @@ pub fn more_hint(n: usize, width: usize) -> String {
     String::new()
 }
 
-/// The cards column `ci` draws: its first `MAX_VISIBLE_CARDS`, in the board's own order —
-/// so under `sort due` these are the nearest-due cards, not just the first by position.
-/// The rest are counted by the `+N more` hint; the header keeps the true total.
-pub(crate) fn visible_cards(app: &App, ci: usize) -> Vec<&Card> {
-    app.col_cards(ci).into_iter().take(MAX_VISIBLE_CARDS).collect()
-}
+
 
 /// Box heights (4-row style) of column `ci`'s cards in a column `width` wide; a dense box
 /// is one row shorter.
 pub(crate) fn card_box_heights(app: &App, ci: usize, width: u16) -> Vec<u16> {
     let text_w = width.saturating_sub(6) as usize; // column frame + card frame + padding
-    // only the cards the column would draw: a column never ASKS for height it will not use
-    visible_cards(app, ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
+    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
 }
 
 /// Rows column `ci` needs to show every card boxed (frame included; 3 when empty).
@@ -2370,7 +2347,9 @@ pub const BOXED_MIN_ROWS: usize = 12;
 
 /// How many cards a box `height` rows tall holds in the fixed forms, for `n` cards: `(boxed,
 /// total)` — `boxed` 3-row boxes first, then one-line cards in the rows left, the last row
-/// kept for `+N more` when not all `n` fit. Never more than `MAX_VISIBLE_CARDS`.
+/// kept for `+N more` when not all `n` fit. A box FILLS its rows: there is no cap on how
+/// many cards it shows (equal boxes are what keep one long column from crowding the others,
+/// which a ten-card cap used to do — and it left empty rows above `+N more`).
 pub fn fill_slots(height: usize, n: usize, boxed: bool) -> (usize, usize) {
     if height == 0 {
         return (0, 0);
@@ -2378,7 +2357,6 @@ pub fn fill_slots(height: usize, n: usize, boxed: bool) -> (usize, usize) {
     let b = if boxed { height.saturating_sub(1) / 3 } else { 0 };
     let all = b + (height - 3 * b);
     let total = if n <= all { n } else { all - 1 };
-    let total = total.min(MAX_VISIBLE_CARDS);
     (b.min(total), total)
 }
 
@@ -2443,11 +2421,8 @@ fn draw_fill(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inne
 }
 
 fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect) {
-    // the same cap the boxed column keeps: a window of MAX_VISIBLE_CARDS that follows the
-    // selection, so one long column cannot crowd out its neighbours in either style
-    let first = sel.unwrap_or(0).saturating_sub(MAX_VISIBLE_CARDS - 1);
-    let last = (first + MAX_VISIBLE_CARDS).min(cards.len());
-    let window = &cards[first..last];
+    let first = 0;
+    let window = cards;
     let mut lines = Vec::new();
     let (mut sel_start, mut sel_end) = (0, 0);
     let mut ends = Vec::new();
@@ -2512,20 +2487,16 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         .map(|(i, c)| card_lines(app, c, sel == Some(i), text_w, true))
         .collect();
     let avail = inner.height as usize;
-    // tight: carry each card's first line in its top border (3 rows per card instead of 4)
-    let dense = dense || bodies.iter().map(|b| b.len() + 2).sum::<usize>() > avail;
+    // the frame's plan decides dense for every box (`card_plan`): a box never picks its own
     let skip_first = usize::from(dense);
     let h = |i: usize| bodies[i].len() + 2 - skip_first;
-    // first visible card: advance until the selected card (plus hint rows) fits — and until
-    // it is inside the MAX_VISIBLE_CARDS window drawn from `start`. A pane with room for more
-    // than that window used to stop advancing on room alone, so the window ended just above
-    // the selection and the last card of a long column could never be scrolled onto screen.
+    // first visible card: advance until the selected card (plus hint rows) fits
     let target = sel.unwrap_or(0);
     let mut start = 0;
     while start < target {
         let used: usize = (start..=target).map(h).sum();
         let hints = usize::from(start > 0) + usize::from(target + 1 < cards.len());
-        if used + hints <= avail && target - start < MAX_VISIBLE_CARDS {
+        if used + hints <= avail {
             break;
         }
         start += 1;
@@ -2538,10 +2509,7 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         y += 1;
     }
     let mut i = start;
-    // at most MAX_VISIBLE_CARDS at a time: a column of forty finished cards must not crowd
-    // out its neighbours. Scrolling still reaches every card, because the window follows the
-    // selection, and both hints count what is outside it.
-    let stop = (start + MAX_VISIBLE_CARDS).min(cards.len());
+    let stop = cards.len();
     while i < stop {
         let more_after = cards.len() - i - 1;
         let reserve = u16::from(more_after > 0);

@@ -1162,8 +1162,8 @@ its mark when it is close, with `due-warn` (3 days) deciding how close that is.
 Every view splits its space **evenly**: the four columns side by side, the 2 × 2 grid's rows
 and columns, and the stacked sections of the tall third, whatever each one holds. A column
 with twenty cards and one with two get the same room, so a long DONE column never pushes TODO
-off the screen. A column draws at most ten cards at a time and counts the rest as `+N more`
-at its foot. The arrow keys scroll through them, and the selected card is always on screen.
+off the screen. A column fills its box with cards and counts the rest as `+N more` on the
+box's last row. The arrow keys scroll through them, and the selected card is always on screen.
 The count in a column header is always the real total, whatever is hidden. An empty column
 keeps its box, and an empty TODO tells you how to add the first card.
 
