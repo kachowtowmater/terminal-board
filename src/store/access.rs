@@ -33,7 +33,14 @@ pub const SYNC_ACTOR: &str = "github";
 /// Is this process refusing every write? `TB_READONLY` (or `TTYBOARD_READONLY`) set to
 /// anything but `0`/`no`/`false`/empty, or `--read-only` on the command line.
 pub fn readonly_env() -> bool {
-    crate::env("READONLY").is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "no" | "false"))
+    readonly_value(crate::env("READONLY").as_deref())
+}
+
+/// What a `TB_READONLY` value means: on unless it is unset, empty, `0`, `no` or `false`. Kept
+/// apart from the environment so it is tested without setting a process-wide variable, which
+/// every other test in the same process would see — a read-only store under their feet.
+fn readonly_value(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "no" | "false"))
 }
 
 /// The refusal every write gets in read-only mode. One line: what happened, then what to do.
@@ -264,12 +271,12 @@ mod tests {
 
     #[test]
     fn readonly_reads_the_environment_the_way_a_person_expects() {
-        for (v, want) in [("1", true), ("yes", true), ("true", true), ("0", false), ("no", false), ("false", false), ("FALSE", false)] {
-            std::env::set_var("TB_READONLY", v);
-            assert_eq!(readonly_env(), want, "TB_READONLY={v}");
+        // the value alone, never through `set_var`: TB_READONLY set here was seen by every
+        // test running beside this one, and their stores refused writes ("read-only mode")
+        for (v, want) in [("1", true), ("yes", true), ("true", true), ("0", false), ("no", false), ("false", false), ("FALSE", false), (" 0 ", false)] {
+            assert_eq!(readonly_value(Some(v)), want, "TB_READONLY={v}");
         }
-        std::env::remove_var("TB_READONLY");
-        assert!(!readonly_env());
+        assert!(!readonly_value(None), "unset");
     }
 
     #[test]
