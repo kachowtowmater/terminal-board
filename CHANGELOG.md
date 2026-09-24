@@ -33,6 +33,15 @@ info line while the other columns' cards were whole, some boxes had an empty row
   stack four one-card sections from 62 columns down. In a wide view, four columns narrower
   than 14 cells (an 80x24 window with the side panels) become a 2x2 grid.
 
+### Several `tb` started together on a new board no longer fail with "database is locked"
+
+- The first `tb` commands on a board that does not exist yet (for example several agents
+  running `tb NAME add` at once) could fail with "database is locked". Opening a board
+  switches it into SQLite's WAL mode, and SQLite gives up at once, without waiting, when
+  another process has the new file open at that moment. tb now retries the switch for up to
+  the same 10 seconds it waits for any other write. A board that already exists was never
+  affected. This was also why `restore_races_add_and_never_loses_a_card` failed now and then.
+
 ## 3.1.0 — 2026-09-23
 
 ### Highlights
