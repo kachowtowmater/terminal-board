@@ -8,7 +8,7 @@
 //! first statement, so the busy timeout applies and a second writer queues instead of failing.
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 struct Board {
     dir: tempfile::TempDir,
@@ -127,19 +127,59 @@ fn concurrent_adds_on_a_new_board_all_succeed() {
 
 /// The ordinary case (#85): one process, nothing to contend with. `BEGIN IMMEDIATE` must not
 /// make an uncontended writer slower than a deferred transaction would — there is no lock to
-/// wait for either way, so the two behave the same when nobody else is writing.
+/// wait for either way. That is a property of what tb DOES, so it is counted, not timed (a
+/// 500ms-per-add bound failed on a busy disk with nothing wrong in tb):
+///
+/// - every deliberate wait in the store (a SQLite busy retry, a WAL-switch retry, a back-off
+///   sleep) goes through `waits::pause`, which `TB_TRACE_WAITS` records — and none may happen;
+/// - `TB_LOCK_WAIT_MS=0` turns any wait for a board lock into an immediate refusal, so an add
+///   that had to queue for a lock (even one of its own) fails instead of taking longer.
+///
+/// `store_sleeps_only_through_the_wait_trace` below keeps a plain sleep from being added to
+/// the store where the trace cannot see it.
 #[test]
 fn single_process_add_stays_fast() {
     let b = Board::new();
+    let trace = b.dir.path().join("waits.log");
     let n = 50u32;
     let start = Instant::now();
     for i in 0..n {
-        b.ok("solo", &["add", &format!("t{i}: card")]);
+        let o = b
+            .cmd("solo", &["add", &format!("t{i}: card")])
+            .env("TB_TRACE_WAITS", &trace)
+            .env("TB_LOCK_WAIT_MS", "0")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "add {i} had to wait for a lock: {}", String::from_utf8_lossy(&o.stderr));
     }
-    let elapsed = start.elapsed();
-    let per = elapsed / n;
-    println!("single-process: {n} adds in {elapsed:?} ({per:?} each)");
-    // generous bound: this catches a real regression (e.g. an extra round trip added per
-    // write), not ordinary machine-to-machine variance in process-spawn overhead
-    assert!(per < Duration::from_millis(500), "an uncontended add averaged {per:?} — investigate before calling this 'no slower'");
+    // for the log only: the time depends on the machine and its disk, the waits do not
+    println!("single-process: {n} adds in {:?}", start.elapsed());
+    let waits = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(waits.is_empty(), "an uncontended add waited ({} times):\n{waits}", waits.lines().count());
+    let list = b.ok("solo", &["list", "--json"]);
+    let cards: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert_eq!(cards.as_array().unwrap().len(), n as usize, "every add landed");
+}
+
+/// The store's waits are all visible to the trace: nothing under `src/store` (or the lock
+/// the store opens with) sleeps except through `waits::pause`, so a sleep added to the write
+/// path shows up in `single_process_add_stays_fast` instead of only making it slower.
+#[test]
+fn store_sleeps_only_through_the_wait_trace() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = vec![src.join("store.rs")];
+    for e in std::fs::read_dir(src.join("store")).unwrap().flatten() {
+        files.push(e.path());
+    }
+    let mut hits = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains("thread::sleep(") || code.contains("busy_timeout(") {
+                hits.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "sleep through waits::pause (and set the busy wait with waits::busy) so the wait trace sees it:\n{}", hits.join("\n"));
 }

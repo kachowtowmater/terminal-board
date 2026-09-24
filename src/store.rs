@@ -1147,7 +1147,7 @@ fn backup_aside(path: &Path) -> Result<std::path::PathBuf> {
         }
         let to = partial.to_str().ok_or("its path is not valid UTF-8")?;
         let reader = Connection::open(path).map_err(|e| e.to_string())?;
-        reader.busy_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+        crate::waits::busy(&reader, BUSY_WAIT).map_err(|e| e.to_string())?;
         reader.execute("VACUUM INTO ?1", [to]).map_err(|e| e.to_string())?;
         drop(reader);
         std::fs::rename(&partial, &target).map_err(|e| e.to_string())
@@ -1223,7 +1223,7 @@ fn set_wal(conn: &Connection) -> Result<()> {
         match conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)) {
             Ok(_) => return Ok(()),
             Err(e) if is_contended(&e) && std::time::Instant::now() < deadline => {
-                std::thread::sleep(pause);
+                crate::waits::pause("wal switch", pause);
                 pause = (pause * 2).min(Duration::from_millis(50));
             }
             Err(e) => return Err(e.into()),
@@ -1374,7 +1374,7 @@ impl Store {
         } else {
             Connection::open(&real)?
         };
-        conn.busy_timeout(BUSY_WAIT)?;
+        crate::waits::busy(&conn, BUSY_WAIT)?;
         if readonly {
             // a read-only connection cannot upgrade the schema; say so plainly rather than
             // failing later in SQLite's own words
