@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use terminal_board::lock::{self, Error, Mode};
 
-/// The two tests count this process's threads and locks: never at the same time.
+/// The two tests count this process's threads and open files: never at the same time.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 #[cfg(target_os = "linux")]
@@ -15,35 +15,22 @@ fn threads() -> usize {
     std::fs::read_dir("/proc/self/task").unwrap().count()
 }
 
-/// `/proc/locks` lines for `file`'s inode that belong to this process: (held, waiting).
+/// How many of this process's open files are `file` (the lock file itself).
 #[cfg(target_os = "linux")]
-fn my_locks(file: &std::path::Path) -> (usize, usize) {
-    use std::os::unix::fs::MetadataExt;
-    let ino = std::fs::metadata(file).unwrap().ino();
-    let me = std::process::id().to_string();
-    let (mut held, mut waiting) = (0, 0);
-    for l in std::fs::read_to_string("/proc/locks").unwrap().lines() {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        // "1: FLOCK ADVISORY WRITE pid maj:min:ino ..." or, for a waiter, "1: -> FLOCK ..."
-        let (rest, is_wait) = if f.get(1) == Some(&"->") { (&f[2..], true) } else { (&f[1..], false) };
-        if rest.len() < 5 || rest[0] != "FLOCK" || rest[3] != me {
-            continue;
-        }
-        if rest[4].rsplit(':').next().and_then(|i| i.parse::<u64>().ok()) != Some(ino) {
-            continue;
-        }
-        if is_wait {
-            waiting += 1;
-        } else {
-            held += 1;
-        }
-    }
-    (held, waiting)
+fn open_fds(file: &std::path::Path) -> usize {
+    let file = std::fs::canonicalize(file).unwrap();
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+        .filter(|t| *t == file)
+        .count()
 }
 
 /// A take that times out leaves nothing of this process holding or waiting on the lock: no
-/// request still queued in the kernel, no extra thread, so the moment the holder lets go the
-/// lock is free to the very next try — every time.
+/// extra thread (waiting on a lock in the kernel takes a thread blocked in `flock`), no open
+/// file on it but the holder's, and the moment the holder lets go the lock is free to the very
+/// next try — every time. (`/proc/locks` is not used: read while other processes take and drop
+/// locks it can skip or repeat entries, so it is no ground truth under load.)
 #[test]
 fn a_take_that_times_out_leaves_nothing_waiting_or_holding() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
@@ -59,8 +46,10 @@ fn a_take_that_times_out_leaves_nothing_waiting_or_holding() {
         }
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(my_locks(&file), (1, 0), "round {round}: after the refused take: (held, waiting)");
+            // waiting on a lock in the kernel takes a thread blocked in `flock`: none may be left
             assert_eq!(threads(), before, "round {round}: the refused take left a thread behind");
+            // and no open file on the lock but the holder's own
+            assert_eq!(open_fds(&file), 1, "round {round}: the refused take left the lock file open");
         }
         drop(holder);
         // free to every try from here on: nothing left over can be granted it in between
