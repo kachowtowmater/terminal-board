@@ -193,12 +193,12 @@ fn board_picker_lists_switches_in_place_and_cancels() {
     assert_eq!(app.snap.cards.len(), 1);
 }
 
-/// The picker's bottom hint, longest first. The first two name the archive/restore/delete keys
-/// (`a`/`r`/`d`) the picker gained with board deletion; a narrow pane still falls back to the
+/// The picker's bottom hint, longest first. The first two name the default/archive/restore/
+/// delete keys (`*`/`a`/`r`/`d`); a narrow pane still falls back to the
 /// short forms it always had.
 const HINTS: [&str; 4] = [
-    "up/down select · enter switch · a archive · r restore · d delete · esc cancel",
-    "enter switch · a archive · r restore · d delete · esc",
+    "up/down select · enter switch · * default · a archive · r restore · d delete · esc cancel",
+    "enter switch · * default · a archive · r restore · d delete · esc",
     "enter switch · esc cancel",
     "esc",
 ];

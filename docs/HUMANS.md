@@ -183,7 +183,9 @@ tb boards                    # every board with its counts
 
 `tb boards --default work` makes `work` the board plain `tb` opens from now on: `tb boards
 --default` shows it, `tb boards --default --clear` goes back to `default`, and `tb boards` and
-the picker mark it with `*`. It is saved for you on this machine, not inside any board.
+the picker mark it with `*`. It is saved for you on this machine, not inside any board. In the
+`B` picker, `*` makes the selected board the default at once, saved in the same place; `*` on
+`default` goes back to it, and an archived board is refused (restore it first).
 `TB_BOARD=work` in your shell does the same for that shell only, and beats the saved choice; a
 name on the command line (`tb home …`) beats both; with `TB_DB` set the saved choice is ignored.
 
