@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 3.1.1 — 2026-09-24
+
+### Highlights
+
+- **Whole cards on small screens.** Every column box shows the same number of whole cards,
+  in a 3-row or one-line form when space is short, fills before `+N more`, and no longer
+  stops at ten cards.
+- **No more "database is locked" on a new board.** Several `tb` writing to a board that does
+  not exist yet all succeed.
+- **A verifier that sent a card back can close it** once it is fixed.
+- **The board picker acts at once:** in `B`, `a` archives, `d` deletes and `r` restores the
+  selected board on one keypress, with no y/n question.
+- New screenshots of every layout.
+- Nothing needs doing to upgrade from 3.1.0.
+
+### The board picker's `a`, `d` and `r` act at once
+
+- In the full-screen board picker (`B`), `a` archives, `d` deletes and `r` restores the
+  selected board on one keypress. There is no y/n question, and `d` works on a live board
+  too: it archives and deletes it in one go. A status line says what happened. Still
+  refused, on the status line: the board a bare `tb` opens, a board another `tb` has open,
+  and the board the picker is on (switch to another first). `tb boards delete` on the
+  command line is unchanged.
 
 ### Every column box shows the same number of whole cards
 
@@ -41,6 +63,7 @@ info line while the other columns' cards were whole, some boxes had an empty row
   another process has the new file open at that moment. tb now retries the switch for up to
   the same 10 seconds it waits for any other write. A board that already exists was never
   affected. This was also why `restore_races_add_and_never_loses_a_card` failed now and then.
+
 ### A verifier that sent a card back can still close it
 
 - A verifier that failed a card (review -> todo, which clears the owner) and later moved it
@@ -50,6 +73,16 @@ info line while the other columns' cards were whole, some boxes had an empty row
   when someone else moved the card into review before; that earlier mover is the author. The
   worker who built the card is still refused, and so is a verifier that held the card or is
   the only one that ever moved it into review.
+
+### Smaller fixes, tests and screenshots
+
+- An empty `TB_READONLY` (`TB_READONLY=`) now means read-only is off, like unset, `0`, `no`
+  and `false`. It used to turn read-only mode on. The unit test for it no longer sets the
+  variable for the whole test process, where it made other tests' boards refuse writes (#181).
+- The killed-holder lock test waits on events instead of timing a kill against a fixed
+  300 ms bound, which failed on busy CI runners (#175).
+- The README's layout screenshots are re-shot on the current layout: every box showing
+  whole cards, and `+N more` (#179).
 
 ## 3.1.0 — 2026-09-23
 
