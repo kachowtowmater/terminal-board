@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### The board picker refuses a board another `tb` has open at once
+
+- In the board picker (`B`), `a` or `d` on a board another `tb` has open waited up to 10
+  seconds for it to close before refusing, with the picker frozen, and the refusal named the
+  board's full file path. It now looks first, without waiting, and refuses at once:
+  `'work' is open in another tb — close it there, then try again`.
+- `d` on the board a bare `tb` opens now says "delete another board", not "archive another
+  board".
+
 ## 3.1.1 — 2026-09-24
 
 ### Highlights
