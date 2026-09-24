@@ -1,3 +1,8 @@
+# Upgrading to 3.1.0
+
+Nothing to do: 3.1.0 only adds `tb boards delete` and archive/restore/delete in the `B`
+picker. Boards, commands and the JSON contract are unchanged from 3.0.0.
+
 # Upgrading to 3.0.0
 
 Boards made by 2.x open unchanged. The JSON contract is still `"v": 1`: new fields were added

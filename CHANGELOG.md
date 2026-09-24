@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — 2026-09-23
+
+### Highlights
+
+- **Delete a board.** `tb boards delete NAME` removes an archived board for good, and the `B`
+  picker can archive, restore and delete boards. Nothing else changed, and nothing needs
+  doing to upgrade from 3.0.0.
 
 ### Delete a board (`tb boards delete`, and archive/restore/delete in the `B` picker)
 
