@@ -20,6 +20,9 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.1.2:** in the `B` picker, `*` makes the selected board the default (the one a plain
+`tb` opens), and `a` or `d` on a board another `tb` has open is refused at once, by name.
+
 **New in 3.1.1:** on a small screen every column box shows whole cards, the same number in
 each, in a compact form when space is short. Several agents writing to a new board at once no
 longer fail with "database is locked", a verifier that sent a card back can close it once it

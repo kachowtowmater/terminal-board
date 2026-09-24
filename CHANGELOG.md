@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 3.1.2 — 2026-09-24
+
+### Highlights
+
+- **Make any board the default from the board picker:** `*` in `B` makes the selected board
+  the one a plain `tb` opens, at once.
+- **The picker refuses a board another `tb` has open at once**, by name, instead of freezing
+  for up to 10 seconds.
+- Nothing needs doing to upgrade from 3.1.1.
 
 ### `*` in the board picker makes a board the default
 
