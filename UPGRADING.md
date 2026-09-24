@@ -1,3 +1,8 @@
+# Upgrading to 3.1.2
+
+Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.1. The board
+picker gains `*` (make the selected board the default).
+
 # Upgrading to 3.1.1
 
 Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.0.
