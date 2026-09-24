@@ -30,6 +30,7 @@ pub mod store;
 pub mod text;
 pub mod textin;
 pub mod tui;
+pub mod waits;
 
 /// Convert a value to JSON with every text leaf cleaned through the display sanitiser
 /// (`text::sanitize_json`) — one shared function with the screen paths, so `--json` output
