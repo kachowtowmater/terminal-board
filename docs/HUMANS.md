@@ -146,7 +146,7 @@ Select DOING and press `+` / `-`, or run `tb config wip 4`.
 
 ## When a column is long
 
-A column shows as many cards as it has room for, and at most ten at a time; the rest are
+A column shows as many cards as its box has room for, filling it; the rest are
 counted at the bottom of the column as `+12 more`. Scrolling with the arrow keys walks through
 them all, and the number in the column header is always the real total.
 
@@ -154,6 +154,11 @@ This also stops one long column taking the whole board. Every view splits its sp
 the four columns side by side are the same width, the 2x2 grid's two rows are the same
 height, and the stacked sections are too — however many cards each one holds. So sixty
 finished cards in DONE get exactly the room TODO gets, and can no longer push it down.
+
+Equal boxes also hold the same number of cards. A card is drawn whole or not at all, and a
+box with cards out of sight ends in one `+N more` line, with no empty row above it. When the
+boxes are too short for several full cards (a small window), every card becomes one line,
+`#32 title…  x` (`x` = blocked), so each box still shows several.
 
 ## Boards
 
@@ -316,9 +321,9 @@ it still works:
 |---|---|---|
 | **focus** | small (under 40 columns or 16 rows) | one card, big: the one you're working on |
 | **third-h** | wide and short (e.g. a bottom strip) | columns left, GITHUB and AGENTS right |
-| **third-v** | tall and narrow (a side pane) | the columns stacked, then GITHUB, then AGENTS |
+| **third-v** | tall and narrow (a side pane, under 48 columns) | the columns stacked, then GITHUB, then AGENTS |
 | **half-h** | half the screen or more | four columns side by side, panels below |
-| **half-v** | half the width, tall | the columns as a 2×2 grid, panels below |
+| **half-v** | half the width, tall (48 columns or more) | the columns as a 2×2 grid, panels below |
 
 `L` pins a view (and cycles through them); `tb config layout auto` goes back to automatic.
 A panel that doesn't fit becomes a one-line bar; `tab` shows it full screen and `esc` comes

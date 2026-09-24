@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Every column box shows the same number of whole cards
+
+On a small screen (about 60x30) the board looked off: a DOING card was drawn without its
+info line while the other columns' cards were whole, some boxes had an empty row before
+`+N more` and others did not, and every box showed one card.
+
+- One card form per frame for all four boxes. When every column fits its cards, they look as
+  before. Otherwise every card is a 3-row box (title in its border, the info line inside),
+  or, when the boxes are too short for that, one line (`#32 title…  x`). Equal boxes
+  then hold an equal number of cards.
+- A card is drawn whole or not at all. A box with cards out of sight ends in one
+  `+N more` line (`+N above · +N more` when scrolled), with no empty row above it. Rows
+  under the 3-row boxes take one-line cards, and the selected card is always drawn in full.
+- **No more ten-card cap per column:** every box fills its room with cards, in every layout.
+  The cap was there so a long DONE could not crowd the other columns. Equal boxes do that
+  now, and the cap left empty rows above `+N more` in a tall box.
+- Stacked sections and the grid's two rows are now exactly equal in height. Leftover rows
+  go to a GITHUB or AGENTS panel that has content for them, or stay below the boxes.
+- While cards are hidden, the GITHUB and AGENTS panels take only their content (the
+  compact GitHub block, the agent rows), never empty padding rows, in every layout. Under the
+  columns (grid, stack, half-h) the rows they give up go to the card boxes. In a side rail
+  the space below the panels stays empty.
+- A boxed card's info line is never left empty: when none of its fields fits whole, the
+  line is cut to the box with `…` (`probe - inves…`) instead of dropped. Boxes whose card
+  text would be under 12 cells use the one-line form for every box instead.
+- A side rail that would leave the columns under 48 cells (third-h at 60 or 80 columns) is
+  not drawn: the columns take the full width and the panels become one-line bars below.
+- A tall window uses the 2x2 grid down to 48 columns (two 24-cell columns), where it used to
+  stack four one-card sections from 62 columns down. In a wide view, four columns narrower
+  than 14 cells (an 80x24 window with the side panels) become a 2x2 grid.
+
 ### Several `tb` started together on a new board no longer fail with "database is locked"
 
 - The first `tb` commands on a board that does not exist yet (for example several agents

@@ -6,8 +6,12 @@
 //! Two things were wrong. In the stacked layouts the four columns share one height, and each
 //! was grown to everything it wanted in turn — so the first long column took the lot and the
 //! others were left as one-row headers. And a column would draw as many cards as its space
-//! allowed, however many that was. Now every column reaches a fair share before any column
-//! takes a second helping, and no column draws more than `MAX_VISIBLE_CARDS` at once.
+//! allowed, however many that was. That was answered first by a ten-card cap per column,
+//! and then by EQUAL boxes: every column gets the same room whatever it holds, so a long
+//! DONE cannot take TODO's rows. The cap is gone — it left empty rows above `+N more` in a
+//! tall box ("anything that goes over becomes read more by pressing down arrow") — and every
+//! box now fills its room with cards. What this file pins is the owner's point: DONE never
+//! shows more than a box holds while TODO is squeezed.
 //!
 //! The rule that must never break: **a card that is not on screen always has a `+N more`
 //! saying so.**
@@ -23,9 +27,6 @@ use terminal_board::herdr::AgentsState;
 use terminal_board::store::Store;
 use terminal_board::tui::{draw, App};
 
-/// The cap this change introduces. Named here rather than imported, so this file compiles
-/// against the version before it and fails by ASSERTION, not by a missing symbol.
-const MAX_VISIBLE_CARDS: usize = 10;
 
 fn render(app: &App, w: u16, h: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -286,7 +287,12 @@ fn a_long_done_column_never_starves_the_others() {
                 if h >= 20 {
                     assert!(todo > 0, "{layout} {w}x{h}: DONE squeezed TODO out entirely:\n{screen}");
                 }
-                assert!(done <= MAX_VISIBLE_CARDS, "{layout} {w}x{h}: {done} done cards drawn, the cap is {MAX_VISIBLE_CARDS}");
+                // Was `done <= MAX_VISIBLE_CARDS` (a ten-card cap). Equal boxes do that job now,
+                // so the check is the report itself: while DONE shows N cards, TODO (three
+                // cards, a box the same size) shows all of them, or as many as DONE does.
+                if h >= 20 {
+                    assert!(todo >= 3.min(done), "{layout} {w}x{h}: DONE shows {done} cards while TODO shows {todo} of 3:\n{screen}");
+                }
                 // whatever is not on screen is counted
                 // a column collapsed to its header is not silent: the header carries the count
                 let collapsed = screen.contains("o DONE today (40)") && done == 0;
@@ -368,10 +374,9 @@ fn a_capped_column_shows_the_nearest_due_cards_under_sort_due() {
     // position, which here would be the twenty furthest-off ones
     let shown: Vec<usize> = (1..=20).filter(|i| screen.contains(&format!("filing {i:02}"))).collect();
     assert!(shown.len() >= 5, "too few drawn to judge the order:\n{screen}");
-    assert!(shown.len() <= MAX_VISIBLE_CARDS, "{} drawn, the cap is {MAX_VISIBLE_CARDS}", shown.len());
     assert!(shown.iter().copied().eq(1..=shown.len()), "the nearest dates are not the ones shown:\n{screen}");
     assert!(screen.contains(&format!("+{} more", 20 - shown.len())), "the rest are counted:\n{screen}");
-    // a blocked card is capped like any other, and still shown when it is the nearest
+    // a blocked card is hidden like any other past what fits, and still shown when it is the nearest
     let nearest = s.list().unwrap().into_iter().find(|c| c.title == "filing 01").expect("filing 01").id;
     s.block_opts(nearest, Some("waiting"), None, None, "alice").unwrap();
     let mut app = App::new(s.snapshot().unwrap(), "alice");

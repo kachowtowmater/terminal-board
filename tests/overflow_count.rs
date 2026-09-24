@@ -74,15 +74,12 @@ fn todo_overflow_count_is_exact_at_three_sizes() {
 
 /// Enlarging the terminal must let the column show more, never hold the count still or
 /// make it worse — the exact defect reported ("we are on full screen almost, still the
-/// same"). third-v goes from a short pane to a tall one; the hidden count must shrink (never
-/// grow or stay put) as height grows, down to the MAX_VISIBLE_CARDS design floor (12 - 10 =
-/// 2: a column never draws more than 10 cards, however tall the pane — that cap is
-/// intentional, not the bug, so a fully-grown pane still legitimately says "+2 more").
+/// same"). The hidden count must shrink (never grow or stay put) as height grows.
 ///
-/// The stacked sections now split the height EVENLY, so TODO gets a quarter of the cards'
-/// height even beside three empty columns: at 55x100 that quarter holds 7 of the 12, and
-/// it takes a 55x150 pane for TODO to reach the floor. 150 was added for that; the rule
-/// pinned — taller never hides more, and the floor is reached — is unchanged.
+/// This used to end at a ten-card floor (12 - 10 = 2 still hidden at 55x150): a column never
+/// drew more than ten cards. That cap is gone — equal boxes keep one long column from
+/// crowding the others, and a tall box fills its rows instead of leaving them empty above
+/// `+N more` — so a pane tall enough shows all twelve, and the count reaches 0.
 #[test]
 fn growing_the_pane_shrinks_the_overflow_count() {
     common::pin_clock();
@@ -96,5 +93,5 @@ fn growing_the_pane_shrinks_the_overflow_count() {
         assert!(hidden <= last_hidden, "55x{h}: overflow count grew from {last_hidden} to {hidden} as the pane got taller\n{screen}");
         last_hidden = hidden;
     }
-    assert_eq!(last_hidden, 2, "a fully-grown 55x150 pane should sit at the MAX_VISIBLE_CARDS floor (10 shown, 2 more), not above or below it");
+    assert_eq!(last_hidden, 0, "a 55x150 pane has room for all twelve cards, and shows them");
 }

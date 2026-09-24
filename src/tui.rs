@@ -41,9 +41,9 @@ pub enum Shape {
 pub const VIEW_RULES: &[(&str, &str)] = &[
     ("focus", "cols < 40, or rows < 16, or short and < 80 cols, or tall and < 30 rows"),
     ("third-h", "wide (cols >= rows*2.2), rows < 30, cols >= 80"),
-    ("third-v", "tall (cols < rows*2.2), cols <= 62, rows >= 30"),
+    ("third-v", "tall (cols < rows*2.2), cols < 48, rows >= 30"),
     ("half-h", "wide, rows >= 30"),
-    ("half-v", "tall, cols >= 63, rows >= 30"),
+    ("half-v", "tall, cols >= 48 (two 24-cell columns), rows >= 30"),
 ];
 
 /// Layout preference -> view; `auto` picks by size (see `VIEW_RULES`).
@@ -62,7 +62,7 @@ pub fn pick_shape(pref: &str, w: u16, h: u16) -> Shape {
     } else if tall {
         if h < 30 {
             Shape::Focus
-        } else if w <= 62 {
+        } else if w < 2 * layouts::MIN_COLUMN_WIDTH {
             Shape::ThirdV
         } else {
             Shape::HalfV
@@ -2014,6 +2014,7 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     let mut lines = vec![Line::from(first)];
 
     let parts = meta_parts(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let dropped = parts.base.trim().is_empty() && parts.mark.is_empty() && parts.warn.is_empty() && parts.quiet.is_empty();
     let (base, warn, q) = (parts.base, parts.warn, parts.quiet);
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
@@ -2021,9 +2022,9 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
         _ => dim(),
     };
     let sep = if base.is_empty() || (parts.mark.is_empty() && warn.is_empty() && q.is_empty()) { "" } else { " " };
-    let mut second = vec![Span::raw(indent)];
+    let mut second: Vec<Span<'static>> = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
-        second.push(Span::raw(meta_gh));
+        second.push(Span::raw(meta_gh.clone()));
     }
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
@@ -2040,6 +2041,16 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     if !q.is_empty() {
         second.push(Span::raw(if warn.is_empty() && parts.mark.is_empty() { "" } else { " " }));
         second.push(Span::styled(q, dim()));
+    }
+    // A boxed card is drawn whole: when the fitting above gave up every field (none fits
+    // whole in `width`), the info is cut to the width with `…` rather than left out — an empty
+    // line inside a card box reads as a card with its info missing.
+    if boxed && dropped {
+        let all = meta_parts(card, &app.snap, 10_000);
+        let text = [all.base, all.mark, all.warn, all.quiet].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            second = vec![Span::raw(meta_gh.clone()), Span::styled(fit(&text, width.saturating_sub(meta_gh.chars().count())), owner_style)];
+        }
     }
     lines.push(Line::from(second));
     if card.column == "doing" {
@@ -2120,14 +2131,68 @@ fn column_needs_dense(app: &App, ci: usize, area: Rect) -> bool {
     if cards.is_empty() || inner_h < 3 || inner_w < 8 {
         return false;
     }
-    let text_w = inner_w.saturating_sub(4) as usize;
-    let full: usize = cards.iter().map(|c| card_lines(app, c, false, text_w, true).len() + 2).sum();
-    full > inner_h
+    natural_rows(app, ci, inner_w.saturating_sub(4) as usize, false) > inner_h
 }
 
-/// One card style per render: dense everywhere if any column needs it.
-pub(crate) fn any_dense(app: &App, cols: &[(usize, Rect)]) -> bool {
-    cols.iter().any(|(ci, r)| column_needs_dense(app, *ci, *r))
+/// The narrowest card TEXT a boxed card is drawn with (the column's inner width less the
+/// card's frame and padding). Below it an info line keeps too little to read — `x blocke…`,
+/// or nothing — so the frame's plan draws every card as one line instead.
+pub const MIN_BOX_TEXT: u16 = 12;
+
+/// How EVERY column box draws its cards in one frame. One plan per render, so no column is
+/// ever drawn in a different card form from its neighbours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardPlan {
+    /// Every column shows ALL of its cards whole, each as tall as it is (`dense`: title in the box's top border, everywhere, when any column needs it).
+    Natural { dense: bool },
+    /// Something would be cut short: every card is a 3-row box (title in its top border, the
+    /// meta line inside) and every box holds the same number of them. Rows that cannot take
+    /// another 3-row box take one-line cards, so no row sits empty while cards are hidden.
+    Boxed,
+    /// Boxes too short for three 3-row cards: one line per card (`#32 title…  x`), so a
+    /// small screen still shows several cards a box, not one.
+    Line,
+}
+
+/// Rows every card of column `ci` takes as boxes `text_w` wide (dense: one row less each).
+fn natural_rows(app: &App, ci: usize, text_w: usize, dense: bool) -> usize {
+    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() + 2 - usize::from(dense)).sum()
+}
+
+/// THE CARD RULE, decided once per frame for all four boxes `cols` (column, box rect):
+///
+/// 1. If every column can show ALL its cards whole in their natural boxes, it does:
+///    `Natural`, dense everywhere when any column needs it — and then nothing is hidden.
+/// 2. Otherwise every box uses the SAME fixed card form, so equal boxes hold an equal number
+///    of cards: 3-row boxes when the shortest box fits at least two of them and three cards
+///    in all (the rows under the boxes take one-line cards, the last row `+N more`), else
+///    one line per card.
+///
+/// A card is drawn whole in its form or not at all, and a box with hidden cards ends in one
+/// `+N more` line at its bottom, with no empty row above it.
+pub fn card_plan(app: &App, cols: &[(usize, Rect)]) -> CardPlan {
+    let inner = |r: &Rect| (r.height.saturating_sub(2) as usize, r.width.saturating_sub(2));
+    // too narrow for a readable card box: one line per card, in every box
+    if cols.iter().any(|(ci, r)| !app.col_cards(*ci).is_empty() && inner(r).1 < MIN_BOX_TEXT + 4) {
+        return CardPlan::Line;
+    }
+    let natural = cols.iter().all(|(ci, r)| {
+        let (h, w) = inner(r);
+        app.col_cards(*ci).is_empty() || (h >= 3 && w >= 8 && natural_rows(app, *ci, w.saturating_sub(4) as usize, true) <= h)
+    });
+    if natural {
+        let dense = cols.iter().any(|(ci, r)| column_needs_dense(app, *ci, *r));
+        return CardPlan::Natural { dense };
+    }
+    let h = cols.iter().map(|(_, r)| inner(r).0).min().unwrap_or(0);
+    let w = cols.iter().map(|(_, r)| inner(r).1).min().unwrap_or(0);
+    // boxed while a box holds at least two 3-row cards and still three cards in all
+    let (boxes, total) = fill_slots(h, usize::MAX, true);
+    if w >= 8 && boxes >= 2 && total >= 3 {
+        CardPlan::Boxed
+    } else {
+        CardPlan::Line
+    }
 }
 
 /// Remember where column `ci` / panel `k` (0 = GITHUB, 1 = AGENTS) was drawn this frame.
@@ -2146,7 +2211,7 @@ pub(crate) fn note_area(app: &App, k: usize, r: Rect) {
     app.area_rects.set(a);
 }
 
-fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
+fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, plan: CardPlan) {
     note_col(app, ci, area);
     let col = COLUMNS[ci];
     let cards = app.col_cards(ci);
@@ -2192,23 +2257,27 @@ fn draw_column(f: &mut Frame, app: &App, ci: usize, area: Rect, dense: bool) {
             None => vec![Line::styled(" -", dim())],
         };
         f.render_widget(Paragraph::new(lines), inner);
-    } else if inner.height < 3 || inner.width < 8 {
-        app.drawn_styles.borrow_mut().push((ci, "compact"));
-        draw_compact(f, app, &cards, sel, inner);
     } else {
-        let used_dense = draw_boxed(f, app, &cards, sel, inner, colour, dense);
-        app.drawn_styles.borrow_mut().push((ci, if used_dense { "dense" } else { "full" }));
+        match plan {
+            CardPlan::Natural { .. } if inner.height < 3 || inner.width < 8 => {
+                app.drawn_styles.borrow_mut().push((ci, "compact"));
+                draw_compact(f, app, &cards, sel, inner);
+            }
+            CardPlan::Natural { dense } => {
+                let used_dense = draw_boxed(f, app, &cards, sel, inner, colour, dense);
+                app.drawn_styles.borrow_mut().push((ci, if used_dense { "dense" } else { "full" }));
+            }
+            CardPlan::Boxed => {
+                app.drawn_styles.borrow_mut().push((ci, "boxed"));
+                draw_fill(f, app, &cards, sel, inner, colour, true);
+            }
+            CardPlan::Line => {
+                app.drawn_styles.borrow_mut().push((ci, "line"));
+                draw_fill(f, app, &cards, sel, inner, colour, false);
+            }
+        }
     }
 }
-
-/// The most cards one column ever draws, however tall the pane is. Past this it shows
-/// `+N more`, the same hint a column that runs out of room already shows.
-///
-/// A board is read column by column, and a column of forty finished cards is not read at
-/// all — it is scrolled past. Ten is enough to see what is going on and short enough that
-/// no column can crowd out its neighbours in the stacked layouts, where the four columns
-/// share one height. (Reported by the owner: "the done has too many and it pushes everyone".)
-pub const MAX_VISIBLE_CARDS: usize = 10;
 
 /// The `+N more` hint, in the longest form that fits `width` cells: `+10 more`, then `+10`,
 /// then `+`. It shortens in WHOLE words like every other hint on the board — a cut `+10 mor`
@@ -2222,19 +2291,13 @@ pub fn more_hint(n: usize, width: usize) -> String {
     String::new()
 }
 
-/// The cards column `ci` draws: its first `MAX_VISIBLE_CARDS`, in the board's own order —
-/// so under `sort due` these are the nearest-due cards, not just the first by position.
-/// The rest are counted by the `+N more` hint; the header keeps the true total.
-pub(crate) fn visible_cards(app: &App, ci: usize) -> Vec<&Card> {
-    app.col_cards(ci).into_iter().take(MAX_VISIBLE_CARDS).collect()
-}
+
 
 /// Box heights (4-row style) of column `ci`'s cards in a column `width` wide; a dense box
 /// is one row shorter.
 pub(crate) fn card_box_heights(app: &App, ci: usize, width: u16) -> Vec<u16> {
     let text_w = width.saturating_sub(6) as usize; // column frame + card frame + padding
-    // only the cards the column would draw: a column never ASKS for height it will not use
-    visible_cards(app, ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
+    app.col_cards(ci).iter().map(|c| card_lines(app, c, false, text_w, true).len() as u16 + 2).collect()
 }
 
 /// Rows column `ci` needs to show every card boxed (frame included; 3 when empty).
@@ -2252,7 +2315,9 @@ pub(crate) fn column_height(app: &App, ci: usize, width: u16, dense: bool) -> u1
 /// hold: a column of sixty finished cards gets exactly the room of a column of four. What
 /// does not fit shows `+N more`, and the arrow keys scroll into it.
 ///
-/// This is the ONE function that decides a pane's extent. Sizing panes by what they hold
+/// This is the ONE function that decides a pane's extent. Panes of CARDS stacked above each
+/// other (the grid's two rows, the stacked sections) take its rule with no row of
+/// difference at all (`layouts::equal_rows`), so equal boxes hold an equal number of cards. Sizing panes by what they hold
 /// (the round-robin growth this replaced) let the fullest pile win the height — a TODO of
 /// twenty squeezed to four cards while REVIEW sat half empty beside a long DONE — which is
 /// not what a board is for: every column is read, so every column gets the same share.
@@ -2300,12 +2365,84 @@ pub(crate) fn column_min_boxed(app: &App, ci: usize, width: u16) -> u16 {
 /// Below this many rows per column, cards fall back to the unboxed compact list.
 pub const BOXED_MIN_ROWS: usize = 12;
 
+/// How many cards a box `height` rows tall holds in the fixed forms, for `n` cards: `(boxed,
+/// total)` — `boxed` 3-row boxes first, then one-line cards in the rows left, the last row
+/// kept for `+N more` when not all `n` fit. A box FILLS its rows: there is no cap on how
+/// many cards it shows (equal boxes are what keep one long column from crowding the others,
+/// which a ten-card cap used to do — and it left empty rows above `+N more`).
+pub fn fill_slots(height: usize, n: usize, boxed: bool) -> (usize, usize) {
+    if height == 0 {
+        return (0, 0);
+    }
+    let b = if boxed { height.saturating_sub(1) / 3 } else { 0 };
+    let all = b + (height - 3 * b);
+    let total = if n <= all { n } else { all - 1 };
+    (b.min(total), total)
+}
+
+/// The last line of a box with cards out of sight: `+N more` below (and how many are above
+/// when the box has scrolled), in the longest form that fits.
+fn fill_hint(above: usize, below: usize, width: usize) -> String {
+    let forms = match (above, below) {
+        (0, b) => return more_hint(b, width),
+        (a, 0) => vec![format!(" +{a} above"), format!(" ^{a}"), format!("^{a}")],
+        (a, b) => vec![format!(" +{a} above · +{b} more"), format!(" ^{a} · +{b} more"), format!(" ^{a} +{b}"), format!("+{b}")],
+    };
+    forms.into_iter().find(|f| f.chars().count() <= width).unwrap_or_default()
+}
+
+/// A card as ONE line `width` wide: `#id title…`, and a red ` x` at the end when blocked.
+fn line_card(app: &App, card: &Card, selected: bool, width: usize) -> Line<'static> {
+    let mark = if card.blocked.is_some() { " x" } else { "" };
+    let mut line = card_lines(app, card, selected, width.saturating_sub(mark.len()), false).swap_remove(0);
+    if !mark.is_empty() {
+        line.spans.push(Span::styled(mark, red()));
+    }
+    line
+}
+
+/// A box drawn in a fixed card form (`CardPlan::Boxed` / `Line`): `fill_slots` cards from a
+/// window that follows the selection, each whole, and — when any are out of sight — one
+/// `+N more` on the box's last row.
+fn draw_fill(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect, colour: Color, boxed: bool) {
+    let n = cards.len();
+    let (nb, total) = fill_slots(inner.height as usize, n, boxed);
+    // the window follows the selection (it is the last card in view when scrolled down), and
+    // never scrolls past the end, so a box with cards out of sight never has an empty row
+    let t = sel.unwrap_or(0).min(n.saturating_sub(1));
+    let start = t.saturating_sub(total.saturating_sub(1)).min(n.saturating_sub(total));
+    // the 3-row boxes are a run that holds the selection: the one-line cards sit above and
+    // below it, so the selected card is always drawn in full
+    let run = if t < start + nb { start } else { t + 1 - nb };
+    let text_w = inner.width.saturating_sub(4) as usize;
+    let mut y = inner.y;
+    for (k, c) in cards.iter().enumerate().skip(start).take(total) {
+        let selected = sel == Some(k);
+        if (run..run + nb).contains(&k) {
+            let lines = card_lines(app, c, selected, text_w, true);
+            let mut t = lines[0].clone().style(Style::default().fg(palette(&app.snap.theme).fg));
+            t.spans.insert(0, Span::raw(" "));
+            t.spans.push(Span::raw(" "));
+            let b = frame(selected, Some(colour)).padding(Padding::horizontal(1)).title(t);
+            let body: Vec<Line> = lines.get(1).cloned().into_iter().collect();
+            f.render_widget(Paragraph::new(body).block(b), Rect { y, height: 3, ..inner });
+            y += 3;
+        } else {
+            let l = line_card(app, c, selected, inner.width.saturating_sub(1) as usize);
+            f.render_widget(Paragraph::new(l), Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 });
+            y += 1;
+        }
+    }
+    let below = n - (start + total).min(n);
+    if start > 0 || below > 0 {
+        let hint = Line::styled(fill_hint(start, below, inner.width as usize), dim());
+        f.render_widget(Paragraph::new(hint), Rect { y: inner.y + inner.height - 1, height: 1, ..inner });
+    }
+}
+
 fn draw_compact(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inner: Rect) {
-    // the same cap the boxed column keeps: a window of MAX_VISIBLE_CARDS that follows the
-    // selection, so one long column cannot crowd out its neighbours in either style
-    let first = sel.unwrap_or(0).saturating_sub(MAX_VISIBLE_CARDS - 1);
-    let last = (first + MAX_VISIBLE_CARDS).min(cards.len());
-    let window = &cards[first..last];
+    let first = 0;
+    let window = cards;
     let mut lines = Vec::new();
     let (mut sel_start, mut sel_end) = (0, 0);
     let mut ends = Vec::new();
@@ -2370,20 +2507,16 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         .map(|(i, c)| card_lines(app, c, sel == Some(i), text_w, true))
         .collect();
     let avail = inner.height as usize;
-    // tight: carry each card's first line in its top border (3 rows per card instead of 4)
-    let dense = dense || bodies.iter().map(|b| b.len() + 2).sum::<usize>() > avail;
+    // the frame's plan decides dense for every box (`card_plan`): a box never picks its own
     let skip_first = usize::from(dense);
     let h = |i: usize| bodies[i].len() + 2 - skip_first;
-    // first visible card: advance until the selected card (plus hint rows) fits — and until
-    // it is inside the MAX_VISIBLE_CARDS window drawn from `start`. A pane with room for more
-    // than that window used to stop advancing on room alone, so the window ended just above
-    // the selection and the last card of a long column could never be scrolled onto screen.
+    // first visible card: advance until the selected card (plus hint rows) fits
     let target = sel.unwrap_or(0);
     let mut start = 0;
     while start < target {
         let used: usize = (start..=target).map(h).sum();
         let hints = usize::from(start > 0) + usize::from(target + 1 < cards.len());
-        if used + hints <= avail && target - start < MAX_VISIBLE_CARDS {
+        if used + hints <= avail {
             break;
         }
         start += 1;
@@ -2396,10 +2529,7 @@ fn draw_boxed(f: &mut Frame, app: &App, cards: &[&Card], sel: Option<usize>, inn
         y += 1;
     }
     let mut i = start;
-    // at most MAX_VISIBLE_CARDS at a time: a column of forty finished cards must not crowd
-    // out its neighbours. Scrolling still reaches every card, because the window follows the
-    // selection, and both hints count what is outside it.
-    let stop = (start + MAX_VISIBLE_CARDS).min(cards.len());
+    let stop = cards.len();
     while i < stop {
         let more_after = cards.len() - i - 1;
         let reserve = u16::from(more_after > 0);
@@ -3801,7 +3931,21 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         (true, false) => 3,
     };
     let want_ag = wide && app.show_agents;
-    let (gh_h, ag_h, detail_h, gh_bar, ag_bar) = board_budget(area.height, gh_full, want_ag, wide, agent_rows);
+    let mut budget = board_budget(area.height, gh_full, want_ag, wide, agent_rows);
+    // Cards come first: when the columns would still hide cards, GITHUB gets only its
+    // CONTENT height (never padding rows) and the rows it gives up go to the columns.
+    let cols_h = |b: &(u16, u16, u16, bool, bool)| {
+        let bars = u16::from(b.3 || (!wide && app.show_github)) + u16::from(b.4 || (!wide && app.show_agents));
+        area.height.saturating_sub(2 + bars + b.0 + b.1 + b.2)
+    };
+    // (the compact GITHUB block then, sized to exactly what it draws)
+    let content = layouts::gh_compact_height(app, area.width);
+    let mut gh_compact = false;
+    if want_gh && content < budget.0 && layouts::cells_hide(app, &layouts::four_cells(Rect { height: cols_h(&budget), ..area })) {
+        budget = board_budget(area.height, content, want_ag, wide, agent_rows);
+        gh_compact = true;
+    }
+    let (gh_h, ag_h, detail_h, gh_bar, ag_bar) = budget;
     // narrow MEDIUM (< 100 cols): panels still show, as bars
     let gh_bar = gh_bar || (!wide && app.show_github);
     let ag_bar = ag_bar || (!wide && app.show_agents);
@@ -3829,11 +3973,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
     let mut i = 0;
     f.render_widget(Paragraph::new(header(app, area.width)), rows[i]);
     i += 1;
-    let cols = split_even(rows[i], 4, true);
-    let dense = any_dense(app, &(0..4).map(|ci| (ci, cols[ci])).collect::<Vec<_>>());
-    for (ci, col) in cols.iter().enumerate() {
-        draw_column(f, app, ci, *col, dense);
-    }
+    layouts::draw_four(f, app, rows[i]);
     i += 1;
     if gh_bar {
         note_area(app, 0, rows[i]);
@@ -3846,7 +3986,11 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect, _adaptive: bool) {
         i += 1;
     }
     if gh_h > 0 {
-        draw_github(f, app, rows[i]);
+        if gh_compact {
+            layouts::draw_gh_compact(f, app, rows[i]);
+        } else {
+            draw_github(f, app, rows[i]);
+        }
         i += 1;
     }
     if ag_h > 0 {

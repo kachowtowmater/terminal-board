@@ -32,7 +32,7 @@
 │                                        │
 └────────────────────────────────────────┘
 ===== 50x70 =====
- TERMINAL BOARD · default · 7 cards
+ TERMINAL BOARD · default · 7 cards · 10 agents
 ┌ AGENTS · 7 here · 3 elsewhere ─────────────────┐
 │ * dev-1      working  #2 "plu…" 0m login form… │
 │ ! dev-2      #3 fix flaky… · idle w/ card (0m) │

@@ -49,10 +49,9 @@ fn assert_palette(buf: &Buffer, theme: &str) -> usize {
                 assert!(frames.contains(&c.fg), "frame cell ({x},{y}) {:?} is {:?}", c.symbol(), c.fg);
             }
             if !BOX.contains(c.symbol()) && !c.symbol().trim().is_empty() && c.fg != p.fg && c.fg != RED {
-                let header_row = (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .contains("o TODO ");
+                // (a 2x2 grid puts REVIEW and DONE's headers on a row of their own)
+                let row = (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+                let header_row = ["o TODO ", "o DOING ", "o REVIEW ", "o DONE "].iter().any(|h| row.contains(h));
                 assert!(
                     (c.fg == GREEN && c.symbol() == "*") || header_row,
                     "coloured text at ({x},{y}) {:?} {:?}: only red warnings, the green '*' and column headers may be coloured",
@@ -733,9 +732,11 @@ fn scrolling_keeps_selection_visible_with_20_cards() {
         // too many to fit: dense boxes carry the title in their (thick, when selected) top border
         let (x, y) = pos(&screen, &format!("#{target} task {target}"));
         assert_eq!(buf[(x - 2, y)].symbol(), "┏", "selected #{target} boxed thick, title in the border:\n{screen}");
-        if target > 1 {
-            let above = screen.lines().take(y as usize).any(|l| l.contains(" more"));
-            assert!(above, "a '+N more' hint above the selection when scrolled:\n{screen}");
+        // scrolled: the box's LAST row says what is out of sight above (and below) — every box
+        // says it on the same row now, instead of spending a card's row at the top on it
+        if target > 1 && !screen.contains("#1 task 1 ") {
+            let below = screen.lines().skip(y as usize).any(|l| l.contains(" above"));
+            assert!(below, "a '+N above' hint under the selection when scrolled:\n{screen}");
         }
         if target == 20 {
             assert!(!screen.contains("#1 task 1 "), "scrolled past the top");
@@ -765,7 +766,8 @@ fn compact_fallback_at_small_heights() {
     let (screen, buf) = render(&app, 90, 9);
     let (x, y) = pos(&screen, "#2 task 2");
     assert!(buf[(x, y)].modifier.contains(Modifier::BOLD), "{screen}");
-    assert!(screen.contains("+1 more") && screen.contains("+4 more"), "{screen}");
+    // one `+N more` on the box's last row: #1 and #2 both fit, so nothing is above them
+    assert!(screen.contains("#1 task 1") && screen.contains("+4 more"), "{screen}");
 }
 
 #[test]

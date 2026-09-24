@@ -517,7 +517,10 @@ pub(super) fn draw_rail(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let w = body.width;
-    if w < 60 {
+    let rail_w = if w < 130 { (w * 34 / 100).max(36) } else { w * 38 / 100 };
+    // a side rail that would leave the columns under two readable 2x2 cells (the columns then
+    // read `#32 …`) is not drawn: the columns take the width, the panels become bars below
+    if w < 60 || w.saturating_sub(rail_w) < 2 * MIN_COLUMN_WIDTH {
         // too narrow for a rail: columns, then a bar per enabled panel
         let n_bars = u16::from(gh_on) + u16::from(ag_on);
         let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(n_bars)]).split(body);
@@ -534,7 +537,6 @@ pub(super) fn draw_rail(f: &mut Frame, app: &App, area: Rect) {
         app.bars.set((gh_on, ag_on));
         return;
     }
-    let rail_w = if w < 130 { (w * 34 / 100).max(36) } else { w * 38 / 100 };
     let parts = Layout::horizontal([Constraint::Min(10), Constraint::Length(rail_w.min(w.saturating_sub(10)))]).split(body);
     draw_columns(f, app, parts[0]);
     let rail = parts[1];
@@ -551,6 +553,17 @@ pub(super) fn draw_rail(f: &mut Frame, app: &App, area: Rect) {
             ag_h += gh_h - 3;
         }
         gh_h = 3;
+    }
+    // while the columns hide cards, a panel is its content, never padding rows (the rest of
+    // the rail stays empty below the panels)
+    if cells_hide(app, &four_cells(parts[0])) {
+        let gh_content = if app.gh.repo.is_some() { tidy_full_height(app, rail.width) } else { 3 };
+        if gh_h >= 3 {
+            gh_h = gh_h.min(gh_content);
+        }
+        if ag_h >= 3 {
+            ag_h = ag_h.min(ag_want.max(3));
+        }
     }
     let (gh_panel, ag_panel) = (gh_h >= 3, ag_h >= 3);
     let mut y = rail.y;
@@ -578,13 +591,78 @@ pub(super) fn draw_rail(f: &mut Frame, app: &App, area: Rect) {
     app.bars.set(bars);
 }
 
-/// The four columns side by side (boxed cards, dense when tight).
-fn draw_columns(f: &mut Frame, app: &App, area: Rect) {
-    let cols = split_even(area, 4, true);
-    let dense = any_dense(app, &(0..4).map(|ci| (ci, cols[ci])).collect::<Vec<_>>());
-    for (ci, col) in cols.iter().enumerate() {
-        draw_column(f, app, ci, *col, dense);
+/// The width of a 2x2 grid cell a tall pane keeps before it stacks the columns instead: a
+/// tall pane is a 2x2 grid from twice this width up (`pick_shape`). At 24 cells a card keeps
+/// 18 cells of text — `#32 our own omp a…` still reads.
+pub const MIN_COLUMN_WIDTH: u16 = 24;
+
+/// The narrowest a column is drawn side by side with the other three (the wide views).
+/// Below it the four columns become a 2x2 grid in the same area: an 80x24 rail left each
+/// column 11 cells and every card read `#32 …`.
+pub const MIN_SIDE_BY_SIDE: u16 = 14;
+
+/// The four columns in `area`: side by side when each gets `MIN_SIDE_BY_SIDE`, else a 2x2
+/// grid (TODO | DOING over REVIEW | DONE) of EQUAL rows (`equal_rows`).
+pub(super) fn draw_four(f: &mut Frame, app: &App, area: Rect) {
+    let cells = four_cells(area);
+    let plan = card_plan(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
+    for (ci, cell) in cells.iter().enumerate() {
+        draw_column(f, app, ci, *cell, plan);
     }
+}
+
+/// Rows the compact GITHUB block (`draw_gh_compact`) takes at `width`: its content, capped
+/// like the stack's (the stats and at most `STACK_GH_ROWS` rows, then `+N more`).
+pub(crate) fn gh_compact_height(app: &App, width: u16) -> u16 {
+    if app.gh.repo.is_none() {
+        return 3;
+    }
+    tidy_full_height(app, width).min(2 + tidy_stats_height(width.saturating_sub(2)) + STACK_GH_ROWS)
+}
+
+/// Where `draw_four` puts the four columns in `area`.
+pub(crate) fn four_cells(area: Rect) -> Vec<Rect> {
+    if area.width / 4 >= MIN_SIDE_BY_SIDE || area.height < 6 {
+        split_even(area, 4, true)
+    } else {
+        grid_cells(area)
+    }
+}
+
+/// A 2x2 grid in `area`: two EXACTLY equal rows, two even columns in each.
+fn grid_cells(area: Rect) -> Vec<Rect> {
+    let rows = equal_rows(area, 2);
+    let top = split_even(rows[0], 2, true);
+    let bottom = split_even(rows[1], 2, true);
+    vec![top[0], top[1], bottom[0], bottom[1]]
+}
+
+/// Would columns drawn in `cells` leave any card out of sight? Decided exactly as they will
+/// be drawn: the same one card plan for the frame, the same slots.
+pub(crate) fn cells_hide(app: &App, cells: &[Rect]) -> bool {
+    let plan = card_plan(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
+    let boxed = match plan {
+        CardPlan::Natural { .. } => return false,
+        CardPlan::Boxed => true,
+        CardPlan::Line => false,
+    };
+    (0..4).any(|ci| {
+        let n = app.col_cards(ci).len();
+        n > 0 && fill_slots(cells[ci].height.saturating_sub(2) as usize, n, boxed).1 < n
+    })
+}
+
+/// `area` split into `n` stacked panes of EXACTLY equal height — the `even_extents` rule
+/// with no row of difference, so equal boxes hold equal cards. The `height % n` rows left
+/// over stay below the last pane, outside every box.
+pub(crate) fn equal_rows(area: Rect, n: usize) -> Vec<Rect> {
+    let h = area.height / n as u16;
+    (0..n as u16).map(|i| Rect { y: area.y + i * h, height: h, ..area }).collect()
+}
+
+/// The four columns side by side, or as a 2x2 grid when that is too narrow (`draw_four`).
+fn draw_columns(f: &mut Frame, app: &App, area: Rect) {
+    draw_four(f, app, area);
 }
 
 /// STACK (tall and narrow, e.g. 42x73 / 60x73): the columns as stacked boxed sections, then
@@ -633,6 +711,15 @@ pub(super) fn draw_stack(f: &mut Frame, app: &App, area: Rect) {
             ag_h = 1;
         }
     }
+    // the four sections are EXACTLY equal (`equal_rows`): the rows over a multiple of four
+    // go to a panel below, so they never sit as a gap under DONE
+    // (only to a panel whose content has a use for them: a panel is never padded)
+    let spare = bh.saturating_sub(gh_h + ag_h) % 4;
+    if gh_on && gh_h >= 3 && gh_full >= gh_h + spare {
+        gh_h += spare;
+    } else if ag_on && ag_h >= 3 && ag_full >= ag_h + spare {
+        ag_h += spare;
+    }
     let cards_h = bh.saturating_sub(gh_h + ag_h);
     let cards_area = Rect { height: cards_h, ..body };
     draw_sections(f, app, cards_area, &counts);
@@ -670,8 +757,9 @@ const STACK_GH_ROWS: u16 = 8;
 ///
 /// # THE RULE THIS FUNCTION OBEYS — EQUAL SECTIONS
 ///
-/// **Every section gets the same height, give or take one row** (`even_extents`), however
-/// many cards it holds — an empty column included. A section with more cards than fit shows
+/// **Every section gets the same height, to the row** (`equal_rows`, the `even_extents` rule
+/// with no row of difference, so equal sections hold equal cards — `card_plan`), however many
+/// cards it holds — an empty column included; the rows over a multiple of four go to a panel. A section with more cards than fit shows
 /// `+N more`, and moving the cursor down scrolls into them. This replaced a share-out by
 /// demand (first cards cheapest-first, then round-robin growth, then the leftover to the
 /// section furthest behind), which kept the COUNTS even but let the longest pile take the
@@ -682,7 +770,8 @@ const STACK_GH_ROWS: u16 = 8;
 /// is hidden with nothing to say so. All sections share one height, so that happens to all
 /// of them together or to none — never one column boxed beside a starved neighbour.
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
-    let heights = even_extents(area.height, 4);
+    // equal to the row: a leftover row or three stays under DONE, outside every box
+    let heights = equal_rows(area, 4).iter().map(|r| r.height).collect::<Vec<_>>();
     let boxed = |c: usize| heights[c] >= 3;
     let mut rects = Vec::new();
     let mut yy = area.y;
@@ -692,7 +781,7 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
         }
         yy += h;
     }
-    let dense = any_dense(app, &rects);
+    let plan = card_plan(app, &rects);
     let mut y = area.y;
     for ci in 0..4 {
         let h = heights[ci].min((area.y + area.height).saturating_sub(y));
@@ -713,7 +802,7 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             ]);
             f.render_widget(Paragraph::new(l), Rect { height: 1, ..r });
         } else {
-            draw_column(f, app, ci, r, dense);
+            draw_column(f, app, ci, r, plan);
         }
         y += h;
     }
@@ -841,36 +930,31 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     let ag_min = ag_want.min(4).min(bh.saturating_sub(grid_floor));
     let gh_min = gh_want.min(GRID_GH_MIN).min(bh.saturating_sub(grid_floor + ag_min));
     let cap = bh - gh_min - ag_min;
-    // the panels take what they want out of whatever the grid cannot use, down to their floor
+    // The panels as before: they take what they want out of whatever the grid cannot use,
+    // down to their floor. `settle` then fits them (the grid keeps GRID_MIN rows, a panel
+    // too short to draw becomes its 1-line bar) and gives the grid's odd row to a panel.
     let spare = bh - full.min(cap);
-    let mut gh_h = gh_want.min(spare.saturating_sub(ag_min));
-    let mut ag_h = ag_want.min(spare - gh_h);
-    // A panel with too few rows to draw becomes its 1-line bar, and that is settled HERE,
-    // before the grid is split, so the rows it keeps are split evenly like any others.
-    let mut bars = (false, false);
-    if gh_on && gh_h < 5 {
-        bars.0 = true;
-        gh_h = 1.min(bh);
+    let gh = gh_want.min(spare.saturating_sub(ag_min));
+    let (mut gh_h, mut ag_h, mut bars) = settle(app, body, gh, ag_want.min(spare - gh), false);
+    let mut gh_compact = false;
+    // Cards come first: when that grid would still hide cards, a panel gets only its CONTENT
+    // (GITHUB its compact block, AGENTS its rows, each with a small max) and every other row
+    // goes to the card boxes — a panel is never padded with empty rows while cards are hidden.
+    if grid_hides(app, Rect { height: bh - gh_h - ag_h, ..body }) {
+        let gh = if gh_on { tidy_full_height(app, body.width).min(2 + tidy_stats_height(body.width.saturating_sub(2)) + STACK_GH_ROWS) } else { 0 };
+        (gh_h, ag_h, bars) = settle(app, body, gh, ag_want.min(6), true);
+        gh_compact = true;
     }
-    if ag_on && ag_h < 3 {
-        bars.1 = true;
-        ag_h = 1.min(bh - gh_h);
-    }
-    // THE RULE THIS OBEYS — `even_extents` (src/tui.rs): the two rows of the grid are the
-    // SAME height, give or take one row, and so are the two columns of each, however many
-    // cards each cell holds. Sizing each row by its own fuller cell (what this did before)
-    // let a long DONE pile take the height while TODO's twenty cards were cut to a handful;
-    // a cell with more than fits says `+N more`, and the arrow keys scroll into it.
     let grid_area = Rect { height: bh - gh_h - ag_h, ..body };
-    let grid_rows = split_even(grid_area, 2, false);
-    let grid = [grid_rows[0].height, grid_rows[1].height];
-    let cols_h = grid[0] + grid[1];
+    // equal to the row; an odd leftover row stays under the grid, outside both rows' boxes
+    let grid_rows = equal_rows(grid_area, 2);
+    let cols_h = grid_area.height;
     let top = split_even(grid_rows[0], 2, true);
     let bottom = split_even(grid_rows[1], 2, true);
     let cells = [top[0], top[1], bottom[0], bottom[1]];
-    let dense = any_dense(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
+    let plan = card_plan(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
     for (ci, cell) in cells.iter().enumerate() {
-        draw_column(f, app, ci, *cell, dense);
+        draw_column(f, app, ci, *cell, plan);
     }
     let mut y = body.y + cols_h;
     if gh_on {
@@ -878,6 +962,8 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
         if bars.0 {
             note_area(app, 0, r);
             f.render_widget(Paragraph::new(gh_bar(app, body.width as usize)), r);
+        } else if gh_compact {
+            draw_gh_compact(f, app, r);
         } else {
             draw_github(f, app, r);
         }
@@ -894,6 +980,43 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     }
     app.shown.set((gh_on && !bars.0, ag_on && !bars.1));
     app.bars.set(bars);
+}
+
+/// Fit the grid's panels into `bh` rows: the grid keeps `GRID_MIN` rows (or all there is),
+/// a panel too short to draw becomes its 1-line bar, and the grid's odd row (its two rows
+/// are exactly equal) goes to a panel that has content for it. `(github, agents, bars)`.
+fn settle(app: &App, body: Rect, mut gh_h: u16, mut ag_h: u16, compact: bool) -> (u16, u16, (bool, bool)) {
+    let (gh_on, ag_on) = (app.show_github, app.show_agents);
+    let bh = body.height;
+    let floor = GRID_MIN.min(bh);
+    if gh_h + ag_h + floor > bh {
+        gh_h = gh_h.saturating_sub(gh_h + ag_h + floor - bh);
+        ag_h = ag_h.saturating_sub((gh_h + ag_h + floor).saturating_sub(bh));
+    }
+    let mut bars = (false, false);
+    if gh_on && gh_h < if compact { 3 } else { 5 } {
+        bars.0 = true;
+        gh_h = 1.min(bh);
+    }
+    if ag_on && ag_h < 3 {
+        bars.1 = true;
+        ag_h = 1.min(bh - gh_h);
+    }
+    let odd = (bh - gh_h - ag_h) % 2;
+    let ag_more = 2 + agent_count(app).min(8) > ag_h;
+    if gh_on && !bars.0 && !compact {
+        gh_h += odd;
+    } else if ag_on && !bars.1 && ag_more {
+        ag_h += odd;
+    } else if gh_on && !bars.0 && tidy_full_height(app, body.width) > gh_h {
+        gh_h += odd;
+    }
+    (gh_h, ag_h, bars)
+}
+
+/// Would a 2x2 grid in `area` leave any card out of sight?
+fn grid_hides(app: &App, area: Rect) -> bool {
+    cells_hide(app, &grid_cells(area))
 }
 
 /// A panel full screen (Tab paging): `BOARD · GITHUB · AGENTS` header, the panel, a footer.

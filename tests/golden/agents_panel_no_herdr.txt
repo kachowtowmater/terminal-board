@@ -31,7 +31,7 @@
 │                                        │
 └────────────────────────────────────────┘
 ===== 50x70 =====
- TERMINAL BOARD · default · 7 cards
+ TERMINAL BOARD · default · 7 cards · 7 agents
 ┌ AGENTS · 7 here · 0 elsewhere ─────────────────┐
 │   dev-1      #2 "plus-address…" 0m login form… │
 │   dev-2      #3 0m fix flaky u…                │
