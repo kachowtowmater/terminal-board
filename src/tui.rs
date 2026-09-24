@@ -2014,6 +2014,7 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     let mut lines = vec![Line::from(first)];
 
     let parts = meta_parts(card, &app.snap, width.saturating_sub(indent.len() + meta_gh.chars().count()));
+    let dropped = parts.base.trim().is_empty() && parts.mark.is_empty() && parts.warn.is_empty() && parts.quiet.is_empty();
     let (base, warn, q) = (parts.base, parts.warn, parts.quiet);
     let owner_style = match owner_agent(app, card) {
         Some(a) if a.status == "working" => Style::default(),
@@ -2021,9 +2022,9 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
         _ => dim(),
     };
     let sep = if base.is_empty() || (parts.mark.is_empty() && warn.is_empty() && q.is_empty()) { "" } else { " " };
-    let mut second = vec![Span::raw(indent)];
+    let mut second: Vec<Span<'static>> = vec![Span::raw(indent)];
     if !meta_gh.is_empty() {
-        second.push(Span::raw(meta_gh));
+        second.push(Span::raw(meta_gh.clone()));
     }
     second.push(Span::styled(base, owner_style));
     second.push(Span::raw(sep));
@@ -2040,6 +2041,16 @@ fn card_lines(app: &App, card: &Card, selected: bool, width: usize, boxed: bool)
     if !q.is_empty() {
         second.push(Span::raw(if warn.is_empty() && parts.mark.is_empty() { "" } else { " " }));
         second.push(Span::styled(q, dim()));
+    }
+    // A boxed card is drawn whole: when the fitting above gave up every field (none fits
+    // whole in `width`), the info is cut to the width with `…` rather than left out — an empty
+    // line inside a card box reads as a card with its info missing.
+    if boxed && dropped {
+        let all = meta_parts(card, &app.snap, 10_000);
+        let text = [all.base, all.mark, all.warn, all.quiet].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            second = vec![Span::raw(meta_gh.clone()), Span::styled(fit(&text, width.saturating_sub(meta_gh.chars().count())), owner_style)];
+        }
     }
     lines.push(Line::from(second));
     if card.column == "doing" {
@@ -2123,6 +2134,11 @@ fn column_needs_dense(app: &App, ci: usize, area: Rect) -> bool {
     natural_rows(app, ci, inner_w.saturating_sub(4) as usize, false) > inner_h
 }
 
+/// The narrowest card TEXT a boxed card is drawn with (the column's inner width less the
+/// card's frame and padding). Below it an info line keeps too little to read — `x blocke…`,
+/// or nothing — so the frame's plan draws every card as one line instead.
+pub const MIN_BOX_TEXT: u16 = 12;
+
 /// How EVERY column box draws its cards in one frame. One plan per render, so no column is
 /// ever drawn in a different card form from its neighbours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2156,6 +2172,10 @@ fn natural_rows(app: &App, ci: usize, text_w: usize, dense: bool) -> usize {
 /// `+N more` line at its bottom, with no empty row above it.
 pub fn card_plan(app: &App, cols: &[(usize, Rect)]) -> CardPlan {
     let inner = |r: &Rect| (r.height.saturating_sub(2) as usize, r.width.saturating_sub(2));
+    // too narrow for a readable card box: one line per card, in every box
+    if cols.iter().any(|(ci, r)| !app.col_cards(*ci).is_empty() && inner(r).1 < MIN_BOX_TEXT + 4) {
+        return CardPlan::Line;
+    }
     let natural = cols.iter().all(|(ci, r)| {
         let (h, w) = inner(r);
         app.col_cards(*ci).is_empty() || (h >= 3 && w >= 8 && natural_rows(app, *ci, w.saturating_sub(4) as usize, true) <= h)

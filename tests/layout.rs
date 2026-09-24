@@ -487,7 +487,9 @@ fn one_card_style_per_render() {
         assert!(styles.len() >= 8 && styles.iter().all(|s| *s == "full"), "{w}x{h}: {styles:?}");
     }
     // one crowded column (TODO with 7 cards): every column switches to the dense boxes
-    for (w, h) in [(126u16, 22u16), (95, 22), (126, 41), (60, 73), (42, 73)] {
+    // (95x22 was here: its rail columns are 15 cells, too narrow for a readable card box
+    // (`MIN_BOX_TEXT`), so every box there draws one-line cards — pinned just below)
+    for (w, h) in [(126u16, 22u16), (126, 41), (60, 73), (42, 73)] {
         let (_d, s, mut app) = setup();
         for i in 0..4 {
             s.add(&format!("docs: extra card {i}"), "", &[], "alice").unwrap();
@@ -498,6 +500,15 @@ fn one_card_style_per_render() {
         assert!(styles.len() >= 4, "{w}x{h}: {styles:?}:\n{screen}");
         assert!(styles.iter().all(|s| *s == "dense"), "{w}x{h}: mixed styles {styles:?}:\n{screen}");
     }
+    // too narrow for card boxes: one form still, the one-line cards, in every box
+    let (_d, s, mut app) = setup();
+    for i in 0..4 {
+        s.add(&format!("docs: extra card {i}"), "", &[], "alice").unwrap();
+    }
+    app.reload(&s);
+    let screen = render(&app, 95, 22);
+    let drawn = app.drawn_styles.borrow().clone();
+    assert!(drawn.len() == 4 && drawn.iter().all(|(_, f)| *f == "line"), "95x22: {drawn:?}:\n{screen}");
 }
 
 #[test]

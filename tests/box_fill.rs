@@ -35,12 +35,15 @@ fn owners_board() -> (tempfile::TempDir, Store) {
             if col == "todo" && i <= 6 {
                 s.block(id, Some("waiting on the other team"), "alice").unwrap();
             }
+            // a long owner name, as on the real board ("investigator-217"): the info line it
+            // heads must be cut short with `…` in a narrow box, never dropped
+            let who = "investigator-217";
             if col != "todo" {
                 // fixture only: nothing reaches done except from review, so seed it forced
-                if col == "done" { s.move_to_forced(id, col, "alice") } else { s.move_to(id, col, "alice") }.unwrap();
+                if col == "done" { s.move_to_forced(id, col, who) } else { s.move_to(id, col, who) }.unwrap();
             }
             if col == "doing" {
-                s.note(id, "still working on it, tests running", "alice").unwrap();
+                s.note(id, "still working on it, tests running", who).unwrap();
             }
         }
     }
@@ -124,18 +127,28 @@ fn panel_rows(screen: &[Vec<char>], name: &str) -> Vec<String> {
 #[test]
 fn every_box_shows_whole_cards_the_same_number_and_no_gap_before_more() {
     let (_d, s) = owners_board();
+    // which cards have an info line to show at all (`meta_parts` with room for everything)
+    let snap = s.snapshot().unwrap();
+    let has_info: std::collections::BTreeMap<i64, bool> = snap
+        .cards
+        .iter()
+        .map(|c| {
+            let m = terminal_board::plain::meta_parts(c, &snap, 10_000);
+            (c.id, !(m.base.trim().is_empty() && m.mark.is_empty() && m.warn.is_empty() && m.quiet.is_empty()))
+        })
+        .collect();
     for layout in LAYOUTS {
         let app = app_for(&s);
         s.set_layout(layout).unwrap();
         let mut app = app;
         app.reload(&s);
         for (w, h) in SIZES {
-            check(&app, layout, w, h);
+            check(&app, layout, w, h, &has_info);
         }
     }
 }
 
-fn check(app: &App, layout: &str, w: u16, h: u16) {
+fn check(app: &App, layout: &str, w: u16, h: u16, has_info: &std::collections::BTreeMap<i64, bool>) {
     let screen = render(app, w, h);
     let all = text(&screen);
     let at = format!("{layout} {w}x{h}");
@@ -165,6 +178,17 @@ fn check(app: &App, layout: &str, w: u16, h: u16) {
             if row.starts_with(['┌', '┏']) {
                 let next = rows.get(k + 1).map(String::as_str).unwrap_or("");
                 assert!(next.starts_with(['│', '┃']), "{at}: a {col} card is cut to its title (row {k} of the box):\n{all}");
+                // a card box is drawn only wide enough to read: 12 cells of text or more
+                // (the frame and one cell of padding each side are the other 4)
+                let box_w = row.chars().position(|c| matches!(c, '┐' | '┓')).map_or(0, |e| e + 1);
+                assert!(box_w >= 12 + 4, "{at}: a {col} card box is {box_w} cells wide, too narrow to read:\n{all}");
+                // and its info line is there: cut short with `…` when it does not fit, never
+                // left empty for a card that has info
+                let id: Option<i64> = row.split('#').nth(1).and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse().ok());
+                let info = next.trim_matches(|c: char| c == '│' || c == '┃' || c.is_whitespace());
+                if let Some(id) = id.filter(|id| has_info.get(id) == Some(&true)) {
+                    assert!(!info.is_empty(), "{at}: boxed card #{id} in {col} has an empty info line:\n{all}");
+                }
             }
         }
         if hidden > 0 {

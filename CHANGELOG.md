@@ -24,6 +24,9 @@ info line while the other columns' cards were whole, some boxes had an empty row
   compact GitHub block, the agent rows), never empty padding rows, in every layout. Under the
   columns (grid, stack, half-h) the rows they give up go to the card boxes. In a side rail
   the space below the panels stays empty.
+- A boxed card's info line is never left empty: when none of its fields fits whole, the
+  line is cut to the box with `…` (`probe - inves…`) instead of dropped. Boxes whose card
+  text would be under 12 cells use the one-line form for every box instead.
 - A side rail that would leave the columns under 48 cells (third-h at 60 or 80 columns) is
   not drawn: the columns take the full width and the panels become one-line bars below.
 - A tall window uses the 2x2 grid down to 48 columns (two 24-cell columns), where it used to
