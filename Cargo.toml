@@ -9,6 +9,10 @@ license = "MIT"
 name = "tb"
 path = "src/main.rs"
 
+[[bin]]
+name = "tb-reap"
+path = "src/bin/tb_reap.rs"
+
 [dependencies]
 ratatui = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
