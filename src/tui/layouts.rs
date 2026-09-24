@@ -578,13 +578,44 @@ pub(super) fn draw_rail(f: &mut Frame, app: &App, area: Rect) {
     app.bars.set(bars);
 }
 
-/// The four columns side by side (boxed cards, dense when tight).
-fn draw_columns(f: &mut Frame, app: &App, area: Rect) {
-    let cols = split_even(area, 4, true);
-    let dense = any_dense(app, &(0..4).map(|ci| (ci, cols[ci])).collect::<Vec<_>>());
-    for (ci, col) in cols.iter().enumerate() {
-        draw_column(f, app, ci, *col, dense);
+/// The width of a 2x2 grid cell a tall pane keeps before it stacks the columns instead: a
+/// tall pane is a 2x2 grid from twice this width up (`pick_shape`). At 24 cells a card keeps
+/// 18 cells of text — `#32 our own omp a…` still reads.
+pub const MIN_COLUMN_WIDTH: u16 = 24;
+
+/// The narrowest a column is drawn side by side with the other three (the wide views).
+/// Below it the four columns become a 2x2 grid in the same area: an 80x24 rail left each
+/// column 11 cells and every card read `#32 …`.
+pub const MIN_SIDE_BY_SIDE: u16 = 14;
+
+/// The four columns in `area`: side by side when each gets `MIN_SIDE_BY_SIDE`, else a 2x2
+/// grid (TODO | DOING over REVIEW | DONE) of EQUAL rows (`equal_rows`).
+pub(super) fn draw_four(f: &mut Frame, app: &App, area: Rect) {
+    let cells: Vec<Rect> = if area.width / 4 >= MIN_SIDE_BY_SIDE || area.height < 6 {
+        split_even(area, 4, true)
+    } else {
+        let rows = equal_rows(area, 2);
+        let top = split_even(rows[0], 2, true);
+        let bottom = split_even(rows[1], 2, true);
+        vec![top[0], top[1], bottom[0], bottom[1]]
+    };
+    let plan = card_plan(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
+    for (ci, cell) in cells.iter().enumerate() {
+        draw_column(f, app, ci, *cell, plan);
     }
+}
+
+/// `area` split into `n` stacked panes of EXACTLY equal height — the `even_extents` rule
+/// with no row of difference, so equal boxes hold equal cards. The `height % n` rows left
+/// over stay below the last pane, outside every box.
+pub(crate) fn equal_rows(area: Rect, n: usize) -> Vec<Rect> {
+    let h = area.height / n as u16;
+    (0..n as u16).map(|i| Rect { y: area.y + i * h, height: h, ..area }).collect()
+}
+
+/// The four columns side by side, or as a 2x2 grid when that is too narrow (`draw_four`).
+fn draw_columns(f: &mut Frame, app: &App, area: Rect) {
+    draw_four(f, app, area);
 }
 
 /// STACK (tall and narrow, e.g. 42x73 / 60x73): the columns as stacked boxed sections, then
@@ -633,6 +664,14 @@ pub(super) fn draw_stack(f: &mut Frame, app: &App, area: Rect) {
             ag_h = 1;
         }
     }
+    // the four sections are EXACTLY equal (`equal_rows`): the rows over a multiple of four
+    // go to a panel below, so they never sit as a gap under DONE
+    let spare = bh.saturating_sub(gh_h + ag_h) % 4;
+    if gh_on && gh_h >= 3 {
+        gh_h += spare;
+    } else if ag_on && ag_h >= 3 {
+        ag_h += spare;
+    }
     let cards_h = bh.saturating_sub(gh_h + ag_h);
     let cards_area = Rect { height: cards_h, ..body };
     draw_sections(f, app, cards_area, &counts);
@@ -670,8 +709,9 @@ const STACK_GH_ROWS: u16 = 8;
 ///
 /// # THE RULE THIS FUNCTION OBEYS — EQUAL SECTIONS
 ///
-/// **Every section gets the same height, give or take one row** (`even_extents`), however
-/// many cards it holds — an empty column included. A section with more cards than fit shows
+/// **Every section gets the same height, to the row** (`equal_rows`, the `even_extents` rule
+/// with no row of difference, so equal sections hold equal cards — `card_plan`), however many
+/// cards it holds — an empty column included; the rows over a multiple of four go to a panel. A section with more cards than fit shows
 /// `+N more`, and moving the cursor down scrolls into them. This replaced a share-out by
 /// demand (first cards cheapest-first, then round-robin growth, then the leftover to the
 /// section furthest behind), which kept the COUNTS even but let the longest pile take the
@@ -682,7 +722,8 @@ const STACK_GH_ROWS: u16 = 8;
 /// is hidden with nothing to say so. All sections share one height, so that happens to all
 /// of them together or to none — never one column boxed beside a starved neighbour.
 fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
-    let heights = even_extents(area.height, 4);
+    // equal to the row: a leftover row or three stays under DONE, outside every box
+    let heights = equal_rows(area, 4).iter().map(|r| r.height).collect::<Vec<_>>();
     let boxed = |c: usize| heights[c] >= 3;
     let mut rects = Vec::new();
     let mut yy = area.y;
@@ -692,7 +733,7 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
         }
         yy += h;
     }
-    let dense = any_dense(app, &rects);
+    let plan = card_plan(app, &rects);
     let mut y = area.y;
     for ci in 0..4 {
         let h = heights[ci].min((area.y + area.height).saturating_sub(y));
@@ -713,7 +754,7 @@ fn draw_sections(f: &mut Frame, app: &App, area: Rect, counts: &[u16]) {
             ]);
             f.render_widget(Paragraph::new(l), Rect { height: 1, ..r });
         } else {
-            draw_column(f, app, ci, r, dense);
+            draw_column(f, app, ci, r, plan);
         }
         y += h;
     }
@@ -861,16 +902,24 @@ pub(super) fn draw_grid(f: &mut Frame, app: &App, area: Rect) {
     // cards each cell holds. Sizing each row by its own fuller cell (what this did before)
     // let a long DONE pile take the height while TODO's twenty cards were cut to a handful;
     // a cell with more than fits says `+N more`, and the arrow keys scroll into it.
+    // the two rows are EXACTLY equal (`equal_rows`): an odd row goes to a panel below, so
+    // it never sits as a gap between the grid and GITHUB
+    let odd = (bh - gh_h - ag_h) % 2;
+    if gh_on && !bars.0 {
+        gh_h += odd;
+    } else if ag_on && !bars.1 {
+        ag_h += odd;
+    }
     let grid_area = Rect { height: bh - gh_h - ag_h, ..body };
-    let grid_rows = split_even(grid_area, 2, false);
-    let grid = [grid_rows[0].height, grid_rows[1].height];
-    let cols_h = grid[0] + grid[1];
+    // equal to the row; an odd leftover row stays under the grid, outside both rows' boxes
+    let grid_rows = equal_rows(grid_area, 2);
+    let cols_h = grid_area.height;
     let top = split_even(grid_rows[0], 2, true);
     let bottom = split_even(grid_rows[1], 2, true);
     let cells = [top[0], top[1], bottom[0], bottom[1]];
-    let dense = any_dense(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
+    let plan = card_plan(app, &(0..4).map(|ci| (ci, cells[ci])).collect::<Vec<_>>());
     for (ci, cell) in cells.iter().enumerate() {
-        draw_column(f, app, ci, *cell, dense);
+        draw_column(f, app, ci, *cell, plan);
     }
     let mut y = body.y + cols_h;
     if gh_on {

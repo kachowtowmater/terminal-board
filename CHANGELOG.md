@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Every column box shows the same number of whole cards
+
+On a small screen (about 60x30) the board looked off: a DOING card was drawn without its
+info line while the other columns' cards were whole, some boxes had an empty row before
+`+N more` and others did not, and every box showed one card.
+
+- One card form per frame for all four boxes. When every column fits its cards, they look as
+  before. Otherwise every card is a 3-row box (title in its border, the info line inside),
+  or, when the boxes are too short for that, one line (`#32 title…  x`). Equal boxes
+  then hold an equal number of cards.
+- A card is drawn whole or not at all. A box with cards out of sight ends in one
+  `+N more` line (`+N above · +N more` when scrolled), with no empty row above it. The
+  10-card cap per column stays. Rows under one-line cards in a box take the next cards, and
+  the selected card is always drawn in full.
+- Stacked sections and the grid's two rows are now exactly equal in height. A leftover row
+  goes to the GITHUB or AGENTS panel, not into a card box.
+- A tall window uses the 2x2 grid down to 48 columns (two 24-cell columns), where it used to
+  stack four one-card sections from 62 columns down. In a wide view, four columns narrower
+  than 14 cells (an 80x24 window with the side panels) become a 2x2 grid.
+
 ## 3.1.0 — 2026-09-23
 
 ### Highlights

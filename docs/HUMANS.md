@@ -155,6 +155,11 @@ the four columns side by side are the same width, the 2x2 grid's two rows are th
 height, and the stacked sections are too — however many cards each one holds. So sixty
 finished cards in DONE get exactly the room TODO gets, and can no longer push it down.
 
+Equal boxes also hold the same number of cards. A card is drawn whole or not at all, and a
+box with cards out of sight ends in one `+N more` line, with no empty row above it. When the
+boxes are too short for several full cards (a small window), every card becomes one line,
+`#32 title…  x` (`x` = blocked), so each box still shows several.
+
 ## Boards
 
 Keep separate boards for separate things. `tb` opens `default`; any other name opens that
@@ -316,9 +321,9 @@ it still works:
 |---|---|---|
 | **focus** | small (under 40 columns or 16 rows) | one card, big: the one you're working on |
 | **third-h** | wide and short (e.g. a bottom strip) | columns left, GITHUB and AGENTS right |
-| **third-v** | tall and narrow (a side pane) | the columns stacked, then GITHUB, then AGENTS |
+| **third-v** | tall and narrow (a side pane, under 48 columns) | the columns stacked, then GITHUB, then AGENTS |
 | **half-h** | half the screen or more | four columns side by side, panels below |
-| **half-v** | half the width, tall | the columns as a 2×2 grid, panels below |
+| **half-v** | half the width, tall (48 columns or more) | the columns as a 2×2 grid, panels below |
 
 `L` pins a view (and cycles through them); `tb config layout auto` goes back to automatic.
 A panel that doesn't fit becomes a one-line bar; `tab` shows it full screen and `esc` comes

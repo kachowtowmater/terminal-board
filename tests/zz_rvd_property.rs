@@ -574,9 +574,19 @@ fn widths_on(screen: &str, y: usize, n: usize) -> Vec<usize> {
     starts.windows(2).take(n).map(|p| p[1] - p[0]).collect()
 }
 
-fn check_even_extents(screen: &str, layout: &str, what: &str) {
+fn check_even_extents(screen: &str, layout: &str, what: &str, rects: [ratatui::layout::Rect; 4]) {
     let frames = board_frames(screen);
     let spread = |v: &[usize]| v.iter().max().unwrap() - v.iter().min().unwrap();
+    // A side-by-side view whose four columns would each be narrower than the side-by-side
+    // minimum draws them as a 2x2 grid in the same area instead. It is held to the same
+    // evenness, measured on where the columns were drawn (the grid's first row shares its top
+    // line with the GITHUB rail, so it cannot be read off the screen like the others).
+    if matches!(layout, "third-h" | "half-h") && rects[0].y != rects[2].y {
+        let (h, w) = (|i: usize| rects[i].height as usize, |i: usize| rects[i].width as usize);
+        assert!(spread(&[h(0), h(1), h(2), h(3)]) == 0, "{what}: grid rows {rects:?} are not equal:\n{screen}");
+        assert!(spread(&[w(0), w(1)]) <= 1 && spread(&[w(2), w(3)]) <= 1, "{what}: grid columns {rects:?} differ by more than one:\n{screen}");
+        return;
+    }
     let heights: Vec<usize> = frames.iter().map(|(a, b)| b - a + 1).collect();
     match layout {
         "half-v" => {
@@ -626,7 +636,7 @@ fn every_shape_of_board_splits_its_panes_evenly() {
                     if is_focus_view(&screen) {
                         continue;
                     }
-                    check_even_extents(&screen, layout, &format!("{counts:?} {layout} {w}x{h} cursor={col}"));
+                    check_even_extents(&screen, layout, &format!("{counts:?} {layout} {w}x{h} cursor={col}"), app.col_rects.get());
                 }
             }
         }

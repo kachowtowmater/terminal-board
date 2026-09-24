@@ -123,9 +123,15 @@ fn auto_shape_by_size() {
         (126, 22, Shape::ThirdH),
         (200, 24, Shape::ThirdH),
         (260, 26, Shape::ThirdH),
-        (50, 70, Shape::ThirdV),
+        // a tall pane keeps the 2x2 grid down to 48 columns (two 24-cell columns: a card still
+        // reads), and stacks below that — it stacked from 62 columns down before, which put a
+        // 60x30 pane in four one-card sections
+        (47, 70, Shape::ThirdV),
         (42, 73, Shape::ThirdV),
-        (60, 73, Shape::ThirdV),
+        (48, 70, Shape::HalfV),
+        (50, 70, Shape::HalfV),
+        (60, 73, Shape::HalfV),
+        (60, 30, Shape::HalfV),
         (126, 41, Shape::HalfH),
         (160, 50, Shape::HalfH),
         (95, 35, Shape::HalfH),
@@ -177,8 +183,11 @@ fn third_height_rail_126x24_and_200x24() {
 #[test]
 fn third_width_stack_42_60_85() {
     common::pin_clock();
+    // the stacked view itself, at the widths it used to be picked for (60 and 50 are auto a
+    // 2x2 grid now — `auto_shape_by_size` — so the view is pinned here)
     for (w, h) in [(42u16, 73u16), (60, 73), (50, 70)] {
-        let (_d, _s, app) = setup();
+        let (_d, _s, mut app) = setup();
+        app.snap.layout = "third-v".into();
         let screen = render(&app, w, h);
         let order: Vec<usize> =
             ["o TODO (3)", "o DOING (3/5)", "o REVIEW (3)", "o DONE today (3)", "GITHUB", "AGENTS"].iter().map(|n| row_of(&screen, n)).collect();
@@ -197,6 +206,9 @@ fn third_width_stack_42_60_85() {
 fn stack_github_rows_are_focusable() {
     common::pin_clock();
     let (_d, mut s, mut app) = setup();
+    // the stacked view (60x73 is auto a 2x2 grid now)
+    s.set_layout("third-v").unwrap();
+    app.reload(&s);
     render(&app, 60, 73);
     // walk down through every card, then into GITHUB
     for _ in 0..12 {
@@ -570,8 +582,11 @@ fn arrows_are_spatial_in_every_layout() {
     app.handle_key(key(KeyCode::Left), &mut s);
     assert_eq!(app.focus, Focus::Github, "GITHUB is below the columns: <- is not a way back");
 
-    // STACK (60x73): <-/-> jump between sections, -> from the last does nothing
+    // STACK (60x73, pinned: auto is a 2x2 grid there now): <-/-> jump between sections,
+    // -> from the last does nothing
     let (_d, mut s, mut app) = setup();
+    s.set_layout("third-v").unwrap();
+    app.reload(&s);
     render(&app, 60, 73);
     app.handle_key(key(KeyCode::Right), &mut s);
     assert_eq!(app.col, 1);
@@ -702,7 +717,9 @@ fn tidy_geometry(screen: &str) -> (Vec<usize>, Vec<usize>) {
 fn tidy_github_block_aligns_at_62_48_40() {
     common::pin_clock();
     for w in [62u16, 48, 40] {
-        let (_d, _s, app) = setup();
+        let (_d, _s, mut app) = setup();
+        // the stacked view's GitHub block (62 and 48 are auto a 2x2 grid now, so it is pinned)
+        app.snap.layout = "third-v".into();
         let screen = render(&app, w, 70);
         assert_eq!(app.last_shape.get(), Shape::ThirdV, "{w}");
         let (hash, end) = tidy_geometry(&screen);
@@ -1054,7 +1071,7 @@ fn first_run_empty_states_show_hints() {
     for (w, h, want, shape) in [
         (50u16, 14u16, Shape::Focus, "focus"),
         (110, 22, Shape::ThirdH, "third-h"),
-        (52, 60, Shape::ThirdV, "third-v"),
+        (46, 60, Shape::ThirdV, "third-v"),
         (110, 45, Shape::HalfH, "half-h, hint wrapped"),
         (140, 45, Shape::HalfH, "half-h"),
         (90, 45, Shape::HalfV, "half-v"),
@@ -1333,6 +1350,9 @@ fn stat_block_and_bar_label_a_full_page() {
 
     // 2) the narrow stat block, two-column form (`tidy_github_block_aligns_at_62_48_40` pins
     //    62/48/40 wide, 70 tall as ThirdV; >=58 wide keeps MERGED/MAIN CI on the ISSUES/PRS rows)
+    // (62x70 is auto a 2x2 grid now: the stacked view is pinned for this block)
+    plain.snap.layout = "third-v".into();
+    full.snap.layout = "third-v".into();
     let stat_plain = render(&plain, 62, 70);
     let stat_full = render(&full, 62, 70);
     let line = |screen: &str, needle: &str| screen.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle} row:\n{screen}")).to_string();

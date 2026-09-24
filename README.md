@@ -1217,9 +1217,9 @@ read, appear in the status line at the bottom.
 |---|---|
 | focus | fewer than 40 columns or 16 rows |
 | third, wide | at least 80 columns and fewer than 30 rows |
-| third, tall | at most 62 columns and 30+ rows |
+| third, tall | under 48 columns and 30+ rows |
 | half, wide | wide and 30+ rows |
-| half, tall | 63+ columns, 30+ rows and taller than wide |
+| half, tall | 48+ columns, 30+ rows and taller than wide |
 
 The same settings from the command line: `tb config layout auto|focus|third-h|third-v|half-h|half-v`
 and `tb config theme dark|light`.

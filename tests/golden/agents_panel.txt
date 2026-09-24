@@ -32,7 +32,7 @@
 │                                        │
 └────────────────────────────────────────┘
 ===== 50x70 =====
- TERMINAL BOARD · default · 7 cards
+ TERMINAL BOARD · default · 7 cards · 10 agents
 ┌ AGENTS · 7 here · 3 elsewhere ─────────────────┐
 │ * dev-1      working  #2 "plu…" 0m login form… │
 │ ! dev-2      #3 fix flaky… · idle w/ card (0m) │
@@ -42,6 +42,7 @@
 │ * rev-1      review #4 "readi…" 0m backup res… │
 │   filer      last created #7 0m                │
 │ +3 elsewhere (not on this board)               │
+│                                                │
 └────────────────────────────────────────────────┘
 ===== 70x70 =====
  TERMINAL BOARD · default · 7 cards · 10 agents (7 here, 3 elsewhere)
@@ -54,6 +55,7 @@
 │ * rev-1      working  review #4 "reading the diff" 0m backup rest… │
 │   filer      last created #7 0m                                    │
 │ +3 elsewhere (not on this board)                                   │
+│                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ===== 95x35 =====
  TERMINAL BOARD · default · 7 cards · 10 agents (7 here, 3 elsewhere)
