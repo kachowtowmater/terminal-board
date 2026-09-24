@@ -70,7 +70,13 @@ pub fn read_up_to(source: &Path, usage: &str, max: usize) -> Result<String, Boar
 /// starter that does eventually write is never cut off once it has begun. Leniently parsed —
 /// this only changes what tb WAITS for, never what it writes (docs/AGENTS.md's env var rule).
 fn stdin_timeout() -> Option<std::time::Duration> {
-    let secs: u64 = crate::env("STDIN_TIMEOUT")?.trim().parse().ok()?;
+    timeout_value(crate::env("STDIN_TIMEOUT").as_deref())
+}
+
+/// What a `TB_STDIN_TIMEOUT` value means, apart from the environment (tested without
+/// `set_var`, which every test in the same process would see).
+fn timeout_value(v: Option<&str>) -> Option<std::time::Duration> {
+    let secs: u64 = v?.trim().parse().ok()?;
     (secs > 0).then_some(std::time::Duration::from_secs(secs))
 }
 
@@ -289,15 +295,10 @@ mod tests {
     /// unparsable value is lenient rather than refused, like tb's other read-only knobs.
     #[test]
     fn stdin_timeout_is_seconds_unset_or_zero_means_forever() {
-        std::env::remove_var("TB_STDIN_TIMEOUT");
-        assert_eq!(stdin_timeout(), None);
-        std::env::set_var("TB_STDIN_TIMEOUT", "0");
-        assert_eq!(stdin_timeout(), None);
-        std::env::set_var("TB_STDIN_TIMEOUT", "5");
-        assert_eq!(stdin_timeout(), Some(std::time::Duration::from_secs(5)));
-        std::env::set_var("TB_STDIN_TIMEOUT", "not-a-number");
-        assert_eq!(stdin_timeout(), None, "unparsable is lenient, not a refusal");
-        std::env::remove_var("TB_STDIN_TIMEOUT");
+        assert_eq!(timeout_value(None), None);
+        assert_eq!(timeout_value(Some("0")), None);
+        assert_eq!(timeout_value(Some("5")), Some(std::time::Duration::from_secs(5)));
+        assert_eq!(timeout_value(Some("not-a-number")), None, "unparsable is lenient, not a refusal");
     }
 
     #[test]
