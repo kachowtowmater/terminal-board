@@ -184,7 +184,11 @@ fn scan_board(name: &str, mode: Mode, threshold: i64, agents: &Agents, tmux: &[S
                 format!("tb-reap: released — owner '{owner}' had no herdr agent and no tmux session for >= {threshold}s");
             // force=true here is a direct library call, never the CLI's `--force` flag: the
             // reaper is the one caller allowed to release a dead owner's card without asking.
-            if store.move_opts(*id, "todo", "tb-reap", true, Some(&reason)).is_ok() {
+            // `move_opts`'s `reason` param is reserved for a review->doing send-back (any other
+            // transition with one is refused outright), so the release note goes through
+            // `note` instead, after the move succeeds.
+            if store.move_opts(*id, "todo", "tb-reap", true, None).is_ok() {
+                let _ = store.note(*id, &reason, "tb-reap");
                 released.push(*id);
             }
         }
