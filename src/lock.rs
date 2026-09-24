@@ -76,7 +76,6 @@ impl Drop for Guard {
 #[cfg(unix)]
 pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
     use std::os::unix::io::AsRawFd;
-    use std::time::Instant;
     let mut o = std::fs::OpenOptions::new();
     o.read(true).write(true).create(true).truncate(false);
     {
@@ -93,19 +92,41 @@ pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
         Mode::Shared => libc::LOCK_SH,
         Mode::Exclusive => libc::LOCK_EX,
     };
-    let start = Instant::now();
-    loop {
-        if unsafe { libc::flock(file.as_raw_fd(), flag | libc::LOCK_NB) } == 0 {
-            return Ok(Guard { file });
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() != std::io::ErrorKind::WouldBlock {
-            return Err(Error::Io(e));
-        }
-        if start.elapsed() >= wait {
-            return Err(Error::Busy(holders(path)));
-        }
-        std::thread::sleep(Duration::from_millis(5 + (std::process::id() % 11) as u64));
+    // The uncontended case, every time nobody else holds it: one non-blocking try, no thread.
+    if unsafe { libc::flock(file.as_raw_fd(), flag | libc::LOCK_NB) } == 0 {
+        return Ok(Guard { file });
+    }
+    let e = std::io::Error::last_os_error();
+    if e.kind() != std::io::ErrorKind::WouldBlock {
+        return Err(Error::Io(e));
+    }
+    if wait.is_zero() {
+        return Err(Error::Busy(holders(path)));
+    }
+    // Contended: wait IN THE KERNEL, not by polling. A waiter that sleeps between non-blocking
+    // tries is unfair: a process that lets go and takes the lock again at once (a loop of
+    // writes) wins every time the sleeping waiter is not looking, and under load the waiter can
+    // lose for its whole wait. A blocking `flock` is woken the moment the holder lets go.
+    // The blocking call runs on a helper thread so the wait stays bounded: past `wait` we give
+    // up, and should the helper get the lock later, its hand-off finds nobody listening, the
+    // file is dropped with the unsent message, and the lock is released at once.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let got = loop {
+            if unsafe { libc::flock(file.as_raw_fd(), flag) } == 0 {
+                break Ok(file);
+            }
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                break Err(e);
+            }
+        };
+        let _ = tx.send(got);
+    });
+    match rx.recv_timeout(wait) {
+        Ok(Ok(file)) => Ok(Guard { file }),
+        Ok(Err(e)) => Err(Error::Io(e)),
+        Err(_) => Err(Error::Busy(holders(path))),
     }
 }
 

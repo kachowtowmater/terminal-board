@@ -150,7 +150,14 @@ fn update_at(settings: &Path, change: impl FnOnce(&mut Map<String, Value>)) -> R
     if !fresh_raw.is_empty() && text == render(&fresh_raw) && target.exists() {
         return Ok(()); // somebody else already wrote exactly this
     }
-    write_atomically(&target, &dir, &text)
+    write_atomically(&target, &dir, &text)?;
+    // The rename is what other processes see, and it happened under the lock. Making the
+    // rename itself survive a crash (syncing the directory) does not need the lock, so it is
+    // done after letting go: under a busy disk that sync is a large share of the time a
+    // writer would otherwise make every other writer wait.
+    drop(_guard);
+    let _ = std::fs::File::open(&dir).map(|d| d.sync_all());
+    Ok(())
 }
 
 /// One change to one top-level key.
@@ -358,8 +365,8 @@ fn write_atomically(target: &Path, dir: &Path, text: &str) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         return Err(cannot("write", target, dir, e));
     }
-    // the rename itself is durable only once the directory is: best effort, never fatal
-    let _ = std::fs::File::open(dir).map(|d| d.sync_all());
+    // the rename itself is durable only once the directory is synced: the caller does that
+    // (best effort, never fatal) after it lets go of the lock
     Ok(())
 }
 
