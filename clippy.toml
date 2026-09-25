@@ -10,4 +10,7 @@ disallowed-methods = [
   { path = "std::thread::park_timeout", reason = "a timed park is a sleep: wait through waits::pause (src/waits.rs)" },
   { path = "rusqlite::Connection::busy_timeout", reason = "set SQLite's busy wait with waits::busy, so a traced run sees every retry (src/waits.rs)" },
   { path = "rusqlite::Connection::busy_handler", reason = "set SQLite's busy wait with waits::busy, so a traced run sees every retry (src/waits.rs)" },
+  { path = "libc::usleep", reason = "an FFI sleep is still a sleep: wait through waits::pause, so the wait trace sees it (src/waits.rs)" },
+  { path = "libc::nanosleep", reason = "an FFI sleep is still a sleep: wait through waits::pause, so the wait trace sees it (src/waits.rs)" },
+  { path = "libc::sleep", reason = "an FFI sleep is still a sleep: wait through waits::pause, so the wait trace sees it (src/waits.rs)" },
 ]
