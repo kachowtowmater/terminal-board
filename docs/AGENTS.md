@@ -112,22 +112,19 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 - **TODO** — any agent files work (`tb add`). **DOING** — the workers: one session or many, however the client runs them.
 - **REVIEW → DONE — only an independent verifier**: an agent started with `TB_ROLE=verifier` (or `reviewer`), a name a person put on
   `tb config verifiers`, or a person — never the card's owner or last holder. Any other agent is refused (`not_verifier`): leave it in REVIEW.
-  Only a person changes `tb config verifiers` / `verifier-only` (an agent gets `person_only`). tb sees an agent by its harness: `TB_HARNESS`,
-  `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), `CODEX_*` (codex), `CLAUDECODE`, or a herdr pane — anything else counts as a person.
+  Only a person changes `tb config verifiers` / `verifier-only` (an agent gets `person_only`). tb sees an agent by its harness (`TB_HARNESS`,
+  `AI_AGENT`, `OMPCODE`, `CODEX_*`, `CLAUDECODE`, or a herdr pane) — anything else counts as a person.
 - **An agent's close rides on a registered session** (`unregistered_verifier`): every REVIEW → DONE by an agent — a `TB_ROLE=verifier`
   claim, or just a name on `tb config verifiers` — is refused unless the resolved session has an entry in
-  `~/.local/state/terminal-board/verifiers/<session>` — one JSON `{"session","name","harness"}` per file, written by
-  `tb-agent-start --role verifier` at launch. Setting the role (or the name) in any shell — including a script the agent writes itself — does
-  not make it a verifier: the registry's `name` must match this command and its `harness` must be claude-code. `TB_VERIFIER_REGISTRY=off`
-  turns the check off; `--force` still gets past any refusal, logged.
+  `~/.local/state/terminal-board/verifiers/<session>` (`{"session","name","harness"}`, written by `tb-agent-start --role verifier`).
+  Setting the role or the name in any shell, script included, never makes it a verifier: the entry's `name` must match and its `harness` be
+  claude-code. `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged.
 - Nothing reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the full-screen board, not `tb sync`.
-- Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
-  (`identity` in `--json`), and — on moves into DONE, `force` events and the verifier-config changes — the kernel's process ancestry
-  (`ancestry` in `--json`, `store::proc`): what actually ran the command, not what its environment claimed. `--force` gets past both
-  rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
+- Every move into DONE is traced: actor + identity (`identity` in `--json`) and, on DONE/`force`/verifier-config events, the kernel's
+  process ancestry (`ancestry` in `--json`, `store::proc`) — what actually ran the command. A person may turn the verifier rule off.
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>` — started by `tb-agent-start`, so the session is registered.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
-  rename and `TB_ROLE` don't change what the harness records; start the verifier in its own session.
+  start the verifier in its own session.
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
