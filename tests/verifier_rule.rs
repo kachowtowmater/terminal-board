@@ -268,6 +268,7 @@ fn a_verifier_still_never_closes_its_own_work() {
 #[test]
 fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let b = Board::new();
+    assert_eq!(b.ok(PERSON, "lead", &["config", "verifiers"]).trim(), "none — only an agent with TB_ROLE=verifier, or a person, may close a card");
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-1, rv-3"]);
     assert_eq!(b.json(&["config", "verifiers"])["config"]["value"], serde_json::json!(["rv-1", "rv-3"]));
     assert!(b.ok(PERSON, "lead", &["config"]).contains("verifiers"), "listed once set");
@@ -647,7 +648,7 @@ fn no_session_on_either_side_never_matches() {
     let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
-    assert_eq!(b.column(&two), "done");
+    assert_eq!(b.column(&two), "done", "a sessionless verifier was refused without --force; --force closes it");
     // a person closes it regardless: no session to match, and never a refusal
     let three = b.in_review("x: a person closes", "bot-1");
     b.ok(PERSON, "anna", &["done", &three]);
