@@ -102,6 +102,9 @@ pub enum Code {
     /// The actor who did the work tried to approve or review their own card
     /// (never-approve-your-own-work).
     SelfApprove,
+    /// REVIEW -> DONE by a verifier running in the same recorded session as an identity that
+    /// took the card or moved it into review, in any round (store/verifier.rs).
+    SameSession,
     /// `config done-by` restricts who may close a card, and the actor is not on the list.
     DoneByRestricted,
     /// A move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`):
@@ -184,6 +187,7 @@ impl Code {
             Code::GithubError => "github_error",
             Code::NotInReview => "not_in_review",
             Code::SelfApprove => "self_approve",
+            Code::SameSession => "same_session",
             Code::DoneByRestricted => "done_by_restricted",
             Code::NotFromReview => "not_from_review",
             Code::NotVerifier => "not_verifier",
@@ -377,6 +381,13 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             rule: "only a verifier closes",
             err: verifier::not_verifier_err(id, actor, &who),
             forced: format!("closed #{id} with no verifier role"),
+        });
+    }
+    if let Some(session) = verifier::same_session_of(conn, id, actor, &who)? {
+        v.push(DoneCheck {
+            rule: "same session as the builder",
+            err: verifier::same_session_err(id, actor, &who, &session),
+            forced: format!("closed #{id} in the builder's same_session"),
         });
     }
     if let Some(names) = closing::may_close(conn, actor)? {
@@ -2495,7 +2506,9 @@ impl Store {
     ///    `--force`, logged — store/verifier.rs) → self-approval (entering DONE by the card's
     ///    author or last holder, or `--force`, logged) → the
     ///    verifier rule (REVIEW -> DONE needs a verifier role, a place on `config verifiers`,
-    ///    or a person; or `--force`, logged — store/verifier.rs) → `done-by` (entering DONE needs to be one of the named closers,
+    ///    or a person; or `--force`, logged — store/verifier.rs) → the same-session rule
+    ///    (REVIEW -> DONE from a session that did the work, or `--force`, logged —
+    ///    store/verifier.rs) → `done-by` (entering DONE needs to be one of the named closers,
     ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
     ///    send-back). The first two are about WHO may touch the card; `done-by` and
@@ -2637,7 +2650,8 @@ impl Store {
         // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
         // supersedes it, so a real reassignment is never falsely refused.
         // Every guard on the way into DONE, in one fixed order, from ONE list (`done_checks`):
-        // review-first → self-approval → the verifier rule → `done-by` → `done-needs-note` →
+        // review-first → self-approval → the verifier rule → same-session → `done-by` →
+        // `done-needs-note` →
         // `done-needs-link`. Each refuses unless `--force`, which logs one `force` event per
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
