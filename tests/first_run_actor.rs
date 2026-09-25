@@ -19,7 +19,6 @@ fn shell_quote(s: &str) -> String {
 /// reads as typed keys (the same harness `access.rs` uses for the full-screen board).
 fn first_run_drive(home: &std::path::Path, actor: &str) -> Output {
     let tb = env!("CARGO_BIN_EXE_tb");
-    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     // The watchdog is perl's `alarm`, not `timeout`: macOS has no
     // `timeout`, and a missing watchdog would leave the board (or the wizard) waiting for
     // keys for ever. The pauses let the wizard print and the board start before the keys
