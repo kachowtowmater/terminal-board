@@ -570,7 +570,9 @@ listed: the header reads `7 agents (4 here, 3 elsewhere)`. Show or hide the pane
 **Who moves what.** TODO: any agent files work. DOING: the workers. REVIEW → DONE: only an
 independent verifier (`TB_ROLE=verifier`, a name on `tb config verifiers`, or a person). A
 builder or orchestrator that runs `tb done` on a REVIEW card is refused (`not_verifier`) and
-should leave it for the verifier. See [Who moves a card](#who-moves-a-card).
+should leave it for the verifier. A verifier running in the SAME recorded session as whoever
+took the card or moved it into review is refused too (`same_session`) — start the verifier in
+its own session — unless `--force` closes it, logged. See [Who moves a card](#who-moves-a-card).
 
 **Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
 `block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
@@ -971,6 +973,13 @@ card into DONE, and every `tb log --json` row has it as `identity`. `--force` ge
 rules and is logged. `tb config verifier-only off` turns the verifier rule off for a board;
 the change is logged, and review-first still applies. A role is self-asserted, like a name,
 so this catches an honest mistake, not an attacker.
+
+A verifier also never closes from the same recorded SESSION as the work: if the session id
+behind the close matches any identity that took the card or moved it into review, in any
+round (a verifier-role mover's session is skipped, the way its name is skipped), the close is
+refused (`same_session`). A session is only recorded by a harness, so a person's plain
+terminal — and every event written before the record existed — never matches. `--force` gets
+past it and is logged.
 
 ### Who closes a card
 

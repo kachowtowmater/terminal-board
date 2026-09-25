@@ -118,7 +118,8 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 - Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
   (`identity` in `--json`). `--force` gets past both rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>`.
-
+- **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
+  rename and `TB_ROLE` don't change what the harness records; start the verifier in its own session.
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
@@ -145,7 +146,7 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb asks herdr for
 `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command (each command usually
 runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work;
-`TB_ROLE=verifier` is what lets you close a card). Names are self-asserted — never pass another agent's name to get past a rule. The AGENTS panel
+`TB_ROLE=verifier` is what lets you close a card; the session id is recorded with it too (see `same_session` above). Names are self-asserted — never pass another agent's name to get past a rule. The AGENTS panel
 matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
 
 | variable | what it does | knob or test hook |
@@ -207,7 +208,6 @@ a `tb: …` line on stderr of a command that succeeded — is for your operator:
 | `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
 
 ## Brief line for orchestrators
-
 > Your work is on Terminal Board: run `tb next --as <your-name>`, log each step with `tb note`, tick `tb check`, and `tb done` when
 > finished (`tb drop` if you stop, `tb block` if stuck); a separate verifier (`TB_ROLE=verifier`) moves REVIEW → DONE. Full manual: `tb guide`.
 

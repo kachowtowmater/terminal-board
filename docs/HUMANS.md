@@ -57,7 +57,10 @@ TODO card, not the GitHub sync. Every move into DONE records who made it and the
 the name (harness, model, role, session, machine) — `tb show 3` lists it, and `tb log` prints it on
 the line that moved the card into DONE. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen, and counts as a person. `--force` gets past the
 rule and is logged; `tb config verifier-only off` lets any reviewer close a card on this board
-(still only from REVIEW, never their own work). Like every name in tb, a role is self-asserted:
+(still only from REVIEW, never their own work). A verifier also never closes from the same
+recorded session as the work: a session that took the card or moved it into review cannot close
+it either, whatever name it wears (`same_session` — start the verifier in its own session).
+Like every name in tb, a role is self-asserted:
 this stops an honest mistake, not someone set on getting round it.
 
 ## Cards

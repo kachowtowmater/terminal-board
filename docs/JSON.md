@@ -294,6 +294,7 @@ Everyday failures:
 | `github_error` | a GitHub API/network call failed |
 | `not_in_review` | an approval (`tb done --approve`) outside REVIEW |
 | `self_approve` | the actor who did the work tried to approve or review their own card (never-approve-your-own-work) |
+| `same_session` | REVIEW -> DONE by a verifier running in the same recorded session (`TB_SESSION`/the harness's session id) as an identity that took the card or moved it into review, in any round; sessions only a harness records, so a person and every old event are never refused (`--force` gets past it, logged) |
 | `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
 | `not_from_review` | a move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`): nothing reaches DONE except from REVIEW, whoever asks (`--force` gets past it, logged) |
 | `not_verifier` | REVIEW -> DONE by an agent (a harness in its identity) whose role (`TB_ROLE`) is not `verifier`/`reviewer` and whose name is not on `config verifiers`; on unless `config verifier-only off` |
