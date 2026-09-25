@@ -8,7 +8,6 @@
 //! environment; `setup_first_run_creator.rs` proves the same recording in-process, this one
 //! proves main.rs's wiring, so a first-run site changed to `actor: None` fails here.
 use std::process::{Command, Output};
-use std::time::Duration;
 
 /// Bare `tb` in a pty on a fresh HOME, fed `s` (skip the wizard) and then `q` (quit the
 /// board that opens): the keys are fed to `script`'s stdin, because crossterm reads the
