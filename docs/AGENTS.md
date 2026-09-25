@@ -118,6 +118,9 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 - Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
   (`identity` in `--json`). `--force` gets past both rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>`.
+- **Never verify from the builder's session**: a verifier whose recorded session matches any session that took the card or moved it
+  into review is refused (`same_session`) — rename and `TB_ROLE` don't change what the harness records. Start the verifier in its own
+  session (a fresh agent, its own `TB_SESSION`); `--force` is the logged way past it.
 
 ## Rules
 
