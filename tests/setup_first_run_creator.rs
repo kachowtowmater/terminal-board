@@ -20,6 +20,8 @@ fn the_first_run_skip_records_the_creator_of_the_board_it_creates() {
     std::env::set_var("HOME", home.path());
     std::env::set_var("TB_TTY", &answers);
     std::env::set_var("TB_SESSION", "sess-first");
+    // record the identity as the binary does (main.rs), so the session reaches the record
+    terminal_board::store::actors::use_environment();
 
     run("default", Options { first_run: true, actor: Some("firstuser".into()), ..Default::default() }).unwrap();
 
