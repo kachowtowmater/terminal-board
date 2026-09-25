@@ -738,6 +738,7 @@ impl App {
                         Picked::None => {}
                     },
                     KeyCode::Char(c @ ('a' | 'r' | 'd')) => self.board_key(c, sel.min(last)),
+                    KeyCode::Char('*') => self.make_default(sel.min(last)),
                     _ => {}
                 }
             }
@@ -1386,6 +1387,46 @@ impl App {
         }
     }
 
+    /// `*` in the board picker: the selected board becomes the default — the board a plain
+    /// `tb` opens — at once, no question, saved exactly as `tb boards --default NAME` saves it.
+    /// `*` on the built-in `default` board goes back to it (clears the saved choice, like
+    /// `--default --clear`). An archived board cannot be the default. The list is re-read, so
+    /// its `*` mark moves, and every rule that reads the default (the picker's own refusals
+    /// among them) follows the new one.
+    fn make_default(&mut self, sel: usize) {
+        let name = match self.picked(sel) {
+            Picked::Live(row) => row.name,
+            Picked::Archived(name) => {
+                self.status = Some((format!("'{name}' is archived — restore it (r) before making it the default"), true));
+                return;
+            }
+            Picked::None => return,
+        };
+        // what is saved (TB_BOARD in this shell does not count: it is not what `*` changes)
+        let saved = crate::boards::saved_default().ok().flatten();
+        if saved.as_deref().unwrap_or(crate::boards::DEFAULT_BOARD) == name {
+            self.status = Some((format!("'{name}' is already the default"), false));
+            return;
+        }
+        let status = match crate::boards::set_default(Some(&name)) {
+            Err(e) => (e.to_string(), true),
+            // what a plain `tb` opens now: TB_BOARD in this environment still beats the setting
+            Ok(()) => match crate::boards::plain_board() {
+                Ok((opens, crate::boards::DefaultSource::Env)) if opens != name => {
+                    (format!("'{name}' saved as the default — TB_BOARD={opens} still wins in this shell"), false)
+                }
+                _ => (format!("'{name}' is now the default — a plain 'tb' opens it"), false),
+            },
+        };
+        self.open_boards();
+        if let Mode::Boards { .. } = self.mode {
+            if let Some(sel) = self.boards.iter().position(|b| b.name == name) {
+                self.mode = Mode::Boards { sel };
+            }
+        }
+        self.status = Some(status);
+    }
+
     /// The board picker's row `i`: a live board, then the archived ones.
     fn picked(&self, i: usize) -> Picked {
         if let Some(row) = self.boards.get(i) {
@@ -1424,6 +1465,23 @@ impl App {
             }
             _ => return,
         };
+        // The board a bare `tb` opens: refused by `boards::archive` in its own words, which
+        // say "archive" — `d` says "delete".
+        if matches!(act, BoardAct::DeleteLive) && name == crate::boards::default_name() {
+            self.status = Some((format!("'{name}' is the board a bare 'tb' opens — delete another board, or point TB_BOARD elsewhere first"), true));
+            return;
+        }
+        // A board another `tb` has open: archive/restore would wait for it to close (up to
+        // 10 s) before refusing, the picker frozen and every key typed meanwhile landing on
+        // the re-read list. Look first, without waiting, and refuse at once by name.
+        // (Not for an archived board being deleted: nothing opens an archived file.)
+        let live = crate::lock::sibling(&crate::boards::path_for(&name));
+        if !matches!(act, BoardAct::Delete)
+            && matches!(crate::lock::take(&live, crate::lock::Mode::Exclusive, Duration::ZERO), Err(crate::lock::Error::Busy(_)))
+        {
+            self.status = Some((format!("'{name}' is open in another tb — close it there, then try again"), true));
+            return;
+        }
         let deleted = |d: crate::boards::Deleted| format!("deleted '{name}' ({} file(s))", d.removed.len());
         let r = match act {
             BoardAct::Archive => crate::boards::archive(&name).map(|_| format!("archived '{name}' — r restores it")),
@@ -3412,7 +3470,7 @@ pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
         ("T", "dark / light theme"),
         ("L", "view: auto, focus, third-h, third-v, half-h, half-v"),
         ("A / G", "show / hide AGENTS / GITHUB"),
-        ("B", "boards: switch without quitting; a archive, r restore, d delete"),
+        ("B", "boards: switch without quitting; * default, a archive, r restore, d delete"),
         ("R", "pick the GitHub repo"),
         ("?", "this help"),
     ]),
@@ -3743,8 +3801,8 @@ const BOARD_COLS: [(&str, u16); 4] = [("TODO", 4), ("DOING", 5), ("REVIEW", 6), 
 const BOARD_NAME_HEAD: &str = "BOARD";
 /// The overlay's bottom hint, longest form first; the widest one that fits is used.
 const BOARD_HINTS: [&str; 4] = [
-    " up/down select · enter switch · a archive · r restore · d delete · esc cancel ",
-    " enter switch · a archive · r restore · d delete · esc ",
+    " up/down select · enter switch · * default · a archive · r restore · d delete · esc cancel ",
+    " enter switch · * default · a archive · r restore · d delete · esc ",
     " enter switch · esc cancel ",
     " esc ",
 ];

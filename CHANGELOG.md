@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### A process waiting for a lock is served in turn, never starved
+
+- A `tb` waiting for a board's lock or the settings file's lock used to lose, again and
+  again, to a process that let go and asked straight back. Under load a settings writer gave
+  up after 10 seconds ("another tb has been writing the settings for 10s"). Waiters now take
+  a numbered place and get the lock first come, first served. A waiter that gives up or is
+  killed never holds up the ones behind it. An uncontended take is one try and creates no
+  files, as before.
+- The settings file's directory is synced after the lock is released, not while it is held.
+
+### `*` in the board picker makes a board the default
+
+- In the board picker (`B`), `*` makes the selected board the default, the board a plain `tb`
+  opens, at once and with no question. It is saved where `tb boards --default NAME` saves it,
+  the `*` mark in the list moves, and a status line says so. `*` on the built-in `default`
+  goes back to it, like `--default --clear`. An archived board is refused (restore it
+  first). The picker's footer and the `?` help list the key.
+
+### The board picker refuses a board another `tb` has open at once
+
+- In the board picker (`B`), `a` or `d` on a board another `tb` has open waited up to 10
+  seconds for it to close before refusing, with the picker frozen, and the refusal named the
+  board's full file path. It now looks first, without waiting, and refuses at once:
+  `'work' is open in another tb — close it there, then try again`.
+- `d` on the board a bare `tb` opens now says "delete another board", not "archive another
+  board".
+
 ## 3.1.1 — 2026-09-24
 
 ### Highlights
