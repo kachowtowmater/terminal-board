@@ -152,8 +152,9 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb asks herdr for
 `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command (each command usually
 runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work;
-`TB_ROLE=verifier` is what lets you close a card; the session id is recorded with it too (see `same_session` above). Names are self-asserted — never pass another agent's name to get past a rule. The AGENTS panel
-matches your name to your herdr pane; an idle agent holding a DOING card is a warning.
+`TB_ROLE=verifier` is what lets you close a card, and only from a registered session; the session id is recorded with it too. Names are
+self-asserted — never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent
+holding a DOING card is a warning.
 
 | variable | what it does | knob or test hook |
 |---|---|---|
