@@ -86,8 +86,8 @@ tb done ID                   # finished: DOING -> REVIEW
 
 `tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not the
 top position (`tb prio` there only orders cards sharing a date). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card;
-`tb move ID todo` clears the owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text arrives byte for byte from a file
-(`tb note ID --file notes.md`, `--desc-file brief.md`; UTF-8, at most 256 KiB; `-` reads a pipe — never a terminal — and waits for it to close,
+`tb move ID todo` clears the owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text arrives byte for byte from a file, blank space
+trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--desc-file brief.md`; UTF-8, at most 256 KiB; `-` reads a pipe — never a terminal — and waits for it to close,
 `TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings
 alone unless a person asks you to.
 
