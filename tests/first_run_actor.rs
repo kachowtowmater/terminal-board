@@ -48,7 +48,7 @@ fn the_first_run_skip_records_the_actor_and_session_of_the_bare_tb_that_ran() {
     assert!(seen.contains("\x1b[?1049l"), "the board never took its quit key: {seen:?}");
     assert!(home.path().join(".local/state/terminal-board/boards/default.db").exists(), "the skipped first run never made the board");
 
-    let rows: serde_json::Value = serde_json::from_str(&Command::new(env!("CARGO_BIN_EXE_tb"))
+    let rows: serde_json::Value = match Command::new(env!("CARGO_BIN_EXE_tb"))
         .args(["boards", "--json"])
         .current_dir(home.path())
         .env("HOME", home.path())
@@ -56,9 +56,11 @@ fn the_first_run_skip_records_the_actor_and_session_of_the_bare_tb_that_ran() {
         .env("PATH", "/usr/bin:/bin")
         .env_remove("TB_AS")
         .output()
-        .unwrap_or_else(|e| panic!("boards --json failed to run: {e}"))
-        .stdout)
-    .unwrap_or_else(|e| panic!("boards --json was not JSON: {e}"));
+    {
+        Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("boards --json was not JSON: {e}\n{}", String::from_utf8_lossy(&o.stderr))),
+        Ok(o) => panic!("boards --json failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => panic!("boards --json failed to run: {e}"),
+    };
     let c = rows
         .as_array()
         .and_then(|r| r.iter().find(|r| r["name"] == "default"))
