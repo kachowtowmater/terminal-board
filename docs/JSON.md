@@ -547,7 +547,15 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 
 - `tb list --json` — array of cards (without checklist/events; with `days_left` and `due_state`). In id order, as always — except on a board set to `sort due`, where it is in the board's order (todo, doing, review, done; each as `columns.*` above), so it agrees with `tb next`.
 - `tb show ID --json` — one card with `checklist` (`n`, `idx`, `text`, `done` — the same shape as in `tb board --json`), `links` (`idx`, `label`, `value`, `added_by`, `added_at`), `round`, all `events` (each with its `actor_id`) and `actors[]`: the **identity** of everyone who wrote one of them (`[]` when no event has one).
-- `tb boards --json` — `[{name, default, todo, doing, review, done}]`; `default` is true on the board plain `tb` opens here.
+- `tb boards --json` — `[{name, default, todo, doing, review, done, created_by}]`; `default` is true on the board plain `tb` opens here. `created_by` (#137) is who made the board, or `null` when nothing records it:
+  `{actor, harness, model, role, session, host, at, source}` — `actor` is the name the creating command ran as
+  (`--as`/`TB_AS`/…), and `harness`/`model`/`role`/`session`/`host` are that command's identity exactly as tb records
+  it for a card's actor (`tb show`'s `actors:`), `null` when unknown (a person in a plain terminal records a name and a
+  time only). `at` is RFC 3339 UTC (`"2026-09-25T10:06:25Z"`). `source` is `"board"` when the board's own file
+  recorded it — written once, by `tb new NAME` or by the first command that created the board on first use (`tb NAME
+  add …`), and kept by an archived board — or `"log"` for a board made before tb recorded this, read from
+  `~/.local/state/terminal-board/board-creations.log` (`time<TAB>board<TAB>actor=…<TAB>session=…<TAB>host=…`, the last
+  line naming the board; `-` is unknown). `tb boards --long` prints the same as one `created by …` line per board.
 - `tb boards --default --json` — `{ok, default, source, setting, missing}`: `default` is the board plain `tb` opens
   in this environment, `source` says why (`"TB_DB"` | `"TB_BOARD"` | `"setting"` | `"builtin"`), `setting` is the
   saved default board (string, or null when none is saved — and always null under `TB_DB`, where it is not
@@ -562,7 +570,7 @@ useful without herdr, and empty only when nobody is on the board and herdr shows
 - `tb boards archive NAME --json` (#80) — `{ok:true, board, archived, restore}`: `archived` is the full path the board's file was moved to, `restore` is the exact `tb boards restore NAME` command that undoes it. Refusals (`{ok:false,error,hint,code}`): the board plain `tb` opens now (`default_board`), under `TB_DB` (`db_pinned`), an unknown board (`no_board`), a name that is not a board name (`invalid_board_name`/`board_name_is_command`), or the board open in another process (`board_busy`). Nothing is ever deleted; the file that moved is byte-identical to what was live.
 - `tb boards restore NAME --json` — `{ok:true, board, path, from}`: `path` is where it landed (the boards directory), `from` is the archive file it came from. Refusals: a live board (or a stray `-wal`/`-shm`) already at that name (`board_exists`), no archived board with that name (`no_archive`), under `TB_DB` (`db_pinned`), or the destination held busy past the wait (`board_busy`).
 - `tb boards delete NAME --yes --json` — `{ok:true, board, removed, kept_backups}`: `removed` is every file deleted (each archive of that name: `.db`, and `-wal`/`-shm` when there), `kept_backups` the board's schema-upgrade backups left in place (empty with `--backups`, which deletes them). Refusals: no `--yes` (`confirm_required`), a live board (`board_live`), no archived board of that name (`no_archive`), the board plain `tb` opens (`default_board`), an agent (`person_only`), the file open in another process (`board_busy`), under `TB_DB` (`db_pinned`), a name that is not a board name.
-- `tb boards --archived --json` — `[{name, archived_at, path, todo, doing, review, done}]`, oldest archive of a name first (the newest — what `restore` takes — is last for that name). `archived_at` is `"YYYY-MM-DD HH:MM"`, local time when it was archived. Card counts are `null` when the file cannot be read; reading them never changes the file (checked: `md5`/`sha256` identical before and after any number of `--archived` calls).
+- `tb boards --archived --json` — `[{name, archived_at, path, todo, doing, review, done, created_by}]` (`created_by` as for `tb boards --json`, read from the archived file without changing it), oldest archive of a name first (the newest — what `restore` takes — is last for that name). `archived_at` is `"YYYY-MM-DD HH:MM"`, local time when it was archived. Card counts are `null` when the file cannot be read; reading them never changes the file (checked: `md5`/`sha256` identical before and after any number of `--archived` calls).
 
 ## Environment variables
 
