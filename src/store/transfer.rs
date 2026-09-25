@@ -46,7 +46,7 @@
 use super::archive::board_log;
 use super::links::LinkItem;
 use super::{get_card, now, Card, Code, Result, Store};
-use rusqlite::{params, params_from_iter, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use std::collections::HashMap;
 
 /// What a move did: where the card came from, and the number it has now.

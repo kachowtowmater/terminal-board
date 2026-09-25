@@ -86,10 +86,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | read the settings (WIP limit, GitHub repo, …) | `tb config` |
 | see the agents and the card each holds | `tb agents` |
 
-`tb mv ID --to BOARD` carries the identity behind each of the card's events too (harness,
-model, role, session, host): the destination gets its own `actors` row for it, matched on the
-identity — ids belong to a board — so `tb show` on the new board still names the session that
-did the work.
+`tb mv ID --to BOARD` carries the identity behind each event (session, model, …) to the destination board, so `tb show` names the actor there; detail in docs/JSON.md.
 
 `tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not
 the top position (lists and `--json` show that order, and `tb prio` there only orders cards sharing a date, and says so). `tb move ID doing` respects the
