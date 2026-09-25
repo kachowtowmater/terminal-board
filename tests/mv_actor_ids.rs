@@ -83,10 +83,6 @@ impl Home {
     }
 }
 
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).to_string()
-}
-
 /// The fixture both tests use: card 1 on `src` with events written by TWO distinct
 /// identities (alice and bob), card 2 on `src` with none, a card already on `dst`.
 fn boards() -> Home {
