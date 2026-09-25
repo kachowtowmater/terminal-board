@@ -9,12 +9,17 @@
 //! proves main.rs's wiring, so a first-run site changed to `actor: None` fails here.
 use std::process::{Command, Output};
 
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Bare `tb` in a pty on a fresh HOME, fed `s` (skip the wizard) and then `q` (quit the
 /// board that opens): the keys are fed to `script`'s stdin, because crossterm reads the
 /// terminal (`/dev/tty`), not a pipe — what `script` reads on its stdin is what the board
 /// reads as typed keys (the same harness `access.rs` uses for the full-screen board).
 fn first_run_drive(home: &std::path::Path, actor: &str) -> Output {
     let tb = env!("CARGO_BIN_EXE_tb");
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     // The watchdog is perl's `alarm`, not `timeout`: macOS has no
     // `timeout`, and a missing watchdog would leave the board (or the wizard) waiting for
     // keys for ever. The pauses let the wizard print and the board start before the keys
@@ -22,13 +27,13 @@ fn first_run_drive(home: &std::path::Path, actor: &str) -> Output {
     // Linux `script` takes the command with `-e -c`; the BSD/macOS one takes it as a bare
     // operand (the same branch `access.rs::board_keys` uses — same tool, two dialects).
     let pty = if cfg!(target_os = "linux") {
-        format!("script -q -e -c {0} /dev/null", q(tb))
+        format!("script -q -e -c {0} /dev/null", shell_quote(tb))
     } else {
-        format!("script -q /dev/null {0}", q(tb))
+        format!("script -q /dev/null {0}", shell_quote(tb))
     };
     let feed = format!(
         "(sleep 1; printf s; sleep 0.5; printf '\\r'; sleep 2; printf q; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 30 {} 2>&1",
-        q(&pty)
+        shell_quote(&pty)
     );
     let mut c = Command::new("sh");
     c.arg("-c").arg(&feed);
