@@ -646,9 +646,11 @@ fn no_session_on_either_side_never_matches() {
     // session to register (card #169), so it is refused, and only --force closes it, logged
     let two = b.in_review("w: verifier sessionless", "bot-1");
     let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
-    assert_eq!(code, "unregistered_verifier", "{e}");
+    // the original "a sessionless verifier was refused" assertion, restated for the registry era:
+    // the close still cannot succeed without --force
+    assert_eq!(code, "unregistered_verifier", "a sessionless verifier was refused: {e}");
     b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
-    assert_eq!(b.column(&two), "done", "a sessionless verifier was refused without --force; --force closes it");
+    assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
     let three = b.in_review("x: a person closes", "bot-1");
     b.ok(PERSON, "anna", &["done", &three]);
