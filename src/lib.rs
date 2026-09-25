@@ -20,6 +20,7 @@ pub mod github;
 pub mod herdr;
 pub mod hooks;
 pub mod import;
+pub mod liveness;
 pub mod lock;
 pub mod machine;
 pub mod notice;
