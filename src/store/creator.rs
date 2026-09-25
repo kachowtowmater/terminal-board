@@ -105,7 +105,7 @@ pub fn read(conn: &Connection) -> Option<Creator> {
 /// name made again later was made by whoever made it last). Fields are `key=value`; `-` and
 /// empty values are unknown. Every value is cleaned the way an identity field is.
 pub fn from_log_text(log: &str, board: &str) -> Option<Creator> {
-    let line = log.lines().filter(|l| l.split('\t').nth(1).map(str::trim) == Some(board)).last()?;
+    let line = log.lines().rfind(|l| l.split('\t').nth(1).map(str::trim) == Some(board))?;
     let mut parts = line.split('\t');
     let time = parts.next()?.trim();
     parts.next();
