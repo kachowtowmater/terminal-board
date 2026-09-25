@@ -613,6 +613,8 @@ pub struct Event {
     /// oldest ancestor first, as one JSON list — recorded on moves into DONE, `force` events
     /// and the verifier-config changes (the writes of consequence). NULL on everything else
     /// and on events written before it existed. Deserialized on read into `Vec<String>`.
+    /// Serialized only when recorded (the key is absent otherwise — additive JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ancestry: Option<Vec<String>>,
 }
 
