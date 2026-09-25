@@ -229,6 +229,7 @@ fn apply_is_refused_when_the_dry_run_log_spans_under_7_days() {
 
 /// A card the dry run flagged whose owner then wrote to it was a false positive.
 #[test]
+#[allow(clippy::disallowed_methods, reason = "a test staging a later event clock; not a write-path wait")]
 fn apply_is_refused_when_the_log_holds_a_false_positive() {
     let f = fx();
     let id = doing(&f, "ghost", None);
