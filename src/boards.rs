@@ -3,7 +3,6 @@
 
 use crate::store::creator::{self, Creator};
 use crate::store::{self, BoardError, Code, Result, Store, COLUMNS};
-use crate::resolve_actor;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
@@ -662,14 +661,14 @@ pub fn db_pinned() -> bool {
 /// The rows `tb boards` prints: every board on disk, counted. `TB_DB` pins one file, so it
 /// reports the one board it is (and, as always under `TB_DB`, is created on first read —
 /// nothing there can ever be archived, so there is no race to close).
-pub fn rows() -> Result<Vec<BoardRow>> {
+pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
     let def = default_name();
     if db_pinned() {
         let path = path_for(&def);
         let store = Store::open(&path)?.named(&def);
         // create-on-first-use: whoever's command made the file is the board's creator
         if store.was_created() {
-            store.record_creator(&resolve_actor(None))?;
+            store.record_creator(actor)?;
         }
         let snap = store.snapshot()?;
         let mut counts = [0usize; 4];

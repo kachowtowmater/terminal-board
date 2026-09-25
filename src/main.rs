@@ -897,7 +897,7 @@ fn list_boards(json_out: bool, long: bool) -> Result<(), BoardError> {
         Ok(_) => {}
     }
     // the same rows the board picker (B) shows inside the TUI
-    let rows = boards::rows()?;
+    let rows = boards::rows(&actor)?;
     if json_out {
         let v: Vec<_> = rows
             .iter()
