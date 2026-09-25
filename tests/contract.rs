@@ -119,7 +119,7 @@ fn golden_board_shape() {
     assert_eq!(keys(card), sorted(CARD));
     assert_eq!((card["tag"].as_str(), card["gh_ref"].as_i64(), card["position"].as_i64()), (Some("widgets"), Some(7), Some(0)));
     assert_eq!(keys(&card["checklist"][0]), sorted(&["n", "idx", "text", "done"]));
-    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
+    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id", "ancestry"]));
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
     // bare `tb --json` (not a TTY) prints the same object
     let bare = json(&tb(&db, &["--json"]));
@@ -297,7 +297,7 @@ fn watch_events_streams_one_line_per_event() {
     child.wait().unwrap();
     assert_eq!(
         keys(&got[0]),
-        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity"]),
+        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity", "ancestry"]),
         "one NDJSON line per event: {got:?}"
     );
     let kinds: Vec<&str> = got.iter().map(|g| g["kind"].as_str().unwrap()).collect();
