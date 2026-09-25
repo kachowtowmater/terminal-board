@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.1.2:** many `tb` waiting on the same board or settings lock are served in turn, so
+none is starved under load. In the `B` picker, `*` makes the selected board the default (the
+one a plain `tb` opens), and `a` or `d` on a board another `tb` has open is refused at once,
+by name.
+
 **New in 3.1.1:** on a small screen every column box shows whole cards, the same number in
 each, in a compact form when space is short. Several agents writing to a new board at once no
 longer fail with "database is locked", a verifier that sent a card back can close it once it
@@ -170,7 +175,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.1.1` | install that release instead of the latest (`3.1.1` works too) |
+| `--version v3.1.2` | install that release instead of the latest (`3.1.2` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
@@ -1247,6 +1252,11 @@ and `tb config theme dark|light`.
   with `TB_DB is set — board names are ignored; unset TB_DB to use boards`. A `TB_BOARD`
   left in the environment is not a typed name: `TB_DB` wins, and tb says so in one warning
   line (`TB_DB is set, so TB_BOARD=work is ignored …`; with `--json`, a `warnings` field).
+- **Several `tb` at once.** Beside each board tb keeps a hidden `.NAME.db.lock` file, and
+  where processes had to wait, a `.NAME.db.lock.q/` folder. They coordinate several `tb`
+  using the same board: a process that has to wait is served in turn, first come, first
+  served. They mean nothing unless a `tb` is running, and are safe to leave or delete while
+  none is.
 - **Board files are private.** Every file tb creates — a board, its `-wal`/`-shm` sidecars,
   a backup — is mode `0600`, whatever your umask, in the boards folder and under `TB_DB`
   alike. A board path may be a symbolic link (`boards/work.db -> /mnt/secure/work.db`): the board

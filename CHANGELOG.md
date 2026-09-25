@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 3.1.2 — 2026-09-24
+
+### Highlights
+
+- **A fair lock under load:** a `tb` waiting for a board's or the settings file's lock is
+  served in turn, first come, first served, and is never starved by a process that keeps
+  taking it again.
+- **Make any board the default from the board picker:** `*` in `B` makes the selected board
+  the one a plain `tb` opens, at once.
+- **The picker refuses a board another `tb` has open at once**, by name, instead of freezing
+  for up to 10 seconds.
+- Nothing needs doing to upgrade from 3.1.1.
 
 ### A process waiting for a lock is served in turn, never starved
 
@@ -11,6 +22,9 @@
   killed never holds up the ones behind it. An uncontended take is one try and creates no
   files, as before.
 - The settings file's directory is synced after the lock is released, not while it is held.
+- A test now proves that an add with nobody else writing never waits at all. It counts the
+  waits instead of timing the add against a wall-clock bound that busy machines missed, and
+  `clippy.toml` now refuses a stray `sleep` outside the few places that are meant to wait.
 
 ### `*` in the board picker makes a board the default
 
