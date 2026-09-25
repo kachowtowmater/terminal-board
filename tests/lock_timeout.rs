@@ -2,6 +2,7 @@
 //! lock. Alone in its own test binary, because it counts this process's threads — any other
 //! test in the same binary adds or removes harness threads while it counts.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::time::Duration;
 use terminal_board::lock::{self, Error, Mode};
 

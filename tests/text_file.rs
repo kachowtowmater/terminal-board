@@ -6,6 +6,7 @@
 //! drives the real binary and reads the stored text back from SQLite (raw, byte for byte);
 //! the `--json` view shows the same text cleaned like the screen.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

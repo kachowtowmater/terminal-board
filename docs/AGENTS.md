@@ -159,7 +159,7 @@ matches your name to your herdr pane; an idle agent holding a DOING card is a wa
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
 | `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
 | `TB_STDIN_TIMEOUT` | seconds to wait for `-`'s first byte before refusing; unset or `0` = wait forever | knob |
-| `TB_LOCK_WAIT_MS` | milliseconds a board lock waits before refusing (`board_busy`); unset = 10000 | test hook |
+| `TB_LOCK_WAIT_MS` · `TB_TRACE_WAITS` | milliseconds a board lock waits before refusing (`board_busy`; unset = 10000) · a file tb appends one line to for every deliberate wait | test hooks |
 
 A variable that changes what tb **writes** must validate its value and refuse; one that only changes what tb reads or executes may
 stay lenient — today that binds `TB_NOW` only: a value that is not an integer in that range exits non-zero before any command runs

@@ -10,6 +10,7 @@
 //! through the read-modify-write this file used to do without one — same temp file, same
 //! fsync, same rename — so the numbers come from one machine in one run.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Write;

@@ -209,7 +209,7 @@ fn join_queue(queue: &Path, deadline: std::time::Instant) -> Option<Ticket> {
     loop {
         match try_flock(&counter, libc::LOCK_EX) {
             Ok(true) => break,
-            Ok(false) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+            Ok(false) if std::time::Instant::now() < deadline => crate::waits::pause("lock queue counter", Duration::from_millis(1)),
             _ => {
                 let _ = std::fs::remove_file(&private);
                 return None;
@@ -288,7 +288,7 @@ pub fn take(path: &Path, mode: Mode, wait: Duration) -> Result<Guard, Error> {
             return Err(Error::Busy(holders(path)));
         }
         n += 1;
-        std::thread::sleep(Duration::from_millis(1 + (std::process::id() as u64 + n * 7) % 4));
+        crate::waits::pause("lock", Duration::from_millis(1 + (std::process::id() as u64 + n * 7) % 4));
     }
 }
 
@@ -342,6 +342,7 @@ fn holders(_path: &Path) -> Vec<i32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests hold a lock for a while to stage a wait")]
 mod tests {
     use super::*;
 

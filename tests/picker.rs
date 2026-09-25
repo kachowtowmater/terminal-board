@@ -1,5 +1,6 @@
 //! Repo picker (R) and `github repos` / `config github` CLI, via a fake gh (TB_GH).
 //! One test function: TB_GH is process-wide, so scenarios run in order.
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 mod common;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
