@@ -1362,7 +1362,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     let tty = std::io::stdout().is_terminal();
     // first run: bare `tb` in a terminal on a machine where nothing is set up yet
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
-        setup::run(&name, setup::Options { first_run: true, ..Default::default(), actor: Some(actor.clone()) })?;
+        setup::run(&name, setup::Options { first_run: true, actor: Some(actor.clone()), ..Default::default() })?;
     }
     if let Some(cmd) = cli.cmd.as_mut() {
         text_from_files(cmd)?;
