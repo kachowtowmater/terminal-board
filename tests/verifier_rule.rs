@@ -296,11 +296,13 @@ fn a_listed_name_with_no_role_and_no_registry_entry_is_refused() {
     let b = Board::new();
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
     let id = b.in_review("c3b: listed-name forge", "bot-1");
-    let (e, code) = b.refused_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)]), "rv-1", &["done", &id]);
+    let forge: Vec<(&str, String)> =
+        Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]).into_iter().collect();
+    let (e, code) = b.refused_raw(&forge, "rv-1", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     assert_eq!(b.column(&id), "review");
     // --force is still the logged escape
-    b.ok_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)]), "rv-1", &["done", &id, "--force"]);
+    b.ok_raw(&forge, "rv-1", &["done", &id, "--force"]);
     assert_eq!(b.column(&id), "done");
     // the real thing this guards: the REGISTERED session closes under the listed name
     let two = b.in_review("c3b: registered listed verifier", "bot-1");
