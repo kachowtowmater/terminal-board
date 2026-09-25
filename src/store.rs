@@ -409,15 +409,17 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             err: verifier::not_verifier_err(id, actor, &who),
             forced: format!("closed #{id} with no verifier role"),
         });
-    } else if !verifier::registered(conn, actor, &who)? {
+    } else if verifier::has_verifier_role(&who) && !verifier::registered(conn, actor, &who)? {
         // the role claimed, the session not launched as a verifier (card #169): a separate
-        // rule, because the fix it names is starting a real verifier, not claiming a role
+        // rule, because the fix it names is starting a real verifier, not claiming a role.
+        // A role-claiming close is the only one the registry answers — a listed verifier
+        // (no role) closed cards before the registry existed, and a person never had one.
         v.push(DoneCheck {
             rule: "the session is not a registered verifier",
             err: verifier::unregistered_verifier_err(id, actor, &who),
             forced: format!("closed #{id} from an unregistered verifier session"),
         });
-    } else if !who.says_something() && !closing::may_close(conn, actor)?.is_none() {
+    } else if !verifier::has_verifier_role(&who) && !who.says_something() && !closing::may_close(conn, actor)?.is_none() {
         // 'person' close with an agent somewhere up the parent chain (card #169): the env
         // was scrubbed, the kernel's record was not. GitHub's sync runs with no identity
         // and an ancestry of tb/ci shells — checked only when a real actor is acting.
