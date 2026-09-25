@@ -35,6 +35,7 @@ pub mod gate;
 pub mod kinds;
 pub mod links;
 pub mod order;
+pub mod release;
 pub mod rounds;
 pub mod rules;
 pub mod transfer;
@@ -100,6 +101,12 @@ pub enum Code {
     GithubError,
     /// An approval outside REVIEW.
     NotInReview,
+    /// `tb release` on a card that is not in DOING with a holder (store/release.rs).
+    NotInDoing,
+    /// `tb release` refused: a liveness probe vouches for the card's holder (store/release.rs).
+    HolderAlive,
+    /// `tb release` by an agent whose role is not lead or orchestrator (store/release.rs).
+    NotReleaser,
     /// The actor who did the work tried to approve or review their own card
     /// (never-approve-your-own-work).
     SelfApprove,
@@ -187,6 +194,9 @@ impl Code {
             Code::GithubOff => "github_off",
             Code::GithubError => "github_error",
             Code::NotInReview => "not_in_review",
+            Code::NotInDoing => "not_in_doing",
+            Code::HolderAlive => "holder_alive",
+            Code::NotReleaser => "not_releaser",
             Code::SelfApprove => "self_approve",
             Code::SameSession => "same_session",
             Code::DoneByRestricted => "done_by_restricted",
@@ -2574,6 +2584,15 @@ impl Store {
                 }
                 (c, "todo".to_string(), None)
             }
+            Change::Release { id, holder, .. } => {
+                let c = get_card(&tx, id)?;
+                if c.column != "doing" || !c.owner.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(holder)) {
+                    return err(format!(
+                        "#{id} changed while its holder {holder} was being checked — look again: 'tb show {id}'"
+                    ), Code::Unknown);
+                }
+                (c, "todo".to_string(), None)
+            }
             Change::Move { id, column, reason } => {
                 let column = column.to_ascii_lowercase();
                 if !COLUMNS.contains(&column.as_str()) {
@@ -2624,6 +2643,7 @@ impl Store {
             Change::Drop(_) => Kind::Drop,
             Change::Move { .. } => Kind::Move,
             Change::Assign { .. } => Kind::Assign,
+            Change::Release { .. } => Kind::Release,
         };
         // who `assign` hands the card to — read out of `change` here (not inside the "3. the
         // change" match below) because `column`/`c` are rebound by then; a WIP cap keyed on
@@ -2639,7 +2659,8 @@ impl Store {
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
         // The `github` automation is exempt: its moves are evidence-driven and logged.
-        if c.column == "doing" && actor != "github" {
+        // `release` is exempt too: its permission is the dead-holder check (store/release.rs).
+        if c.column == "doing" && actor != "github" && kind != Kind::Release {
             if let Some(owner) = c.owner.as_deref() {
                 if !owner.eq_ignore_ascii_case(actor) {
                     if !force {
@@ -2751,6 +2772,13 @@ impl Store {
             // it is always `Some` — `log_assign` writes it into its own structured column too.
             Kind::Assign => Self::log_assign(&tx, id, actor, owner.as_deref().unwrap_or(""))?,
             Kind::Drop => Self::log(&tx, id, actor, "dropped", &format!("{} -> todo", c.column))?,
+            Kind::Release => {
+                let text = match change {
+                    Change::Release { text, .. } => text,
+                    _ => "",
+                };
+                Self::log(&tx, id, actor, "released", text)?
+            }
             Kind::Move => {
                 if block_cleared {
                     Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
@@ -2788,7 +2816,7 @@ impl Store {
                 let target = Self::claim_target(&self.conn, Some(id))?;
                 (get_card(&self.conn, target)?, "doing".to_string())
             }
-            Change::Drop(id) => (get_card(&self.conn, id)?, "todo".to_string()),
+            Change::Drop(id) | Change::Release { id, .. } => (get_card(&self.conn, id)?, "todo".to_string()),
             Change::Move { id, column, .. } => {
                 // caught again, identically, once `transition_inner` opens its transaction —
                 // duplicated here only so a hook is never asked about a column that does not
@@ -3092,6 +3120,13 @@ impl Store {
     fn drop_card_inner(&mut self, id: i64, actor: &str, force: bool, break_glass: Option<&str>) -> Result<Card> {
         self.transition(Change::Drop(id), actor, force, HookGate::of(break_glass))
     }
+
+    /// The move behind `tb release` (store/release.rs, which runs its checks first): DOING →
+    /// TODO, unowned, logged as one `released` event carrying `text`. No `--force`: refused
+    /// unless the card is still in DOING held by `holder` when the transaction opens.
+    pub(crate) fn release_card(&mut self, id: i64, holder: &str, text: &str, actor: &str) -> Result<Card> {
+        self.transition(Change::Release { id, holder, text }, actor, false, HookGate::Normal)
+    }
 }
 
 /// A column change, as asked for (see `Store::transition`).
@@ -3109,6 +3144,10 @@ enum Change<'a> {
     /// either), so the holder guard never needs a separate check here: a card already held
     /// by someone is simply not a valid target, by construction.
     Assign { id: i64, owner: &'a str },
+    /// `release`: a DOING card held by `holder` (checked dead by store/release.rs) back to
+    /// TODO, unowned; `text` is the `released` event. Not a holder-rule bypass by `--force`:
+    /// the liveness check is the permission, and it is refused if the holder changed since.
+    Release { id: i64, holder: &'a str, text: &'a str },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3117,6 +3156,7 @@ enum Kind {
     Move,
     Drop,
     Assign,
+    Release,
 }
 
 /// How a change relates to the pre/post-change hook (`config hook`, `crate::hooks`) — see

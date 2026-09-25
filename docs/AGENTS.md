@@ -59,7 +59,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | clear the block | `tb block ID --clear` |
 | reorder inside its column | `tb prio ID top` · `bottom` · `up` · `down` |
 | finished your work (DOING → REVIEW), or — as a verifier — checked someone else's (REVIEW → DONE) | `tb done ID` · a verifier: `TB_ROLE=verifier tb done ID` |
-| another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n |
+| another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n · a lead/orchestrator frees a DEAD holder's card with `tb release ID "why"` (refused while it is alive: `holder_alive`) |
 | record that you checked a card, without closing it (any card; stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
 | send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
