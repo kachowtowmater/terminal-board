@@ -978,10 +978,36 @@ record. A harness that exports none of these is not seen, and counts as a person
 
 Every move into DONE records who made it and the identity behind the name (harness, model,
 role, session, machine). `tb show` shows it, `tb log` shows it on the line that moved the
-card into DONE, and every `tb log --json` row has it as `identity`. `--force` gets past both
-rules and is logged. `tb config verifier-only off` turns the verifier rule off for a board;
-the change is logged, and review-first still applies. A role is self-asserted, like a name,
-so this catches an honest mistake, not an attacker.
+card into DONE, and every `tb log --json` row has it as `identity`. Moves into DONE, `force`
+events and changes to the verifier settings also record the **kernel's process ancestry**
+(`ancestry` in `--json`): the parent chain this command actually ran under, read from the
+OS (`/proc` on Linux, `proc_pidinfo`/`sysctl` on macOS) — not from the environment, which a
+script can rewrite. `--force` gets past both rules and is logged.
+`tb config verifier-only off` turns the verifier rule off for a board; the change is logged,
+and review-first still applies. A role is self-asserted, like a name, so this catches an
+honest mistake, not an attacker — and card #169 narrows that: a verifier role is no longer
+enough on its own.
+
+**A verifier role is a claim; the session must be registered.** A close that rode on
+`TB_ROLE=verifier` is refused (`unregistered_verifier`) unless the resolved session has an
+entry in `~/.local/state/terminal-board/verifiers/<session>` — one JSON
+`{"session","name","harness"}` per file, written by `tb-agent-start --role verifier` at
+launch. The entry's name and harness (claude-code) must match the command. Setting the role
+in any shell — including a script an agent writes itself — no longer makes it a verifier.
+`TB_VERIFIER_REGISTRY=off` turns the check off.
+
+A close that looks like a person's but runs from an agent's process is refused
+(`agent_as_person`): the identity carries no harness, but the kernel's ancestry holds an
+agent binary (`omp`, `claude`, `codex`, `pi`). A real person in a terminal still closes.
+
+**Residual risk, stated plainly:** everything above runs as the same OS user as the caller.
+The registry directory, the board file and the environment are all writable by that user, so
+a determined same-uid attacker can still forge a close (edit the registry, `sqlite3` the
+board, scrub the env of a fresh process tree). The interim stops the env/script forge and
+the accident; the ancestry stamp makes everything else *visible* after the fact — a close
+whose recorded ancestry, identity and registry do not agree is the alarm a person reviews.
+The real fix is privilege separation (the board held by a separate OS user or a broker that
+checks the caller's credentials); it is a design change, not a flag.
 
 A verifier also never closes from the same recorded SESSION as the work: if the session id
 behind the close matches any identity that took the card or moved it into review, in any

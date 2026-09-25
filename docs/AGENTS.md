@@ -114,10 +114,17 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
   `tb config verifiers`, or a person — never the card's owner or last holder. Any other agent is refused (`not_verifier`): leave it in REVIEW.
   Only a person changes `tb config verifiers` / `verifier-only` (an agent gets `person_only`). tb sees an agent by its harness: `TB_HARNESS`,
   `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), `CODEX_*` (codex), `CLAUDECODE`, or a herdr pane — anything else counts as a person.
+- **A verifier role is a claim; the session must be registered** (`unregistered_verifier`): a close that rode on `TB_ROLE=verifier` is
+  refused unless the resolved session has an entry in `~/.local/state/terminal-board/verifiers/<session>` — one JSON
+  `{"session","name","harness"}` per file, written by `tb-agent-start --role verifier` at launch. Setting the role in any shell (or in a
+  script the agent writes itself) does not make it a verifier: the registry's `name` and `harness` must match this command too.
+  `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged.
 - Nothing reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the full-screen board, not `tb sync`.
 - Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
-  (`identity` in `--json`). `--force` gets past both rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
-  Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>`.
+  (`identity` in `--json`), and — on moves into DONE, `force` events and the verifier-config changes — the kernel's process ancestry
+  (`ancestry` in `--json`, `store::proc`): what actually ran the command, not what its environment claimed. `--force` gets past both
+  rules, logged; a person may turn the verifier rule off (`tb config verifier-only off`).
+  Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>` — started by `tb-agent-start`, so the session is registered.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   rename and `TB_ROLE` don't change what the harness records; start the verifier in its own session.
 ## Rules
@@ -131,6 +138,8 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
 - Never approve your own work: REVIEW → DONE is a verifier's `tb done` (above). A board may also name who closes its cards (`tb config done-by`) or
   require a link first (`tb config done-needs-link LABEL`, attach one with `tb link ID VALUE --label LABEL`): the error says what to do. All of
   these catch an honest mistake — names, roles and labels are self-asserted — so never pass another agent's name, claim a role, or fake a link.
+  The same close is also refused (`agent_as_person`) when the identity looks like a person's but the kernel's parent chain holds an agent
+  binary (`omp`, `claude`, `codex`, `pi`): close it from your own terminal, not from inside an agent's shell with the environment scrubbed.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused (`--force`
@@ -159,6 +168,8 @@ matches your name to your herdr pane; an idle agent holding a DOING card is a wa
 | `TB_NO_HERDR` | set to anything: tb does not ask herdr for agents | test hook |
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
 | `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
+| `TB_VERIFIERS_DIR` | moves the verifier-registry directory wholesale (tests — never in production; the dir is who may close a board's cards) | test hook |
+| `TB_VERIFIER_REGISTRY` | `off`/`0`/`no` turns the session-registry check off; unset or anything else = on | knob |
 | `TB_STDIN_TIMEOUT` | seconds to wait for `-`'s first byte before refusing; unset or `0` = wait forever | knob |
 | `TB_LOCK_WAIT_MS` · `TB_TRACE_WAITS` | milliseconds a board lock waits before refusing (`board_busy`; unset = 10000) · a file tb appends one line to for every deliberate wait | test hooks |
 
