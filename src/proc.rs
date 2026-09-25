@@ -32,20 +32,20 @@ pub fn ancestry() -> Vec<String> {
 pub fn walk(start: u32) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: Vec<u32> = Vec::new();
-    let mut pid = start;
+    let Some((mut ppid, _)) = step(start) else { return out };
     for _ in 0..MAX_DEPTH {
-        let Some((ppid, comm)) = step(pid) else { break };
+        let Some((next, comm)) = step(ppid) else { break };
         out.push(comm);
-        seen.push(pid);
+        seen.push(ppid);
         // pid 0 and 1 end the chain: 0 is the kernel, 1 launchd/init — every process's final
         // ancestors, carrying no signal.
-        if ppid <= 1 {
+        if next <= 1 {
             break;
         }
-        if seen.contains(&ppid) || seen.len() >= MAX_DEPTH {
+        if seen.contains(&next) || seen.len() >= MAX_DEPTH {
             break;
         }
-        pid = ppid;
+        ppid = next;
     }
     out
 }
