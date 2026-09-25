@@ -52,8 +52,31 @@ impl Board {
         c.output().unwrap()
     }
 
+    /// The registry tests hand envs built at runtime (`TB_VERIFIERS_DIR` is a temp path), so
+    /// the three runners below take `(key, String)` pairs; `str_env` lifts the const literals.
+    fn run_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args).env_clear();
+        c.env("TB_DB", self.db())
+            .env("TB_AS", who)
+            .env("TB_NO_HERDR", "1")
+            .env("TB_GH", "/nonexistent/gh")
+            .env("USER", "login-user")
+            .env("TZ", "UTC")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.dir.path());
+        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
+        c.output().unwrap()
+    }
+
     fn ok(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> String {
         let o = self.run(env, who, args);
+        assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    }
+
+    fn ok_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> String {
+        let o = self.run_s(env, who, args);
         assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8(o.stdout).unwrap()
     }
@@ -68,6 +91,22 @@ impl Board {
         // `--json` splits the message at its first ` — `: `error` is what happened, `hint` what to do
         let text = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
         (text, v["code"].as_str().unwrap_or("").to_string())
+    }
+
+    fn refused_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> (String, String) {
+        let mut a = args.to_vec();
+        a.push("--json");
+        let o = self.run_s(env, who, &a);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+        assert!(!o.status.success(), "{who}: tb {args:?} was allowed: {v}");
+        let text = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
+        (text, v["code"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Lifts a compile-time env literal (`[(key, "value"); N]`) into the `(key, String)` pairs
+    /// the `*_s` runners take.
+    fn str_env(env: &[(&str, &str)]) -> Vec<(&'static str, String)> {
+        env.iter().map(|(k, v)| (*k, v.to_string())).collect()
     }
 
     fn json(&self, args: &[&str]) -> serde_json::Value {
@@ -598,7 +637,7 @@ fn same_session_applies_with_verifier_only_off() {
 /// before the registry is consulted.
 fn registered(verifier_registry: &common::VerifierRegistry, session: &str, name: &str) -> Vec<(&'static str, String)> {
     verifier_registry.register(session, name, "claude-code");
-    Vec::from(verifier_registry.env())
+    Board::str_env(VERIFIER).into_iter().chain(verifier_registry.env()).collect()
 }
 
 #[test]
@@ -606,12 +645,8 @@ fn a_role_claim_without_a_registry_entry_is_refused() {
     let reg = common::VerifierRegistry::new();
     let b = Board::new();
     let id = b.in_review("r1: env-only verifier", "bot-1");
-    let env: Vec<(&str, String)> = VERIFIER
-        .iter()
-        .map(|(k, v)| (*k, v.to_string()))
-        .chain(reg.env().iter().cloned())
-        .collect();
-    let (e, code) = b.refused(&env, "rv-x", &["done", &id]);
+    let env: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_s(&env, "rv-x", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     assert!(e.contains("tb-agent-start did not start") && e.contains(&id), "{e}");
     assert!(e.contains("--force, logged"), "{e}");
@@ -624,7 +659,7 @@ fn a_registered_session_closes_with_its_own_name_and_harness() {
     let b = Board::new();
     let id = b.in_review("r2: registered verifier", "bot-1");
     let env = registered(&reg, VUUID, "rv-1");
-    b.ok(&env, "rv-1", &["done", &id]);
+    b.ok_s(&env, "rv-1", &["done", &id]);
     assert_eq!(b.column(&id), "done");
     // the trace still carries the whole identity
     let show = b.json(&["show", &id]);
@@ -639,7 +674,7 @@ fn a_registered_session_under_another_name_is_refused() {
     let b = Board::new();
     let id = b.in_review("r3: session borrowed", "bot-1");
     let env = registered(&reg, VUUID, "rv-1");
-    let (e, code) = b.refused(&env, "rv-z", &["done", &id]);
+    let (e, code) = b.refused_s(&env, "rv-z", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     // a name the entry does not carry closes nothing, even with the role claimed
     assert_eq!(b.column(&id), "review");
@@ -652,13 +687,9 @@ fn a_registered_session_with_another_harness_is_refused() {
     let id = b.in_review("r4: harness swapped", "bot-1");
     reg.register(VUUID, "rv-1", "omp");
     // same role/session, but the identity says omp — the entry's harness is claude-code
-    let with_harness: Vec<(&str, String)> = VERIFIER
-        .iter()
-        .map(|(k, v)| (*k, v.to_string()))
-        .chain(reg.env().iter().cloned())
-        .chain([("TB_HARNESS", "omp".to_string())])
-        .collect();
-    let (e, code) = b.refused(&with_harness, "rv-1", &["done", &id]);
+    let with_harness: Vec<(&str, String)> =
+        Board::str_env(VERIFIER).into_iter().chain(reg.env()).chain([("TB_HARNESS", "omp".to_string())]).collect();
+    let (e, code) = b.refused_s(&with_harness, "rv-1", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     assert_eq!(b.column(&id), "review");
 }
@@ -670,12 +701,8 @@ fn a_session_file_with_bad_or_missing_json_is_no_entry() {
     let id = b.in_review("r5: corrupt entry", "bot-1");
     std::fs::create_dir_all(reg.dir.path()).unwrap();
     std::fs::write(reg.dir.path().join(VUUID), "{not json").unwrap();
-    let full: Vec<(&str, String)> = VERIFIER
-        .iter()
-        .map(|(k, v)| (*k, v.to_string()))
-        .chain(reg.env().iter().cloned())
-        .collect();
-    let (e, code) = b.refused(&full, "rv-1", &["done", &id]);
+    let full: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_s(&full, "rv-1", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
 }
 
@@ -684,12 +711,8 @@ fn the_registry_refusal_names_the_fix_not_the_list() {
     let reg = common::VerifierRegistry::new();
     let b = Board::new();
     let id = b.in_review("r6: message check", "bot-1");
-    let full: Vec<(&str, String)> = VERIFIER
-        .iter()
-        .map(|(k, v)| (*k, v.to_string()))
-        .chain(reg.env().iter().cloned())
-        .collect();
-    let (e, code) = b.refused(&full, "rv-1", &["done", &id]);
+    let full: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_s(&full, "rv-1", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "{e}");
     assert!(!e.contains("config verifiers"), "never teach the refused agent the list: {e}");
