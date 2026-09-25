@@ -136,6 +136,27 @@ claim, not proof), cleaned of control characters, and at most 64 characters.
 | `first_seen` | INTEGER | unix seconds of the first event this identity wrote |
 | `last_seen` | INTEGER | unix seconds of its latest event |
 
+### board_creator
+Who made the board (#137): **at most one row** (`id` is always 1), written once, when tb creates
+the board file — by `tb new NAME` or by the first command that makes the board on first use —
+and never changed after (`INSERT OR IGNORE`: of two processes creating a board at once, the
+first keeps it). Same identity as an `actors` row, from the same sources, but written even when
+nothing but a name is known (a person gets `actor` and `created_at`, the rest NULL). A board made
+before this table existed has an empty table; `tb boards --json` then reads its creator from
+`board-creations.log` (`source: "log"`) and writes nothing back. Travels with the file, so an
+archived board keeps it.
+
+| column | type | meaning |
+|---|---|---|
+| `id` | INTEGER PK | always 1 (`CHECK (id = 1)`) |
+| `actor` | TEXT | the name the creating command ran as (`--as`, `TB_AS`, the herdr pane, the login) |
+| `harness` | TEXT NULL | as `actors.harness`, for the creating command |
+| `model` | TEXT NULL | as `actors.model` |
+| `role` | TEXT NULL | as `actors.role` |
+| `session` | TEXT NULL | as `actors.session` |
+| `host` | TEXT NULL | as `actors.host` |
+| `created_at` | INTEGER | unix seconds the board was created |
+
 ### github_snapshot
 The last GitHub sync.
 

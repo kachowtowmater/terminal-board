@@ -27,6 +27,7 @@ pub mod actors;
 pub mod archive;
 pub mod blocks;
 pub mod closing;
+pub mod creator;
 pub mod bulk;
 pub mod display;
 pub mod due;
@@ -736,6 +737,8 @@ pub struct Store {
     /// with it). `None` for an in-memory board (`:memory:`) and for a read-only open, which
     /// never creates or moves anything — see `Store::open`'s doc comment.
     _lock: Option<lock::Guard>,
+    /// This open created the board file (see `creator`: only then is a creator recorded).
+    created: bool,
 }
 
 const SCHEMA: &str = r#"
@@ -1388,7 +1391,7 @@ impl Store {
                     Code::ReadOnly,
                 ));
             }
-            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock });
+            return Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock, created });
         }
         set_wal(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
@@ -1398,7 +1401,9 @@ impl Store {
         }
         // migration: who did the work (`actors`, `events.actor_id`, `board_events.actor_id`)
         actors::migrate(&conn)?;
-        Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock })
+        // migration: who made the board (`board_creator`, #137)
+        creator::migrate(&conn)?;
+        Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock, created })
     }
 
     /// Like [`open`](Self::open), for a caller that must NEVER conjure a missing board:

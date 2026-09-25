@@ -1,6 +1,7 @@
 //! Named boards: `~/.local/state/ttyboard/boards/<name>.db`, legacy migration, selection,
 //! archive/restore (#80), and deleting an archived board for good.
 
+use crate::store::creator::{self, Creator};
 use crate::store::{self, BoardError, Code, Result, Store, COLUMNS};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
@@ -221,6 +222,12 @@ pub fn old_state_dir() -> PathBuf {
     home().join(".local/state/ttyboard")
 }
 
+/// The fleet's record of who made which board (`time<TAB>board<TAB>key=value…`), read for a
+/// board that has no creator record of its own (`store::creator`).
+pub fn creations_log() -> PathBuf {
+    state_dir().join("board-creations.log")
+}
+
 pub fn boards_dir() -> PathBuf {
     state_dir().join("boards")
 }
@@ -280,6 +287,8 @@ pub struct ArchiveRow {
     pub path: PathBuf,
     /// Card counts in column order, or `None` when the file cannot be read.
     pub counts: Option<[usize; 4]>,
+    /// Who made the board (its own record, else `board-creations.log`), when known.
+    pub created_by: Option<Creator>,
 }
 
 impl ArchiveRow {
@@ -304,7 +313,7 @@ impl ArchiveRow {
 /// again once the connection is closed. Sidecars that were already there are left alone — they
 /// belong to the archived board, and a concurrent `restore` moving them out from under this
 /// read simply makes the file briefly unreadable, which reads as `None`, never a corruption.
-fn counts_read_only(path: &Path) -> Option<[usize; 4]> {
+fn counts_read_only(path: &Path) -> Option<([usize; 4], Option<Creator>)> {
     let sidecars: Vec<(PathBuf, bool)> = ["-wal", "-shm"]
         .iter()
         .map(|ext| {
@@ -325,7 +334,7 @@ fn counts_read_only(path: &Path) -> Option<[usize; 4]> {
                 counts[i] = n.max(0) as usize;
             }
         }
-        Some(counts)
+        Some((counts, creator::read(&conn)))
     })();
     for (p, existed) in sidecars {
         if !existed {
@@ -349,8 +358,10 @@ pub fn archived() -> Vec<ArchiveRow> {
                         return None;
                     }
                     let path = e.path();
-                    let counts = counts_read_only(&path);
-                    Some(ArchiveRow { name: name.to_string(), stamp: stamp.to_string(), path, counts })
+                    let read = counts_read_only(&path);
+                    let counts = read.as_ref().map(|r| r.0);
+                    let created_by = read.and_then(|r| r.1).or_else(|| creator::from_log(&creations_log(), name));
+                    Some(ArchiveRow { name: name.to_string(), stamp: stamp.to_string(), path, counts, created_by })
                 })
                 .collect()
         })
@@ -686,6 +697,16 @@ pub fn rows() -> Result<Vec<BoardRow>> {
             Some(Ok(BoardRow { name: n.clone(), is_default: *n == def, counts, path }))
         })
         .collect()
+}
+
+/// Who made the board a `rows()` row is: its own record, else `board-creations.log`. `None`
+/// when neither knows, or when the board was archived since `rows()` looked (never
+/// re-created: `open_if_exists`, as in `rows`).
+pub fn creator_of(row: &BoardRow) -> Option<Creator> {
+    match Store::open_if_exists(&row.path) {
+        Ok(Some(s)) => s.named(&row.name).creator(),
+        _ => creator::from_log(&creations_log(), &row.name),
+    }
 }
 
 /// The board picker's rows, or the reason it cannot offer a choice. With `TB_DB` set there

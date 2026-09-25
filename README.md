@@ -374,7 +374,11 @@ tb home add "call the plumber"
 tb home list
 tb -b home list
 tb boards
+tb boards --long
 ```
+
+`tb boards --long` adds who created each board (name, harness, model, role, session, host, time) — the
+`created_by` of `tb boards --json`, recorded when `tb new` or a first `add` makes the board.
 
 **Choose the board plain `tb` opens.** `tb boards --default home` saves it: from then on
 `tb`, `tb add …`, `tb next` and every other command without a board name act on `home`, and

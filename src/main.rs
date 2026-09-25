@@ -25,7 +25,7 @@ Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
 Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
-Boards  boards [--default [NAME|--clear]] | boards [--archived] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
+Boards  boards [--default [NAME|--clear]] | boards [--archived] [--long] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
 Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
 GitHub  github [--refresh] | github repos | sync
@@ -334,6 +334,9 @@ enum Cmd {
         /// `delete`: also remove the board's schema-upgrade backups
         #[arg(long, requires = "what")]
         backups: bool,
+        /// Also show who created each board (the `created_by` of `--json`)
+        #[arg(long, conflicts_with_all = ["what", "name", "default"])]
+        long: bool,
     },
     /// Make a board with a kind's settings, or with another board's.
     New {
@@ -814,6 +817,9 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
         ), Code::InvalidValue));
     }
     let store = Store::open(&path)?.named(name);
+    if store.was_created() {
+        store.record_creator(actor)?;
+    }
     let what = match &source {
         Some(other) => {
             let (_, skipped) = store.copy_settings_from(other, actor)?;
@@ -845,15 +851,16 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     Ok(())
 }
 
-fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
+fn open_board(name: &str, create: bool, actor: &str) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
     if create {
-        if !path.exists() {
-            let store = Store::open(&path)?.named(name);
+        let store = Store::open(&path)?.named(name);
+        // create-on-first-use: whoever's command made the file is the board's creator
+        if store.was_created() {
+            store.record_creator(actor)?;
             warn!("created board '{name}'");
-            return Ok(store);
         }
-        return Ok(Store::open(&path)?.named(name));
+        return Ok(store);
     }
     // A command not allowed to create a board (every one but `add`/`config`, on a named,
     // non-default board): `Store::open_if_exists` checks under the SAME lock `archive`/
@@ -879,7 +886,7 @@ fn open_board(name: &str, create: bool) -> Result<Store, BoardError> {
     }
 }
 
-fn list_boards(json_out: bool) -> Result<(), BoardError> {
+fn list_boards(json_out: bool, long: bool) -> Result<(), BoardError> {
     let def = boards::default_name();
     // the `*` below cannot follow a saved default board that is unusable or gone: say why
     match boards::saved_default_for_read() {
@@ -896,7 +903,8 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
             .iter()
             .map(|b| {
                 let c = b.counts;
-                serde_json::json!({"name": b.name, "default": b.is_default, "todo": c[0], "doing": c[1], "review": c[2], "done": c[3]})
+                serde_json::json!({"name": b.name, "default": b.is_default, "todo": c[0], "doing": c[1], "review": c[2], "done": c[3],
+                                   "created_by": boards::creator_of(b)})
             })
             .collect();
         println!("{}", pretty(&v));
@@ -910,6 +918,9 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
                 if b.is_default { "*" } else { " " },
                 c[0], c[1], c[2], c[3]
             );
+            if long {
+                say!("    created by {}", boards::creator_of(b).map_or_else(|| "unknown".to_string(), |c| c.line()));
+            }
         }
         say!("* = default (plain 'tb'); open another with 'tb NAME'");
     }
@@ -921,6 +932,8 @@ fn list_boards(json_out: bool) -> Result<(), BoardError> {
 struct BoardsDelete {
     yes: bool,
     backups: bool,
+    /// not a delete flag: `--long` for the listings `boards_cmd` also answers
+    long: bool,
 }
 
 /// `tb boards`'s verbs and `--archived`. Retiring a board is a MOVE the user can undo:
@@ -929,8 +942,8 @@ struct BoardsDelete {
 /// `tb boards rm` would be a dangerous near-miss — deliberately not offered).
 fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, del: BoardsDelete, json_out: bool) -> Result<(), BoardError> {
     match (what, name) {
-        (None, _) if archived => list_archived(json_out),
-        (None, None) => list_boards(json_out),
+        (None, _) if archived => list_archived(json_out, del.long),
+        (None, None) => list_boards(json_out, del.long),
         (None, Some(n)) => Err(BoardError(format!(
             "'tb boards {n}' is not a command — 'tb boards archive {n}' or 'tb boards restore {n}'? 'tb boards' lists them"
         ), Code::UnknownCommand)),
@@ -1014,7 +1027,7 @@ fn delete_board(name: &str, del: BoardsDelete, json_out: bool) -> Result<(), Boa
 
 /// `tb boards --archived`: what `tb boards archive` retired, with card counts read without
 /// touching the files, so a restore returns the board exactly as it was.
-fn list_archived(json_out: bool) -> Result<(), BoardError> {
+fn list_archived(json_out: bool, long: bool) -> Result<(), BoardError> {
     let rows = boards::archived();
     if json_out {
         let v: Vec<_> = rows
@@ -1022,7 +1035,7 @@ fn list_archived(json_out: bool) -> Result<(), BoardError> {
             .map(|a| {
                 let n = |i: usize| a.counts.map_or(serde_json::Value::Null, |c| json!(c[i]));
                 json!({"name": a.name, "archived_at": a.archived_at(), "path": a.path.display().to_string(),
-                       "todo": n(0), "doing": n(1), "review": n(2), "done": n(3)})
+                       "todo": n(0), "doing": n(1), "review": n(2), "done": n(3), "created_by": a.created_by})
             })
             .collect();
         println!("{}", pretty(&v));
@@ -1035,6 +1048,9 @@ fn list_archived(json_out: bool) -> Result<(), BoardError> {
                 None => "counts unavailable".to_string(),
             };
             say!("  {:<16} archived {}  {counts}", a.name, a.archived_at());
+            if long {
+                say!("    created by {}", a.created_by.as_ref().map_or_else(|| "unknown".to_string(), |c| c.line()));
+            }
         }
         say!("in {} — bring one back with 'tb boards restore NAME'", boards::archive_dir().display());
     }
@@ -1319,13 +1335,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         };
         return new_board(name, kind.as_deref(), from.as_deref(), &actor, cli.json);
     }
-    if let Some(Cmd::Boards { default, clear, what, name, archived, yes, backups }) = &cli.cmd {
+    if let Some(Cmd::Boards { default, clear, what, name, archived, yes, backups, long }) = &cli.cmd {
         if what.is_some() || name.is_some() || *archived {
-            return boards_cmd(what.as_deref(), name.as_deref(), *archived, BoardsDelete { yes: *yes, backups: *backups }, cli.json);
+            let flags = BoardsDelete { yes: *yes, backups: *backups, long: *long };
+            return boards_cmd(what.as_deref(), name.as_deref(), *archived, flags, cli.json);
         }
         return match default {
             Some(name) => default_board_cmd(name.as_deref(), *clear, cli.json),
-            None => list_boards(cli.json),
+            None => list_boards(cli.json, *long),
         };
     }
     // TB_DB > a name on the command line > TB_BOARD > the saved default board > `default`
@@ -1376,7 +1393,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         _ => None,
     };
     let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
-    let mut store = open_board(&name, creates)?;
+    let mut store = open_board(&name, creates, &actor)?;
     // a stored `tz` this build does not know must not be ignored silently: today then comes
     // from this machine's zone, and every command says so until the setting is fixed. Scoped
     // to `store.notice_key()` (the one function that computes this — see its doc comment on
