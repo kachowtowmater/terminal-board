@@ -60,6 +60,12 @@ impl Board {
         self.run_raw(&env, who, args)
     }
 
+    /// The registering runner under its original name at call sites that built envs as
+    /// `Vec<(&str, String)>` before the wrapper existed.
+    fn run_s<'a>(&self, env: &'a [(&'a str, String)], who: &str, args: &[&str]) -> Output {
+        self.run(env, who, args)
+    }
+
     fn ok(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> String {
         self.ok_s(&Self::str_env(env), who, args)
     }
