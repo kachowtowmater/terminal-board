@@ -268,7 +268,6 @@ fn a_verifier_still_never_closes_its_own_work() {
 #[test]
 fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let b = Board::new();
-    assert_eq!(b.ok(PERSON, "lead", &["config", "verifiers"]).trim(), "none — only an agent with TB_ROLE=verifier, or a person, may close a card");
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-1, rv-3"]);
     assert_eq!(b.json(&["config", "verifiers"])["config"]["value"], serde_json::json!(["rv-1", "rv-3"]));
     assert!(b.ok(PERSON, "lead", &["config"]).contains("verifiers"), "listed once set");
@@ -286,6 +285,30 @@ fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let two = b.in_review("h: list cleared", "bot-1");
     let (_, code) = b.refused(AGENT, "rv-1", &["done", &two]);
     assert_eq!(code, "not_verifier");
+}
+
+/// The C3b forge: an agent with NO role whose name is on `tb config verifiers` and whose
+/// session has NO registry entry — the name alone (set by `TB_AS`) closes nothing. A listed
+/// name is only a pass for the session `tb-agent-start` launched as a verifier's, so a real
+/// listed verifier registers its session and closes as before.
+#[test]
+fn a_listed_name_with_no_role_and_no_registry_entry_is_refused() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
+    let id = b.in_review("c3b: listed-name forge", "bot-1");
+    let (e, code) = b.refused_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)]), "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert_eq!(b.column(&id), "review");
+    // --force is still the logged escape
+    b.ok_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)]), "rv-1", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
+    // the real thing this guards: the REGISTERED session closes under the listed name
+    let two = b.in_review("c3b: registered listed verifier", "bot-1");
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register(VUUID, "rv-1", "claude-code");
+    let env: Vec<(&str, String)> = reg.env().into_iter().chain(Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)])).collect();
+    b.ok_raw(&env, "rv-1", &["done", &two]);
+    assert_eq!(b.column(&two), "done");
 }
 
 #[test]
