@@ -37,8 +37,6 @@ const BOB: &[(&str, &str)] = &[
     ("TB_ROLE", "reviewer"),
     ("TB_HOST", "gatehost"),
 ];
-/// A person in a plain terminal: nothing but the name, so no identity and no row.
-const CAROL: &[(&str, &str)] = &[];
 
 struct Home {
     dir: tempfile::TempDir,
@@ -55,7 +53,7 @@ impl Home {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env_clear().stdin(Stdio::null());
         c.env("HOME", self.dir.path()).env("USER", "login-user").env("TZ", "UTC").env("PATH", "/usr/bin:/bin");
-        c.env("TB_NO_HERDR", "1").env("TB_NOW", "1789000000").env("TB_CONFIG", self.dir.path().join("cfg.json"));
+        c.env("NO_HERDR", "1").env("TB_NOW", "1789000000").env("TB_CONFIG", self.dir.path().join("cfg.json"));
         c.envs(env.iter().copied());
         c
     }
@@ -97,7 +95,7 @@ fn boards() -> Home {
     h.ok(ALICE, &["take", "1", "--as", "alice"]);
     h.ok(ALICE, &["note", "1", "progress by alice", "--as", "alice"]);
     h.ok(BOB, &["note", "1", "note by bob", "--as", "bob"]);
-    h.ok(CAROL, &["add", "plain: no identity", "--as", "carol"]);
+    h.ok(&[], &["add", "plain: no identity", "--as", "carol"]);
     h.ok(ALICE, &["dst", "add", "a card already here", "--as", "alice"]);
     h
 }
@@ -115,11 +113,11 @@ fn a_card_with_identity_events_moves_and_keeps_them() {
 
     // gone from the source; its board log names where it went
     assert_eq!(h.events("src").iter().filter(|e| e.0 == 1).count(), 0, "card 1's events left with it");
-    let log = h.ok(CAROL, &["src", "log", "--as", "carol"]);
+    let log = h.ok(&[], &["src", "log", "--as", "carol"]);
     assert!(log.contains("moved-out"), "{log}");
 
     // there, with its whole history and the identity behind every event
-    let show = h.ok(CAROL, &["dst", "show", "2", "--as", "carol"]);
+    let show = h.ok(&[], &["dst", "show", "2", "--as", "carol"]);
     assert!(show.contains("progress by alice"), "{show}");
     assert!(show.contains("note by bob"), "{show}");
     assert!(show.contains(&format!("session {SESSION_A}")), "{show}");
@@ -154,7 +152,7 @@ fn the_second_move_finds_the_identity_the_first_left() {
     assert_eq!(rows, 2, "{rows} actor rows on the destination");
 
     // the second card's note points at the row the first move already made
-    let note = h.events("dst").iter().find(|e| e.0 == 3 && e.2 == "note").map(|e| e.3).flatten();
+    let note = h.events("dst").iter().find(|e| e.0 == 3 && e.2 == "note").and_then(|e| e.3);
     assert_eq!(note, Some(1), "reused, not re-inserted: {note:?}");
 }
 
@@ -163,8 +161,8 @@ fn the_second_move_finds_the_identity_the_first_left() {
 #[test]
 fn a_card_without_identities_moves_as_it_always_did() {
     let h = boards();
-    h.ok(CAROL, &["mv", "2", "--to", "dst", "--as", "carol"]);
-    let said = h.ok(CAROL, &["dst", "show", "2", "--as", "carol"]);
+    h.ok(&[], &["mv", "2", "--to", "dst", "--as", "carol"]);
+    let said = h.ok(&[], &["dst", "show", "2", "--as", "carol"]);
     assert!(said.contains("no identity"), "{said}");
     assert!(!said.contains("actors:"), "no identity, no section: {said}");
     assert_eq!(h.sessions("dst"), Vec::<String>::new(), "nothing invented");
