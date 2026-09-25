@@ -4,6 +4,8 @@
 //! `config verifiers`, or a person. Everything here drives the real `tb` binary with a
 //! controlled environment (so whatever harness runs the suite never leaks in) and only
 //! through the CLI, so a tree without the rule fails these by assertion, not by compile error.
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -583,4 +585,112 @@ fn same_session_applies_with_verifier_only_off() {
     assert_eq!(code, "same_session", "{e}");
     b.ok(AGENT, "rv-other", &["done", &id, "--force"]);
     assert_eq!(b.column(&id), "done");
+}
+
+// --- the verifier registry (card #169): TB_ROLE=verifier is a claim; the session must be one
+// --- tb-agent-start launched as a verifier (a JSON entry {"session","name","harness"} per file).
+
+/// Every verifier env gets the test registry wired in: `TB_VERIFIERS_DIR` (tests) pointing at
+/// a fresh temp dir, so the suite never writes the machine's real
+/// `~/.local/state/terminal-board/verifiers`. Existing tests above run WITHOUT it: no
+/// registry anywhere, so a role-claiming close is refused as `unregistered_verifier` — the
+/// assertions above that say `not_verifier` are the AGENT-without-role cases, which refuse
+/// before the registry is consulted.
+fn registered(verifier_registry: &common::VerifierRegistry, session: &str, name: &str) -> Vec<(&'static str, String)> {
+    verifier_registry.register(session, name, "claude-code");
+    Vec::from(verifier_registry.env())
+}
+
+#[test]
+fn a_role_claim_without_a_registry_entry_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r1: env-only verifier", "bot-1");
+    let env: Vec<(&str, String)> = VERIFIER
+        .iter()
+        .map(|(k, v)| (*k, v.to_string()))
+        .chain(reg.env().iter().cloned())
+        .collect();
+    let (e, code) = b.refused(&env, "rv-x", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("tb-agent-start did not start") && e.contains(&id), "{e}");
+    assert!(e.contains("--force, logged"), "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_registered_session_closes_with_its_own_name_and_harness() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r2: registered verifier", "bot-1");
+    let env = registered(&reg, VUUID, "rv-1");
+    b.ok(&env, "rv-1", &["done", &id]);
+    assert_eq!(b.column(&id), "done");
+    // the trace still carries the whole identity
+    let show = b.json(&["show", &id]);
+    let moved = show["events"].as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
+    let who = show["actors"].as_array().unwrap().iter().find(|a| a["id"] == moved["actor_id"]).cloned().unwrap();
+    assert_eq!((who["role"].as_str(), who["session"].as_str()), (Some("verifier"), Some(VUUID)));
+}
+
+#[test]
+fn a_registered_session_under_another_name_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r3: session borrowed", "bot-1");
+    let env = registered(&reg, VUUID, "rv-1");
+    let (e, code) = b.refused(&env, "rv-z", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    // a name the entry does not carry closes nothing, even with the role claimed
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_registered_session_with_another_harness_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r4: harness swapped", "bot-1");
+    reg.register(VUUID, "rv-1", "omp");
+    // same role/session, but the identity says omp — the entry's harness is claude-code
+    let with_harness: Vec<(&str, String)> = VERIFIER
+        .iter()
+        .map(|(k, v)| (*k, v.to_string()))
+        .chain(reg.env().iter().cloned())
+        .chain([("TB_HARNESS", "omp".to_string())])
+        .collect();
+    let (e, code) = b.refused(&with_harness, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_session_file_with_bad_or_missing_json_is_no_entry() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r5: corrupt entry", "bot-1");
+    std::fs::create_dir_all(reg.dir.path()).unwrap();
+    std::fs::write(reg.dir.path().join(VUUID), "{not json").unwrap();
+    let full: Vec<(&str, String)> = VERIFIER
+        .iter()
+        .map(|(k, v)| (*k, v.to_string()))
+        .chain(reg.env().iter().cloned())
+        .collect();
+    let (e, code) = b.refused(&full, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+}
+
+#[test]
+fn the_registry_refusal_names_the_fix_not_the_list() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r6: message check", "bot-1");
+    let full: Vec<(&str, String)> = VERIFIER
+        .iter()
+        .map(|(k, v)| (*k, v.to_string()))
+        .chain(reg.env().iter().cloned())
+        .collect();
+    let (e, code) = b.refused(&full, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "{e}");
+    assert!(!e.contains("config verifiers"), "never teach the refused agent the list: {e}");
 }
