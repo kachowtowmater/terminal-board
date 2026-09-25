@@ -409,7 +409,7 @@ fn the_event_stream_carries_the_identity_inline() {
     let _ = child.wait();
     let mut keys: Vec<&str> = lines[0].as_object().unwrap().keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
+    assert_eq!(keys, ["actor", "actor_id", "ancestry", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
     assert_eq!((lines[0]["v"].as_i64(), lines[0]["actor"].as_str(), lines[0]["actor_id"].as_i64()), (Some(1), Some("lead"), Some(1)));
     let who = &lines[0]["identity"];
     assert_eq!(
