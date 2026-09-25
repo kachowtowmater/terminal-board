@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A process waiting for a lock is served in turn, never starved
+
+- A `tb` waiting for a board's lock or the settings file's lock used to lose, again and
+  again, to a process that let go and asked straight back. Under load a settings writer gave
+  up after 10 seconds ("another tb has been writing the settings for 10s"). Waiters now take
+  a numbered place and get the lock first come, first served. A waiter that gives up or is
+  killed never holds up the ones behind it. An uncontended take is one try and creates no
+  files, as before.
+- The settings file's directory is synced after the lock is released, not while it is held.
+
 ### `*` in the board picker makes a board the default
 
 - In the board picker (`B`), `*` makes the selected board the default, the board a plain `tb`
