@@ -54,7 +54,7 @@ impl Home {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env_clear().stdin(Stdio::null());
         c.env("HOME", self.dir.path()).env("USER", "login-user").env("TZ", "UTC").env("PATH", "/usr/bin:/bin");
-        c.env("TB_NO_HERDR", "1").env("TB_NOW", "1789000000");
+        c.env("TB_NO_HERDR", "1").env("TB_NOW", "1789000000").env("TB_CONFIG", self.dir.path().join("cfg.json"));
         c.envs(env.iter().copied());
         c
     }
