@@ -27,12 +27,14 @@
 //! where it went even though the card itself is gone from one of them.
 //!
 //! **What travels:** the card, its checklist and its whole history, with the original actor
-//! and timestamp of every event. What does NOT travel: the owner and the column — a card
-//! lands in TODO, unowned, because the destination has its own WIP limit and its own people,
-//! and because a card held by somebody on one board cannot be held by them on a board they
-//! may not be working. A block that names another card (`--on #7`) is kept as TEXT but its
-//! `--on` is dropped: `#7` means a different card over there, and a link that silently points
-//! at the wrong card is worse than no link.
+//! and timestamp of every event — and the identity behind each of those actors (`actors`
+//! rows, re-keyed to the ids the destination gives them), so a history that names its
+//! sessions still names them on the board it lands on. What does NOT travel: the owner and
+//! the column — a card lands in TODO, unowned, because the destination has its own WIP limit
+//! and its own people, and because a card held by somebody on one board cannot be held by
+//! them on a board they may not be working. A block that names another card (`--on #7`) is
+//! kept as TEXT but its `--on` is dropped: `#7` means a different card over there, and a
+//! link that silently points at the wrong card is worse than no link.
 //!
 //! **Known limit (issue #112).** tb has no lock on a board file's lifetime yet, so nothing
 //! stops another process moving or replacing the destination file between the open and the
@@ -44,7 +46,8 @@
 use super::archive::board_log;
 use super::links::LinkItem;
 use super::{get_card, now, Card, Code, Result, Store};
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, params_from_iter, OptionalExtension, TransactionBehavior};
+use std::collections::HashMap;
 
 /// What a move did: where the card came from, and the number it has now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +68,7 @@ pub struct Moved {
 type Item = (i64, String, bool);
 
 /// Everything about a card that travels to another board.
-type Packed = (Card, Vec<Item>, Vec<Past>, Vec<LinkItem>);
+type Packed = (Card, Vec<Item>, Vec<Past>, Vec<LinkItem>, Vec<IdentityRow>);
 
 /// One event as it sits in the source, so it can be written again at the far end with its
 /// original actor and time.
@@ -79,6 +82,16 @@ struct Past {
     /// guard on the destination board never has to fall back to parsing `text`, the way a
     /// pre-migration row does.
     assignee: Option<String>,
+}
+
+/// One identity row as it travels: the destination keeps the same record behind the name,
+/// under its own id (`receive_identities`, below).
+struct IdentityRow {
+    id: i64,
+    actor: String,
+    who: super::actors::Identity,
+    first_seen: i64,
+    last_seen: i64,
 }
 
 /// Everything about card `id` that travels to another board, read through the transaction
@@ -98,7 +111,79 @@ fn pack(tx: &rusqlite::Transaction, id: i64) -> Result<Packed> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut st = tx.prepare("SELECT idx, label, value, added_by, added_at FROM links WHERE card_id=? ORDER BY idx")?;
     let links = st.query_map([id], super::links::row_link)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok((card, checklist, events, links))
+    // the identities behind the history, read whole: the destination inserts-or-finds each of
+    // them under its own id, or every `actor_id` copied over would point at a row it does not
+    // have (the FOREIGN KEY refusal this file's bug report is about)
+    let identities = identities_of(tx, &events)?;
+    Ok((card, checklist, events, links, identities))
+}
+
+/// The `actors` rows behind `events.actor_id`, one per distinct id, in id order. Read from
+/// the same transaction as the events, so a concurrent write cannot split the two.
+fn identities_of(tx: &rusqlite::Transaction, events: &[Past]) -> Result<Vec<IdentityRow>> {
+    let mut ids: Vec<i64> = events.iter().filter_map(|e| e.actor_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut st = tx.prepare_cached(&format!(
+        "SELECT id, actor, harness, model, role, session, host, first_seen, last_seen FROM actors WHERE id IN ({})",
+        vec!["?"; ids.len()].join(",")
+    ))?;
+    let rows = st
+        .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok(IdentityRow {
+                id: r.get(0)?,
+                actor: r.get(1)?,
+                who: super::actors::Identity {
+                    harness: r.get(2)?,
+                    model: r.get(3)?,
+                    role: r.get(4)?,
+                    session: r.get(5)?,
+                    host: r.get(6)?,
+                },
+                first_seen: r.get(7)?,
+                last_seen: r.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    debug_assert_eq!(rows.len(), ids.len(), "every actor_id referenced an actors row");
+    Ok(rows)
+}
+
+/// Insert-or-find each packed identity in the destination, matched on the identity columns
+/// exactly as the unique index `actors_identity` is — NOT on the id, which is per board — and
+/// map the source id to the id the row has here. The row keeps its original first_seen and
+/// last_seen: the destination is receiving a history that really happened, not recording a
+/// new visit.
+fn receive_identities(conn: &rusqlite::Connection, rows: &[IdentityRow]) -> Result<HashMap<i64, i64>> {
+    let mut map = HashMap::new();
+    for row in rows {
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM actors WHERE actor=? AND IFNULL(harness, '')=IFNULL(?, '') AND IFNULL(model, '')=IFNULL(?, '')
+                   AND IFNULL(role, '')=IFNULL(?, '') AND IFNULL(session, '')=IFNULL(?, '') AND IFNULL(host, '')=IFNULL(?, '')",
+                params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = match found {
+            Some(id) => id,
+            None => {
+                conn.execute(
+                    "INSERT OR IGNORE INTO actors(actor, harness, model, role, session, host, first_seen, last_seen)
+                     VALUES (?,?,?,?,?,?,?,?)",
+                    params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host, row.first_seen, row.last_seen],
+                )?;
+                conn.query_row(
+                    "SELECT id FROM actors WHERE actor=? AND IFNULL(harness, '')=IFNULL(?, '') AND IFNULL(model, '')=IFNULL(?, '')
+                       AND IFNULL(role, '')=IFNULL(?, '') AND IFNULL(session, '')=IFNULL(?, '') AND IFNULL(host, '')=IFNULL(?, '')",
+                    params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host],
+                    |r| r.get(0),
+                )?
+            }
+        };
+        map.insert(row.id, id);
+    }
+    Ok(map)
 }
 
 impl Store {
@@ -113,6 +198,7 @@ impl Store {
         checklist: &[Item],
         events: &[Past],
         links: &[LinkItem],
+        identities: &[IdentityRow],
         actor: &str,
         forced: Option<&str>,
     ) -> Result<i64> {
@@ -157,11 +243,15 @@ impl Store {
         }
         // the history, with the actor and the time each event really had; `assignee` travels
         // too (#111), so an `assigned` event's holder is still read from a structured column
-        // on the destination board, not silently dropped back to parsing `text`
+        // on the destination board, not silently dropped back to parsing `text`. Each
+        // event's `actor_id` is rewritten to the row the identity has HERE, so the
+        // destination's own `actors` records travel with the history instead of pointing off
+        // the board.
+        let ids = receive_identities(&tx, identities)?;
         for e in events {
             tx.execute(
                 "INSERT INTO events(card_id, ts, actor, kind, text, actor_id, assignee) VALUES (?,?,?,?,?,?,?)",
-                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id, e.assignee],
+                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id.map(|id| ids[&id]), e.assignee],
             )?;
         }
         // then the move itself, so the card says where it came from
@@ -200,8 +290,8 @@ impl Store {
         // this writer builds its events by hand (it replays the card's history with the
         // original actors), so it does not pass through `Store::log` and asks for itself
         super::access::guard_actor(&tx, actor)?;
-        let (card, checklist, events, links) = pack(&tx, id)?;
-        let new_id = dest.receive(&from, &card, &checklist, &events, &links, actor, forced)?;
+        let (card, checklist, events, links, identities) = pack(&tx, id)?;
+        let new_id = dest.receive(&from, &card, &checklist, &events, &links, &identities, actor, forced)?;
         // from here the card exists on the destination: a failure below leaves a duplicate,
         // never a hole
         let cleared = (|| -> Result<()> {
