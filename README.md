@@ -993,9 +993,10 @@ close that rode on `TB_ROLE=verifier`, or one using only a name on `tb config ve
 is refused (`unregistered_verifier`) unless the resolved session has an entry in
 `~/.local/state/terminal-board/verifiers/<session>` — one JSON
 `{"session","name","harness"}` per file, written by `tb-agent-start --role verifier` at
-launch. The entry's name must match the command and its harness must be claude-code. Setting
+launch. The entry's name and harness must both match the command's identity. Setting
 the role in any shell — including a script an agent writes itself — no longer makes it a
-verifier. `TB_VERIFIER_REGISTRY=off` turns the check off.
+verifier. The check applies while the board's `verifier-only` rule is on (the default; only a
+person turns it off) — there is no environment switch an agent could set.
 
 A close that looks like a person's but runs from an agent's process is refused
 (`agent_as_person`): the identity carries no harness, but the kernel's ancestry holds an
@@ -1007,8 +1008,13 @@ a determined same-uid attacker can still forge a close (edit the registry, `sqli
 board, scrub the env of a fresh process tree). The interim stops the env/script forge and
 the accident; the ancestry stamp makes everything else *visible* after the fact — a close
 whose recorded ancestry, identity and registry do not agree is the alarm a person reviews.
-The real fix is privilege separation (the board held by a separate OS user or a broker that
-checks the caller's credentials); it is a design change, not a flag.
+The ancestry check also misses a command handed to a process outside the agent's tree
+(`launchd`, `ssh localhost`, a `nohup` re-parented to pid 1), and `--force` still gets past
+every refusal (logged, with ancestry). One side effect: a person-closing test run from inside
+an agent's shell (`cargo test` under Claude Code or omp) reads as that agent — run the suite
+from a plain terminal or CI. The real fix is privilege separation (the board held by a
+separate OS user or a broker that checks the caller's credentials); it is a design change,
+not a flag.
 
 A verifier also never closes from the same recorded SESSION as the work: if the session id
 behind the close matches any identity that took the card or moved it into review, in any

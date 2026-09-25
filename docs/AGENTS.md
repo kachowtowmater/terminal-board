@@ -113,8 +113,8 @@ alone unless a person asks you to.
 - **An agent's close rides on a registered session** (`unregistered_verifier`): every REVIEW → DONE by an agent — a `TB_ROLE=verifier`
   claim, or just a name on `tb config verifiers` — is refused unless the resolved session has an entry in
   `~/.local/state/terminal-board/verifiers/<session>` (`{"session","name","harness"}`, written by `tb-agent-start --role verifier`).
-  Setting the role or the name in any shell, script included, never makes it a verifier: the entry's `name` must match and its `harness` be
-  claude-code. `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged. Nothing reaches DONE except
+  Setting the role or the name in any shell, script included, never makes it a verifier: the entry's `name` and `harness` must match
+  this command's. It applies while `verifier-only` is on (a person's switch); `--force` still gets past any refusal, logged. Nothing reaches DONE except
   from REVIEW (`not_from_review`). Every move into DONE is traced — actor + identity (`identity` in `--json`) and, on DONE/`force`/
   verifier-config events, the kernel's process ancestry (`ancestry` in `--json`, `store::proc`), what actually ran the command.
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>` — started by `tb-agent-start`, so the session is registered.
@@ -162,7 +162,6 @@ holding a DOING card is a warning.
 | `TB_NO_SETUP` | set to anything: bare `tb` never runs the setup wizard | test hook |
 | `TB_NOW` / `TTYBOARD_NOW` | pin the clock to a unix second, 946684800–4102444800 (2000, last accepted 4102444799); unset or empty = the real clock | test hook |
 | `TB_VERIFIERS_DIR` | moves the verifier-registry directory wholesale (tests — never in production; the dir is who may close a board's cards) | test hook |
-| `TB_VERIFIER_REGISTRY` | `off`/`0`/`no` turns the session-registry check off; unset or anything else = on | knob |
 | `TB_STDIN_TIMEOUT` | seconds to wait for `-`'s first byte before refusing; unset or `0` = wait forever | knob |
 | `TB_LOCK_WAIT_MS` · `TB_TRACE_WAITS` | milliseconds a board lock waits before refusing (`board_busy`; unset = 10000) · a file tb appends one line to for every deliberate wait | test hooks |
 

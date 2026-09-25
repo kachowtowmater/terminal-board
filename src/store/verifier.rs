@@ -145,21 +145,30 @@ pub(super) fn may_verify(conn: &Connection, actor: &str, who: &Identity) -> Resu
 /// registry file names. No session on record = no entry = refused: the env is the only claim
 /// behind such a close, and the registry exists to answer exactly that.
 ///
-/// On by default; `TB_VERIFIER_REGISTRY=off` turns it off. The off switch is a person's
-/// knob only as far as every other self-asserted escape in tb is: `--force` still gets past
-/// the refusal, logged — the registry is a fact to check, not a privilege to grant.
-pub(super) fn registered(_conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
-    if !registry_on() {
+/// Applies wherever the board keeps its verifier rule (`verifier-only`, on by default): a
+/// person who turned that off (`tb config verifier-only off`, person-only) opted the board out
+/// of verifier gating, the registry included. There is no environment switch: an env knob
+/// would be one more thing the agent it guards could set.
+pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if !verifier_only_of(conn)? {
         return Ok(true);
     }
     let Some(session) = who.session.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(false);
     };
     match registry::of_session(session) {
-        Some(e) => Ok(e.harness.eq_ignore_ascii_case("claude-code")
-            && e.name.eq_ignore_ascii_case(actor.trim())),
+        Some(e) => Ok(harness_matches(&e.harness, who) && e.name.eq_ignore_ascii_case(actor.trim())),
         None => Ok(false),
     }
+}
+
+/// The entry vouches for one harness: the identity's harness must be that one (card #169,
+/// lead decision 15:26 — tb-agent-start writes the true harness; tb hardcodes none). A blank
+/// harness on either side matches nothing.
+pub(super) fn harness_matches(entry_harness: &str, who: &Identity) -> bool {
+    let entry = entry_harness.trim();
+    let own = who.harness.as_deref().unwrap_or("").trim();
+    !entry.is_empty() && entry.eq_ignore_ascii_case(own)
 }
 
 /// REVIEW → DONE refusal for a close that rode on a role but no registry entry.
@@ -186,6 +195,18 @@ pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
     })
 }
 
+/// The `agent_as_person` check (card #169): a close by a 'person' (no harness in its
+/// identity) whose kernel parent chain holds an agent binary. Returns that chain when the
+/// close must be refused, `None` otherwise. Agents are the registry's lane, and `github` (the
+/// sync, which runs with no identity) is exempt.
+pub(super) fn agent_as_person(actor: &str, who: &Identity) -> Option<Vec<String>> {
+    if is_agent(who) || actor == "github" {
+        return None;
+    }
+    let ancestry = crate::proc::ancestry();
+    is_agent_ancestry(&ancestry).then_some(ancestry)
+}
+
 /// The 'person' close whose parent chain says agent: the env was scrubbed (`env -u`, a
 /// heredoc script), the kernel's record was not.
 pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> BoardError {
@@ -199,17 +220,6 @@ pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> 
         ),
         Code::AgentAsPerson,
     )
-}
-
-/// `verifier-registry` — on unless the env says off (`TB_VERIFIER_REGISTRY` /
-/// `TTYBOARD_VERIFIER_REGISTRY`, through `crate::env`; no board config: the fleet-wide
-/// launcher owns the registry, so the knob stays with the process environment, exactly like
-/// `TB_READONLY`).
-fn registry_on() -> bool {
-    match crate::env("VERIFIER_REGISTRY").as_deref() {
-        Some(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "no" | "false" | "off" | ""),
-        None => true,
-    }
 }
 
 /// `verifier-only` — on unless the board says off.

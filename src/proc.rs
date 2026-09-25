@@ -47,6 +47,7 @@ pub fn walk(start: u32) -> Vec<String> {
         }
         ppid = next;
     }
+    out.reverse(); // collected nearest-first; recorded oldest ancestor first
     out
 }
 
@@ -102,14 +103,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_walk_ends_at_the_shell_that_started_the_test_and_never_loops() {
+    fn the_walk_has_a_parent_and_stays_within_the_cap() {
         let a = walk(std::process::id());
         assert!(!a.is_empty(), "the test runner itself has a parent");
         assert!(a.iter().all(|n| !n.trim().is_empty()), "no blank names: {a:?}");
-        let mut sorted = a.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted, a, "no pid repeats in one walk: {a:?}");
+        assert!(a.len() <= MAX_DEPTH, "the walk is capped: {a:?}");
     }
 
     #[test]

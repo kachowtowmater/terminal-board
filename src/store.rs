@@ -419,18 +419,14 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             err: verifier::unregistered_verifier_err(id, actor, &who),
             forced: format!("closed #{id} from an unregistered verifier session"),
         });
-    } else if !verifier::has_verifier_role(&who) && !who.says_something() && !closing::may_close(conn, actor)?.is_none() {
+    } else if let Some(ancestry) = verifier::agent_as_person(actor, &who) {
         // 'person' close with an agent somewhere up the parent chain (card #169): the env
-        // was scrubbed, the kernel's record was not. GitHub's sync runs with no identity
-        // and an ancestry of tb/ci shells — checked only when a real actor is acting.
-        let ancestry = crate::proc::ancestry();
-        if verifier::is_agent_ancestry(&ancestry) {
-            v.push(DoneCheck {
-                rule: "a person's close starts from a person's terminal",
-                err: verifier::agent_as_person_err(id, actor, &ancestry),
-                forced: format!("closed #{id} as a 'person' from an agent's process"),
-            });
-        }
+        // was scrubbed, the kernel's record was not.
+        v.push(DoneCheck {
+            rule: "a person's close starts from a person's terminal",
+            err: verifier::agent_as_person_err(id, actor, &ancestry),
+            forced: format!("closed #{id} as a 'person' from an agent's process"),
+        });
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {

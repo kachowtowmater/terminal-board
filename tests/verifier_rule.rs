@@ -364,10 +364,10 @@ fn codex_is_an_agent_too() {
     let mut role = codex.to_vec();
     role[0].1 = VUUID.to_string();
     role.push(("TB_ROLE", "verifier".to_string()));
-    // the role claim needs its session registered (card #169); the entry's harness is
-    // claude-code, the identity stays codex
+    // the role claim needs its session registered (card #169); the entry vouches for the
+    // codex harness this identity carries
     let reg = b.registry.get_or_init(common::VerifierRegistry::new);
-    reg.register(VUUID, "cx", "claude-code");
+    reg.register(VUUID, "cx", "codex");
     let env: Vec<(&str, String)> = reg.env().into_iter().chain(role).collect();
     b.ok_raw(&env, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
@@ -758,7 +758,7 @@ fn a_registered_session_with_another_harness_is_refused() {
     let reg = common::VerifierRegistry::new();
     let b = Board::new();
     let id = b.in_review("r4: harness swapped", "bot-1");
-    reg.register(VUUID, "rv-1", "omp");
+    reg.register(VUUID, "rv-1", "claude-code");
     // same role/session, but the identity says omp — the entry's harness is claude-code
     let with_harness: Vec<(&str, String)> =
         Board::str_env(VERIFIER).into_iter().chain(reg.env()).chain([("TB_HARNESS", "omp".to_string())]).collect();
