@@ -1371,7 +1371,7 @@ impl App {
     /// board. With `TB_DB` there is nothing to choose between, so it refuses on the footer
     /// instead of opening an overlay that cannot do anything.
     pub fn open_boards(&mut self) {
-        match crate::boards::picker_rows() {
+        match crate::boards::picker_rows(&self.actor) {
             Err(msg) => self.status = Some((msg, true)),
             Ok(rows) => {
                 let sel = rows.iter().position(|b| b.name == self.snap.board).unwrap_or(0);

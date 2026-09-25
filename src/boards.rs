@@ -716,11 +716,11 @@ pub fn creator_of(row: &BoardRow) -> Option<Creator> {
 
 /// The board picker's rows, or the reason it cannot offer a choice. With `TB_DB` set there
 /// is exactly one file and board names are refused (`open_board`), so switching is off.
-pub fn picker_rows() -> std::result::Result<Vec<BoardRow>, String> {
+pub fn picker_rows(actor: &str) -> std::result::Result<Vec<BoardRow>, String> {
     if db_pinned() {
         return Err("TB_DB pins one board file — unset TB_DB to switch boards".into());
     }
-    rows().map_err(|e| e.to_string())
+    rows(actor).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
