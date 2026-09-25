@@ -4,7 +4,7 @@
 //! even when stdin is a pipe (`curl … | bash`).
 
 use crate::store::{BoardError, Code, Result, Store};
-use crate::{boards, github, resolve_actor};
+use crate::{boards, github};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,6 +30,9 @@ pub struct Options {
     pub dry_run: bool,
     /// Started by bare `tb` on first run: the first prompt may skip the whole wizard.
     pub first_run: bool,
+    /// The actor running the wizard (resolved in main, like every write): whoever's
+    /// command first created the board records it as the board's creator (#147).
+    pub actor: Option<String>,
 }
 
 /// Line-based prompts from the terminal; EOF or no terminal = the default answer.
@@ -267,7 +270,9 @@ impl Wizard {
         if let Some(s) = store.as_ref() {
             // create-on-first-use: whoever ran the wizard is the board's creator
             if s.was_created() {
-                s.record_creator(&resolve_actor(None))?;
+                if let Some(actor) = &self.o.actor {
+                    s.record_creator(actor)?;
+                }
             }
         }
         note(&format!("board '{board}' ({})", path.display()));

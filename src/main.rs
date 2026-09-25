@@ -1356,13 +1356,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     }
     if let Some(Cmd::Setup { yes, github, no_github, agents, no_agents, agents_md, dry_run }) = cli.cmd {
         let agents = if agents { Some(true) } else if no_agents { Some(false) } else { None };
-        let o = setup::Options { yes, github, no_github, agents, agents_md, dry_run, first_run: false };
+        let o = setup::Options { yes, github, no_github, agents, agents_md, dry_run, first_run: false, actor: Some(actor.clone()) };
         return setup::run(&name, o);
     }
     let tty = std::io::stdout().is_terminal();
     // first run: bare `tb` in a terminal on a machine where nothing is set up yet
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
-        setup::run(&name, setup::Options { first_run: true, ..Default::default() })?;
+        setup::run(&name, setup::Options { first_run: true, ..Default::default(), actor: Some(actor.clone()) })?;
     }
     if let Some(cmd) = cli.cmd.as_mut() {
         text_from_files(cmd)?;
