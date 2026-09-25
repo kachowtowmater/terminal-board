@@ -96,7 +96,8 @@ fn setup_records_the_creator_of_the_board_it_creates() {
                (Some("setupper"), Some("sess-setup"), Some("board")), "the wizard's creator: {c}");
     // a later session re-running setup must not take the record over
     h.ok(&[("TB_SESSION", "sess-later")], &["setup", "--yes", "--no-github", "--no-agents", "--as", "second-comer"]);
-    let c = &board(&h.json(&["boards", "--json"]), "default")["created_by"];
+    let rows = h.json(&["boards", "--json"]);
+    let c = &board(&rows, "default")["created_by"];
     assert_eq!((c["actor"].as_str(), c["session"].as_str()), (Some("setupper"), Some("sess-setup")),
                "the first record stays: {c}");
 }
