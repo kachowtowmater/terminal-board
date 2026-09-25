@@ -266,8 +266,23 @@ impl From<rusqlite::Error> for BoardError {
             // the problem here, so it is not named (#105)
             return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string(), Code::DbError);
         }
+        if db_error_is_constraint(&e) {
+            // the write reached the database, so the file was fine — the DATA was rejected
+            // (a FOREIGN KEY with no row behind it, a UNIQUE index, …). The "is it writable"
+            // hint would send somebody with a data problem off to check permissions.
+            return BoardError(format!("database error: {e} — the board refused this write on its data, not its file"), Code::DbError);
+        }
         BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())), Code::DbError)
     }
+}
+
+/// A constraint the DATABASE refused (`FOREIGN KEY constraint failed`, a UNIQUE index, …) is
+/// a data problem, not a filesystem one — the board file was writable or the write would
+/// never have reached the constraint. The generic hint above points the person at the file
+/// anyway, which for #138's move sent them looking at permissions while their history was
+/// the problem; a constraint names itself instead.
+fn db_error_is_constraint(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
 pub type Result<T> = std::result::Result<T, BoardError>;
@@ -3235,6 +3250,20 @@ mod tests {
         assert_eq!(db_error_hint(None), "check it is writable");
         assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
         assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
+
+    /// #138: a constraint failure reads as the DATA being refused — it never says "writable",
+    /// which sent the person who hit the mv FOREIGN KEY bug off to check file permissions.
+    #[test]
+    fn a_constraint_failure_does_not_hint_at_writability() {
+        let fk = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, extended_code: 787 },
+            Some("FOREIGN KEY constraint failed".to_string()),
+        );
+        let msg = BoardError::from(fk).0;
+        assert!(msg.contains("FOREIGN KEY constraint failed"), "{msg}");
+        assert!(!msg.contains("writable"), "a constraint is a data problem, not a file problem: {msg}");
+        assert!(!msg.contains("TB_DB"), "{msg}");
     }
 
     #[test]
