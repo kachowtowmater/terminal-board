@@ -105,7 +105,7 @@ impl Board {
 
     /// Lifts a compile-time env literal (`[(key, "value"); N]`) into the `(key, String)` pairs
     /// the `*_s` runners take.
-    fn str_env(env: &[(&str, &str)]) -> Vec<(&'static str, String)> {
+    fn str_env(env: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
         env.iter().map(|(k, v)| (*k, v.to_string())).collect()
     }
 
