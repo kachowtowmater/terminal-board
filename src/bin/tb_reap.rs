@@ -15,21 +15,6 @@
 //!   - a card carrying a `mode:headless` note is never released for lacking a pane
 //!     (headless workers have none by design); its note's `pid=N`, when present, decides.
 //!
-//! Liveness (v2, after the 2026-09-24 05:00 `--apply` run released four live owners' cards —
-//! tb tb #131): an owner is ALIVE when ANY of these holds, and only an owner none of them
-//! vouches for is a dead owner:
-//!   1. the orchestrator: an `orch` / `orch-*` name, a name in `TB_REAP_PROTECT`, or the
-//!      identity the reaper itself runs as (`TB_AS`);
-//!   2. a herdr agent with that exact name;
-//!   3. a tmux session with that name;
-//!   4. a herdr pane (plain panes included) whose LABEL names the owner as a whole token;
-//!   5. a running agent process (codex / omp / claude / pi / aider / opencode / gemini) whose
-//!      argv or environment names the owner as a whole token (`TB_AS=<owner>`, `--as <owner>`);
-//!   6. one of the owner's tb actor sessions on this card is a live herdr agent's session
-//!      (an orchestrator or headless builder acting under the name);
-//!   7. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
-//!      conservatively alive.
-//!
 //! Modes: `--dry-run` (report only, never writes; also appends a dated line carrying
 //! `"liveness":2` to `<state>/dry-run.log`, the 7-day proof) and `--apply`. Neither flag
 //! defaults to `--dry-run`. `--apply` is REFUSED (exit 1, `{"refused":true,...}`) unless
@@ -40,24 +25,21 @@
 //! (`TB_REAP_KILLSWITCH`, else `~/.config/tb/reap.disabled`) short-circuits everything to
 //! `{"disabled":true}` and exit 0.
 //!
-//! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,PANES,SESSIONS,PROCS}` switches every
-//! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
-//! TMUX, SESSIONS are comma lists; PANES (labels) and PROCS (`<pid> <command line>`) are
-//! `;`-separated.
+//! The liveness probes themselves (and the `TB_REAP_FAKE_*` fixture mode) live in the
+//! library, `terminal_board::liveness` — `tb release` asks the SAME world, so the two can
+//! never drift apart.
 
 use serde_json::json;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use terminal_board::boards;
-use terminal_board::herdr::{self, Agent, AgentsState};
-use terminal_board::store::{actors, Card, Store};
+use terminal_board::liveness::{eq_ci, World};
+use terminal_board::store::Store;
 
 /// Bumped when the liveness rules change: only dry-run lines written under the current rules
 /// count toward the 7-day proof `--apply` needs.
 const LIVENESS_VERSION: i64 = 2;
 const APPLY_MIN_DAYS: i64 = 7;
-const AGENT_BINS: &[&str] = &["codex", "omp", "claude", "pi", "aider", "opencode", "gemini"];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
@@ -97,200 +79,6 @@ fn now() -> i64 {
 
 fn dead_after() -> i64 {
     std::env::var("TB_REAP_DEAD_AFTER").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(1800)
-}
-
-const FAKE_VARS: &[&str] =
-    &["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"];
-
-/// Any `TB_REAP_FAKE_*` set (even to "") puts EVERY probe in fixture mode: a test must never
-/// half-ask the real world. `std::env::var` directly (not `terminal_board::env`, which treats
-/// "" as unset) so a test can assert "nothing is alive".
-fn fixture_mode() -> bool {
-    FAKE_VARS.iter().any(|v| std::env::var(v).is_ok())
-}
-
-fn fake_split(var: &str, sep: char) -> Vec<String> {
-    std::env::var(var)
-        .map(|v| v.split(sep).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-        .unwrap_or_default()
-}
-
-fn eq_ci(a: &str, b: &str) -> bool {
-    let (a, b) = (a.trim(), b.trim());
-    !a.is_empty() && a.eq_ignore_ascii_case(b)
-}
-
-/// Whole-token match: `text` split on anything that cannot be part of an agent name
-/// (letters, digits, `-`, `_`, `.`) holds `name`. `codex-u5` is in `worker · codex-u5 · #5`
-/// but not in `codex-u55`.
-fn names_token(text: &str, name: &str) -> bool {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.')).any(|t| eq_ci(t, name))
-}
-
-/// Real or fixture herdr agents, asked once per run.
-enum Agents {
-    Fake(Vec<String>),
-    Real(Vec<Agent>),
-    Unavailable,
-}
-
-/// Everything liveness is judged against, probed once per run.
-struct World {
-    agents: Agents,
-    tmux: Vec<String>,
-    pane_labels: Vec<String>,
-    /// Session tokens of live herdr agents (same reduction tb applies when it records one).
-    sessions: Vec<String>,
-    /// `(pid, command line + environment where the OS shows it)`.
-    procs: Vec<(i64, String)>,
-    protect: Vec<String>,
-    me: Option<String>,
-}
-
-fn herdr_json(args: &[&str]) -> Option<serde_json::Value> {
-    herdr::run(args).and_then(|s| serde_json::from_str(&s).ok())
-}
-
-fn load_procs() -> Vec<(i64, String)> {
-    // macOS: -E appends each process's environment (own user only) — where TB_AS lives.
-    // Linux procps has no -E; fall back to argv alone.
-    let tries: [&[&str]; 2] = [&["-E", "-ww", "-A", "-o", "pid=,command="], &["-ww", "-A", "-o", "pid=,command="]];
-    for args in tries {
-        if let Ok(o) = Command::new("ps").args(args).output() {
-            if o.status.success() {
-                return parse_procs(&String::from_utf8_lossy(&o.stdout), '\n');
-            }
-        }
-    }
-    Vec::new()
-}
-
-fn parse_procs(text: &str, sep: char) -> Vec<(i64, String)> {
-    text.split(sep)
-        .filter_map(|l| {
-            let l = l.trim();
-            let (pid, rest) = l.split_once(char::is_whitespace)?;
-            Some((pid.parse().ok()?, rest.trim().to_string()))
-        })
-        .collect()
-}
-
-impl World {
-    fn load() -> World {
-        let protect = std::env::var("TB_REAP_PROTECT")
-            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-            .unwrap_or_default();
-        let me = std::env::var("TB_AS").ok().filter(|s| !s.trim().is_empty());
-        if fixture_mode() {
-            let procs = std::env::var("TB_REAP_FAKE_PROCS").map(|v| parse_procs(&v, ';')).unwrap_or_default();
-            return World {
-                agents: Agents::Fake(fake_split("TB_REAP_FAKE_AGENTS", ',')),
-                tmux: fake_split("TB_REAP_FAKE_TMUX", ','),
-                pane_labels: fake_split("TB_REAP_FAKE_PANES", ';'),
-                sessions: fake_split("TB_REAP_FAKE_SESSIONS", ','),
-                procs,
-                protect,
-                me,
-            };
-        }
-        let agents = match herdr::probe() {
-            AgentsState::Agents(a) => Agents::Real(a),
-            _ => Agents::Unavailable,
-        };
-        let (mut pane_labels, mut sessions) = (Vec::new(), Vec::new());
-        if herdr::herdr_enabled() {
-            if let Some(v) = herdr_json(&["pane", "list"]) {
-                for p in v.pointer("/result/panes").and_then(|a| a.as_array()).into_iter().flatten() {
-                    if let Some(l) = p.get("label").and_then(|l| l.as_str()) {
-                        pane_labels.push(l.to_string());
-                    }
-                }
-            }
-            if let Some(v) = herdr_json(&["agent", "list"]) {
-                for a in v.pointer("/result/agents").and_then(|a| a.as_array()).into_iter().flatten() {
-                    if let Some(s) = a.pointer("/agent_session/value").and_then(|s| s.as_str()) {
-                        sessions.extend(actors::session_token(s));
-                    }
-                }
-            }
-        }
-        let tmux = match Command::new("tmux").args(["list-sessions", "-F", "#{session_name}"]).output() {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect(),
-            _ => Vec::new(),
-        };
-        World { agents, tmux, pane_labels, sessions, procs: load_procs(), protect, me }
-    }
-
-    fn pid_alive(&self, pid: i64) -> bool {
-        self.procs.iter().any(|(p, _)| *p == pid)
-    }
-
-    /// The live herdr agent behind this card's owner (for the idle report), when one exists.
-    fn agent<'a>(&'a self, card: &Card) -> Option<Option<&'a Agent>> {
-        let owner = card.owner.as_deref()?;
-        match &self.agents {
-            Agents::Fake(names) => names.iter().any(|n| eq_ci(n, owner)).then_some(None),
-            Agents::Real(a) => herdr::exact_owner(a, card).map(Some),
-            Agents::Unavailable => None,
-        }
-    }
-
-    /// Why `owner` of card `id` counts as alive, or None when nothing vouches for it.
-    fn alive_by(&self, store: &Store, card: &Card) -> Option<String> {
-        let owner = card.owner.as_deref()?;
-        let o = owner.trim();
-        if eq_ci(o, "orch") || o.to_ascii_lowercase().starts_with("orch-") || self.protect.iter().any(|p| eq_ci(p, o)) {
-            return Some("orchestrator".into());
-        }
-        if self.me.as_deref().is_some_and(|m| eq_ci(m, o)) {
-            return Some("reaper-caller".into());
-        }
-        if self.agent(card).is_some() {
-            return Some("herdr-agent".into());
-        }
-        if self.tmux.iter().any(|n| eq_ci(n, o)) {
-            return Some("tmux".into());
-        }
-        if self.pane_labels.iter().any(|l| names_token(l, o)) {
-            return Some("pane-label".into());
-        }
-        if let Some((pid, _)) = self.procs.iter().find(|(_, cmd)| {
-            let toks: Vec<&str> = cmd.split(|c: char| c.is_whitespace() || c == '=').collect();
-            let agentish = toks.iter().any(|t| {
-                let base = t.rsplit('/').next().unwrap_or(t);
-                AGENT_BINS.iter().any(|b| base.eq_ignore_ascii_case(b))
-            });
-            agentish && toks.iter().any(|t| eq_ci(t, o))
-        }) {
-            return Some(format!("process {pid}"));
-        }
-        let detail = store.show(card.id).ok()?;
-        if detail
-            .actors
-            .iter()
-            .any(|a| eq_ci(&a.actor, o) && a.session.as_deref().is_some_and(|s| self.sessions.iter().any(|l| l == s)))
-        {
-            return Some("actor-session".into());
-        }
-        // mode:headless — the newest such note decides; its pid, when it names one.
-        if let Some(note) = detail.events.iter().rev().find(|e| e.kind == "note" && e.text.contains("mode:headless")) {
-            return match headless_pid(&note.text) {
-                Some(pid) if self.pid_alive(pid) => Some(format!("headless pid {pid}")),
-                Some(_) => None,
-                None => Some("headless (no pid recorded)".into()),
-            };
-        }
-        None
-    }
-}
-
-/// `pid=123`, `pid:123` or `pid 123` in a `mode:headless` note.
-fn headless_pid(text: &str) -> Option<i64> {
-    let lower = text.to_ascii_lowercase();
-    let i = lower.find("pid")?;
-    let rest = lower[i + 3..].trim_start_matches(|c: char| c == '=' || c == ':' || c.is_whitespace());
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
 }
 
 struct BoardResult {
