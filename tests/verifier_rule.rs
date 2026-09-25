@@ -372,6 +372,22 @@ fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
     assert_eq!(b.column(&id), "done");
 }
 
+/// A listed verifier (a name on `config verifiers`, no role) closes the card FROM THE SAME
+/// SESSION it sent it back and returned it in: its own mover sessions are skipped whatever
+/// made it a verifier — a role or the list — so only the builder's take session counts.
+#[test]
+fn a_listed_verifier_closes_it_from_the_same_session_it_moved_it_in() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-l"]);
+    let id = b.in_review("6a: listed mover, one session", "bot-1");
+    let rv_l = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "cccccccc-3333-4444-5555-666666666666")];
+    b.ok(rv_l, "rv-l", &["move", &id, "todo"]);
+    b.ok(rv_l, "rv-l", &["move", &id, "review"]);
+    let o = b.run(rv_l, "rv-l", &["done", &id]);
+    assert!(o.status.success(), "closing from the session it moved it in was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+}
+
 /// A verifier that did the work is still refused, however the card got back to review: it
 /// held the card, or it is the only one that ever moved it into review.
 #[test]
@@ -530,6 +546,20 @@ fn no_session_on_either_side_never_matches() {
     let three = b.in_review("x: a person closes", "bot-1");
     b.ok(PERSON, "anna", &["done", &three]);
     assert_eq!(b.column(&three), "done");
+}
+
+/// The negative of `no_session_on_either_side_never_matches`, both halves: a BUILDER with no
+/// session exported and a verifier WITH one is allowed — `same_session` never matches a
+/// session the work never recorded.
+#[test]
+fn a_builder_with_no_session_and_a_verifier_with_one_is_allowed() {
+    let b = Board::new();
+    // the work ran under a harness with no session id exported, so nothing was recorded
+    let id = b.add("6c: no-session builder");
+    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["take", &id]);
+    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["done", &id]);
+    b.ok(VERIFIER, "rv-y", &["done", &id]);
+    assert_eq!(b.column(&id), "done");
 }
 
 /// A session is compared trimmed and case-insensitively, the way `self_approve` compares
