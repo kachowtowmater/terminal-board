@@ -436,7 +436,7 @@ fn restore_refuses_when_a_stray_wal_sits_at_the_destination() {
     assert!(h.archived("scratch").is_file(), "the archive was consumed anyway");
 }
 
-/// The `B` picker offers exactly `boards::picker_rows()`; an archived board leaves the
+/// The `B` picker offers exactly `boards::picker_rows(actor)`; an archived board leaves the
 /// boards directory, so it stops being offered there too.
 #[test]
 fn the_board_picker_stops_offering_an_archived_board() {
@@ -448,7 +448,7 @@ fn the_board_picker_stops_offering_an_archived_board() {
     for k in ["TB_DB", "TTYBOARD_DB", "TB_BOARD", "TTYBOARD_BOARD"] {
         std::env::remove_var(k);
     }
-    let names = || terminal_board::boards::picker_rows().unwrap().iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+    let names = || terminal_board::boards::picker_rows("t").unwrap().iter().map(|b| b.name.clone()).collect::<Vec<_>>();
     assert_eq!(names(), ["default", "scratch"]);
     h.ok(&["boards", "archive", "scratch"]);
     assert_eq!(names(), ["default"], "the picker still offers an archived board");

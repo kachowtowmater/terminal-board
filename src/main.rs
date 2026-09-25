@@ -886,7 +886,7 @@ fn open_board(name: &str, create: bool, actor: &str) -> Result<Store, BoardError
     }
 }
 
-fn list_boards(json_out: bool, long: bool) -> Result<(), BoardError> {
+fn list_boards(json_out: bool, long: bool, actor: &str) -> Result<(), BoardError> {
     let def = boards::default_name();
     // the `*` below cannot follow a saved default board that is unusable or gone: say why
     match boards::saved_default_for_read() {
@@ -940,10 +940,10 @@ struct BoardsDelete {
 /// `archive` puts the file in `archive/` and prints the one line that restores it. `delete`
 /// removes only an ARCHIVED board, after a confirm (`tb rm ID` already deletes a CARD, so
 /// `tb boards rm` would be a dangerous near-miss — deliberately not offered).
-fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, del: BoardsDelete, json_out: bool) -> Result<(), BoardError> {
+fn boards_cmd(what: Option<&str>, name: Option<&str>, archived: bool, del: BoardsDelete, json_out: bool, actor: &str) -> Result<(), BoardError> {
     match (what, name) {
         (None, _) if archived => list_archived(json_out, del.long),
-        (None, None) => list_boards(json_out, del.long),
+        (None, None) => list_boards(json_out, del.long, actor),
         (None, Some(n)) => Err(BoardError(format!(
             "'tb boards {n}' is not a command — 'tb boards archive {n}' or 'tb boards restore {n}'? 'tb boards' lists them"
         ), Code::UnknownCommand)),
@@ -1338,11 +1338,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if let Some(Cmd::Boards { default, clear, what, name, archived, yes, backups, long }) = &cli.cmd {
         if what.is_some() || name.is_some() || *archived {
             let flags = BoardsDelete { yes: *yes, backups: *backups, long: *long };
-            return boards_cmd(what.as_deref(), name.as_deref(), *archived, flags, cli.json);
+            return boards_cmd(what.as_deref(), name.as_deref(), *archived, flags, cli.json, &actor);
         }
         return match default {
             Some(name) => default_board_cmd(name.as_deref(), *clear, cli.json),
-            None => list_boards(cli.json, *long),
+            None => list_boards(cli.json, *long, &actor),
         };
     }
     // TB_DB > a name on the command line > TB_BOARD > the saved default board > `default`
