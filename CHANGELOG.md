@@ -4,8 +4,10 @@
 
 ### Highlights
 
-- **Stale cards get their boards back:** a card left DOING by an owner that is gone is
-  released to TODO on its own, so a dead pane never holds a card hostage.
+- **A dead worker's card goes back to TODO:** a new, separate `tb-reap` command releases a
+  card left in DOING by an owner that is gone. You run it or schedule it yourself — build it
+  from source with `cargo build --bin tb-reap`, because it is not yet in the release
+  downloads.
 - **A verifier can no longer grade its own work:** a card is refused from REVIEW to DONE
   when the closing session is the one that did the work, whatever name that session used.
 - **Every board remembers who made it:** `tb boards --long` shows the creator, and moving a
@@ -20,6 +22,8 @@
   marked `mode:headless` is exempt, because headless workers have no pane by design.
 - A kill-switch file turns the whole check off, and `--dry-run` keeps a dated log of what it
   would have released, the proof a scheduled job needs before it is switched on for real.
+- `tb-reap` ships with `tb` in the source tree but not in the release downloads yet: build
+  it with `cargo build --bin tb-reap`, then run it by hand or put it on a schedule.
 
 ### Clippy refuses the libc and FFI sleeps
 
