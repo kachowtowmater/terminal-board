@@ -383,10 +383,10 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             forced: format!("closed #{id} with no verifier role"),
         });
     }
-    if let Some(session) = verifier::same_session_of(conn, id, actor, &who)? {
+    if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {
             rule: "same session as the builder",
-            err: verifier::same_session_err(id, actor, &who, &session),
+            err: verifier::same_session_err(id, &session, &builder),
             forced: format!("closed #{id} in the builder's same_session"),
         });
     }

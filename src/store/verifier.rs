@@ -138,7 +138,8 @@ pub(super) fn verifiers_of(conn: &Connection) -> Result<Vec<String>> {
     Ok(v.map(|s| super::closing::parse_names(&s)).unwrap_or_default())
 }
 
-/// The shared session that makes `same_session` refuse, or None. The panel's design (card
+/// The shared session that makes `same_session` refuse, with the builder whose session it is,
+/// or None. The panel's design (card
 /// #134, 3/3 DO-NOW): a name and a self-reported role are exactly what a same-session
 /// verifier can fake — renaming past `self_approve` and claiming `TB_ROLE=verifier` is how a
 /// session graded its own work on this fleet (ops #18/#19). The session id is what the
@@ -154,7 +155,7 @@ pub(super) fn verifiers_of(conn: &Connection) -> Result<Vec<String>> {
 /// `None` never matches — a session is only known when the harness exports it, so a person's
 /// plain terminal and every event written before the record existed are invisible to this,
 /// and the older guards answer for them. The same for a blank (trimmed to empty) session.
-pub(super) fn same_session_of(conn: &Connection, id: i64, actor: &str, who: &Identity) -> Result<Option<String>> {
+pub(super) fn same_session_of(conn: &Connection, id: i64, who: &Identity) -> Result<Option<(String, String)>> {
     // The acting session: exactly what `stamp` records, so the same identity is compared
     // that every event carries. A person's terminal (no harness, no exported session) reads
     // as none, and is refused by nothing here.
@@ -185,18 +186,17 @@ pub(super) fn same_session_of(conn: &Connection, id: i64, actor: &str, who: &Ide
             continue;
         }
         if session.eq_ignore_ascii_case(mine) {
-            return Ok(Some(session.to_string()));
+            return Ok(Some((session.to_string(), event_actor.trim().to_string())));
         }
     }
     Ok(None)
 }
 
 /// `same_session`'s refusal: names the shared session and the builder, and says what to do.
-pub(super) fn same_session_err(id: i64, actor: &str, who: &Identity, session: &str) -> BoardError {
-    let _ = (actor, who); // the message names the SHARED session and the builder, not the actor
+pub(super) fn same_session_err(id: i64, session: &str, builder: &str) -> BoardError {
     BoardError(
         format!(
-            "#{id} shares your session ({session}) with whoever built it — start the verifier in its own session (TB_ROLE=verifier), never this one (or --force, logged)"
+            "#{id} shares your session ({session}) with {builder}, who built it — start the verifier in its own session (TB_ROLE=verifier), never this one (or --force, logged)"
         ),
         Code::SameSession,
     )
@@ -325,8 +325,8 @@ mod tests {
 
     #[test]
     fn the_same_session_refusal_names_the_session_and_the_action() {
-        let e = same_session_err(4, "bob", &who(Some("claude-code"), Some("verifier")), "S1");
+        let e = same_session_err(4, "S1", "bld-1");
         assert_eq!(e.1, Code::SameSession);
-        assert!(e.0.contains("(S1)") && e.0.contains("TB_ROLE=verifier"), "{}", e.0);
+        assert!(e.0.contains("(S1)") && e.0.contains("bld-1") && e.0.contains("TB_ROLE=verifier"), "{}", e.0);
     }
 }
