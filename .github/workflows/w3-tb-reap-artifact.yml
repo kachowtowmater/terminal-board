@@ -1,0 +1,33 @@
+name: w3-tb-reap-artifact
+# Scaffold for orch-restructure W-3 (tb orch #28): fetch a macOS release build of the new
+# `tb-reap` binary without compiling on chick (hook-blocked) or on mcqueen (wrong arch — mcqueen
+# is x86_64 Linux, tb-reap must run on chick, an arm64 Mac). GitHub's macos-14 runner cross-builds
+# nothing: it just IS the target platform.
+#
+# Manual dispatch only — this is a one-off fetch mechanism, not part of the regular release
+# pipeline. Follow-up: fold `tb-reap` into release.yml's normal per-platform packaging (its
+# `Package` step currently only tars `tb`) so this scaffold can be deleted; filed as a TODO for
+# devops-engineer / release-manager.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "src/bin/tb_reap.rs"
+      - ".github/workflows/w3-tb-reap-artifact.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build tb-reap (release)
+        run: cargo build --release --locked --bin tb-reap
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tb-reap-aarch64-apple-darwin
+          path: target/release/tb-reap

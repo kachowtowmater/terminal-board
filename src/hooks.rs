@@ -980,7 +980,7 @@ fn run(mut cmd: Command, args: &[String], payload: &str, timeout: Duration, even
             pgroup::kill_all(&mut child);
             break (child.wait().ok(), true);
         }
-        #[allow(clippy::disallowed_methods, reason = "polls a running hook process for its exit; not a write-path wait")]
+        #[allow(clippy::disallowed_methods, reason = "polls a running hook process for its exit during a move; not a lock wait, and add runs no hooks")]
         std::thread::sleep(wait.min(timeout.saturating_sub(start.elapsed())).max(Duration::from_millis(1)));
         wait = (wait * 2).min(Duration::from_millis(20));
     };
