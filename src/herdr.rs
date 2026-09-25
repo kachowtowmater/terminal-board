@@ -176,6 +176,13 @@ fn run_herdr(args: &[&str]) -> Option<String> {
     run_quick(bin.as_deref().unwrap_or("herdr"), args)
 }
 
+/// `herdr <args>` (1s timeout, `HERDR_BIN_PATH` honoured): its stdout, or None on any failure.
+/// For callers outside the crate that need the raw JSON (`tb-reap` reads pane labels and
+/// agent sessions, which `Agent` does not carry).
+pub fn run(args: &[&str]) -> Option<String> {
+    run_herdr(args)
+}
+
 /// Run `bin <args>` with a 1s timeout and no stdin; its stdout, or None on any failure.
 pub(crate) fn run_quick(bin: &str, args: &[&str]) -> Option<String> {
     let mut child = Command::new(bin)
