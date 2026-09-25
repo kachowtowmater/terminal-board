@@ -409,11 +409,11 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             err: verifier::not_verifier_err(id, actor, &who),
             forced: format!("closed #{id} with no verifier role"),
         });
-    } else if verifier::has_verifier_role(&who) && !verifier::registered(conn, actor, &who)? {
-        // the role claimed, the session not launched as a verifier (card #169): a separate
-        // rule, because the fix it names is starting a real verifier, not claiming a role.
-        // A role-claiming close is the only one the registry answers — a listed verifier
-        // (no role) closed cards before the registry existed, and a person never had one.
+    } else if verifier::is_agent(&who) && !verifier::registered(conn, actor, &who)? {
+        // an agent's close rides on a role claim or a listed name — both self-asserted — so
+        // its SESSION must be one tb-agent-start launched as a verifier (card #169, incl. the
+        // C3b listed-name forge). A person's close is exempt: it never had a registry row,
+        // and a fake person is `agent_as_person`'s lane below.
         v.push(DoneCheck {
             rule: "the session is not a registered verifier",
             err: verifier::unregistered_verifier_err(id, actor, &who),
