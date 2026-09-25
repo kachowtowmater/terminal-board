@@ -342,6 +342,7 @@ fn holders(_path: &Path) -> Vec<i32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests hold a lock for a while to stage a wait")]
 mod tests {
     use super::*;
 

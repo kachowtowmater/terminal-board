@@ -262,6 +262,7 @@ fn gh(args: &[&str]) -> Result<String, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
+            #[allow(clippy::disallowed_methods, reason = "polls the gh subprocess for its exit; not a write-path wait")]
             Ok(None) if start.elapsed() < CALL_TIMEOUT => std::thread::sleep(Duration::from_millis(50)),
             _ => {
                 let _ = child.kill();

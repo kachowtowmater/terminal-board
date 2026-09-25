@@ -10,7 +10,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-/// Sleep for `d` because of `why` (a retry, a backoff), noting it in the trace.
+/// Sleep for `d` because of `why` (a retry, a backoff), noting it in the trace. The one place
+/// the store and its lock may sleep (`clippy.toml` refuses it anywhere else).
+#[allow(clippy::disallowed_methods, reason = "the one traced sleep")]
 pub fn pause(why: &str, d: Duration) {
     note(why);
     std::thread::sleep(d);
@@ -32,6 +34,7 @@ fn note_to(path: &Path, why: &str) {
 /// Make `conn` wait up to `d` for another writer, as `busy_timeout` does. Traced, the wait
 /// goes through a busy handler that notes every retry (SQLite's own timeout cannot be seen
 /// from outside), sleeping with the same back-off SQLite uses and giving up after `d`.
+#[allow(clippy::disallowed_methods, reason = "the one place SQLite's busy wait is set, traced when asked")]
 pub fn busy(conn: &rusqlite::Connection, d: Duration) -> rusqlite::Result<()> {
     if crate::env("TRACE_WAITS").is_none() {
         return conn.busy_timeout(d);

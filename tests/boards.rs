@@ -1,4 +1,5 @@
 //! Named boards, driven through the real binary with a temp HOME (no TB_DB).
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 

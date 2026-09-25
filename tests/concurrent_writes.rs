@@ -6,6 +6,7 @@
 //! holding a read lock hit SQLITE_BUSY immediately. Starting every write transaction as
 //! `BEGIN IMMEDIATE` (store.rs, store/links.rs, store/blocks.rs) takes the write lock on the
 //! first statement, so the busy timeout applies and a second writer queues instead of failing.
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::Instant;
@@ -135,11 +136,12 @@ fn concurrent_adds_on_a_new_board_all_succeed() {
 /// - `TB_LOCK_WAIT_MS=0` turns any wait for a board lock into an immediate refusal, so an add
 ///   that had to queue for a lock (even one of its own) fails instead of taking longer.
 ///
-/// `store_sleeps_only_through_the_wait_trace` below keeps a plain sleep from being added to
-/// the store or the board lock (`src/lock.rs`) where the trace cannot see it. What this covers
-/// is the write path an `add` shares with every write: the store and its lock. The command
-/// layer in `src/main.rs` (what runs before the store is opened) is not traced: a sleep there
-/// is outside what this proves.
+/// A sleep cannot hide from the trace: `clippy.toml` makes the compiler refuse
+/// `std::thread::sleep` (and SQLite's busy waits) anywhere but `src/waits.rs`, however it is
+/// imported or wrapped (`the_compiler_refuses_sleeping_outside_waits`). What this test proves
+/// at run time is the write path an `add` shares with every write: the store and its lock.
+/// Not covered: a busy loop that spins without sleeping (only a clock could see it), and the
+/// command layer in `src/main.rs`, which runs before the store is opened.
 #[test]
 fn single_process_add_stays_fast() {
     let b = Board::new();
@@ -164,27 +166,16 @@ fn single_process_add_stays_fast() {
     assert_eq!(cards.as_array().unwrap().len(), n as usize, "every add landed");
 }
 
-/// The store's waits are all visible to the trace: nothing in `src/store.rs`, `src/store/` or
-/// the board lock the store opens with (`src/lock.rs`) sleeps except through `waits::pause`,
-/// so a sleep added to the write path shows up in `single_process_add_stays_fast` instead of
-/// only making it slower. (Test modules sleep on purpose and are not scanned: each file is
-/// read up to its `#[cfg(test)]`.)
+/// Sleeping is refused by the compiler, not by this test: `clippy.toml` lists
+/// `std::thread::sleep`, `std::thread::park_timeout` and SQLite's `busy_timeout` /
+/// `busy_handler` under `disallowed-methods`, and CI runs `cargo clippy -D warnings`. Clippy
+/// resolves them by path, so an import, an alias or a helper in another module is the same
+/// call; only `src/waits.rs` (which records the wait) and a few named, reasoned sites outside
+/// any write path may use them. This test keeps that list from quietly going away.
 #[test]
-fn store_sleeps_only_through_the_wait_trace() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = vec![src.join("store.rs"), src.join("lock.rs")];
-    for e in std::fs::read_dir(src.join("store")).unwrap().flatten() {
-        files.push(e.path());
+fn the_compiler_refuses_sleeping_outside_waits() {
+    let cfg = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml")).unwrap_or_default();
+    for path in ["std::thread::sleep", "std::thread::park_timeout", "rusqlite::Connection::busy_timeout", "rusqlite::Connection::busy_handler"] {
+        assert!(cfg.contains(&format!("path = \"{path}\"")), "clippy.toml no longer refuses {path}");
     }
-    let mut hits = Vec::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).unwrap();
-        for (n, line) in text.lines().enumerate().take_while(|(_, l)| l.trim() != "#[cfg(test)]") {
-            let code = line.split("//").next().unwrap_or("");
-            if code.contains("thread::sleep(") || code.contains("busy_timeout(") {
-                hits.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
-            }
-        }
-    }
-    assert!(hits.is_empty(), "sleep through waits::pause (and set the busy wait with waits::busy) so the wait trace sees it:\n{}", hits.join("\n"));
 }

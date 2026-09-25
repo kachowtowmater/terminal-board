@@ -3,6 +3,7 @@
 //! dies never holds up the queue. (That a take which gives up leaves no thread or open file
 //! behind is in `tests/lock_timeout.rs`, alone in its binary: it counts this process's threads.)
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
