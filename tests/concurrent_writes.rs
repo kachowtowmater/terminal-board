@@ -179,7 +179,7 @@ fn single_process_add_stays_fast() {
 #[test]
 fn the_compiler_refuses_sleeping_outside_waits() {
     let cfg = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml")).unwrap_or_default();
-    for path in ["std::thread::sleep", "std::thread::park_timeout", "rusqlite::Connection::busy_timeout", "rusqlite::Connection::busy_handler"] {
+    for path in ["std::thread::sleep", "std::thread::park_timeout", "rusqlite::Connection::busy_timeout", "rusqlite::Connection::busy_handler", "libc::usleep", "libc::nanosleep", "libc::sleep"] {
         assert!(cfg.contains(&format!("path = \"{path}\"")), "clippy.toml no longer refuses {path}");
     }
 }
