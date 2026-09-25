@@ -101,6 +101,59 @@ fn long_shows_the_creators_and_an_archived_board_keeps_its_creator() {
 }
 
 #[test]
+fn setup_records_the_creator_of_the_board_it_creates() {
+    let h = Home::new();
+    // --yes accepts defaults without a terminal; the board it creates is 'default'
+    h.ok(&[("TB_SESSION", "sess-setup"), ("TB_HARNESS", "omp")],
+         &["setup", "--yes", "--no-github", "--no-agents", "--as", "setupper"]);
+    let rows = h.json(&["boards", "--json"]);
+    let c = &board(&rows, "default")["created_by"];
+    assert_eq!((c["actor"].as_str(), c["session"].as_str(), c["source"].as_str()),
+               (Some("setupper"), Some("sess-setup"), Some("board")), "the wizard's creator: {c}");
+    // a later session re-running setup must not take the record over
+    h.ok(&[("TB_SESSION", "sess-later")], &["setup", "--yes", "--no-github", "--no-agents", "--as", "second-comer"]);
+    let rows = h.json(&["boards", "--json"]);
+    let c = &board(&rows, "default")["created_by"];
+    assert_eq!((c["actor"].as_str(), c["session"].as_str()), (Some("setupper"), Some("sess-setup")),
+               "the first record stays: {c}");
+}
+
+#[test]
+fn a_tb_db_board_records_its_creator_on_first_read() {
+    let h = Home::new();
+    let db = h.0.path().join("pinned.db");
+    h.ok(&[("TB_DB", db.to_str().unwrap()), ("TB_SESSION", "sess-pin")], &["boards", "--json", "--as", "pinner"]);
+    // the pinned file is not in the boards dir, so read it through the store itself
+    let store = rusqlite::Connection::open(&db).unwrap();
+    let (actor, session, n): (String, String, i64) = store
+        .query_row("SELECT actor, session, (SELECT COUNT(*) FROM board_creator) FROM board_creator", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(n, 1, "exactly one creator row");
+    assert_eq!((actor.as_str(), session.as_str()), ("pinner", "sess-pin"));
+    // a second reader changes nothing
+    h.ok(&[("TB_DB", db.to_str().unwrap()), ("TB_SESSION", "sess-2")], &["boards", "--json", "--as", "late-reader"]);
+    let n: i64 = rusqlite::Connection::open(&db).unwrap().query_row("SELECT COUNT(*) FROM board_creator", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "the first record stays");
+}
+
+#[test]
+fn a_board_with_its_own_record_ignores_a_log_line_naming_someone_else() {
+    let h = Home::new();
+    h.ok(&[("TB_SESSION", "sess-own")], &["new", "owned", "--as", "owner"]);
+    std::fs::write(
+        h.state().join("board-creations.log"),
+        "2026-09-18T18:52:20Z\towned\tactor=impostor\tsession=sess-log\thost=loghost\tworkspace=-\tproject=owned\tinferred\n",
+    )
+    .unwrap();
+    let rows = h.json(&["boards", "--json"]);
+    let c = &board(&rows, "owned")["created_by"];
+    assert_eq!((c["actor"].as_str(), c["session"].as_str(), c["source"].as_str()),
+               (Some("owner"), Some("sess-own"), Some("board")), "the board's own record wins: {c}");
+}
+
+#[test]
 fn a_board_without_a_record_reads_its_creator_from_the_creations_log() {
     let h = Home::new();
     h.ok(&[], &["legacy", "add", "old card", "--as", "olduser"]);
