@@ -229,7 +229,9 @@ fn a_verifier_role_closes_and_the_done_event_carries_its_whole_identity() {
     assert_eq!(b.column(&id), "done");
     // `reviewer` is a verifier's role too, in any case
     let two = b.in_review("e: reviewed work", "bot-1");
-    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "Reviewer")]), "rv-2", &["move", &two, "done"]);
+    // a session of its own, registered: the registry (card #169) answers role claims, and
+    // `Reviewer` is matched case-insensitively both by the role rule and by the wrapper
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID), ("TB_ROLE", "Reviewer")]), "rv-2", &["move", &two, "done"]);
     assert_eq!(b.column(&two), "done");
     // the trace: the move into DONE names who made it, and the identity behind the name —
     // harness, model, role, session, host — in `tb show --json`
@@ -332,7 +334,10 @@ fn codex_is_an_agent_too() {
     let mut role = codex.to_vec();
     role[0].1 = VUUID.to_string();
     role.push(("TB_ROLE", "verifier".to_string()));
-    b.ok_s(&role, "cx", &["done", &id]);
+    // the role claim needs its session registered (card #169); the entry's harness is
+    // claude-code, the identity stays codex
+    b.registry.get_or_init(common::VerifierRegistry::new).register(VUUID, "cx", "claude-code");
+    b.ok_raw(&role, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
     assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(VUUID)));
@@ -605,10 +610,12 @@ fn no_session_on_either_side_never_matches() {
     b.ok(AGENT, "bot-1", &["done", &id]);
     b.ok(VERIFIER, "rv-1", &["done", &id]);
     assert_eq!(b.column(&id), "done");
-    // the verifier has no session but the builder does: closes it too
+    // the verifier has no session but the builder does: the close rode on a role with no
+    // session to register (card #169), so it is refused, and only --force closes it, logged
     let two = b.in_review("w: verifier sessionless", "bot-1");
-    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
-    assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
+    let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
     assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
     let three = b.in_review("x: a person closes", "bot-1");
@@ -636,7 +643,9 @@ fn a_builder_with_no_session_and_a_verifier_with_one_is_allowed() {
 fn a_session_matches_after_trim_and_case() {
     let b = Board::new();
     let id = b.in_review("y: padded session", "bot-1");
-    let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")]), "rv-pad", &["done", &id]);
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register("0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70", "rv-pad", "claude-code");
+    let (e, code) = b.refused_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")]), "rv-pad", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
 }
 
