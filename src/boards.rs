@@ -15,14 +15,15 @@ pub const COMMANDS: [&str; 32] = [
     "agents", "guide", "setup", "restore", "import", "export", "log", "mv", "link", "trust",
 ];
 
-/// The words that are COMMANDS when they come first — `COMMANDS`, plus `new`.
+/// The words that are COMMANDS when they come first — `COMMANDS`, plus `new` and `release`.
 ///
 /// `new` is deliberately NOT in `COMMANDS`: that list also decides which names a board may
 /// have, and a board called `new` (one an older tb happily made) must not become unreachable
 /// because a command was added later. So `tb new …` is the command, and the board keeps its
-/// file, its place in `tb boards`, and `-b new` / `TB_BOARD=new` to open it.
+/// file, its place in `tb boards`, and `-b new` / `TB_BOARD=new` to open it. `release` (#168)
+/// is added the same way, for the same reason.
 pub fn is_command_word(word: &str) -> bool {
-    COMMANDS.contains(&word) || word == "new"
+    COMMANDS.contains(&word) || word == "new" || word == "release"
 }
 
 /// `[a-z0-9_-]{1,32}` and not a subcommand.

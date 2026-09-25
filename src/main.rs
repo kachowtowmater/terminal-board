@@ -223,6 +223,13 @@ enum Cmd {
         #[arg(long = "break-glass", value_name = "WHY")]
         break_glass: Option<String>,
     },
+    /// Free a DOING card whose holder is dead (no live agent, tmux session, pane or process) —
+    /// back to todo, unowned, with the reason logged. For a lead, an orchestrator or a person.
+    Release {
+        id: i64,
+        /// Why it is released (logged on the card).
+        reason: String,
+    },
     Rm {
         id: i64,
         /// Remove a DOING card someone else holds (logged as its own event).
@@ -477,6 +484,7 @@ fn command_name(cmd: &Cmd) -> &'static str {
         Cmd::Done { .. } => "tb done",
         Cmd::Block { .. } => "tb block",
         Cmd::Drop { .. } => "tb drop",
+        Cmd::Release { .. } => "tb release",
         Cmd::Rm { .. } => "tb rm",
         Cmd::Restore { .. } => "tb restore",
         Cmd::Prio { .. } => "tb prio",
@@ -672,6 +680,7 @@ impl<'a> EventLine<'a> {
         let (from, to) = match e.kind.as_str() {
             "created" => (None, Some("todo")),
             "taken" => (Some("todo"), Some("doing")),
+            "released" => (Some("doing"), Some("todo")),
             "moved" | "dropped" => e
                 .text
                 .split_once(" -> ")
@@ -1822,6 +1831,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         Cmd::Drop { id, force, break_glass } => {
             store.drop_card_bg(id, &actor, force, break_glass.as_deref())?;
             done_card(&store, j, id, format!("#{id} is back in todo, unowned"))?;
+        }
+        Cmd::Release { id, reason } => {
+            let holder = store.card(id).ok().and_then(|c| c.owner).unwrap_or_default();
+            store.release(id, &reason, &actor)?;
+            done_card(&store, j, id, format!("#{id} released from {holder} — back in todo, unowned"))?;
         }
         Cmd::Rm { id, force } => {
             let before = contract::card_by_id(&store, id)?;
