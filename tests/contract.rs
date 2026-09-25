@@ -124,6 +124,7 @@ fn golden_board_shape() {
     // the ORIGINAL assertion, on the event minus the new ancestry field
     let without = keys(&card["events"][0]).iter().filter(|k| *k != "ancestry").cloned().collect::<Vec<_>>();
     assert_eq!(without, sorted(&["ts", "actor", "kind", "text", "actor_id"]));
+    assert_eq!(without, sorted(&["ts", "actor", "kind", "text", "actor_id"]), "the original event keys survive the ancestry field (card #169)");
     assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id", "ancestry"]));
     assert!(["ts", "actor", "kind", "text", "actor_id"].iter().all(|k| keys(&card["events"][0]).contains(&k.to_string())), "the original event keys survive");
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
