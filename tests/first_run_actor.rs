@@ -15,14 +15,20 @@ use std::process::{Command, Output};
 /// reads as typed keys (the same harness `access.rs` uses for the full-screen board).
 fn first_run_drive(home: &std::path::Path, actor: &str) -> Output {
     let tb = env!("CARGO_BIN_EXE_tb");
-    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-    // Linux `script`: -e -c. The watchdog is perl's `alarm`, not `timeout`: macOS has no
+    // The watchdog is perl's `alarm`, not `timeout`: macOS has no
     // `timeout`, and a missing watchdog would leave the board (or the wizard) waiting for
     // keys for ever. The pauses let the wizard print and the board start before the keys
     // arrive — everything reads them as they come, never all at once.
+    // Linux `script` takes the command with `-e -c`; the BSD/macOS one takes it as a bare
+    // operand (the same branch `access.rs::board_keys` uses — same tool, two dialects).
+    let pty = if cfg!(target_os = "linux") {
+        format!("script -q -e -c {0} /dev/null", q(tb))
+    } else {
+        format!("script -q /dev/null {0}", q(tb))
+    };
     let feed = format!(
         "(sleep 1; printf s; sleep 0.5; printf '\\r'; sleep 2; printf q; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 30 {} 2>&1",
-        q(&format!("script -q -e -c {0} /dev/null", q(tb)))
+        q(&pty)
     );
     let mut c = Command::new("sh");
     c.arg("-c").arg(&feed);
