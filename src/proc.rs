@@ -63,34 +63,34 @@ fn step(pid: u32) -> Option<(u32, String)> {
     Some((ppid, if comm.is_empty() { "?".to_string() } else { comm }))
 }
 
-/// One ancestor hop on macOS: `proc_pidinfo` (`PROC_PIDTBSDINFO`) for the ppid and
-/// `sysctl` `KERN_PROC_PID` for `comm` — what `ps -o ppid,comm` reads. The process may be
-/// gone by the time we read it: `None`, and the chain ends where it ended.
-#[cfg(all(unix, not(target_os = "linux")))]
+/// One ancestor hop on macOS: `proc_pidinfo` (`PROC_PIDTBSDINFO`) gives both the ppid and
+/// the binary's short name (`pbi_comm`, what `ps -o comm` shows without the path; `pbi_name`
+/// when `comm` is blank). The process may be gone by the time we read it: `None`, and the
+/// chain ends where it ended.
+#[cfg(target_os = "macos")]
 fn step(pid: u32) -> Option<(u32, String)> {
-    use libc::*;
-    unsafe {
-        let mut info: proc_bsdinfo = std::mem::zeroed();
-        if proc_pidinfo(
-            pid as c_int,
-            PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut _ as *mut c_void,
-            std::mem::size_of::<proc_bsdinfo>() as c_int,
-        ) != std::mem::size_of::<proc_bsdinfo>() as c_int
-        {
-            return None;
-        }
-        let ppid = info.p_ppid as u32;
-        let mut kinfo: kinfo_proc = std::mem::zeroed();
-        let mut len = std::mem::size_of::<kinfo_proc>();
-        let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid as c_int];
-        if sysctl(&mut mib, 4, &mut kinfo as *mut _ as *mut c_void, &mut len, std::ptr::null_mut(), 0) != 0 {
-            return None;
-        }
-        let comm = std::ffi::CStr::from_bytes_until_nul(&kinfo.kp_proc.p_comm).to_string_lossy().trim().to_string();
-        Some((ppid, if comm.is_empty() { "?".to_string() } else { comm }))
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a writable, correctly sized `proc_bsdinfo`; the kernel fills at most
+    // `size` bytes and returns how many it wrote.
+    let got = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size)
+    };
+    if got != size {
+        return None;
     }
+    let name = |raw: &[libc::c_char]| -> String {
+        let bytes: Vec<u8> = raw.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    };
+    let comm = Some(name(&info.pbi_comm)).filter(|n| !n.is_empty()).unwrap_or_else(|| name(&info.pbi_name));
+    Some((info.pbi_ppid, if comm.is_empty() { "?".to_string() } else { comm }))
+}
+
+/// Other unix systems (the BSDs, …): no walk yet — an empty ancestry, recorded as such.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn step(_pid: u32) -> Option<(u32, String)> {
+    None
 }
 
 #[cfg(not(unix))]

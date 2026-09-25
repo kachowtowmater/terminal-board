@@ -981,7 +981,7 @@ role, session, machine). `tb show` shows it, `tb log` shows it on the line that 
 card into DONE, and every `tb log --json` row has it as `identity`. Moves into DONE, `force`
 events and changes to the verifier settings also record the **kernel's process ancestry**
 (`ancestry` in `--json`): the parent chain this command actually ran under, read from the
-OS (`/proc` on Linux, `proc_pidinfo`/`sysctl` on macOS) — not from the environment, which a
+OS (`/proc` on Linux, `proc_pidinfo` on macOS) — not from the environment, which a
 script can rewrite. `--force` gets past both rules and is logged.
 `tb config verifier-only off` turns the verifier rule off for a board; the change is logged,
 and review-first still applies. A role is self-asserted, like a name, so this catches an
