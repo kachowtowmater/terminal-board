@@ -70,6 +70,7 @@ impl Home {
     }
     /// The sessions every `actors` row on `board` holds, in id order.
     fn sessions(&self, board: &str) -> Vec<String> {
+        assert!(self.board_file(board).exists(), "no board file for '{board}'");
         let conn = self.conn(board);
         let mut st = conn.prepare("SELECT session FROM actors ORDER BY id").unwrap();
         let v = st.query_map([], |r| r.get::<_, Option<String>>(0)).unwrap().map(|r| r.unwrap().unwrap()).collect();
@@ -83,8 +84,12 @@ impl Home {
     }
 }
 
-/// The fixture both tests use: card 1 on `src` with events written by TWO distinct
-/// identities (alice and bob), card 2 on `src` with none, a card already on `dst`.
+/// The board plain `tb` opens — the SOURCE of every move here.
+const SRC: &str = "default";
+
+/// The fixture every test uses: card 1 on the default board with events written by TWO
+/// distinct identities (alice and bob), card 2 there with none, and a card already on `dst`
+/// (added by alice, so `dst` already holds alice's identity row, id 1).
 fn boards() -> Home {
     let h = Home::new();
     h.ok(ALICE, &["add", "bug: the moved card", "--as", "alice"]);
@@ -100,16 +105,17 @@ fn boards() -> Home {
 #[test]
 fn a_card_with_identity_events_moves_and_keeps_them() {
     let h = boards();
-    // the precondition, on the source: two sessions behind card 1's events
-    assert_eq!(h.sessions("src"), [SESSION_A, SESSION_B]);
+    // the precondition: two sessions behind card 1's events on the source; only alice's on dst
+    assert_eq!(h.sessions(SRC), [SESSION_A, SESSION_B]);
+    assert_eq!(h.sessions("dst"), [SESSION_A]);
 
     let said = h.ok(ALICE, &["mv", "1", "--to", "dst", "--as", "alice"]);
     assert!(said.contains("moved to 'dst' as #2"), "{said}");
     assert!(said.contains("2 events"), "{said}");
 
     // gone from the source; its board log names where it went
-    assert_eq!(h.events("src").iter().filter(|e| e.0 == 1).count(), 0, "card 1's events left with it");
-    let log = h.ok(&[], &["src", "log", "--as", "carol"]);
+    assert_eq!(h.events(SRC).iter().filter(|e| e.0 == 1).count(), 0, "card 1's events left with it");
+    let log = h.ok(&[], &[SRC, "log", "--as", "carol"]);
     assert!(log.contains("moved-out"), "{log}");
 
     // there, with its whole history and the identity behind every event
@@ -119,14 +125,18 @@ fn a_card_with_identity_events_moves_and_keeps_them() {
     assert!(show.contains(&format!("session {SESSION_A}")), "{show}");
     assert!(show.contains(&format!("session {SESSION_B}")), "{show}");
 
-    // the ids are the DESTINATION's: a fresh row each, in the order the identities arrived
+    // the ids are the DESTINATION's: alice's row is the one dst already had (found by
+    // identity, not copied by id), bob's is new there
     let dst = h.sessions("dst");
     assert_eq!(dst, [SESSION_A, SESSION_B], "{dst:?}");
     let moved = h.events("dst").iter().filter(|e| e.0 == 2 && e.2 == "note").map(|e| e.3).collect::<Vec<_>>();
     assert_eq!(moved, [Some(1), Some(2)], "each note points at its own identity row: {moved:?}");
-
-    // the source keeps nothing behind (its rows were the card's own)
-    assert_eq!(h.sessions("src"), Vec::<String>::new(), "the card's identities were never the board's");
+    // and every actor_id on dst resolves to a row dst really has
+    let dangling: i64 = h
+        .conn("dst")
+        .query_row("SELECT COUNT(*) FROM events WHERE actor_id IS NOT NULL AND actor_id NOT IN (SELECT id FROM actors)", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(dangling, 0, "no event points off the board");
 }
 
 /// Two identities that share a row arrive one after the other: the second move finds the row
@@ -161,7 +171,7 @@ fn a_card_without_identities_moves_as_it_always_did() {
     let said = h.ok(&[], &["dst", "show", "2", "--as", "carol"]);
     assert!(said.contains("no identity"), "{said}");
     assert!(!said.contains("actors:"), "no identity, no section: {said}");
-    assert_eq!(h.sessions("dst"), Vec::<String>::new(), "nothing invented");
+    assert_eq!(h.sessions("dst"), [SESSION_A], "nothing invented: dst keeps only the row it had");
     let ids: Vec<Option<i64>> = h.events("dst").iter().filter(|e| e.0 == 2).map(|e| e.3).collect();
     assert!(ids.iter().all(Option::is_none), "its events keep NULL actor_id: {ids:?}");
 }

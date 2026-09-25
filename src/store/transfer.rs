@@ -46,7 +46,7 @@
 use super::archive::board_log;
 use super::links::LinkItem;
 use super::{get_card, now, Card, Code, Result, Store};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, TransactionBehavior};
 use std::collections::HashMap;
 
 /// What a move did: where the card came from, and the number it has now.
@@ -124,7 +124,10 @@ fn identities_of(tx: &rusqlite::Transaction, events: &[Past]) -> Result<Vec<Iden
     let mut ids: Vec<i64> = events.iter().filter_map(|e| e.actor_id).collect();
     ids.sort_unstable();
     ids.dedup();
-    let mut st = tx.prepare_cached(&format!(
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut st = tx.prepare(&format!(
         "SELECT id, actor, harness, model, role, session, host, first_seen, last_seen FROM actors WHERE id IN ({})",
         vec!["?"; ids.len()].join(",")
     ))?;
@@ -145,42 +148,19 @@ fn identities_of(tx: &rusqlite::Transaction, events: &[Past]) -> Result<Vec<Iden
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    debug_assert_eq!(rows.len(), ids.len(), "every actor_id referenced an actors row");
     Ok(rows)
 }
 
-/// Insert-or-find each packed identity in the destination, matched on the identity columns
-/// exactly as the unique index `actors_identity` is — NOT on the id, which is per board — and
-/// map the source id to the id the row has here. The row keeps its original first_seen and
-/// last_seen: the destination is receiving a history that really happened, not recording a
-/// new visit.
+/// Insert-or-find each packed identity in the destination and map the source id to the id the
+/// row has HERE — matched on the identity (`actors::upsert`, written exactly as the unique index
+/// `actors_identity` is), never on the id, which is per board. The row keeps the span the
+/// history really had: `last_seen` from the upsert, `first_seen` pulled back if the source saw
+/// the identity earlier than the destination did.
 fn receive_identities(conn: &rusqlite::Connection, rows: &[IdentityRow]) -> Result<HashMap<i64, i64>> {
     let mut map = HashMap::new();
     for row in rows {
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM actors WHERE actor=? AND IFNULL(harness, '')=IFNULL(?, '') AND IFNULL(model, '')=IFNULL(?, '')
-                   AND IFNULL(role, '')=IFNULL(?, '') AND IFNULL(session, '')=IFNULL(?, '') AND IFNULL(host, '')=IFNULL(?, '')",
-                params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let id = match found {
-            Some(id) => id,
-            None => {
-                conn.execute(
-                    "INSERT OR IGNORE INTO actors(actor, harness, model, role, session, host, first_seen, last_seen)
-                     VALUES (?,?,?,?,?,?,?,?)",
-                    params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host, row.first_seen, row.last_seen],
-                )?;
-                conn.query_row(
-                    "SELECT id FROM actors WHERE actor=? AND IFNULL(harness, '')=IFNULL(?, '') AND IFNULL(model, '')=IFNULL(?, '')
-                       AND IFNULL(role, '')=IFNULL(?, '') AND IFNULL(session, '')=IFNULL(?, '') AND IFNULL(host, '')=IFNULL(?, '')",
-                    params![row.actor, row.who.harness, row.who.model, row.who.role, row.who.session, row.who.host],
-                    |r| r.get(0),
-                )?
-            }
-        };
+        let id = super::actors::upsert(conn, &row.actor, &row.who, row.last_seen)?;
+        conn.execute("UPDATE actors SET first_seen=? WHERE id=? AND first_seen>?", params![row.first_seen, id, row.first_seen])?;
         map.insert(row.id, id);
     }
     Ok(map)
@@ -251,7 +231,7 @@ impl Store {
         for e in events {
             tx.execute(
                 "INSERT INTO events(card_id, ts, actor, kind, text, actor_id, assignee) VALUES (?,?,?,?,?,?,?)",
-                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id.map(|id| ids[&id]), e.assignee],
+                params![new_id, e.ts, e.actor, e.kind, e.text, e.actor_id.and_then(|id| ids.get(&id).copied()), e.assignee],
             )?;
         }
         // then the move itself, so the card says where it came from
