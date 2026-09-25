@@ -34,9 +34,11 @@ use std::sync::OnceLock;
 /// The longest value any identity field may have, in characters.
 pub const FIELD_CAP: usize = 64;
 
-/// The table, its key, and the nullable `actor_id` on both event tables. Idempotent, additive
-/// (`CREATE … IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN`), safe inside a transaction: existing
-/// rows keep `actor_id` NULL and nothing is back-filled.
+/// The table, its key, and the nullable `actor_id` — plus the `ancestry` text column on
+/// both event tables, where a write of consequence records the kernel's parent chain
+/// (`store::proc`). Idempotent, additive (`CREATE … IF NOT EXISTS`, `ALTER TABLE … ADD
+/// COLUMN`), safe inside a transaction: existing rows keep `actor_id` NULL and no ancestry,
+/// and nothing is back-filled.
 pub(super) fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS actors (
@@ -62,6 +64,19 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
         )?;
         if has == 0 {
             match conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN actor_id INTEGER REFERENCES actors(id)")) {
+                Err(e) if !e.to_string().contains("duplicate column") => return Err(e.into()),
+                _ => {}
+            }
+        }
+    }
+    for table in ["events", "board_events"] {
+        let has: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='ancestry'"),
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            match conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN ancestry TEXT")) {
                 Err(e) if !e.to_string().contains("duplicate column") => return Err(e.into()),
                 _ => {}
             }
@@ -660,6 +675,8 @@ mod tests {
         for t in ["events", "board_events"] {
             let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{t}') WHERE name='actor_id'"), [], |r| r.get(0)).unwrap();
             assert_eq!(n, 1, "{t}");
+            let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{t}') WHERE name='ancestry'"), [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 1, "{t} ancestry column");
         }
     }
 

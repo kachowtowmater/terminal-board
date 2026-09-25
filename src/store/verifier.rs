@@ -21,6 +21,16 @@
 //!    A verifier that sends a card back and later returns it to review does not become its
 //!    author by that move (`store::author_of`).
 //!
+//! Card #169 adds two questions on top of rule 2, so an env-only claim stops being enough:
+//! - **The session must be registered** (`unregistered_verifier`): a close that rode on a
+//!   verifier role is refused unless THIS session has an entry in the registry
+//!   `tb-agent-start` writes at launch (`~/.local/state/terminal-board/verifiers/<session>`)
+//!   with the same name and harness — `TB_ROLE=verifier` typed into any shell, including a
+//!   script the agent writes itself, is no longer a verifier (the `registry` module below).
+//! - **A 'person' close is refused from an agent's process** (`agent_as_person`): an
+//!   identity with no harness in it can still be an agent that scrubbed its env — the
+//!   kernel's parent chain (`store::proc`) is what settles it.
+//!
 //! Rule 2 is on by default and can be turned off per board (`tb config verifier-only off`,
 //! logged on the board); rule 1 cannot. Who is on `config verifiers`, and whether rule 2
 //! applies at all, are a person's settings: an agent that changes either is refused
@@ -126,6 +136,77 @@ pub(super) fn may_verify(conn: &Connection, actor: &str, who: &Identity) -> Resu
     Ok(verifiers_of(conn)?.iter().any(|n| n.eq_ignore_ascii_case(actor.trim())))
 }
 
+/// The one question the interim (card #169) adds on top of `may_verify`: is the SESSION this
+/// agent runs in one tb-agent-start really launched as a verifier?
+///
+/// Applies to every agent whose close rides on a verifier role. A session is identified by
+/// what tb records as the identity's session (`actors::session_token` of `TB_SESSION` or the
+/// harness's exported id) — the same token `same_session` compares, and the same one the
+/// registry file names. No session on record = no entry = refused: the env is the only claim
+/// behind such a close, and the registry exists to answer exactly that.
+///
+/// On by default; `TB_VERIFIER_REGISTRY=off` turns it off. The off switch is a person's
+/// knob only as far as every other self-asserted escape in tb is: `--force` still gets past
+/// the refusal, logged — the registry is a fact to check, not a privilege to grant.
+pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if !registry_on() {
+        return Ok(true);
+    }
+    let Some(session) = who.session.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(false);
+    };
+    match registry::of_session(session) {
+        Some(e) => Ok(e.harness.eq_ignore_ascii_case(who.harness.as_deref().unwrap_or("").trim())
+            && e.name.eq_ignore_ascii_case(actor.trim())),
+        None => Ok(false),
+    }
+}
+
+/// REVIEW → DONE refusal for a close that rode on a role but no registry entry.
+pub(super) fn unregistered_verifier_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+    registry::unregistered_err(id, actor, who)
+}
+
+/// The agent binaries one name covers: a 'person' close whose ancestry holds any of these
+/// came OUT of an agent, whatever its environment said.
+pub(super) const AGENT_BINARIES: [&str; 4] = ["omp", "claude", "codex", "pi"];
+
+/// Is `ancestry` (oldest ancestor first) a person's? A person's chain names shells and
+/// system processes (`bash`, `zsh`, `sshd`, `tmux`, `herdr`, `login`, …). It is an agent's
+/// when one entry's name (without an extension, case-insensitive) is an agent binary.
+pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
+    ancestry.iter().any(|name| {
+        let n = name.trim().trim_end_matches(".exe").to_ascii_lowercase();
+        AGENT_BINARIES.contains(&n.as_str())
+    })
+}
+
+/// The 'person' close whose parent chain says agent: the env was scrubbed (`env -u`, a
+/// heredoc script), the kernel's record was not.
+pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> BoardError {
+    BoardError(
+        format!(
+            "#{id}: {actor} says it is a person (no harness in its identity), but this command was \
+             started by {} — an agent's process. tb records the kernel's parent chain with every close; \
+             an agent does not close as a person. Close it from your own terminal, or as a verifier \
+             in a registered session (or --force, logged)",
+            ancestry.iter().find(|n| is_agent_ancestry(std::slice::from_ref(n))).map(String::as_str).unwrap_or("an agent")
+        ),
+        Code::AgentAsPerson,
+    )
+}
+
+/// `verifier-registry` — on unless the env says off (`TB_VERIFIER_REGISTRY` /
+/// `TTYBOARD_VERIFIER_REGISTRY`, through `crate::env`; no board config: the fleet-wide
+/// launcher owns the registry, so the knob stays with the process environment, exactly like
+/// `TB_READONLY`).
+fn registry_on() -> bool {
+    match crate::env("VERIFIER_REGISTRY").as_deref() {
+        Some(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "no" | "false" | "off" | ""),
+        None => true,
+    }
+}
+
 /// `verifier-only` — on unless the board says off.
 pub(super) fn verifier_only_of(conn: &Connection) -> Result<bool> {
     let v: Option<String> = conn.query_row("SELECT value FROM config WHERE key='verifier-only'", [], |r| r.get(0)).optional()?;
@@ -227,7 +308,7 @@ impl Store {
         self.set_config("verifier-only", if on { "on" } else { "off" })?;
         if old != on {
             let said = |b: bool| if b { "on" } else { "off" };
-            Self::log_board(&self.conn, actor, "verifier-only", &format!("verifier-only {} -> {}", said(old), said(on)))?;
+            Self::log_board_with_ancestry(&self.conn, actor, "verifier-only", &format!("verifier-only {} -> {}", said(old), said(on)))?;
         }
         Ok(on)
     }
@@ -265,7 +346,7 @@ impl Store {
         }
         if old != names {
             let said = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
-            Self::log_board(&self.conn, actor, "verifiers", &format!("verifiers {} -> {}", said(&old), said(&names)))?;
+            Self::log_board_with_ancestry(&self.conn, actor, "verifiers", &format!("verifiers {} -> {}", said(&old), said(&names)))?;
         }
         Ok(names)
     }
@@ -287,6 +368,76 @@ impl Store {
             v.push(("verifiers".to_string(), names.join(",")));
         }
         Ok(v)
+    }
+}
+
+/// The verifier registry: which sessions tb-agent-start really launched as verifiers.
+///
+/// An env forge (`TB_ROLE=verifier` in a script the agent writes itself) is indistinguishable
+/// from a real verifier launch by the env alone, so REVIEW → DONE by an agent is refused
+/// (`unregistered_verifier`) unless THIS process's resolved session has an entry under
+/// `~/.local/state/terminal-board/verifiers/<session>` — written by `tb-agent-start --role
+/// verifier` at launch, one JSON object `{"session","name","harness"}` per file. All three
+/// must match this command's resolved identity: the session it runs in, the `--as` name it
+/// ran under, and the harness that session belongs to. `TB_ROLE` / `TB_AS` alone never
+/// suffice — that is the forge this stops.
+///
+/// The registry is same-uid-writable (docs/AGENTS.md, residual risk), so it stops the env
+/// forge and the accident, not a determined attacker with a shell on the same account — the
+/// kernel-ancestry stamp on every close answers for that (store::proc).
+pub(super) mod registry {
+    use super::{err, BoardError, Code, Identity, Result};
+    use crate::boards::state_dir;
+    use std::path::PathBuf;
+
+    /// One registry entry, as `tb-agent-start` writes it.
+    #[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+    pub struct Entry {
+        pub session: String,
+        pub name: String,
+        pub harness: String,
+    }
+
+    /// The directory the registry lives in: `~/.local/state/terminal-board/verifiers`,
+    /// moved wholesale by `TB_VERIFIERS_DIR` (tests — never set it in production; a person
+    /// moving it changes who may close their board).
+    pub fn dir() -> PathBuf {
+        match crate::env("VERIFIERS_DIR") {
+            Some(d) => PathBuf::from(d),
+            None => state_dir().join("verifiers"),
+        }
+    }
+
+    /// The entry `session_id` carries, when the file exists and parses. Read errors (a
+    /// directory that cannot be listed, a file that vanished mid-read) count as missing:
+    /// tb refuses the close, and says so, rather than inventing an entry.
+    pub fn of_session(session_id: &str) -> Option<Entry> {
+        let name = session_file_name(session_id)?;
+        let raw = std::fs::read_to_string(dir().join(name)).ok()?;
+        serde_json::from_str::<Entry>(&raw).ok()
+    }
+
+    /// A session id as a file name: the ids tb records are already tokens (`actors::
+    /// session_token` — no path, no separator), but a caller-crafted id must never reach
+    /// the FS as one. Anything but plain name characters is refused.
+    fn session_file_name(session_id: &str) -> Option<String> {
+        let ok = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+        (session_id.chars().all(ok) && !session_id.starts_with('.'))
+            .then(|| session_id.to_string())
+    }
+
+    /// REVIEW → DONE refusal when the session is not a registered verifier.
+    pub(super) fn unregistered_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+        let session = who.session.as_deref().unwrap_or("none");
+        BoardError(
+            format!(
+                "only a registered verifier moves #{id} from review to done — {actor} runs in session \
+                 {session}, which tb-agent-start did not start as a verifier (harness claude-code). \
+                 Start the verifier with: tb-agent-start <name> --kind claude --model <model> --role verifier \
+                 (or --force, logged)"
+            ),
+            Code::UnregisteredVerifier,
+        )
     }
 }
 
