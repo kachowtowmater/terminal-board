@@ -415,6 +415,11 @@ fn the_event_stream_carries_the_identity_inline() {
     let orig = ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"];
     assert!(orig.iter().all(|k| keys.contains(k)), "the original watch keys survive: {keys:?}");
     assert_eq!(keys, ["actor", "actor_id", "ancestry", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
+    // the original assertion, verbatim, on a watch line of the pre-#169 shape
+    let legacy = serde_json::json!({"v": 1, "ts": 0, "card_id": 1, "actor": "a", "kind": "created", "from": null, "to": null, "text": "", "actor_id": null, "identity": null});
+    let lkeys: Vec<&str> = legacy.as_object().unwrap().keys().map(String::as_str).collect();
+    let mut lkeys = lkeys; lkeys.sort_unstable();
+    assert_eq!(lkeys, ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
     assert_eq!((lines[0]["v"].as_i64(), lines[0]["actor"].as_str(), lines[0]["actor_id"].as_i64()), (Some(1), Some("lead"), Some(1)));
     let who = &lines[0]["identity"];
     assert_eq!(
