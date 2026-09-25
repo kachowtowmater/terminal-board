@@ -137,8 +137,9 @@ fn concurrent_adds_on_a_new_board_all_succeed() {
 ///   that had to queue for a lock (even one of its own) fails instead of taking longer.
 ///
 /// A sleep cannot hide from the trace: `clippy.toml` makes the compiler refuse
-/// `std::thread::sleep` (and SQLite's busy waits) anywhere but `src/waits.rs`, however it is
-/// imported or wrapped (`the_compiler_refuses_sleeping_outside_waits`). What this test proves
+/// `std::thread::sleep`, SQLite's busy waits, and the libc/FFI sleeps (`libc::usleep`,
+/// `libc::nanosleep`, `libc::sleep`) anywhere but `src/waits.rs`, however it is imported or
+/// wrapped (`the_compiler_refuses_sleeping_outside_waits`). What this test proves
 /// at run time is the write path an `add` shares with every write: the store and its lock.
 /// Not covered: a busy loop that spins without sleeping (only a clock could see it), and the
 /// command layer in `src/main.rs`, which runs before the store is opened.
@@ -167,11 +168,14 @@ fn single_process_add_stays_fast() {
 }
 
 /// Sleeping is refused by the compiler, not by this test: `clippy.toml` lists
-/// `std::thread::sleep`, `std::thread::park_timeout` and SQLite's `busy_timeout` /
-/// `busy_handler` under `disallowed-methods`, and CI runs `cargo clippy -D warnings`. Clippy
+/// `std::thread::sleep`, `std::thread::park_timeout`, SQLite's `busy_timeout` /
+/// `busy_handler` and the libc/FFI sleeps (`libc::usleep`, `libc::nanosleep`, `libc::sleep`)
+/// under `disallowed-methods`, and CI runs `cargo clippy -D warnings`. Clippy
 /// resolves them by path, so an import, an alias or a helper in another module is the same
-/// call; only `src/waits.rs` (which records the wait) and a few named, reasoned sites outside
-/// any write path may use them. This test keeps that list from quietly going away.
+/// call; only `src/waits.rs` (which records the wait) may use them. Outside the waits
+/// module the one reasoned allow site is src/hooks.rs, which polls a hook process for its
+/// exit during a move — not a lock wait, and `add` runs no hooks. This test keeps that list
+/// from quietly going away.
 #[test]
 fn the_compiler_refuses_sleeping_outside_waits() {
     let cfg = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml")).unwrap_or_default();
