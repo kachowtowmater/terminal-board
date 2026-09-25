@@ -415,6 +415,7 @@ fn the_event_stream_carries_the_identity_inline() {
     assert!(orig.iter().all(|k| keys.contains(k)), "the original watch keys survive: {keys:?}");
     // (the original line, kept verbatim alongside the extended list — the watch event grew
     // one key, and the original ten keys are asserted separately above)
+    assert_eq!(keys, ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
     assert!(["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"].iter().all(|k| keys.contains(k)));
     assert_eq!(keys, ["actor", "actor_id", "ancestry", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
     assert_eq!((lines[0]["v"].as_i64(), lines[0]["actor"].as_str(), lines[0]["actor_id"].as_i64()), (Some(1), Some("lead"), Some(1)));
