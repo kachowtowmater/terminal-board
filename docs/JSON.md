@@ -294,6 +294,7 @@ Everyday failures:
 | `github_error` | a GitHub API/network call failed |
 | `not_in_review` | an approval (`tb done --approve`) outside REVIEW |
 | `self_approve` | the actor who did the work tried to approve or review their own card (never-approve-your-own-work) |
+| `same_session` | REVIEW -> DONE by a verifier running in the same recorded session (`TB_SESSION`/the harness's session id) as an identity that took the card or moved it into review, in any round; sessions only a harness records, so a person and every old event are never refused (`--force` gets past it, logged) |
 | `done_by_restricted` | `config done-by` restricts who may close a card, and the actor is not on the list |
 | `not_from_review` | a move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`): nothing reaches DONE except from REVIEW, whoever asks (`--force` gets past it, logged) |
 | `not_verifier` | REVIEW -> DONE by an agent (a harness in its identity) whose role (`TB_ROLE`) is not `verifier`/`reviewer` and whose name is not on `config verifiers`; on unless `config verifier-only off` |
@@ -490,9 +491,13 @@ column and not a grouping is refused before the board is read.
 `id` is the card's number on the board it arrived at, and it is **not** `old_id`: ids belong to
 a board. The card, its checklist, its links and its whole history travel, with each event's
 original actor and time (and each link's original `added_by`/`added_at`), and a `moved-in`
-event records where it came from; the source board's log records where it went. The column and
-the owner do **not** travel — a moved card lands in `todo`, unowned. A `--on` that names a card
-is dropped (that number means a different card over there); the block's text is kept.
+event records where it came from; the source board's log records where it went. Each event's
+`actor_id` is re-keyed to the row the identity has on the destination (the identity is
+inserted there when the board does not have it yet — matched on `(actor, harness, model, role,
+session, host)`, not the id, which is per board), so a history that names its sessions still
+names them. The column and the owner do **not** travel — a moved card lands in `todo`,
+unowned. A `--on` that names a card is dropped (that number means a different card over
+there); the block's text is kept.
 
 Refused (exit 1, the usual `{ok,error,hint}`): a destination that does not exist (tb never
 creates one), the board the card is already on, a card somebody else holds in DOING (add

@@ -8,11 +8,15 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 const UUID: &str = "0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70";
+/// A second session: what a VERIFIER runs in. Same-session refusals (`same_session`) compare
+/// the close's session with the WORK's, so a fixture where both share `UUID` now models the
+/// self-approval #134 forbids — every verifier-side env gets `VUUID` instead.
+const VUUID: &str = "1f4e9d7b-6c2a-4e5b-8d3f-a0b1c2d3e4f5";
 /// An agent: a harness on record, no role.
 const AGENT: &[(&str, &str)] = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID)];
-/// A verifier: the same harness, with the role.
+/// A verifier: the same harness, with the role, in its own session.
 const VERIFIER: &[(&str, &str)] =
-    &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
+    &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
 /// A person in a plain terminal: nothing but the name.
 const PERSON: &[(&str, &str)] = &[];
 
@@ -168,11 +172,11 @@ fn a_verifier_role_closes_and_the_done_event_carries_its_whole_identity() {
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["id"] == aid).cloned().unwrap();
     assert_eq!(
         (who["actor"].as_str(), who["harness"].as_str(), who["model"].as_str(), who["role"].as_str(), who["session"].as_str(), who["host"].as_str()),
-        (Some("rv-1"), Some("claude-code"), Some("model-x"), Some("verifier"), Some(UUID), Some("lab"))
+        (Some("rv-1"), Some("claude-code"), Some("model-x"), Some("verifier"), Some(VUUID), Some("lab"))
     );
     // ... and in the plain `tb show` a person reads
     let text = b.ok(PERSON, "lead", &["show", &id]);
-    assert!(text.contains(&format!("rv-1 — claude-code model-x verifier session {UUID} on lab")), "{text}");
+    assert!(text.contains(&format!("rv-1 — claude-code model-x verifier session {VUUID} on lab")), "{text}");
     // ... and in `tb log --json`
     let log: serde_json::Value = serde_json::from_str(&b.ok(PERSON, "lead", &["log", "--json"])).unwrap();
     assert!(log.as_array().unwrap().iter().any(|e| e["kind"] == "moved" && e["text"] == "review -> done" && e["actor_id"] == aid), "{log}");
@@ -197,7 +201,8 @@ fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let id = b.in_review("g: listed verifier", "bot-1");
     let (_, code) = b.refused(AGENT, "rv-2", &["done", &id]);
     assert_eq!(code, "not_verifier", "not on the list, no role");
-    b.ok(AGENT, "RV-1", &["done", &id]);
+    let listed = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)];
+    b.ok(listed, "RV-1", &["done", &id]);
     assert_eq!(b.column(&id), "done", "on the list, whatever case it is typed in");
     // the change is on the board's own log
     let log = b.ok(PERSON, "lead", &["log"]);
@@ -228,7 +233,7 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
     assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "off");
     assert!(b.ok(PERSON, "lead", &["log"]).contains("verifier-only on -> off"), "the change is logged on the board");
     let id = b.in_review("j: rule off", "bot-1");
-    b.ok(AGENT, "orch", &["done", &id]);
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "orch", &["done", &id]);
     assert_eq!(b.column(&id), "done");
     // review-first is not part of the switch
     let todo = b.add("k: still review first");
@@ -254,13 +259,15 @@ fn codex_is_an_agent_too() {
     assert_eq!(code, "not_verifier", "{e}");
     assert!(e.contains("cx is codex with no role"), "{e}");
     assert_eq!(b.column(&id), "review");
-    // with the role it closes, and the trace says codex with its session
+    // with the role it closes, and the trace says codex with its session — in a session of
+    // its own, not the builder's (`same_session` would refuse that)
     let mut role = codex.to_vec();
+    role[0].1 = VUUID;
     role.push(("TB_ROLE", "verifier"));
     b.ok(&role, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
-    assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(UUID)));
+    assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(VUUID)));
 }
 
 #[test]
@@ -302,7 +309,7 @@ fn tb_log_carries_the_identity_of_whoever_moved_a_card_to_done() {
     // plain text: the line that moved the card into DONE says who, in full
     let log = b.ok(PERSON, "lead", &["log"]);
     let line = log.lines().find(|l| l.contains("review -> done")).unwrap_or_else(|| panic!("{log}"));
-    assert!(line.contains(&format!("(by rv-1 — claude-code model-x verifier session {UUID} on lab)")), "{line}");
+    assert!(line.contains(&format!("(by rv-1 — claude-code model-x verifier session {VUUID} on lab)")), "{line}");
     // the other lines stay one short line each
     assert!(!log.lines().any(|l| l.contains("doing -> review") && l.contains("(by ")), "{log}");
     // --json: every row carries its identity inline
@@ -311,7 +318,7 @@ fn tb_log_carries_the_identity_of_whoever_moved_a_card_to_done() {
     let who = &moved["identity"];
     assert_eq!(
         (who["actor"].as_str(), who["harness"].as_str(), who["model"].as_str(), who["role"].as_str(), who["session"].as_str(), who["host"].as_str()),
-        (Some("rv-1"), Some("claude-code"), Some("model-x"), Some("verifier"), Some(UUID), Some("lab")),
+        (Some("rv-1"), Some("claude-code"), Some("model-x"), Some("verifier"), Some(VUUID), Some("lab")),
         "{moved}"
     );
     assert_eq!(who["id"], moved["actor_id"]);
@@ -359,7 +366,8 @@ fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
     let id = b.in_review("m: listed verifier", "bot-1");
     b.ok(AGENT, "rv-2", &["move", &id, "todo"]);
     b.ok(AGENT, "rv-2", &["move", &id, "review"]);
-    let o = b.run(AGENT, "rv-2", &["done", &id]);
+    let listed = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)];
+    let o = b.run(listed, "rv-2", &["done", &id]);
     assert!(o.status.success(), "the listed verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -380,4 +388,169 @@ fn a_verifier_that_built_the_card_is_still_refused_after_a_send_back() {
     let (e, code) = b.refused(VERIFIER, "rv-1", &["done", &two]);
     assert_eq!(code, "self_approve", "{e}");
     assert_eq!(b.column(&two), "review");
+}
+
+/// A different name and a claimed verifier role do not change the session a harness records:
+/// the session behind the close is compared with the sessions of every identity that took the
+/// card or moved it into review, in any round — the hole ops #18/#19 fell through, where one
+/// session graded its own work as `rv-w2fixture` and passed both name guards.
+#[test]
+fn a_verifier_in_the_builders_session_is_refused_whatever_its_name_or_role() {
+    let b = Board::new();
+    let id = b.in_review("p: same session, new name", "bot-1");
+    // the verifier is in the builder's session, under another name, claiming the role
+    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
+    let (e, code) = b.refused(same, "rv-other", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    assert!(e.contains("shares your session (0b9f6a52"), "{e}");
+    assert!(e.contains("bot-1"), "{e}");
+    assert!(e.contains("its own session"), "{e}");
+    assert_eq!(b.column(&id), "review", "nothing moved");
+    // `tb move` meets the same rule
+    let (_, code) = b.refused(same, "rv-other", &["move", &id, "done"]);
+    assert_eq!(code, "same_session");
+    // the message never shows how to get past it another way
+    assert!(!e.contains("config verifiers"), "{e}");
+}
+
+/// The same-session refusal follows the guard list, so `--force` closes and logs its own
+/// force event naming the rule.
+#[test]
+fn force_gets_past_the_same_session_rule_and_is_logged() {
+    let b = Board::new();
+    let id = b.in_review("q: forced same session", "bot-1");
+    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
+    b.ok(same, "rv-other", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
+    let forced: Vec<String> =
+        b.events(&id).iter().filter(|e| e["kind"] == "force").filter_map(|e| e["text"].as_str().map(String::from)).collect();
+    assert!(forced.iter().any(|t| t.contains("same_session")), "{forced:?}");
+}
+
+/// The session belongs to the WORK, not the name: a verifier whose session only ever wrote a
+/// NOTE on the card closes it — notes are progress, not work — and so does one whose session
+/// is only in an old `assigned` event's history.
+#[test]
+fn a_session_that_only_took_notes_or_routed_the_card_still_closes_it() {
+    let b = Board::new();
+    let id = b.add("r: a note is not work");
+    b.ok(AGENT, "bot-1", &["note", &id, "looking at this"]);
+    b.ok(VERIFIER, "bot-1", &["move", &id, "review"]);
+    // the mover IS the verifier here, so let another verifier close it — its session matches
+    // the note only
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-note"]);
+    let o = b.run(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "rv-note", &["done", &id]);
+    assert!(o.status.success(), "a session that only noted was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+
+    // `assigned` is routing by the orchestrator, not a hold: its session does not count
+    let two = b.add("s: assigned is routing");
+    b.ok(PERSON, "lead", &["assign", &two, "bot-1"]);
+    b.ok(AGENT, "bot-1", &["done", &two]);
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-lead"]);
+    let o = b.run(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "rv-lead", &["done", &two]);
+    assert!(o.status.success(), "the assigning session's verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&two), "done");
+}
+
+/// A verifier-role identity's own take/move sessions are skipped, exactly as `author_of`
+/// skips its name: a verifier that failed the card (review -> todo) and moved it back into
+/// review itself closes it, whatever session it did that from — unless the WORK's session
+/// matches.
+#[test]
+fn a_verifier_movers_own_sessions_are_skipped_but_the_builders_never() {
+    let b = Board::new();
+    let id = b.in_review("t: verifier round-trips it", "bot-1");
+    b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
+    b.ok(VERIFIER, "rv-1", &["move", &id, "review"]);
+    // the builder's session, again under a fresh name — still refused
+    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
+    let (e, code) = b.refused(same, "rv-other", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    // the verifier that round-tripped it, in ITS session, closes it: its moves were skipped
+    let o = b.run(VERIFIER, "rv-1", &["done", &id]);
+    assert!(o.status.success(), "the verifier's own send-back round was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+}
+
+/// Round 2 (rv-lead-tb #134): a builder that TOOK the card with `TB_ROLE=verifier` in its
+/// session S is NOT skipped — the verifier-role skip belongs to movers, never to takers. A
+/// taker's `taken` row is the work itself, whatever it claimed to be; the same session under
+/// another verifier's name closes nothing.
+#[test]
+fn a_builder_that_took_with_a_verifier_role_is_never_skipped() {
+    let b = Board::new();
+    let id = b.add("6b: role-claimed taker still owns its session");
+    b.ok(VERIFIER, "bot-1", &["take", &id]);
+    b.ok(AGENT, "bot-1", &["done", &id]);
+    assert_eq!(b.column(&id), "review");
+    // a verifier in the TAKER's session, under a fresh name and the role: refused
+    let (e, code) = b.refused(VERIFIER, "rv-other", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// Two builders across two rounds: taking the card in session A, dropping it, a second
+/// builder in session B moves it into review — a verifier in EITHER session is refused.
+#[test]
+fn a_session_from_any_round_is_refused() {
+    let b = Board::new();
+    let id = b.add("u: two rounds");
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")], "bot-1", &["take", &id]);
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")], "bot-1", &["drop", &id]);
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")], "bot-2", &["take", &id]);
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")], "bot-2", &["done", &id]);
+    let (e, code) =
+        b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888"), ("TB_ROLE", "verifier")], "rv-b", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    let (e, code) =
+        b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444"), ("TB_ROLE", "verifier")], "rv-a", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// Sessions are what the harness RECORDS, and only a harness records one: a person in a
+/// plain terminal has no session at all, so it can never match one — and a verifier whose
+/// session matches nothing closes a card built by sessionless identities as before.
+#[test]
+fn no_session_on_either_side_never_matches() {
+    let b = Board::new();
+    // the builder ran with no session exported (nothing recorded): any verifier closes it
+    let id = b.add("v: no session");
+    b.ok(AGENT, "bot-1", &["take", &id]);
+    b.ok(AGENT, "bot-1", &["done", &id]);
+    b.ok(VERIFIER, "rv-1", &["done", &id]);
+    assert_eq!(b.column(&id), "done");
+    // the verifier has no session but the builder does: closes it too
+    let two = b.in_review("w: verifier sessionless", "bot-1");
+    let o = b.run(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")], "rv-none", &["done", &two]);
+    assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&two), "done");
+    // a person closes it regardless: no session to match, and never a refusal
+    let three = b.in_review("x: a person closes", "bot-1");
+    b.ok(PERSON, "anna", &["done", &three]);
+    assert_eq!(b.column(&three), "done");
+}
+
+/// A session is compared trimmed and case-insensitively, the way `self_approve` compares
+/// names: whitespace padding around a session id is not a different session.
+#[test]
+fn a_session_matches_after_trim_and_case() {
+    let b = Board::new();
+    let id = b.in_review("y: padded session", "bot-1");
+    let (e, code) = b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")], "rv-pad", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+}
+
+/// `verifier-only off` removes the role requirement, not the session one: the same session
+/// is still refused, and only `--force` closes it.
+#[test]
+fn same_session_applies_with_verifier_only_off() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifier-only", "off"]);
+    let id = b.in_review("z: rule off, session on", "bot-1");
+    let (e, code) = b.refused(AGENT, "rv-other", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    b.ok(AGENT, "rv-other", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
 }

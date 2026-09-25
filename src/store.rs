@@ -103,6 +103,9 @@ pub enum Code {
     /// The actor who did the work tried to approve or review their own card
     /// (never-approve-your-own-work).
     SelfApprove,
+    /// REVIEW -> DONE by a verifier running in the same recorded session as an identity that
+    /// took the card or moved it into review, in any round (store/verifier.rs).
+    SameSession,
     /// `config done-by` restricts who may close a card, and the actor is not on the list.
     DoneByRestricted,
     /// A move into DONE from a column other than REVIEW (`todo -> done`, `doing -> done`):
@@ -185,6 +188,7 @@ impl Code {
             Code::GithubError => "github_error",
             Code::NotInReview => "not_in_review",
             Code::SelfApprove => "self_approve",
+            Code::SameSession => "same_session",
             Code::DoneByRestricted => "done_by_restricted",
             Code::NotFromReview => "not_from_review",
             Code::NotVerifier => "not_verifier",
@@ -267,8 +271,23 @@ impl From<rusqlite::Error> for BoardError {
             // the problem here, so it is not named (#105)
             return BoardError("database is locked — another tb is writing this board right now: wait a moment and try again".to_string(), Code::DbError);
         }
+        if db_error_is_constraint(&e) {
+            // the write reached the database, so the file was fine — the DATA was rejected
+            // (a FOREIGN KEY with no row behind it, a UNIQUE index, …). The "is it writable"
+            // hint would send somebody with a data problem off to check permissions.
+            return BoardError(format!("database error: {e} — the board refused this write on its data, not its file"), Code::DbError);
+        }
         BoardError(format!("database error: {e} — {}", db_error_hint(crate::env("DB").as_deref())), Code::DbError)
     }
+}
+
+/// A constraint the DATABASE refused (`FOREIGN KEY constraint failed`, a UNIQUE index, …) is
+/// a data problem, not a filesystem one — the board file was writable or the write would
+/// never have reached the constraint. The generic hint above points the person at the file
+/// anyway, which for #138's move sent them looking at permissions while their history was
+/// the problem; a constraint names itself instead.
+fn db_error_is_constraint(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
 pub type Result<T> = std::result::Result<T, BoardError>;
@@ -378,6 +397,13 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             rule: "only a verifier closes",
             err: verifier::not_verifier_err(id, actor, &who),
             forced: format!("closed #{id} with no verifier role"),
+        });
+    }
+    if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
+        v.push(DoneCheck {
+            rule: "same session as the builder",
+            err: verifier::same_session_err(id, &session, &builder),
+            forced: format!("closed #{id} in the builder's same_session"),
         });
     }
     if let Some(names) = closing::may_close(conn, actor)? {
@@ -2500,7 +2526,9 @@ impl Store {
     ///    `--force`, logged — store/verifier.rs) → self-approval (entering DONE by the card's
     ///    author or last holder, or `--force`, logged) → the
     ///    verifier rule (REVIEW -> DONE needs a verifier role, a place on `config verifiers`,
-    ///    or a person; or `--force`, logged — store/verifier.rs) → `done-by` (entering DONE needs to be one of the named closers,
+    ///    or a person; or `--force`, logged — store/verifier.rs) → the same-session rule
+    ///    (REVIEW -> DONE from a session that did the work, or `--force`, logged —
+    ///    store/verifier.rs) → `done-by` (entering DONE needs to be one of the named closers,
     ///    or `--force`, logged) → `done-needs-note` (entering DONE needs a note written during
     ///    the stay being left, or `--force`, logged) → the WIP limit (entering DOING, except a
     ///    send-back). The first two are about WHO may touch the card; `done-by` and
@@ -2642,7 +2670,8 @@ impl Store {
         // fresh claim or assignment to a DIFFERENT actor since (a genuinely new holder) still
         // supersedes it, so a real reassignment is never falsely refused.
         // Every guard on the way into DONE, in one fixed order, from ONE list (`done_checks`):
-        // review-first → self-approval → the verifier rule → `done-by` → `done-needs-note` →
+        // review-first → self-approval → the verifier rule → same-session → `done-by` →
+        // `done-needs-note` →
         // `done-needs-link`. Each refuses unless `--force`, which logs one `force` event per
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
@@ -3240,6 +3269,20 @@ mod tests {
         assert_eq!(db_error_hint(None), "check it is writable");
         assert!(!db_error_hint(None).contains("TB_DB") && !db_error_hint(None).contains("the board file"));
         assert_eq!(db_error_hint(Some("/tmp/some-board.db")), "check TB_DB (/tmp/some-board.db) points at a writable file");
+    }
+
+    /// #138: a constraint failure reads as the DATA being refused — it never says "writable",
+    /// which sent the person who hit the mv FOREIGN KEY bug off to check file permissions.
+    #[test]
+    fn a_constraint_failure_does_not_hint_at_writability() {
+        let fk = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, extended_code: 787 },
+            Some("FOREIGN KEY constraint failed".to_string()),
+        );
+        let msg = BoardError::from(fk).0;
+        assert!(msg.contains("FOREIGN KEY constraint failed"), "{msg}");
+        assert!(!msg.contains("writable"), "a constraint is a data problem, not a file problem: {msg}");
+        assert!(!msg.contains("TB_DB"), "{msg}");
     }
 
     #[test]
