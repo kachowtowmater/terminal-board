@@ -336,8 +336,10 @@ fn codex_is_an_agent_too() {
     role.push(("TB_ROLE", "verifier".to_string()));
     // the role claim needs its session registered (card #169); the entry's harness is
     // claude-code, the identity stays codex
-    b.registry.get_or_init(common::VerifierRegistry::new).register(VUUID, "cx", "claude-code");
-    b.ok_raw(&role, "cx", &["done", &id]);
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register(VUUID, "cx", "claude-code");
+    let env: Vec<(&str, String)> = reg.env().into_iter().chain(role).collect();
+    b.ok_raw(&env, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
     assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(VUUID)));
@@ -645,7 +647,9 @@ fn a_session_matches_after_trim_and_case() {
     let id = b.in_review("y: padded session", "bot-1");
     let reg = b.registry.get_or_init(common::VerifierRegistry::new);
     reg.register("0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70", "rv-pad", "claude-code");
-    let (e, code) = b.refused_raw(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")]), "rv-pad", &["done", &id]);
+    let env: Vec<(&str, String)> =
+        reg.env().into_iter().chain(Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")])).collect();
+    let (e, code) = b.refused_raw(&env, "rv-pad", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
 }
 
