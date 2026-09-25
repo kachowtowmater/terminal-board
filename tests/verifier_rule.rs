@@ -556,12 +556,14 @@ fn a_builder_with_no_session_and_a_verifier_with_one_is_allowed() {
     let b = Board::new();
     // the work ran under a harness with no session id exported, so nothing was recorded
     let id = b.add("6c: no-session builder");
-    b.ok(AGENT, "bot-1", &["take", &id]);
-    b.ok(AGENT, "bot-1", &["done", &id]);
+    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["take", &id]);
+    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["done", &id]);
     b.ok(VERIFIER, "rv-y", &["done", &id]);
     assert_eq!(b.column(&id), "done");
 }
 
+/// A session is compared trimmed and case-insensitively, the way `self_approve` compares
+/// names: whitespace padding around a session id is not a different session.
 #[test]
 fn a_session_matches_after_trim_and_case() {
     let b = Board::new();
