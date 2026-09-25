@@ -164,24 +164,25 @@ pub(super) fn same_session_of(conn: &Connection, id: i64, who: &Identity) -> Res
     };
     let listed = verifiers_of(conn)?;
     let mut stmt = conn.prepare(
-        "SELECT a.session, a.role, e.actor
+        "SELECT a.session, a.role, e.actor, e.kind
          FROM events e LEFT JOIN actors a ON a.id = e.actor_id
          WHERE e.card_id=? AND (e.kind='taken' OR (e.kind='moved' AND e.text LIKE '% -> review'))
            AND a.session IS NOT NULL",
     )?;
-    let rows: Vec<(Option<String>, Option<String>, String)> =
-        stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-    for (session, role, event_actor) in rows {
+    let rows: Vec<(Option<String>, Option<String>, String, String)> =
+        stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+    for (session, role, event_actor, kind) in rows {
         let (Some(session), role) = (session.as_deref().map(str::trim).filter(|s| !s.is_empty()), role) else {
             continue; // NULL or empty never matches
         };
-        // a mover with a verifier role (or on the list, as author_of reads it) was CHECKING
-        // the work, not doing it — its sessions are skipped the way its name is skipped in
-        // author_of
-        let is_verifier = role
-            .as_deref()
-            .is_some_and(|r| ROLES.iter().any(|v| v.eq_ignore_ascii_case(r.trim())))
-            || listed.iter().any(|n| n.eq_ignore_ascii_case(event_actor.trim()));
+        // for MOVERS a verifier role means the identity was CHECKING the work, not doing
+        // it — its sessions are skipped the way its name is skipped in author_of. A TAKEN
+        // row is the build itself, so it is compared regardless of role: a builder that
+        // took the card under TB_ROLE=verifier still owns session S, and any verifier in
+        // S is grading the session that built it (rv-lead-tb, #134 round 2).
+        let is_verifier = kind == "moved" && (role.is_some_and(|r| ROLES.iter().any(|v| v.eq_ignore_ascii_case(r.trim())))
+            || listed.iter().any(|n| n.eq_ignore_ascii_case(event_actor.trim())));
         if is_verifier {
             continue;
         }

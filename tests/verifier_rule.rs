@@ -473,6 +473,23 @@ fn a_verifier_movers_own_sessions_are_skipped_but_the_builders_never() {
     assert_eq!(b.column(&id), "done");
 }
 
+/// Round 2 (rv-lead-tb #134): a builder that TOOK the card with `TB_ROLE=verifier` in its
+/// session S is NOT skipped — the verifier-role skip belongs to movers, never to takers. A
+/// taker's `taken` row is the work itself, whatever it claimed to be; the same session under
+/// another verifier's name closes nothing.
+#[test]
+fn a_builder_that_took_with_a_verifier_role_is_never_skipped() {
+    let b = Board::new();
+    let id = b.add("6b: role-claimed taker still owns its session");
+    b.ok(VERIFIER, "bot-1", &["take", &id]);
+    b.ok(AGENT, "bot-1", &["done", &id]);
+    assert_eq!(b.column(&id), "review");
+    // a verifier in the TAKER's session, under a fresh name and the role: refused
+    let (e, code) = b.refused(VERIFIER, "rv-other", &["done", &id]);
+    assert_eq!(code, "same_session", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
 /// Two builders across two rounds: taking the card in session A, dropping it, a second
 /// builder in session B moves it into review — a verifier in EITHER session is refused.
 #[test]
