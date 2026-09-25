@@ -85,6 +85,22 @@ fn a_person_records_a_name_and_a_time_only() {
 }
 
 #[test]
+fn long_shows_the_creators_and_an_archived_board_keeps_its_creator() {
+    let h = Home::new();
+    h.ok(&AGENT, &["new", "made", "--as", "maker"]);
+    h.ok(&[], &["other", "add", "x", "--as", "otheruser"]);
+    let long = h.ok(&[], &["boards", "--long"]);
+    assert!(long.contains("created by maker (claude-code m-1 coder, session sess-1 on box)"), "{long}");
+    assert!(long.contains("created by otheruser "), "{long}");
+    h.ok(&[], &["boards", "archive", "made"]);
+    let rows = h.json(&["boards", "--archived", "--json"]);
+    let c = &board(&rows, "made")["created_by"];
+    assert_eq!((c["actor"].as_str(), c["source"].as_str()), (Some("maker"), Some("board")));
+    let long = h.ok(&[], &["boards", "--archived", "--long"]);
+    assert!(long.contains("created by maker"), "{long}");
+}
+
+#[test]
 fn setup_records_the_creator_of_the_board_it_creates() {
     let h = Home::new();
     // --yes accepts defaults without a terminal; the board it creates is 'default'

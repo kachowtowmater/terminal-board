@@ -234,6 +234,19 @@ fn remember(line: &str) {
 }
 
 impl Wizard {
+    /// Open (creating on first use) the board the wizard sets up. Every path that can create
+    /// the file — the board step and the first-run skip — comes through here, so whoever ran
+    /// the wizard is recorded as the board's creator, as `open_board` does (#147).
+    fn open(&self, board: &str) -> Result<Store> {
+        let store = open(board)?;
+        if store.was_created() {
+            if let Some(actor) = &self.o.actor {
+                store.record_creator(actor)?;
+            }
+        }
+        Ok(store)
+    }
+
     fn did(&mut self, done: String, would: String) {
         self.done.push(if self.o.dry_run { would } else { done });
     }
@@ -248,7 +261,7 @@ impl Wizard {
             println!("First run: a few questions (every step can be skipped; change anything later).");
             if !self.p.ask("Set up Terminal Board now?", true) {
                 if !dry {
-                    open(board)?.set_setup_done()?;
+                    self.open(board)?.set_setup_done()?;
                 }
                 println!("Skipped. Run 'tb setup' any time.");
                 return Ok(());
@@ -265,16 +278,8 @@ impl Wizard {
                 None
             }
         } else {
-            Some(open(board)?)
+            Some(self.open(board)?)
         };
-        if let Some(s) = store.as_ref() {
-            // create-on-first-use: whoever ran the wizard is the board's creator
-            if s.was_created() {
-                if let Some(actor) = &self.o.actor {
-                    s.record_creator(actor)?;
-                }
-            }
-        }
         note(&format!("board '{board}' ({})", path.display()));
         let would = if existed { format!("Would use the board '{board}' (it exists)") } else { format!("Would create the board '{board}'") };
         self.did(format!("board '{board}' ready"), would);
