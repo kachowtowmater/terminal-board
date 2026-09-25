@@ -988,13 +988,14 @@ and review-first still applies. A role is self-asserted, like a name, so this ca
 honest mistake, not an attacker — and card #169 narrows that: a verifier role is no longer
 enough on its own.
 
-**A verifier role is a claim; the session must be registered.** A close that rode on
-`TB_ROLE=verifier` is refused (`unregistered_verifier`) unless the resolved session has an
-entry in `~/.local/state/terminal-board/verifiers/<session>` — one JSON
+**An agent's close rides on a registered session.** Every REVIEW → DONE by an agent — a
+close that rode on `TB_ROLE=verifier`, or one using only a name on `tb config verifiers` —
+is refused (`unregistered_verifier`) unless the resolved session has an entry in
+`~/.local/state/terminal-board/verifiers/<session>` — one JSON
 `{"session","name","harness"}` per file, written by `tb-agent-start --role verifier` at
-launch. The entry's name and harness (claude-code) must match the command. Setting the role
-in any shell — including a script an agent writes itself — no longer makes it a verifier.
-`TB_VERIFIER_REGISTRY=off` turns the check off.
+launch. The entry's name must match the command and its harness must be claude-code. Setting
+the role in any shell — including a script an agent writes itself — no longer makes it a
+verifier. `TB_VERIFIER_REGISTRY=off` turns the check off.
 
 A close that looks like a person's but runs from an agent's process is refused
 (`agent_as_person`): the identity carries no harness, but the kernel's ancestry holds an

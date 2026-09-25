@@ -114,11 +114,12 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
   `tb config verifiers`, or a person — never the card's owner or last holder. Any other agent is refused (`not_verifier`): leave it in REVIEW.
   Only a person changes `tb config verifiers` / `verifier-only` (an agent gets `person_only`). tb sees an agent by its harness: `TB_HARNESS`,
   `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), `CODEX_*` (codex), `CLAUDECODE`, or a herdr pane — anything else counts as a person.
-- **A verifier role is a claim; the session must be registered** (`unregistered_verifier`): a close that rode on `TB_ROLE=verifier` is
-  refused unless the resolved session has an entry in `~/.local/state/terminal-board/verifiers/<session>` — one JSON
-  `{"session","name","harness"}` per file, written by `tb-agent-start --role verifier` at launch. Setting the role in any shell (or in a
-  script the agent writes itself) does not make it a verifier: the registry's `name` and `harness` must match this command too.
-  `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged.
+- **An agent's close rides on a registered session** (`unregistered_verifier`): every REVIEW → DONE by an agent — a `TB_ROLE=verifier`
+  claim, or just a name on `tb config verifiers` — is refused unless the resolved session has an entry in
+  `~/.local/state/terminal-board/verifiers/<session>` — one JSON `{"session","name","harness"}` per file, written by
+  `tb-agent-start --role verifier` at launch. Setting the role (or the name) in any shell — including a script the agent writes itself — does
+  not make it a verifier: the registry's `name` must match this command and its `harness` must be claude-code. `TB_VERIFIER_REGISTRY=off`
+  turns the check off; `--force` still gets past any refusal, logged.
 - Nothing reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the full-screen board, not `tb sync`.
 - Every move into DONE is traced: the actor and the identity behind it (harness, model, role, session, host) in `tb show`, `tb log`
   (`identity` in `--json`), and — on moves into DONE, `force` events and the verifier-config changes — the kernel's process ancestry

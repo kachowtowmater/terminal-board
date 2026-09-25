@@ -55,13 +55,15 @@ person may change that list or `verifier-only` — an agent is refused, `person_
 whoever did the work. Nothing reaches DONE except from REVIEW — not `tb move 3 done`, not `d` on a
 TODO card, not the GitHub sync. Every move into DONE records who made it and the identity behind
 the name (harness, model, role, session, machine) — `tb show 3` lists it, and `tb log` prints it on
-the line that moved the card into DONE. A close that rode on a verifier role also needs a
-**registered session**: `tb-agent-start --role verifier` writes one small file per verifier launch
-(`~/.local/state/terminal-board/verifiers/<session>`), and a close from any other session that
-claims the role is refused (`unregistered_verifier`) — a role typed into a shell (or into a script
-an agent wrote) is no longer a verifier. Moves into DONE, `force` events and changes to who
-verifies also record the kernel's process ancestry (`ancestry` in `--json`): what actually ran the
-command, so a close whose story does not hold together is visible afterwards. tb sees an agent by
+the line that moved the card into DONE. Every close by an AGENT — a `TB_ROLE=verifier` claim
+or just a name on `tb config verifiers` — also needs a **registered session**:
+`tb-agent-start --role verifier` writes one small file per verifier launch
+(`~/.local/state/terminal-board/verifiers/<session>`), and a close from any other session is
+refused (`unregistered_verifier`) — a role (or a listed name) typed into a shell (or into a
+script an agent wrote) is no longer a verifier. Moves into DONE, `force` events and changes
+to who verifies also record the kernel's process ancestry (`ancestry` in `--json`): what
+actually ran the command, so a close whose story does not hold together is visible
+afterwards. tb sees an agent by
 its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables
 (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen,
 and counts as a person — unless the ancestry says otherwise (`agent_as_person`: a close that looks
