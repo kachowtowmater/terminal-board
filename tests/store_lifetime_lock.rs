@@ -16,6 +16,7 @@
 //! `TB_RACE_RACERS=2,4,8 TB_RACE_ROUNDS=150 cargo test --release --test store_lifetime_lock`.
 //! `TB_LOCK_WAIT_MS` (the crate's own hook) can shrink the wait for the refusal/timing tests.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

@@ -4129,6 +4129,7 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
                         last = Some((r, Instant::now()));
                     }
                 }
+                #[allow(clippy::disallowed_methods, reason = "the GitHub refresh thread's timer; not a write-path wait")]
                 std::thread::sleep(Duration::from_secs(1));
             }
         });
@@ -4142,6 +4143,7 @@ pub fn run(mut store: Store, actor: &str) -> std::io::Result<()> {
             if let Ok(mut g) = shared.lock() {
                 *g = s;
             }
+            #[allow(clippy::disallowed_methods, reason = "the herdr refresh thread's timer; not a write-path wait")]
             std::thread::sleep(HERDR_EVERY);
         });
     }
