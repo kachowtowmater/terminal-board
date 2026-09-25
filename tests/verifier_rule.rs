@@ -233,7 +233,7 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
     assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "off");
     assert!(b.ok(PERSON, "lead", &["log"]).contains("verifier-only on -> off"), "the change is logged on the board");
     let id = b.in_review("j: rule off", "bot-1");
-    b.ok(AGENT, "orch", &["done", &id]);
+    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "orch", &["done", &id]);
     assert_eq!(b.column(&id), "done");
     // review-first is not part of the switch
     let todo = b.add("k: still review first");
@@ -402,7 +402,7 @@ fn a_verifier_in_the_builders_session_is_refused_whatever_its_name_or_role() {
     let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
     let (e, code) = b.refused(same, "rv-other", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
-    assert!(e.contains("session 0b9f6a52"), "{e}");
+    assert!(e.contains("shares your session (0b9f6a52"), "{e}");
     assert!(e.contains("bot-1"), "{e}");
     assert!(e.contains("its own session"), "{e}");
     assert_eq!(b.column(&id), "review", "nothing moved");
