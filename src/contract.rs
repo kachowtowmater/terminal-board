@@ -29,12 +29,16 @@ pub struct EventJ {
     /// The identity behind `actor`: an `id` in the top-level `actors[]`; null when nothing but
     /// the name is known.
     pub actor_id: Option<i64>,
+    /// The kernel's record of the parent chain the mover ran under (`store::proc`), oldest
+    /// ancestor first — on the writes of consequence only (a move into DONE, a `force`, a
+    /// verifier-config change); null on everything else.
+    pub ancestry: Option<Vec<String>>,
 }
 
 impl EventJ {
     /// The JSON form of a stored event.
     pub fn of(e: crate::store::Event) -> EventJ {
-        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id }
+        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id, ancestry: e.ancestry }
     }
 }
 

@@ -148,7 +148,7 @@ pub(super) fn may_verify(conn: &Connection, actor: &str, who: &Identity) -> Resu
 /// On by default; `TB_VERIFIER_REGISTRY=off` turns it off. The off switch is a person's
 /// knob only as far as every other self-asserted escape in tb is: `--force` still gets past
 /// the refusal, logged — the registry is a fact to check, not a privilege to grant.
-pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+pub(super) fn registered(_conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
     if !registry_on() {
         return Ok(true);
     }
@@ -386,7 +386,7 @@ impl Store {
 /// forge and the accident, not a determined attacker with a shell on the same account — the
 /// kernel-ancestry stamp on every close answers for that (store::proc).
 pub(super) mod registry {
-    use super::{err, BoardError, Code, Identity, Result};
+    use super::{BoardError, Code, Identity};
     use crate::boards::state_dir;
     use std::path::PathBuf;
 

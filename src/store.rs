@@ -417,7 +417,7 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             err: verifier::unregistered_verifier_err(id, actor, &who),
             forced: format!("closed #{id} from an unregistered verifier session"),
         });
-    } else if !who.says_something() && !may_close(conn, actor)? {
+    } else if !who.says_something() && !closing::may_close(conn, actor)?.is_none() {
         // 'person' close with an agent somewhere up the parent chain (card #169): the env
         // was scrubbed, the kernel's record was not. GitHub's sync runs with no identity
         // and an ancestry of tb/ci shells — checked only when a real actor is acting.
@@ -2168,6 +2168,7 @@ impl Store {
                         kind: r.get(4)?,
                         text: r.get(5)?,
                         actor_id: r.get(6)?,
+                        ancestry: r.get(7)?,
                     },
                 })
             })?

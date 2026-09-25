@@ -245,8 +245,9 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
                     "actor_id": e.actor_id,
                     "kind": e.kind,
                     "text": e.text,
+                    "ancestry": e.ancestry,
                 }),
-                LogEvent::Board { ts, actor, kind, text, actor_id } => serde_json::json!({
+                LogEvent::Board { ts, actor, kind, text, actor_id, ancestry } => serde_json::json!({
                     "v": contract::SCHEMA_VERSION,
                     "ts": ts,
                     "card_id": null,
@@ -254,6 +255,7 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
                     "actor_id": actor_id,
                     "kind": kind,
                     "text": text,
+                    "ancestry": ancestry,
                 }),
             };
             // additive: the whole identity inline, as `tb watch --events` carries it (a log
