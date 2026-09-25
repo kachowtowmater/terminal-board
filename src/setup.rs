@@ -4,7 +4,7 @@
 //! even when stdin is a pipe (`curl … | bash`).
 
 use crate::store::{BoardError, Code, Result, Store};
-use crate::{boards, github};
+use crate::{boards, github, resolve_actor};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -264,6 +264,12 @@ impl Wizard {
         } else {
             Some(open(board)?)
         };
+        if let Some(s) = store.as_ref() {
+            // create-on-first-use: whoever ran the wizard is the board's creator
+            if s.was_created() {
+                s.record_creator(&resolve_actor(None))?;
+            }
+        }
         note(&format!("board '{board}' ({})", path.display()));
         let would = if existed { format!("Would use the board '{board}' (it exists)") } else { format!("Would create the board '{board}'") };
         self.did(format!("board '{board}' ready"), would);

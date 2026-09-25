@@ -3,6 +3,7 @@
 
 use crate::store::creator::{self, Creator};
 use crate::store::{self, BoardError, Code, Result, Store, COLUMNS};
+use crate::resolve_actor;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
@@ -665,7 +666,12 @@ pub fn rows() -> Result<Vec<BoardRow>> {
     let def = default_name();
     if db_pinned() {
         let path = path_for(&def);
-        let snap = Store::open(&path)?.named(&def).snapshot()?;
+        let store = Store::open(&path)?.named(&def);
+        // create-on-first-use: whoever's command made the file is the board's creator
+        if store.was_created() {
+            store.record_creator(&resolve_actor(None))?;
+        }
+        let snap = store.snapshot()?;
         let mut counts = [0usize; 4];
         for (i, c) in COLUMNS.iter().enumerate() {
             counts[i] = snap.in_column(c).len();
