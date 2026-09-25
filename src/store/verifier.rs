@@ -414,7 +414,19 @@ pub(super) mod registry {
     /// tb refuses the close, and says so, rather than inventing an entry.
     pub fn of_session(session_id: &str) -> Option<Entry> {
         let name = session_file_name(session_id)?;
-        let raw = std::fs::read_to_string(dir().join(name)).ok()?;
+        let dir = dir();
+        // session ids are compared case-insensitively everywhere else (`same_session`), and
+        // macOS filesystems fold case while Linux keeps it: read any file whose NAME matches
+        // the id case-insensitively, so a registry minted on the Mac matches on Linux too.
+        let path = (|| {
+            std::fs::read_dir(&dir)
+                .ok()?
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&name))
+                .map(|e| e.path())
+        })()
+        .unwrap_or_else(|| dir.join(&name));
+        let raw = std::fs::read_to_string(path).ok()?;
         serde_json::from_str::<Entry>(&raw).ok()
     }
 
