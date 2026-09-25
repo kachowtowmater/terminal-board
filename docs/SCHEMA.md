@@ -74,6 +74,7 @@ Every card change, oldest first per card (`ORDER BY ts, id`).
 | `kind` | TEXT | see the vocabulary below |
 | `text` | TEXT | detail (empty when the kind carries none) |
 | `actor_id` | INTEGER NULL FK → actors.id | the identity behind `actor` (harness, model, role, session, machine); NULL when nothing but the name is known, and on every event written before identities were recorded — nothing is back-filled |
+| `ancestry` | TEXT NULL | the kernel's parent chain the writing command ran under (`store::proc`), a JSON list of process names oldest ancestor first. Written on moves into DONE, `force` events and the verifier-config changes only; NULL on everything else and before this column existed — nothing is back-filled |
 | `assignee` | TEXT NULL | `kind='assigned'` only: who the card was assigned to, structured (#111) — the self-approval guard reads this directly, never `text`, so a reworded message cannot change who it refuses. NULL for every other kind, and on an `assigned` row written before this column existed (the guard falls back to parsing `text` for those only). Not exposed in JSON — `text` already carries the same name for reading |
 
 Event `kind` vocabulary — **open set; new kinds may appear; ignore what you don't know**:
@@ -114,6 +115,7 @@ oldest first, `card_id` null — with `tb log` (docs/JSON.md):
 | `kind` | TEXT | `delete`, `wip`, `file-mode`, `archive`, `restore`, `rm` (the setting changed), `rules` (the rules text was set or cleared), `rules-seen` (an agent's first `tb next` since — `text` is the rules text shown), `force` (a held card was deleted or archived), … (same open-set rule as `events`) |
 | `text` | TEXT | detail |
 | `actor_id` | INTEGER NULL FK → actors.id | as `events.actor_id` |
+| `ancestry` | TEXT NULL | as `events.ancestry` — written on the verifier-config changes (`verifiers`, `verifier-only`) only |
 
 ### actors
 Who a name was: one row per **distinct identity**, shared by every event that identity wrote.
