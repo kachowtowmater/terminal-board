@@ -6,9 +6,10 @@
 //! holding a read lock hit SQLITE_BUSY immediately. Starting every write transaction as
 //! `BEGIN IMMEDIATE` (store.rs, store/links.rs, store/blocks.rs) takes the write lock on the
 //! first statement, so the busy timeout applies and a second writer queues instead of failing.
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 struct Board {
     dir: tempfile::TempDir,
@@ -127,19 +128,54 @@ fn concurrent_adds_on_a_new_board_all_succeed() {
 
 /// The ordinary case (#85): one process, nothing to contend with. `BEGIN IMMEDIATE` must not
 /// make an uncontended writer slower than a deferred transaction would — there is no lock to
-/// wait for either way, so the two behave the same when nobody else is writing.
+/// wait for either way. That is a property of what tb DOES, so it is counted, not timed (a
+/// 500ms-per-add bound failed on a busy disk with nothing wrong in tb):
+///
+/// - every deliberate wait in the store (a SQLite busy retry, a WAL-switch retry, a back-off
+///   sleep) goes through `waits::pause`, which `TB_TRACE_WAITS` records — and none may happen;
+/// - `TB_LOCK_WAIT_MS=0` turns any wait for a board lock into an immediate refusal, so an add
+///   that had to queue for a lock (even one of its own) fails instead of taking longer.
+///
+/// A sleep cannot hide from the trace: `clippy.toml` makes the compiler refuse
+/// `std::thread::sleep` (and SQLite's busy waits) anywhere but `src/waits.rs`, however it is
+/// imported or wrapped (`the_compiler_refuses_sleeping_outside_waits`). What this test proves
+/// at run time is the write path an `add` shares with every write: the store and its lock.
+/// Not covered: a busy loop that spins without sleeping (only a clock could see it), and the
+/// command layer in `src/main.rs`, which runs before the store is opened.
 #[test]
 fn single_process_add_stays_fast() {
     let b = Board::new();
+    let trace = b.dir.path().join("waits.log");
     let n = 50u32;
     let start = Instant::now();
     for i in 0..n {
-        b.ok("solo", &["add", &format!("t{i}: card")]);
+        let o = b
+            .cmd("solo", &["add", &format!("t{i}: card")])
+            .env("TB_TRACE_WAITS", &trace)
+            .env("TB_LOCK_WAIT_MS", "0")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "add {i} had to wait for a lock: {}", String::from_utf8_lossy(&o.stderr));
     }
-    let elapsed = start.elapsed();
-    let per = elapsed / n;
-    println!("single-process: {n} adds in {elapsed:?} ({per:?} each)");
-    // generous bound: this catches a real regression (e.g. an extra round trip added per
-    // write), not ordinary machine-to-machine variance in process-spawn overhead
-    assert!(per < Duration::from_millis(500), "an uncontended add averaged {per:?} — investigate before calling this 'no slower'");
+    // for the log only: the time depends on the machine and its disk, the waits do not
+    println!("single-process: {n} adds in {:?}", start.elapsed());
+    let waits = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(waits.is_empty(), "an uncontended add waited ({} times):\n{waits}", waits.lines().count());
+    let list = b.ok("solo", &["list", "--json"]);
+    let cards: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert_eq!(cards.as_array().unwrap().len(), n as usize, "every add landed");
+}
+
+/// Sleeping is refused by the compiler, not by this test: `clippy.toml` lists
+/// `std::thread::sleep`, `std::thread::park_timeout` and SQLite's `busy_timeout` /
+/// `busy_handler` under `disallowed-methods`, and CI runs `cargo clippy -D warnings`. Clippy
+/// resolves them by path, so an import, an alias or a helper in another module is the same
+/// call; only `src/waits.rs` (which records the wait) and a few named, reasoned sites outside
+/// any write path may use them. This test keeps that list from quietly going away.
+#[test]
+fn the_compiler_refuses_sleeping_outside_waits() {
+    let cfg = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml")).unwrap_or_default();
+    for path in ["std::thread::sleep", "std::thread::park_timeout", "rusqlite::Connection::busy_timeout", "rusqlite::Connection::busy_handler"] {
+        assert!(cfg.contains(&format!("path = \"{path}\"")), "clippy.toml no longer refuses {path}");
+    }
 }

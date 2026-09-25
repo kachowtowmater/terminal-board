@@ -202,6 +202,7 @@ pub(crate) fn run_quick(bin: &str, args: &[&str]) -> Option<String> {
     loop {
         match child.try_wait() {
             Ok(Some(st)) if st.success() => break,
+            #[allow(clippy::disallowed_methods, reason = "polls the herdr subprocess for its exit; not a write-path wait")]
             Ok(None) if start.elapsed() < Duration::from_secs(1) => {
                 std::thread::sleep(Duration::from_millis(20))
             }

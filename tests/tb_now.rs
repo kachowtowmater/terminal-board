@@ -4,6 +4,7 @@
 //!
 //! The suite pins the clock by setting `TB_NOW` in the environment of the spawned binary
 //! (`tests/common::pin_clock`), so the check lives in the release binary: no cfg gate.
+#![allow(clippy::disallowed_methods, reason = "a test sleeps to stage a race or wait for another process; tb itself sleeps only through src/waits.rs")]
 use std::process::{Command, Output};
 
 const MIN: &str = "946684800"; // 2000-01-01T00:00:00Z — keep in step with store::TB_NOW_MIN

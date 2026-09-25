@@ -1,0 +1,13 @@
+# Waiting is a decision, made in one place. The store's write path must never wait when it
+# has nothing to wait for (tests/concurrent_writes.rs, single_process_add_stays_fast), and a
+# wait it does make must be visible to the TB_TRACE_WAITS trace. So sleeping and SQLite's
+# busy waits are refused by the compiler everywhere except src/waits.rs, which records them.
+# Clippy resolves these by PATH: an import, an alias or a helper in another module is the same
+# call. A sleep that is not part of any write path (a subprocess poll, a UI refresh timer, a
+# test staging a race) carries its own `#[allow(clippy::disallowed_methods, reason = …)]`.
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "sleep through waits::pause, so the wait trace sees it (src/waits.rs)" },
+  { path = "std::thread::park_timeout", reason = "a timed park is a sleep: wait through waits::pause (src/waits.rs)" },
+  { path = "rusqlite::Connection::busy_timeout", reason = "set SQLite's busy wait with waits::busy, so a traced run sees every retry (src/waits.rs)" },
+  { path = "rusqlite::Connection::busy_handler", reason = "set SQLite's busy wait with waits::busy, so a traced run sees every retry (src/waits.rs)" },
+]

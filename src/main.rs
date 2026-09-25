@@ -721,6 +721,7 @@ fn watch(
                     return Ok(()); // reader went away
                 }
             }
+            #[allow(clippy::disallowed_methods, reason = "tb watch polls the board for changes; not a write-path wait")]
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
     }
@@ -746,6 +747,7 @@ fn watch(
                 return Ok(()); // reader went away
             }
         }
+        #[allow(clippy::disallowed_methods, reason = "tb watch polls the board for changes; not a write-path wait")]
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 }
