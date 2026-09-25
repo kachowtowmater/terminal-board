@@ -1051,7 +1051,7 @@ impl App {
         match store.done_would_skip(id, &self.actor) {
             Ok(skips) if skips.iter().any(|(_, c)| refused(c)) => {
                 self.status = Some((
-                    format!("#{id} is your own work, and only a registered verifier closes a card — leave it in review for an independent verifier"),
+                    format!("#{id} is your own work, and only a verifier closes a card — leave it in review for an independent verifier"),
                     true,
                 ));
                 true

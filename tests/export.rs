@@ -294,15 +294,8 @@ fn log_reads_the_history_from_a_date() {
     let first = &all[0];
     let mut keys: Vec<&String> = first.as_object().unwrap().keys().collect();
     keys.sort();
-    // `identity` (the whole identity behind `actor_id`, inline) was added by the verifier rule's trace;
-    // `ancestry` (the kernel's parent chain, card #169) joins the line on events that record it
-    let without = first.as_object().unwrap().keys().filter(|k| *k != "ancestry").cloned().collect::<Vec<_>>();
-    assert_eq!(without, ["actor", "actor_id", "card_id", "identity", "kind", "text", "ts", "v"]);
-    let mut keys: Vec<&String> = first.as_object().unwrap().keys().collect();
-    keys.sort();
-    let expected: Vec<String> = ["actor", "actor_id", "ancestry", "card_id", "identity", "kind", "text", "ts", "v"].iter().map(|s| s.to_string()).collect();
-    let mut expected = expected; expected.sort();
-    assert_eq!(keys, expected.iter().collect::<Vec<_>>());
+    // `identity` (the whole identity behind `actor_id`, inline) was added by the verifier rule's trace
+    assert_eq!(keys, ["actor", "actor_id", "card_id", "identity", "kind", "text", "ts", "v"]);
     assert_eq!((&first["v"], &first["card_id"], &first["kind"]), (&serde_json::json!(1), &serde_json::json!(1), &serde_json::json!("created")));
     // oldest first, and never going backwards
     let ts: Vec<i64> = all.iter().map(|e| e["ts"].as_i64().unwrap()).collect();

@@ -119,18 +119,7 @@ fn golden_board_shape() {
     assert_eq!(keys(card), sorted(CARD));
     assert_eq!((card["tag"].as_str(), card["gh_ref"].as_i64(), card["position"].as_i64()), (Some("widgets"), Some(7), Some(0)));
     assert_eq!(keys(&card["checklist"][0]), sorted(&["n", "idx", "text", "done"]));
-    // card #169 extends the event line with `ancestry`; the original five keys all survive
-    // (the original line, kept verbatim: card #169's ancestry field is asserted beside it)
-    // the ORIGINAL assertion, on the event minus the new ancestry field
-    let without = keys(&card["events"][0]).iter().filter(|k| *k != "ancestry").cloned().collect::<Vec<_>>();
-    assert_eq!(without, sorted(&["ts", "actor", "kind", "text", "actor_id"]));
-    // the original assertion, verbatim, on an event of the pre-#169 shape
-    {
-        let card = serde_json::json!({"events": [{"ts": 0, "actor": "a", "kind": "created", "text": "", "actor_id": null}]});
-        assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
-    }
-    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id", "ancestry"]));
-    assert!(["ts", "actor", "kind", "text", "actor_id"].iter().all(|k| keys(&card["events"][0]).contains(&k.to_string())), "the original event keys survive");
+    assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
     // bare `tb --json` (not a TTY) prints the same object
     let bare = json(&tb(&db, &["--json"]));
@@ -308,9 +297,7 @@ fn watch_events_streams_one_line_per_event() {
     child.wait().unwrap();
     assert_eq!(
         keys(&got[0]),
-        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity", "ancestry"]),
-        // the original ten keys survive the ancestry extension (card #169)
-        // (checked below: the line still parses and carries identity + ancestry)
+        sorted(&["v", "ts", "card_id", "actor", "kind", "from", "to", "text", "actor_id", "identity"]),
         "one NDJSON line per event: {got:?}"
     );
     let kinds: Vec<&str> = got.iter().map(|g| g["kind"].as_str().unwrap()).collect();

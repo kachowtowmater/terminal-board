@@ -739,6 +739,14 @@ fn a_registered_session_closes_with_its_own_name_and_harness() {
     let moved = show["events"].as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["id"] == moved["actor_id"]).cloned().unwrap();
     assert_eq!((who["role"].as_str(), who["session"].as_str()), (Some("verifier"), Some(VUUID)));
+    // the move into DONE records the kernel's parent chain; every other event omits the key
+    assert!(moved["ancestry"].as_array().is_some_and(|a| !a.is_empty()), "done event ancestry: {moved}");
+    let created = show["events"].as_array().unwrap().iter().find(|e| e["kind"] == "created").cloned().unwrap();
+    assert!(created.get("ancestry").is_none(), "no ancestry key on a created event: {created}");
+    // `tb log --json` carries the same chain on the same event
+    let log = b.json(&["log"]);
+    let done = log.as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
+    assert_eq!(done["ancestry"], moved["ancestry"], "log and show agree: {done}");
 }
 
 #[test]

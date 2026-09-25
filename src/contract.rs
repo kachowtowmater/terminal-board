@@ -31,7 +31,9 @@ pub struct EventJ {
     pub actor_id: Option<i64>,
     /// The kernel's record of the parent chain the mover ran under (`store::proc`), oldest
     /// ancestor first — on the writes of consequence only (a move into DONE, a `force`, a
-    /// verifier-config change); null on everything else.
+    /// verifier-config change); the key is absent on every other event (additive: older
+    /// readers' key lists never see it on an event that does not record one).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ancestry: Option<Vec<String>>,
 }
 

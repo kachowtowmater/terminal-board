@@ -670,7 +670,8 @@ struct EventLine<'a> {
     /// The identity behind `actor`, inlined: a stream has no `actors[]` to look an id up in.
     actor_id: Option<i64>,
     identity: Option<terminal_board::store::actors::Actor>,
-    /// The kernel's parent chain behind the command that wrote it, where recorded.
+    /// The kernel's parent chain behind the command that wrote it; absent where not recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
     ancestry: Option<Vec<String>>,
 }
 

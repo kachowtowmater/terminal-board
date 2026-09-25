@@ -125,7 +125,7 @@ A bare `tb --json` (not a terminal) prints the same object.
 | `approved_by` | string[] | everyone who recorded `tb done ID --approve` on this card, oldest first, each once. A record of who checked it — **not** a permission; `done-by` (which says who may close a card) is a separate, self-asserted setting, see README |
 | `round` | int | rework round: 1, plus one for every `returned` event (counted from all events, so it never drifts) |
 | `escalate` | bool | sent back more times than `config max-rounds` allows — **derived at read time**, never stored, and always `false` on a `done` card. `false` on every board that has not set `max-rounds` (the default). Skipped by `tb next` / `tb next --review`'s automatic pick; never removed from `tb list`, `tb board` or `tb show` — see README |
-| `events[]` | `{ts, actor, kind, text, actor_id, ancestry}` | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. `ancestry` (list\|null) is the kernel's parent chain the writing command ran under (`store::proc` — a list of process names, oldest ancestor first), recorded on moves into DONE, `force` events and the verifier-config changes; null on every other event and on events written before it existed. Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `link` (`tb link`; `text` is `+ LABEL: VALUE` or `- LABEL: VALUE`), `blocked`, `unblocked`, `dropped`, `released` (`tb release`: a dead holder's DOING card went back to TODO; `text` is `released HOLDER (liveness evidence): reason`), `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released), `hook` (a pre/post-change hook ran and either allowed the change or, for `hook-after`, was attempted; `text` is `NAME allowed|failed in Nms`), `break-glass` (`--break-glass` skipped the pre-change hook this board asked for; `text` is `NAME: why`), `hook-nested` (the change was made by a hook's own `tb` call on this board while that hook ran, so the hook was not asked again; `text` names the hook and its event — also a row in `tb log`); the set is open — see the forward-compatibility rule above |
+| `events[]` | `{ts, actor, kind, text, actor_id}` (+ `ancestry`) | the last 10, oldest first. `actor` is the short display name, as always; `actor_id` (int\|null) is the `id` of the **identity** behind it — look it up in the top-level `actors[]` of `tb board --json` / `tb show ID --json`. It is null when nothing but the name is known (a person in a plain terminal) and on every event written before identities were recorded. `ancestry` (list, optional key) is the kernel's parent chain the writing command ran under (`store::proc` — a list of process names, oldest ancestor first), recorded on moves into DONE, `force` events and the verifier-config changes; the key is **absent** on every other event and on events written before it existed (additive — an older reader's key list still matches). Kinds include `created`, `taken`, `moved`, `returned` (a reviewer sent it back; `text` is the reason, right after its `moved` `review -> doing`), `due` (the due date changed; `text` is `OLD -> NEW`, `none` for no date), `note`, `check`, `link` (`tb link`; `text` is `+ LABEL: VALUE` or `- LABEL: VALUE`), `blocked`, `unblocked`, `dropped`, `released` (`tb release`: a dead holder's DOING card went back to TODO; `text` is `released HOLDER (liveness evidence): reason`), `edit`, `prio`, `github`, `force`, `approved` (somebody checked the card with `tb done ID --approve`, on any card; `text` is `checked by NAME (…)` and the card does not move), `reviewing` (claimed with `tb next --review`), `unclaimed` (claim released), `hook` (a pre/post-change hook ran and either allowed the change or, for `hook-after`, was attempted; `text` is `NAME allowed|failed in Nms`), `break-glass` (`--break-glass` skipped the pre-change hook this board asked for; `text` is `NAME: why`), `hook-nested` (the change was made by a hook's own `tb` call on this board while that hook ran, so the hook was not asked again; `text` names the hook and its event — also a row in `tb log`); the set is open — see the forward-compatibility rule above |
 | `links[]` | `{idx, label, value, added_by, added_at}` | evidence attached with `tb link ID VALUE --label LABEL`, in the order added. `value` is a path, a sha or a URL as **plain text tb only stores** — never read, resolved or fetched (docs/SCHEMA.md, table `links`). `label` is free text (not a fixed set), lower-cased. `config done-needs-link LABEL` refuses `tb done` (or `tb move ID done`) while no link here has that `label`, case-insensitive; `github`'s own evidence-driven moves are exempt, same as `done-by` |
 
 ### identity
@@ -173,7 +173,7 @@ tb watch --events --json                # one NDJSON line per event
 tb watch --events --json --since 1789777000   # resume: only events at/after that unix second
 ```
 
-Each line is `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity, ancestry}`: `kind` is the event kind
+Each line is `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity}` (+ `ancestry`): `kind` is the event kind
 (`created`, `taken`, `moved`, `note`, `check`, …); `from`/`to` are the column transition of
 every event that changes a card's column — `created` (null → `todo`), `taken` (`todo` →
 `doing`), `dropped` (e.g. `doing` → `todo`), `released` (`doing` → `todo`) and `moved` (e.g. `doing` → `review`) — so following
@@ -183,7 +183,7 @@ that unix second are streamed, in `(ts, id)` order — an orchestrator records t
 it saw and passes the next start second on restart. `actor_id` and `identity` say who `actor`
 was: a stream has no `actors[]` to look an id up in, so the whole **identity** object (above)
 is on the line — both are null when nothing but the name is known. `ancestry` is the kernel's
-parent chain where the event recorded one (moves into DONE, `force`, verifier-config changes).
+parent chain where the event recorded one (moves into DONE, `force`, verifier-config changes); the key is absent otherwise.
 
 ## Writes — `--json` results
 
@@ -408,12 +408,12 @@ otherwise run it. The stored card is unchanged; this is a property of the file.
 
 ## `tb log [--json] [--since DATE]` — the board's history
 
-`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text, identity, ancestry}` —
+`--json` is an array, oldest first, of `{v, ts, card_id, actor, actor_id, kind, text, identity}` (+ `ancestry`) —
 the same event fields `tb watch --events` streams, without the live stream's `from`/`to`.
 `identity` is the whole **identity** object behind `actor_id` (harness, model, role, session,
 host), inline because a log has no `actors[]` to look an id up in; `null` when none is known.
 `ancestry` is the kernel's parent chain where the event recorded one (moves into DONE, `force`,
-verifier-config changes), else `null`.
+verifier-config changes); the key is absent otherwise.
 In plain text, a move into DONE ends with `(by NAME — harness model role session … on host)`:
 the trace of who closed the card.
 `--since` takes `YYYY-MM-DD`, meaning **local midnight in the board's zone**, or a unix

@@ -409,19 +409,7 @@ fn the_event_stream_carries_the_identity_inline() {
     let _ = child.wait();
     let mut keys: Vec<&str> = lines[0].as_object().unwrap().keys().map(String::as_str).collect();
     keys.sort_unstable();
-    // the ancestry field joins the event line (card #169): the list the old assertion pinned
-    // grew by exactly that key — assert the ORIGINAL list is still fully present, then the
-    // extended one
-    let orig = ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"];
-    assert!(orig.iter().all(|k| keys.contains(k)), "the original watch keys survive: {keys:?}");
-    assert_eq!(keys, ["actor", "actor_id", "ancestry", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
-    // the original assertion, verbatim, on a watch line of the pre-#169 shape
-    {
-        let legacy = serde_json::json!({"v": 1, "ts": 0, "card_id": 1, "actor": "a", "kind": "created", "from": null, "to": null, "text": "", "actor_id": null, "identity": null});
-        let keys: Vec<&str> = legacy.as_object().unwrap().keys().map(String::as_str).collect();
-        let mut keys = keys; keys.sort_unstable();
-        assert_eq!(keys, ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
-    }
+    assert_eq!(keys, ["actor", "actor_id", "card_id", "from", "identity", "kind", "text", "to", "ts", "v"]);
     assert_eq!((lines[0]["v"].as_i64(), lines[0]["actor"].as_str(), lines[0]["actor_id"].as_i64()), (Some(1), Some("lead"), Some(1)));
     let who = &lines[0]["identity"];
     assert_eq!(
