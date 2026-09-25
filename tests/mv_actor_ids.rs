@@ -19,19 +19,20 @@ const SESSION_A: &str = "0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70";
 const SESSION_B: &str = "7e1c3d90-55aa-4b1f-8c2e-9d0f1a2b3c4d";
 
 /// A harness that exports its name and its session (the same shape `tests/actors.rs` uses).
+/// The explicit `TB_*` names, not what a real harness exports: the harness running this
+/// suite (this pane is omp, inside herdr) must not leak in — `env_clear` already strips
+/// everything, and these are the values `Identity::resolve` trusts first.
 const ALICE: &[(&str, &str)] = &[
-    ("CLAUDECODE", "1"),
-    ("AI_AGENT", "claude-code_9-9-9_agent"),
-    ("CLAUDE_CODE_SESSION_ID", SESSION_A),
+    ("TB_HARNESS", "claude-code"),
+    ("TB_SESSION", SESSION_A),
     ("TB_MODEL", "model-x"),
     ("TB_ROLE", "coder"),
     ("TB_HOST", "box.lan"),
 ];
 /// A second identity on the same card, so the move has more than one row to carry.
 const BOB: &[(&str, &str)] = &[
-    ("CLAUDECODE", "1"),
-    ("AI_AGENT", "claude-code_9-9-9_agent"),
-    ("CLAUDE_CODE_SESSION_ID", SESSION_B),
+    ("TB_HARNESS", "claude-code"),
+    ("TB_SESSION", SESSION_B),
     ("TB_MODEL", "model-y"),
     ("TB_ROLE", "reviewer"),
     ("TB_HOST", "gatehost"),
