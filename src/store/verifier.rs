@@ -156,7 +156,8 @@ pub(super) fn registered(_conn: &Connection, actor: &str, who: &Identity) -> Res
         return Ok(false);
     };
     match registry::of_session(session) {
-        Some(e) => Ok(e.harness.eq_ignore_ascii_case(who.harness.as_deref().unwrap_or("").trim())
+        Some(e) => Ok(e.harness.eq_ignore_ascii_case("claude-code")
+            && e.harness.eq_ignore_ascii_case(who.harness.as_deref().unwrap_or("").trim())
             && e.name.eq_ignore_ascii_case(actor.trim())),
         None => Ok(false),
     }
