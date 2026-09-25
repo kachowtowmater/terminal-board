@@ -172,10 +172,11 @@ fn single_process_add_stays_fast() {
 /// `busy_handler` and the libc/FFI sleeps (`libc::usleep`, `libc::nanosleep`, `libc::sleep`)
 /// under `disallowed-methods`, and CI runs `cargo clippy -D warnings`. Clippy
 /// resolves them by path, so an import, an alias or a helper in another module is the same
-/// call; only `src/waits.rs` (which records the wait) may use them. Outside the waits
-/// module the one reasoned allow site is src/hooks.rs, which polls a hook process for its
-/// exit during a move — not a lock wait, and `add` runs no hooks. This test keeps that list
-/// from quietly going away.
+/// call; only `src/waits.rs` (which records the wait) may use them. Tests stage waits on
+/// purpose; outside the waits module a few named, reasoned sites remain: `src/hooks.rs`
+/// polls a hook process for its exit during a move — not a lock wait, and `add` runs no
+/// hooks — while the others poll a subprocess (`gh`, `herdr`) or run a UI/watch timer,
+/// never inside a write. This test keeps that list from quietly going away.
 #[test]
 fn the_compiler_refuses_sleeping_outside_waits() {
     let cfg = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml")).unwrap_or_default();
