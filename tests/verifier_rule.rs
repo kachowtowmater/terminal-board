@@ -115,15 +115,19 @@ impl Board {
         env.iter().map(|(k, v)| (*k, v.to_string())).collect()
     }
 
-    /// A close whose env claims the verifier role also needs its session REGISTERED (card
-    /// #169): the runners register any role-claiming env once per board, so the pre-registry
-    /// role tests above keep testing the role rule alone. The registry's own r1–r6 tests pass
-    /// envs built at runtime and call `VerifierRegistry::register` directly, so they are
-    /// unaffected; a test that wants an UNREGISTERED role claim asserts
-    /// `unregistered_verifier` and uses `run_raw`.
+    /// Every AGENT close needs its session REGISTERED (card #169, incl. the C3b widening):
+    /// the runners register any agent env (a harness on record) whose session resolves, so
+    /// the pre-registry tests above keep testing the role and list rules alone. The
+    /// registry's own r1–r6 tests pass envs built at runtime and call
+    /// `VerifierRegistry::register` directly, so they run through `*_raw` with no automatic
+    /// registration; a test that wants an UNREGISTERED agent close asserts
+    /// `unregistered_verifier` and uses `*_raw`.
     fn with_registration<'a>(&self, env: &'a [(&'a str, String)], who: &str) -> Vec<(&'a str, String)> {
-        let role = env.iter().any(|(k, v)| *k == "TB_ROLE" && v.eq_ignore_ascii_case("verifier") || *k == "TB_ROLE" && v.eq_ignore_ascii_case("reviewer"));
-        if !role {
+        // role or not: any agent (a harness in the env, the thing `is_agent` reads) closing
+        // REVIEW -> DONE must run in a registered session; a person env (no harness keys)
+        // never registers and stays exempt (fake persons are `agent_as_person`'s lane).
+        let is_agent = env.iter().any(|(k, _)| matches!(*k, "CLAUDECODE" | "OMPCODE" | "AI_AGENT" | "CODEX_SESSION_ID" | "CODEX_THREAD_ID" | "CODEX_SANDBOX" | "CODEX_CI" | "TB_HARNESS" | "TB_SESSION"));
+        if !is_agent {
             return env.to_vec();
         }
         let reg = self.registry.get_or_init(common::VerifierRegistry::new);
