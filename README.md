@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.0:** `tb-reap` releases a card stuck in DOING by a dead owner, and a verifier
+can no longer close a card from the session that did the work. Every board remembers who
+created it (`tb boards --long`, and `created_by` in JSON), and moving a card between boards
+keeps its history's actors instead of failing.
+
 **New in 3.1.2:** many `tb` waiting on the same board or settings lock are served in turn, so
 none is starved under load. In the `B` picker, `*` makes the selected board the default (the
 one a plain `tb` opens), and `a` or `d` on a board another `tb` has open is refused at once,
@@ -175,7 +180,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.1.2` | install that release instead of the latest (`3.1.2` works too) |
+| `--version v3.2.0` | install that release instead of the latest (`3.2.0` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
