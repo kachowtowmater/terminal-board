@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
         --no-setup) NO_SETUP=1 ;;
         --no-build) NO_BUILD=1 ;;
         --prefix) PREFIX="${2:?--prefix needs a directory}"; shift ;;
-        --version) VERSION="${2:?--version needs a tag like v3.1.2}"; VERSION="v${VERSION#v}"; shift ;;
+        --version) VERSION="${2:?--version needs a tag like v3.2.0}"; VERSION="v${VERSION#v}"; shift ;;
         --binary) BINARY="${2:?--binary needs a path}"; shift ;;
         --github) SETUP_ARGS+=(--github "${2:?--github needs OWNER/REPO}"); shift ;;
         --agents-md) AGENTS_MD="${2:?--agents-md needs a path}"; SETUP_ARGS+=(--agents-md "$2"); shift ;;

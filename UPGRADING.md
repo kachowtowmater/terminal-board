@@ -1,3 +1,10 @@
+# Upgrading to 3.2.0
+
+Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.2. The JSON
+output only gains fields: `created_by` on boards, the `same_session` error code, and
+`created by …` lines in `tb boards --long`. A verifier can no longer close a card from the
+session that did the work — start it in its own session.
+
 # Upgrading to 3.1.2
 
 Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.1. The board
