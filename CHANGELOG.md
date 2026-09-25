@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Highlights
+
+- **A dead worker's card goes back to TODO:** a new, separate `tb-reap` command releases a
+  card left in DOING by an owner that is gone. You run it or schedule it yourself — build it
+  from source with `cargo build --bin tb-reap`, because it is not yet in the release
+  downloads.
+- **A verifier can no longer grade its own work:** a card is refused from REVIEW to DONE
+  when the closing session is the one that did the work, whatever name that session used.
+- **Every board remembers who made it:** `tb boards --long` shows the creator, and moving a
+  card between boards keeps its history's names instead of failing.
+- Nothing needs doing to upgrade from 3.1.2.
+
+### Stale cards are released by tb-reap
+
+- A card stuck in DOING whose owner has no live agent — no herdr pane and no tmux session —
+  is released back to TODO by `tb-reap` after half an hour by default, and REVIEW cards are
+  never touched. Owners that are idle but alive are only reported, never released. A card
+  marked `mode:headless` is exempt, because headless workers have no pane by design.
+- A kill-switch file turns the whole check off, and `--dry-run` keeps a dated log of what it
+  would have released, the proof a scheduled job needs before it is switched on for real.
+- `tb-reap` ships with `tb` in the source tree but not in the release downloads yet: build
+  it with `cargo build --bin tb-reap`, then run it by hand or put it on a schedule.
+
+### Clippy refuses the libc and FFI sleeps
+
+- The lint list that bans sleeping instead of waiting now also names the libc calls
+  (`libc::usleep`, `libc::nanosleep` and `libc::sleep`), and a test pins the list so entries
+  cannot quietly disappear. The docs say what is covered: std::thread sleeps, SQLite busy
+  waits and the libc/FFI sleeps. Real waits still go through `waits::pause`.
+
+### A verifier cannot close a card from the builder's session
+
+- Moving a card from REVIEW to DONE is refused with a new `same_session` code when the
+  closing session is the same one that took the card or moved it into review, in any round.
+  A name and a self-reported role are easy to fake; the session is not. The refusal says to
+  start the verifier in its own session, and `--force` remains the one way past it, logged.
+- Notes, checklist ticks and assignments never count as work, so a person who only commented
+  can still close; people in plain terminals, with no recorded session, are unaffected.
+
+### Boards record who created them
+
+- Every board stores the identity of whoever created it — the same actor record cards use —
+  recorded at the moment the file is made, first writer wins. `tb boards --long` prints a
+  `created by …` line per board, and the JSON output gains a `created_by` object; boards
+  made before this change fall back to the board-creations log.
+- The two paths that used to miss the record are fixed: `tb setup`, which now uses the real
+  CLI actor instead of the login name, and the first read of a board named by `TB_DB`.
+
+### tb mv keeps the actors behind a card's history
+
+- `tb mv` of a card whose history names its actors failed on the destination board with
+  `FOREIGN KEY constraint failed`, because the identity rows the events point at never came
+  along. The identities now travel with the card, are matched on who they are rather than
+  their row id, and every event is re-keyed; a card that names no actors still moves.
+
 ## 3.1.2 — 2026-09-24
 
 ### Highlights
