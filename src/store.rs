@@ -2168,7 +2168,10 @@ impl Store {
                         kind: r.get(4)?,
                         text: r.get(5)?,
                         actor_id: r.get(6)?,
-                        ancestry: r.get(7)?,
+                        // stored as a JSON list; malformed text reads as none (row_event)
+                        ancestry: r
+                            .get::<_, Option<String>>(7)?
+                            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()),
                     },
                 })
             })?

@@ -210,7 +210,7 @@ pub fn card_with(
             .events
             .iter()
             .skip(skip)
-            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
+            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id, ancestry: e.ancestry.clone() })
             .collect(),
         links: d.links.clone(),
     })
