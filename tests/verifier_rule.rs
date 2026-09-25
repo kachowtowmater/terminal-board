@@ -50,12 +50,10 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        c.envs(env.iter().copied());
+        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
         c.output().unwrap()
     }
 
-    /// The registry tests hand envs built at runtime (`TB_VERIFIERS_DIR` is a temp path), so
-    /// the three runners below take `(key, String)` pairs; `str_env` lifts the const literals.
     /// The entry point every helper runs through: role-claiming envs are registered first.
     fn run(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> Output {
         let env = self.with_registration(env, who);
@@ -81,6 +79,16 @@ impl Board {
     /// The `--json` refusal: (error text, code). Asserts it WAS refused.
     fn refused(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> (String, String) {
         self.refused_s(&Self::str_env(env), who, args)
+    }
+
+    fn refused_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> (String, String) {
+        let mut a = args.to_vec();
+        a.push("--json");
+        let o = self.run(env, who, &a);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+        assert!(!o.status.success(), "{who}: tb {args:?} was allowed: {v}");
+        let text = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
+        (text, v["code"].as_str().unwrap_or("").to_string())
     }
 
     /// The registry's own r1-r6 tests manage registration by hand and assert exact refusals,
