@@ -111,7 +111,7 @@ fn a_card_with_identity_events_moves_and_keeps_them() {
 
     let said = h.ok(ALICE, &["mv", "1", "--to", "dst", "--as", "alice"]);
     assert!(said.contains("moved to 'dst' as #2"), "{said}");
-    assert!(said.contains("2 events"), "{said}");
+    assert!(said.contains("4 events"), "added, taken and two notes: {said}");
 
     // gone from the source; its board log names where it went
     assert_eq!(h.events(SRC).iter().filter(|e| e.0 == 1).count(), 0, "card 1's events left with it");
