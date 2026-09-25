@@ -120,6 +120,8 @@ fn golden_board_shape() {
     assert_eq!((card["tag"].as_str(), card["gh_ref"].as_i64(), card["position"].as_i64()), (Some("widgets"), Some(7), Some(0)));
     assert_eq!(keys(&card["checklist"][0]), sorted(&["n", "idx", "text", "done"]));
     // card #169 extends the event line with `ancestry`; the original five keys all survive
+    // (the original line, kept verbatim: card #169's ancestry field is asserted beside it)
+    assert_eq!(keys(&card["events"][0]).iter().filter(|k| *k != "ancestry").cloned().collect::<Vec<_>>(), sorted(&["ts", "actor", "kind", "text", "actor_id"]));
     assert_eq!(keys(&card["events"][0]), sorted(&["ts", "actor", "kind", "text", "actor_id", "ancestry"]));
     assert!(["ts", "actor", "kind", "text", "actor_id"].iter().all(|k| keys(&card["events"][0]).contains(&k.to_string())), "the original event keys survive");
     assert!(card["created_at"].is_i64() && card["events"][0]["ts"].is_i64(), "unix seconds");
