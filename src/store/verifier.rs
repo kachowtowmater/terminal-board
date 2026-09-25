@@ -176,7 +176,12 @@ pub(super) const AGENT_BINARIES: [&str; 4] = ["omp", "claude", "codex", "pi"];
 /// when one entry's name (without an extension, case-insensitive) is an agent binary.
 pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
     ancestry.iter().any(|name| {
-        let n = name.trim().trim_end_matches(".exe").to_ascii_lowercase();
+        // the extension is stripped case-insensitively first (`CLAUDE.EXE` is claude too),
+        // then the name is folded to lowercase for the whole-name match
+        let mut n = name.trim().to_ascii_lowercase();
+        if n.len() > 4 && n.ends_with(".exe") {
+            n.truncate(n.len() - 4);
+        }
         AGENT_BINARIES.contains(&n.as_str())
     })
 }
