@@ -1,4 +1,5 @@
-//! Every wait the store's write path makes on purpose, in one place.
+//! Every wait the store's write path makes on purpose — the store and the board lock it
+//! opens with (`crate::lock`) — in one place.
 //!
 //! An uncontended `tb add` must never wait: no lock to queue for, no busy retry, no backoff
 //! sleep. That is a property of what the code DOES, not of how fast a machine is, so it is
