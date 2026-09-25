@@ -481,4 +481,23 @@ mod tests {
         assert_eq!(e.1, Code::SameSession);
         assert!(e.0.contains("(S1)") && e.0.contains("bld-1") && e.0.contains("TB_ROLE=verifier"), "{}", e.0);
     }
+
+    #[test]
+    fn an_agent_binary_anywhere_up_the_chain_makes_the_ancestry_an_agents() {
+        let p = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        assert!(is_agent_ancestry(&p(&["bash", "omp"])));
+        assert!(is_agent_ancestry(&p(&["claude", "bash", "sshd", "launchd"])));
+        assert!(is_agent_ancestry(&p(&["sshd", "CLAUDE.EXE"])), "case and extension are ignored");
+        assert!(!is_agent_ancestry(&p(&["bash", "zsh", "sshd", "tmux", "launchd"])));
+        assert!(!is_agent_ancestry(&p(&["herdrcopy", "claude-helper"])), "only whole names match");
+        assert!(!is_agent_ancestry(&p(&[])), "an unreadable chain is a person's");
+    }
+
+    #[test]
+    fn the_agent_as_person_refusal_names_the_agent_and_the_way_out() {
+        let e = agent_as_person_err(7, "charles", &["bash".to_string(), "omp".to_string()]);
+        assert_eq!(e.1, Code::AgentAsPerson);
+        assert!(e.0.contains("started by omp") && e.0.contains("#7") && e.0.contains("charles"), "{}", e.0);
+        assert!(e.0.contains("--force, logged"), "{}", e.0);
+    }
 }
