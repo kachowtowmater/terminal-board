@@ -66,7 +66,7 @@ impl Board {
         self.run(env, who, args)
     }
 
-    fn ok(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> String {
+    fn ok(&self, env: &[(&'static str, &str)], who: &str, args: &[&str]) -> String {
         self.ok_s(&Self::str_env(env), who, args)
     }
 
@@ -83,7 +83,7 @@ impl Board {
     }
 
     /// The `--json` refusal: (error text, code). Asserts it WAS refused.
-    fn refused(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> (String, String) {
+    fn refused(&self, env: &[(&'static str, &str)], who: &str, args: &[&str]) -> (String, String) {
         self.refused_s(&Self::str_env(env), who, args)
     }
 
