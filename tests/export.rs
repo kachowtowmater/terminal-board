@@ -302,7 +302,7 @@ fn log_reads_the_history_from_a_date() {
     keys.sort();
     let expected: Vec<String> = ["actor", "actor_id", "ancestry", "card_id", "identity", "kind", "text", "ts", "v"].iter().map(|s| s.to_string()).collect();
     let mut expected = expected; expected.sort();
-    assert_eq!(keys, expected);
+    assert_eq!(keys, expected.iter().collect::<Vec<_>>());
     assert_eq!((&first["v"], &first["card_id"], &first["kind"]), (&serde_json::json!(1), &serde_json::json!(1), &serde_json::json!("created")));
     // oldest first, and never going backwards
     let ts: Vec<i64> = all.iter().map(|e| e["ts"].as_i64().unwrap()).collect();
