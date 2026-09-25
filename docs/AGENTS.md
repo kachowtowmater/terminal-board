@@ -118,10 +118,9 @@ default > `default`; a hint names its board when bare `tb` would miss it — cop
   claim, or just a name on `tb config verifiers` — is refused unless the resolved session has an entry in
   `~/.local/state/terminal-board/verifiers/<session>` (`{"session","name","harness"}`, written by `tb-agent-start --role verifier`).
   Setting the role or the name in any shell, script included, never makes it a verifier: the entry's `name` must match and its `harness` be
-  claude-code. `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged.
-- Nothing reaches DONE except from REVIEW (`not_from_review`) — not `tb move ID done`, not the full-screen board, not `tb sync`.
-- Every move into DONE is traced: actor + identity (`identity` in `--json`) and, on DONE/`force`/verifier-config events, the kernel's
-  process ancestry (`ancestry` in `--json`, `store::proc`) — what actually ran the command. A person may turn the verifier rule off.
+  claude-code. `TB_VERIFIER_REGISTRY=off` turns the check off; `--force` still gets past any refusal, logged. Nothing reaches DONE except
+  from REVIEW (`not_from_review`). Every move into DONE is traced — actor + identity (`identity` in `--json`) and, on DONE/`force`/
+  verifier-config events, the kernel's process ancestry (`ancestry` in `--json`, `store::proc`), what actually ran the command.
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>` — started by `tb-agent-start`, so the session is registered.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   start the verifier in its own session.
@@ -210,7 +209,7 @@ a `tb: …` line on stderr of a command that succeeded — is for your operator:
 | `card #ID was taken by someone else` | run `tb next` again for another card |
 | `issue gh#N still open on GitHub` | close the issue / merge the PR first |
 | `you did this work — ask another person or agent to review it` | leave it in REVIEW for another agent |
-| `nothing reaches done except from review` (`not_from_review`) / `only a verifier moves` (`not_verifier`) | `tb done` from DOING (→ REVIEW); leave REVIEW to a verifier |
+| `nothing reaches done except from review` (`not_from_review`) / `only a verifier moves` (`not_verifier`) / `only a registered verifier` (`unregistered_verifier`) | `tb done` from DOING (→ REVIEW); leave REVIEW to a verifier launched by `tb-agent-start --role verifier` |
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` |
 | `no card #ID` | `tb list` to find the right ID |
