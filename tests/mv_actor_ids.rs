@@ -12,7 +12,7 @@
 //! - a second move to a board that already holds one of the identities finds that row
 //!   instead of duplicating it (the match is the identity, never the id);
 //! - a card whose events have no identity moves exactly as it always did.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 const SESSION_A: &str = "0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70";
@@ -146,10 +146,9 @@ fn the_second_move_finds_the_identity_the_first_left() {
     h.ok(ALICE, &["mv", "2", "--to", "dst", "--as", "alice"]);
     let dst = h.sessions("dst");
     assert_eq!(dst, [SESSION_A, SESSION_B], "no duplicate row for the session that moved twice: {dst:?}");
-    let rows: Vec<i64> = {
+    let rows: i64 = {
         let conn = h.conn("dst");
-        let mut st = conn.prepare("SELECT COUNT(*) FROM actors").unwrap();
-        st.query_row([], |r| r.get(0)).unwrap()
+        conn.query_row("SELECT COUNT(*) FROM actors", [], |r| r.get(0)).unwrap()
     };
     assert_eq!(rows, 2, "{rows} actor rows on the destination");
 
