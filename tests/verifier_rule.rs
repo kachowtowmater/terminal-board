@@ -61,19 +61,6 @@ impl Board {
         let env = self.with_registration(env, who);
         self.run_raw(&env, who, args)
     }
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(args).env_clear();
-        c.env("TB_DB", self.db())
-            .env("TB_AS", who)
-            .env("TB_NO_HERDR", "1")
-            .env("TB_GH", "/nonexistent/gh")
-            .env("USER", "login-user")
-            .env("TZ", "UTC")
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", self.dir.path());
-        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
-        c.output().unwrap()
-    }
 
     fn ok(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> String {
         self.ok_s(&Self::str_env(env), who, args)
@@ -434,7 +421,7 @@ fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
     b.ok(AGENT, "rv-2", &["move", &id, "todo"]);
     b.ok(AGENT, "rv-2", &["move", &id, "review"]);
     let listed = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]);
-    let o = b.run_s(&Board::str_env(listed), "rv-2", &["done", &id]);
+    let o = b.run(&Board::str_env(listed), "rv-2", &["done", &id]);
     assert!(o.status.success(), "the listed verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -522,7 +509,7 @@ fn a_session_that_only_took_notes_or_routed_the_card_still_closes_it() {
     // the mover IS the verifier here, so let another verifier close it — its session matches
     // the note only
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-note"]);
-    let o = b.run_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-note", &["done", &id]);
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-note", &["done", &id]);
     assert!(o.status.success(), "a session that only noted was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 
@@ -531,7 +518,7 @@ fn a_session_that_only_took_notes_or_routed_the_card_still_closes_it() {
     b.ok(PERSON, "lead", &["assign", &two, "bot-1"]);
     b.ok(AGENT, "bot-1", &["done", &two]);
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-lead"]);
-    let o = b.run_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-lead", &["done", &two]);
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-lead", &["done", &two]);
     assert!(o.status.success(), "the assigning session's verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
 }
@@ -606,7 +593,7 @@ fn no_session_on_either_side_never_matches() {
     assert_eq!(b.column(&id), "done");
     // the verifier has no session but the builder does: closes it too
     let two = b.in_review("w: verifier sessionless", "bot-1");
-    let o = b.run_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
     assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
