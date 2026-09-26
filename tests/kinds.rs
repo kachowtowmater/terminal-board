@@ -430,8 +430,8 @@ fn deadline_kind_126x41_golden() {
     for (i, (title, col, owner, due)) in cards.iter().enumerate() {
         let id = (i + 1).to_string();
         match due {
-            Some(d) => h.ok_fixture(&["filings", "add", title, "--due", d]),
-            None => h.ok_fixture(&["filings", "add", title]),
+            Some(d) => h.ok_fixture(&["filings", "add", title, "--as", "alice", "--due", d]),
+            None => h.ok_fixture(&["filings", "add", title, "--as", "alice"]),
         };
         if *col != "todo" {
             let mut args = vec!["filings", "move", id.as_str(), *col, "--as", owner.unwrap_or("alice")];
