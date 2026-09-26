@@ -111,9 +111,12 @@ impl Board {
         assert_eq!((col.as_str(), owner.as_str()), ("doing", holder));
     }
 
-    /// A release attempt by lead `who`; returns the refusal's json code + text, asserting it WAS refused.
-    fn refused_release(&self, who: &str, id: &str, reason: &str) -> (String, String) {
-        let o = self.run(&agent("lead"), &[], who, &["release", id, reason, "--json"]);
+    /// A release attempt by lead `who` under the liveness fixture `fake`; returns the
+    /// refusal's json code + text, asserting it WAS refused. `fake` MUST keep every
+    /// `TB_REAP_FAKE_*` set (fixture mode) whenever the test means a probe to fire — an
+    /// empty list runs the real probes, where no pid is running.
+    fn refused_release(&self, who: &str, id: &str, reason: &str, fake: &[(&str, &str)]) -> (String, String) {
+        let o = self.run(&agent("lead"), fake, who, &["release", id, reason, "--json"]);
         assert!(!o.status.success(), "tb release {id} by {who} was allowed: {}", String::from_utf8_lossy(&o.stdout));
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
         (v["code"].as_str().unwrap_or("").to_string(), format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or("")))
@@ -140,7 +143,8 @@ fn release_a_headless_holder_whose_recorded_pid_runs_is_refused_holder_alive() {
     let b = Board::new();
     let id = b.held_by("hp");
     b.note(&id, "hp", "mode:headless pid=4242");
-    let (code, text) = b.refused_release("lead-x", &id, "try");
+    let (code, text) =
+        b.refused_release("lead-x", &id, "try", &[("TB_REAP_FAKE_PROCS", "4242 omp --worker")]);
     assert_eq!(code, "holder_alive", "{text}");
     assert!(text.contains("headless pid 4242"), "{text}");
     b.assert_doing(&id, "hp");
