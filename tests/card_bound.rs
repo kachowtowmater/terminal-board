@@ -57,11 +57,11 @@ impl Board {
     fn run(&self, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env("USER", "person").env("TZ", "UTC");
+        scrub(&mut c);
         match &self.db {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
-        scrub(&mut c);
         c.output().unwrap()
     }
 
@@ -75,52 +75,50 @@ impl Board {
     /// identity fields tb records alongside it included).
     fn as_bound(&self, bound: &str, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(args)
-            .env("TB_CARD", bound)
+        c.args(args).env("TZ", "UTC");
+        scrub(&mut c);
+        c.env("TB_CARD", bound)
             .env("TB_AS", "b-1")
             .env("TB_HARNESS", "omp")
             .env("TB_MODEL", "g")
             .env("TB_ROLE", "coder")
             .env("TB_SESSION", "omp-b-1-x")
-            .env("TB_NO_HERDR", "1")
-            .env("TZ", "UTC");
+            .env("TB_NO_HERDR", "1");
         match &self.db {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
-        scrub(&mut c);
         c.output().unwrap()
     }
 
     /// The same session with the role swapped — how a lead/orchestrator pane runs.
     fn with_role(&self, bound: &str, role: &str, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(args)
-            .env("TB_CARD", bound)
+        c.args(args).env("TZ", "UTC");
+        scrub(&mut c);
+        c.env("TB_CARD", bound)
             .env("TB_AS", "lead-p")
             .env("TB_HARNESS", "omp")
             .env("TB_MODEL", "g")
             .env("TB_ROLE", role)
             .env("TB_SESSION", "omp-lead-x")
-            .env("TB_NO_HERDR", "1")
-            .env("TZ", "UTC");
+            .env("TB_NO_HERDR", "1");
         match &self.db {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
-        scrub(&mut c);
         c.output().unwrap()
     }
 
     /// A plain person: no `TB_CARD`, no `TB_AS`, no role.
     fn as_person(&self, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(args).env_remove("TB_CARD").env("USER", "person").env("TZ", "UTC");
+        c.args(args).env("USER", "person").env("TZ", "UTC");
+        scrub(&mut c);
         match &self.db {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
-        scrub(&mut c);
         c.output().unwrap()
     }
 
