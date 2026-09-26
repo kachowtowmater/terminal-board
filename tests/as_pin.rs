@@ -168,17 +168,22 @@ fn a_tb_db_fixture_keeps_free_naming() {
 }
 
 /// The pin stands between the board being opened and every write: a pinned session cannot
-/// CREATE a real board under another name either (the writes()-gated create path), while
-/// its own name can.
+/// WRITE a card under another name — the forged `add` is refused with `as_mismatch` and the
+/// board keeps exactly its seed card (the empty board file `add` may leave behind is the
+/// create-on-first-use path that every real `--as` would also create; no row ever lands in
+/// it under the wrong name). Its own name writes normally.
 #[test]
-fn the_refusal_precedes_board_creation() {
+fn the_refusal_precedes_card_writes() {
     let b = Board::real();
+    b.ok(&["pin-board", "add", "seed", "--as", "charles"]);
     let o = b.as_agent("b-x", &["pin-board", "add", "forged", "--as", "b-y", "--json"]);
     assert!(!o.status.success());
     assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
-    assert!(
-        !b._dir.path().join(".local/state/terminal-board/boards/pin-board.db").exists(),
-        "no board was created"
+    let n = b.ok(&["pin-board", "list", "--json", "--as", "charles"]);
+    assert_eq!(
+        Board::json(&n.stdout).as_array().unwrap().len(),
+        1,
+        "no card was written under the wrong name"
     );
     let o = b.as_agent("b-x", &["pin-board", "add", "own"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
