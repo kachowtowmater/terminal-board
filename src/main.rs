@@ -1421,7 +1421,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty())
     {
-        if terminal_board::env("DB").is_none() && !actor.trim().eq_ignore_ascii_case(&pinned) {
+        // A hook's own `tb` call inside this board's pre-change hook (a live run ticket,
+        // `TB_HOOK_TOKEN` — `hooks::nested`) is tb acting through its own mechanism, not the
+        // session forging a name: the hook script legitimately acts for whoever it serves
+        // (tests/hooks.rs exercises exactly this). The pin yields there, as it does to
+        // `TB_DB`; everything else is refused.
+        let board_path = store.path().map(|p| std::fs::canonicalize(&p).unwrap_or(p).display().to_string()).unwrap_or_default();
+        let in_hook = !board_path.is_empty() && terminal_board::hooks::nested(&board_path).is_some();
+        if !in_hook && terminal_board::env("DB").is_none() && !actor.trim().eq_ignore_ascii_case(&pinned) {
             return Err(BoardError(
                 format!(
                     "this session was launched as {pinned}; it cannot act as {actor} — use --as {pinned}"
