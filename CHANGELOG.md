@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.2.3 — 2026-09-25
+
+### Highlights
+
+- **`tb release` frees a stuck headless holder:** a `mode:headless` note with no pid and no
+  other liveness no longer blocks a `tb release` forever — the holder is dead for release
+  and the card goes back to TODO, unowned. tb-reap keeps its documented no-pid exemption
+  (#189).
+- **A pinned session keeps its name:** a session launched with `TB_AS` pinned can no longer
+  act under a different `--as` on a real board — every mismatched `--as` is refused before
+  anything is written, with the JSON code `as_mismatch` (#191).
+- A test message fix (#187): the person's `--force` assert now names the person force.
+
+### `tb release` treats a no-pid headless holder as dead
+
+- `tb release ID "why"` on a DOING card whose latest holder note is `mode:headless` with no
+  pid recorded and no herdr agent, tmux, pane, process or live session no longer refuses
+  with `holder_alive (headless (no pid recorded))` — the holder is dead, the release
+  proceeds, and the reason is logged. A headless note with a running pid is still refused
+  (`holder_alive (headless pid N)`).
+- tb-reap is untouched: its automatic scan keeps the documented no-pid exemption (a no-pid
+  headless note is conservative-alive for reaping, dead for release).
+
+### A session launched with TB_AS cannot act under another --as on a real board
+
+- tb-agent-start pins the session's name (`TB_AS`); from 3.2.3, every `--as` that differs
+  from the pin is refused on a real board path before anything is written, with the JSON
+  code `as_mismatch` and a message naming the launched identity and the fix (`use --as
+  <name>`). A hook-nested run yields the pin only with a live run ticket; a forged token
+  still gets `as_mismatch`.
+- Ordered after board resolution: a missing board is still the more basic error, and
+  `TB_DB` fixtures and persons (no `TB_AS`) are unaffected. `docs/JSON.md` lists the new
+  code.
+
+### A test message fix
+
+- The `--force` assert in `no_session_on_either_side_never_matches` names the person force,
+  not a stale "sessionless verifier" refusal (test-only, #187).
+
 ## 3.2.2 — 2026-09-25
 
 ### Highlights
