@@ -45,8 +45,9 @@ fn first_run_drive(home: &std::path::Path, tb_line: &str, keys: &str) -> Output 
 #[test]
 fn the_first_run_wizard_refuses_a_forged_as_before_making_the_board() {
     let home = tempfile::tempdir().unwrap();
-    // `tb` unquoted: the line needs the binary's absolute path (CARGO_BIN_EXE_tb), since a
-    // pty's sh resolves no PATH here — the plain `tb --as b-y` TEXT is what the pin compares.
+    let tb = env!("CARGO_BIN_EXE_tb");
+    // The line carries the binary's absolute path (CARGO_BIN_EXE_tb), since a pty's sh
+    // resolves no PATH here — the `--as b-y` TEXT is what the pin compares.
     let o = first_run_drive(home.path(), &format!("{tb} --as b-y"), "");
     let seen = String::from_utf8_lossy(&o.stdout);
     assert!(seen.contains("as_mismatch"), "the refusal never came: {seen:?}");
