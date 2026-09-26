@@ -104,7 +104,11 @@ fn a_pinned_session_acts_as_its_own_name() {
         let b = Board::real();
         let o = b.as_agent(pinned, &["pin-board", "add", "own", "--as", asked, "--json"]);
         assert!(o.status.success(), "pinned={pinned:?} asked={asked:?}: {}", String::from_utf8_lossy(&o.stderr));
-        assert_eq!(Board::json(&o.stdout)["card"]["actor"], "b-x", "the event carries the pinned name");
+        assert_eq!(
+            Board::json(&o.stdout)["card"]["events"][0]["actor"],
+            "b-x",
+            "the event carries the pinned name"
+        );
     }
 }
 
@@ -125,7 +129,11 @@ fn a_pinned_session_without_a_flag_uses_its_launched_name() {
     let b = Board::real();
     let o = b.as_agent("b-x", &["pin-board", "add", "own", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(Board::json(&o.stdout)["card"]["actor"], "b-x");
+    assert_eq!(
+        Board::json(&o.stdout)["card"]["events"][0]["actor"],
+        "b-x",
+        "the pinned name is used with no flag"
+    );
 }
 
 /// An empty/whitespace `TB_AS` is not a pin: nothing is ever refused on that account.
@@ -151,7 +159,11 @@ fn a_tb_db_fixture_keeps_free_naming() {
     let b = Board::pinned_db();
     let o = b.as_agent("b-x", &["add", "fixture", "--as", "b-y", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(Board::json(&o.stdout)["card"]["actor"], "b-y");
+    assert_eq!(
+        Board::json(&o.stdout)["card"]["events"][0]["actor"],
+        "b-y",
+        "under TB_DB the asked-for name is used"
+    );
 }
 
 /// The refusal fires before anything is opened: a pinned session cannot CREATE a real board
