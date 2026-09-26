@@ -480,13 +480,13 @@ fn changes_the_board(cmd: &Cmd) -> bool {
 /// run on; the same value every real write would land on. An exhaustive match whose
 /// catch-all is `None`: a command added later never trips the guard until someone names
 /// its card — the safe way round for a check that must not over-refuse reads.
-fn card_bound_target(cmd: &Cmd, positional_board: Option<&str>, flag_board: Option<&str>) -> Option<String> {
+fn card_bound_target(cmd: Option<&Cmd>, positional_board: Option<&str>, flag_board: Option<&str>) -> Option<String> {
     let (env_name, _ignored) = boards::env_board();
     let board = positional_board
         .or(flag_board)
         .or(env_name.as_deref())
         .unwrap_or(boards::DEFAULT_BOARD);
-    let id = match cmd {
+    let id = match cmd? {
         Cmd::Take { id, .. }
         | Cmd::Assign { id, .. }
         | Cmd::Note { id, .. }
