@@ -1,3 +1,11 @@
+# Upgrading to 3.2.3
+
+Nothing to do: boards and commands are unchanged from 3.2.2. The JSON output only gains the
+`as_mismatch` error code. Behaviour changes: `tb release` frees a DOING card whose holder
+note is `mode:headless` with no pid and no other liveness (tb-reap keeps its exemption); a
+session launched with `TB_AS` pinned cannot act under a different `--as` on a real board
+(`as_mismatch`; `TB_DB` fixtures and persons are unaffected).
+
 # Upgrading to 3.2.2
 
 Nothing to do: boards, commands and the JSON contract are unchanged from 3.2.1. The JSON
