@@ -878,8 +878,8 @@ fn an_agent_force_is_refused_without_a_registered_verifier_session() {
     assert!(e.contains("only a person or a registered verifier may force a card to done"), "{e}");
     assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "the refusal names the fix: {e}");
     assert_eq!(b.column(&id), "review");
-    // the same refusal on the move path
-    let (e, code) = b.refused(AGENT, "orch", &["move", &id, "done", "--force"]);
+    // the same refusal on the move path (also unregistered — the raw runner, as above)
+    let (e, code) = b.refused_raw(&Board::str_env(AGENT), "orch", &["move", &id, "done", "--force"]);
     assert_eq!(code, "force_needs_person", "{e}");
     assert_eq!(b.column(&id), "review");
 }

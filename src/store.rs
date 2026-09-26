@@ -403,13 +403,13 @@ pub(crate) struct DoneCheck {
 /// The force-only question (card #178, rv-169 probe P5b), asked by `transition_inner` AFTER
 /// the skip list — it guards the force itself, so it never rides in `done_checks`'s list:
 /// there `--force` would log it and skip it, the exact hole the rule closes. `Some(check)`
-/// when an AGENT's close met a verifier-session refusal (`force_guard_failed_last` decides
-/// when the question is even asked): `check.err` is the refusal when `may_force` says no, and
+/// whenever an AGENT closes a card into DONE (every such close meets the verifier-session
+/// block, refusing or passing): `check.err` is the refusal when `may_force` says no, and
 /// `check.forced` is the one extra `force` event a passing force logs, naming the
 /// registered-session question it answered. A person's force is none of this — `None`.
 fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCheck>> {
     let who = actors::current();
-    if !verifier::is_agent(&who) || !force_guard_failed_last(conn, c, actor)? {
+    if !verifier::is_agent(&who) {
         return Ok(None);
     }
     Ok(Some(DoneCheck {
@@ -417,17 +417,6 @@ fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCh
         err: verifier::force_needs_person_err(c.id, actor, &who),
         forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
     }))
-}
-
-/// Did the LAST guard a plain close of `c` would meet sit in the verifier-session block
-/// (`not_verifier`, `unregistered_verifier`, `agent_as_person`)? The force-only question is
-/// only asked then — a force that skipped none of those rules needs no person behind it.
-fn force_guard_failed_last(conn: &Connection, c: &Card, actor: &str) -> Result<bool> {
-    let v = done_checks(conn, c, actor)?;
-    Ok(matches!(
-        v.last().map(|d| d.err.1),
-        Some(Code::NotVerifier) | Some(Code::UnregisteredVerifier) | Some(Code::AgentAsPerson)
-    ))
 }
 
 fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
