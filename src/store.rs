@@ -473,10 +473,9 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, force: bool) -> Result<
         });
     }
     if force && force_guard_failed(v.last()) {
-        v.push(
-            force_check(conn, c, actor, &who)
-                .expect("the check is only asked when a verifier-session rule refused the close"),
-        );
+        if let Some(check) = force_check(conn, c, actor, &who) {
+            v.push(check);
+        }
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {
