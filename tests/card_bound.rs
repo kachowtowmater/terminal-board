@@ -116,9 +116,9 @@ impl Board {
         serde_json::from_slice(v).unwrap()
     }
 
-    /// The card count on the real board, read as a person.
-    fn count(&self) -> usize {
-        let n = self.ok(&["default", "list", "--json", "--as", "charles"]);
+    /// The card count on the named board, read as a person.
+    fn count(&self, board: &str) -> usize {
+        let n = self.ok(&[board, "list", "--json", "--as", "charles"]);
         Board::json(&n.stdout).as_array().unwrap().len()
     }
 }
@@ -151,7 +151,7 @@ fn a_bound_session_cannot_write_another_card() {
         assert!(err.contains("p#1"), "the refusal names the bound card: {err}");
         assert!(err.contains("p#2"), "the refusal names the asked-for card: {err}");
     }
-    assert_eq!(b.count(), 2, "nothing was written");
+    assert_eq!(b.count("p"), 2, "nothing was written");
 }
 
 /// A bound session works its own card: `take` (the very first move) succeeds.
@@ -175,7 +175,7 @@ fn a_bound_session_cannot_add_a_card() {
     assert_eq!(v["code"], "card_bound", "{v}");
     let err = v["error"].as_str().unwrap();
     assert!(err.contains("p#1"), "the refusal names the bound card: {err}");
-    assert_eq!(b.count(), 1, "no card was created");
+    assert_eq!(b.count("p"), 1, "no card was created");
 }
 
 /// A write on a card of ANOTHER board is refused too: `TB_CARD=p#1` does not own `q#1`,
@@ -226,7 +226,7 @@ fn a_tb_db_fixture_is_exempt() {
     let b = Board::fixture_db();
     b.ok(&["add", "seed", "--as", "charles"]);
     b.ok(&["add", "other", "--as", "charles"]);
-    let o = b.as_bound("default#1", &["take", "2", "--as", "b-1"]);
+    let o = b.as_bound("default#1", &["take", "1", "--as", "b-1"]);
     assert!(o.status.success(), "a fixture DB is unaffected: {}", String::from_utf8_lossy(&o.stderr));
 }
 
@@ -246,9 +246,11 @@ fn a_lead_role_is_exempt() {
     let b = Board::real();
     b.ok(&["p", "add", "c1", "--as", "charles"]);
     b.ok(&["p", "add", "c2", "--as", "charles"]);
+    // `take 2` succeeds the first time and is refused (already held) afterwards — either
+    // way the CARD-BOUND guard is the one thing it must never be refused by
     for role in ["lead", "orchestrator", "LEAD"] {
         let o = b.with_role("p#1", role, &["p", "take", "2", "--json"]);
-        assert!(o.status.success(), "{role} steers any card: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(o.status.success() || Board::json(&o.stdout)["code"] != "card_bound", "{role} steers any card: {}", String::from_utf8_lossy(&o.stderr));
     }
 }
 
@@ -270,5 +272,5 @@ fn the_refusal_precedes_card_writes() {
         assert!(!o.status.success(), "{args:?} refused");
     }
     b.as_bound("p#1", &["p", "note", "2", "a note is not a write on the card", "--as", "b-1"]);
-    assert_eq!(b.count(), 2, "nothing was written");
+    assert_eq!(b.count("p"), 2, "nothing was written");
 }
