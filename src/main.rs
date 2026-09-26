@@ -883,13 +883,33 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 // - the board not being real at all: a missing non-default board (refused later with
 //   `no_board`) or an in-memory/default-board opening (`:memory:`) — no file, nothing to
 //   protect. There the more basic error must still win (the lead decision on #191).
+/// `path` fully canonicalized: std's `canonicalize` needs the WHOLE path to exist, so on
+/// macOS (`/var` -> `/private/var`) a not-yet-existing tail would stay un-resolved. Instead
+/// the longest prefix that DOES exist is canonicalized and the missing tail re-attached, so
+/// the components compare the same way on every platform.
+fn resolve_scope(path: &std::path::Path) -> std::path::PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match std::fs::canonicalize(&existing) {
+            Ok(real) => return tail.into_iter().rev().fold(real, |p, c| p.join(c)),
+            Err(_) if existing.parent().is_some() => {
+                tail.push(existing.file_name().unwrap().to_os_string());
+                existing = existing.parent().unwrap().to_path_buf();
+            }
+            Err(_) => return path.to_path_buf(),
+        }
+    }
+}
+
 fn db_exempt(store_path: Option<&std::path::Path>) -> bool {
     terminal_board::env("DB").is_some() && store_path.is_none_or(|p| {
         // the store itself resolves the link (`fsperm::create_board` creates the link's
         // TARGET and the connection opens that target, which `store.path()` then reports),
         // so only the two tb directories need resolving here
-        let boards = fsperm::resolve(&boards::boards_dir()).unwrap_or_else(|_| boards::boards_dir());
-        let archive = fsperm::resolve(&boards::archive_dir()).unwrap_or_else(|_| boards::archive_dir());
+        let boards = resolve_scope(&boards::boards_dir());
+        let archive = resolve_scope(&boards::archive_dir());
+        let p = resolve_scope(p);
         !(p.starts_with(&boards) || p.starts_with(&archive))
     })
 }
