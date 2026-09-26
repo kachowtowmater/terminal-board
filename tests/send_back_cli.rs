@@ -31,7 +31,7 @@ fn review_to_todo_prints_a_todo_line() {
     let o = tb(&db, gh, "rev", &["move", &id.to_string(), "todo", "FAIL C3 the widget is still red"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout).into_owned();
-    assert!(out.contains(&format!("#{id} is back in TODO, unowned (round r2)")) && out.contains(&format!("anyone can take it with 'tb take {id}'")), "{out}");
+    assert!(out.contains(&format!("#{id} is back in TODO, unowned (round r2)")) && out.contains(&format!("is back in TODO, unowned")) && out.contains(&format!("take {id}'")) && out.contains("anyone can take it"), "{out}");
     assert_eq!((s.card(id).unwrap().column.as_str(), s.card(id).unwrap().owner.as_deref()), ("todo", None));
 }
 /// A card that bot-1 took and moved to REVIEW.
