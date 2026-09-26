@@ -398,9 +398,10 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-note` (store/closing.rs): a note written during the stay being left. `github`
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
-/// Whether the LAST guard in a `done_checks` list is one of the verifier-session refusals
-/// (rule 2): `--force` past one of those still needs a person behind it, so #178 adds the
-/// FORCE-ONLY check below whenever the list ends in one.
+///
+/// `force_guard_failed` reads the LAST guard in a `done_checks` list: when it is one of the
+/// verifier-session refusals (rule 2), `--force` past it still needs a person behind it, so
+/// #178 adds the FORCE-ONLY check below whenever the list ends in one.
 fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
     matches!(
         last.map(|d| d.err.1),
