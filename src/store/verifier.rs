@@ -170,6 +170,18 @@ pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Resu
     }
 }
 
+/// May `actor`, with identity `who`, FORCE a REVIEW card into DONE (card #178)? The force
+/// skipped a verifier-session rule, so it rides on the same registry: a person always can, an
+/// agent only from a registered verifier session (name and harness), and `github` (the sync,
+/// which never forces) is out of scope — `done_checks` only asks this after a verifier rule
+/// refused the plain close.
+pub(super) fn may_force(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if !is_agent(who) {
+        return Ok(true);
+    }
+    Ok(registered(conn, actor, who)?)
+}
+
 /// The entry vouches for one harness: the identity's harness must be that one (card #169,
 /// lead decision 15:26 — tb-agent-start writes the true harness; tb hardcodes none). A blank
 /// harness on either side matches nothing.

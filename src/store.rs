@@ -409,6 +409,21 @@ fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
     )
 }
 
+/// The force-only check (card #178, rv-169 probe P5b): `--force` past a refused REVIEW → DONE
+/// is itself a person's act — the force skipped a verifier-session rule — so the session it
+/// comes from must be a REGISTERED verifier's, or a person's. An agent whose resolved session
+/// answers to nothing gets `force_needs_person` and nothing moves.
+fn force_check(conn: &Connection, c: &Card, actor: &str, who: &Identity) -> Option<DoneCheck> {
+    if !verifier::may_force(conn, actor, who).unwrap_or(false) {
+        return Some(DoneCheck {
+            rule: "only a person or a registered verifier may force a close",
+            err: verifier::force_needs_person_err(c.id, actor, who),
+            forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
+        });
+    }
+    None
+}
+
 fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
@@ -455,11 +470,10 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
         });
     }
     if force_guard_failed(v.last()) {
-        v.push(DoneCheck {
-            rule: "only a person or a registered verifier may force a close",
-            err: verifier::force_needs_person_err(id, actor, &who),
-            forced: format!("closed #{id} with --force from a session that is not a registered verifier"),
-        });
+        v.push(
+            force_check(conn, c, actor, &who)
+                .expect("the check is only asked when a verifier-session rule refused the close"),
+        );
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {
