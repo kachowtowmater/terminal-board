@@ -17,7 +17,11 @@ fn shell_quote(s: &str) -> String {
 /// perl's `alarm` (macOS has no `timeout`); Linux `script` takes the command with `-e -c`,
 /// the BSD/macOS one as a bare operand (the same branch `access.rs::board_keys` uses).
 fn first_run_drive(home: &std::path::Path, tb_line: &str, keys: &str) -> Output {
-    let tb = env!("CARGO_BIN_EXE_tb");
+    // The pin travels INSIDE the `sh -c` feed (a `TB_AS=b-x …` prefix), not on the Command:
+    // on Linux `script` re-executes its `-c` command with the environment it was born with,
+    // and the pty reader (`sh` under `script`) drops inherited vars unevenly — the pin must
+    // be visible to the tb process itself, exactly like the gate's C1b line.
+    let pin = "TB_AS=b-x TB_SESSION=sess-fr";
     let pty = if cfg!(target_os = "linux") {
         format!("script -q -e -c {0} /dev/null", shell_quote(tb_line))
     } else {
@@ -26,12 +30,12 @@ fn first_run_drive(home: &std::path::Path, tb_line: &str, keys: &str) -> Output 
         format!("script -q /dev/null {0}", shell_quote(tb_line))
     };
     let feed = format!(
-        "(sleep 1; printf {keys}; sleep 2; sleep 1) | perl -e 'alarm shift @ARGV; exec @ARGV' 30 {pty} 2>&1",
+        "(sleep 1; printf {keys}; sleep 2; sleep 1) | {pin} perl -e 'alarm shift @ARGV; exec @ARGV' 30 {pty} 2>&1",
         keys = shell_quote(keys),
     );
     let mut c = Command::new("sh");
     c.arg("-c").arg(&feed);
-    c.current_dir(home).env("HOME", home).env("TB_AS", "b-x").env("TB_SESSION", "sess-fr").env("TB_NO_HERDR", "1").env("TZ", "UTC");
+    c.current_dir(home).env("HOME", home).env("TB_NO_HERDR", "1").env("TZ", "UTC");
     for k in ["TB_DB", "TTYBOARD_DB", "TB_BOARD", "TTYBOARD_BOARD", "TB_CONFIG", "TB_READONLY", "TTYBOARD_READONLY", "HERDR_AGENT_NAME", "TB_HARNESS", "TB_MODEL", "TB_ROLE", "TB_HOST", "TB_TTY", "TTYBOARD_TTY", "AI_AGENT", "OMPCODE", "CLAUDECODE", "CODEX_SESSION_ID", "HERDR_PANE_ID"] {
         c.env_remove(k);
     }
