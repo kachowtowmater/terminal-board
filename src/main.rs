@@ -1484,8 +1484,11 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         return setup::run(&name, o);
     }
     let tty = std::io::stdout().is_terminal();
-    // first run: bare `tb` in a terminal on a machine where nothing is set up yet
+    // first run: bare `tb` in a terminal on a machine where nothing is set up yet. The wizard
+    // creates the board, so the creation pin guard runs FIRST — a pinned session must be
+    // refused before any file is made (#201), like `tb new` / `tb setup` / first-use above.
     if cli.cmd.is_none() && tty && std::io::stdin().is_terminal() && setup::first_run() {
+        pin_guards_creation(&boards::path_for(&name), &actor)?;
         setup::run(&name, setup::Options { first_run: true, actor: Some(actor.clone()), ..Default::default() })?;
     }
     if let Some(cmd) = cli.cmd.as_mut() {
