@@ -385,9 +385,7 @@ pub(crate) struct DoneCheck {
 /// Every guard a move of card `c` into DONE by `actor` would fail, in the order
 /// `transition_inner` applies them (see its doc comment). The ONE list both the transition and
 /// the full-screen board's force prompt read, so they can never disagree about what a forced
-/// close skips. `force` (the move's own flag) adds the FORCE-ONLY check on top when the list
-/// ends in a verifier-session refusal; the plain path (`done_would_skip`, force=false) never
-/// sees it, so it keeps naming exactly the rules a force WOULD skip.
+/// close skips.
 ///
 /// - review-first (store/verifier.rs, rule 1): only from REVIEW — binds everyone.
 /// - self-approval: never the card's author or last holder. Every way into DONE is guarded,
@@ -403,8 +401,9 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
 ///
 /// `force_guard_failed` reads the LAST guard in a `done_checks` list: when it is one of the
-/// verifier-session refusals (rule 2), `--force` past it still needs a person behind it, so
-/// #178 adds the FORCE-ONLY check below whenever the list ends in one.
+/// verifier-session refusals (rule 2), the force that got past it must itself answer to the
+/// registry — `transition_inner` then applies the FORCE-ONLY check below, which no `--force`
+/// can skip (it guards the force, not the close).
 fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
     matches!(
         last.map(|d| d.err.1),
@@ -412,22 +411,24 @@ fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
     )
 }
 
-/// The force-only check (card #178, rv-169 probe P5b): `--force` past a refused REVIEW → DONE
-/// is itself a person's act — the force skipped a verifier-session rule — so the session it
-/// comes from must be a REGISTERED verifier's, or a person's. An agent whose resolved session
-/// answers to nothing gets `force_needs_person` and nothing moves.
-fn force_check(conn: &Connection, c: &Card, actor: &str, who: &Identity) -> Option<DoneCheck> {
-    if !verifier::may_force(conn, actor, who).unwrap_or(false) {
-        return Some(DoneCheck {
-            rule: "only a person or a registered verifier may force a close",
-            err: verifier::force_needs_person_err(c.id, actor, who),
-            forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
-        });
+/// The force-only refusal (card #178, rv-169 probe P5b): the check `transition_inner` applies
+/// AFTER the skip list — a force that got past a verifier-session rule is itself refused when
+/// the session behind the force is not a registered verifier's (or a person's). It guards the
+/// force itself, so it never rides in `done_checks`'s list: there `--force` would log it and
+/// skip it, the exact hole the rule closes.
+fn force_check(conn: &Connection, c: &Card, actor: &str) -> Option<DoneCheck> {
+    let who = actors::current();
+    if verifier::may_force(conn, actor, &who).unwrap_or(false) {
+        return None;
     }
-    None
+    Some(DoneCheck {
+        rule: "only a person or a registered verifier may force a close",
+        err: verifier::force_needs_person_err(c.id, actor, &who),
+        forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
+    })
 }
 
-fn done_checks(conn: &Connection, c: &Card, actor: &str, force: bool) -> Result<Vec<DoneCheck>> {
+fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
     if c.column != "review" {
@@ -471,11 +472,6 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, force: bool) -> Result<
             err: verifier::agent_as_person_err(id, actor, &ancestry),
             forced: format!("closed #{id} as a 'person' from an agent's process"),
         });
-    }
-    if force && force_guard_failed(v.last()) {
-        if let Some(check) = force_check(conn, c, actor, &who) {
-            v.push(check);
-        }
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {
@@ -2566,7 +2562,7 @@ impl Store {
         if c.column == "done" {
             return Ok(Vec::new());
         }
-        Ok(done_checks(&self.conn, &c, actor, false)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+        Ok(done_checks(&self.conn, &c, actor)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
@@ -2812,11 +2808,17 @@ impl Store {
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor, force)? {
+            for check in done_checks(&tx, &c, actor)? {
                 if !force {
                     return Err(check.err);
                 }
                 Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+            }
+            // the force-only rule (#178) is NOT part of the skippable list above — it guards
+            // the force itself, so it refuses even when `--force` is held: an agent whose
+            // resolved session is not a registered verifier's cannot log its way past it.
+            if let Some(check) = force_check(&tx, &c, actor) {
+                return Err(check.err);
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it
