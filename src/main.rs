@@ -484,8 +484,8 @@ fn card_bound_target(cmd: &Cmd, positional_board: Option<&str>, flag_board: Opti
     let (env_name, _ignored) = boards::env_board();
     let board = positional_board
         .or(flag_board)
-        .or(env_name)
-        .unwrap_or_else(|| boards::DEFAULT_BOARD.to_string());
+        .or(env_name.as_deref())
+        .unwrap_or(boards::DEFAULT_BOARD);
     let id = match cmd {
         Cmd::Take { id, .. }
         | Cmd::Assign { id, .. }
@@ -500,8 +500,8 @@ fn card_bound_target(cmd: &Cmd, positional_board: Option<&str>, flag_board: Opti
         | Cmd::Rm { id, .. }
         | Cmd::Restore { id, .. }
         | Cmd::Prio { id, .. }
-        | Cmd::Edit { id, .. }
         | Cmd::Mv { id, .. } => *id,
+        Cmd::Edit { id, .. } => id.unwrap_or(0),
         _ => return None,
     };
     Some(format!("{board}#{id}"))
