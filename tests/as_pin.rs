@@ -167,6 +167,36 @@ fn a_tb_db_fixture_keeps_free_naming() {
     );
 }
 
+/// A `TB_HOOK_TOKEN` alone buys nothing: the pin yields only when `hooks::nested` validates a
+/// LIVE run ticket tb wrote for a running hook (64-hex token whose private `.run` ticket file
+/// names this board and a live pid). Any shell can set the variable; a bogus token still
+/// refuses with `as_mismatch`.
+#[test]
+fn a_forged_hook_token_does_not_bypass_the_pin() {
+    let b = Board::real();
+    b.ok(&["pin-board", "add", "seed", "--as", "charles"]);
+    for token in ["x", "../config.json", &"a".repeat(64)] {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(["pin-board", "add", "forged", "--as", "b-y", "--json"])
+            .env("TB_AS", "b-x")
+            .env("TB_HARNESS", "omp")
+            .env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder")
+            .env("TB_SESSION", "omp-b-x-1")
+            .env("TB_NO_HERDR", "1")
+            .env("TB_HOOK_TOKEN", token)
+            .env("HOME", b._dir.path())
+            .env("TZ", "UTC")
+            .output()
+            .unwrap();
+        assert!(!c.status.success(), "token={token:?} got past the pin");
+        let v = Board::json(&c.stdout);
+        assert_eq!(v["code"], "as_mismatch", "token={token:?}: {v}");
+    }
+    let n = b.ok(&["pin-board", "list", "--json", "--as", "charles"]);
+    assert_eq!(Board::json(&n.stdout).as_array().unwrap().len(), 1, "nothing was written");
+}
+
 /// The pin stands between the board being opened and every write: a pinned session cannot
 /// WRITE a card under another name — the forged `add` is refused with `as_mismatch` and the
 /// board keeps exactly its seed card (the empty board file `add` may leave behind is the
