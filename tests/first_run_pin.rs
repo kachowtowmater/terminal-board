@@ -50,7 +50,10 @@ fn the_first_run_wizard_refuses_a_forged_as_before_making_the_board() {
     // resolves no PATH here — the `--as b-y` TEXT is what the pin compares.
     let o = first_run_drive(home.path(), &format!("{tb} --as b-y"), "");
     let seen = String::from_utf8_lossy(&o.stdout);
-    assert!(seen.contains("as_mismatch"), "the refusal never came: {seen:?}");
+    assert!(
+        seen.contains("this session was launched as b-x") && seen.contains("cannot act as b-y"),
+        "the refusal never came: {seen:?}"
+    );
     assert!(!seen.contains("Set up Terminal Board now?"), "the wizard must never even ask: {seen:?}");
     assert!(
         !home.path().join(".local/state/terminal-board/boards/default.db").exists(),
