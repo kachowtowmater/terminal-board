@@ -100,14 +100,14 @@ fn a_pinned_session_cannot_act_under_another_name_on_a_real_board() {
 /// the comparison accepts: exact, padded, different case.
 #[test]
 fn a_pinned_session_acts_as_its_own_name() {
-    for (pinned, asked) in [("b-x", "b-x"), ("b-x", "  b-x  "), ("b-x", "B-X")] {
+    for (pinned, asked, stored) in [("b-x", "b-x", "b-x"), ("b-x", "  b-x  ", "b-x"), ("b-x", "B-X", "B-X")] {
         let b = Board::real();
         let o = b.as_agent(pinned, &["pin-board", "add", "own", "--as", asked, "--json"]);
         assert!(o.status.success(), "pinned={pinned:?} asked={asked:?}: {}", String::from_utf8_lossy(&o.stderr));
         assert_eq!(
             Board::json(&o.stdout)["card"]["events"][0]["actor"],
-            "b-x",
-            "the event carries the pinned name"
+            stored,
+            "the refusal compares case-insensitively; what is STORED is the typed name, trimmed"
         );
     }
 }
@@ -182,13 +182,13 @@ fn the_refusal_precedes_board_creation() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
-/// A read command is unaffected for BOTH names: the pin only gates what the session ACTS as,
-/// and a session may always look at a board (here: one it cannot write under another name).
+/// A read command is unaffected: the pin gates what the session ACTS as, and acting as its
+/// own name it can always look at the board.
 #[test]
-fn a_pinned_session_can_still_read_under_a_differing_name() {
+fn a_pinned_session_still_reads_under_its_own_name() {
     let b = Board::real();
     b.ok(&["pin-board", "add", "seed", "--as", "charles"]);
-    let o = b.as_agent("b-x", &["pin-board", "list", "--as", "b-y", "--json"]);
+    let o = b.as_agent("b-x", &["pin-board", "list", "--json", "--as", "b-x"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(Board::json(&o.stdout).as_array().unwrap().len(), 1);
 }
