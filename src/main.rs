@@ -884,13 +884,13 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 //   `no_board`) or an in-memory/default-board opening (`:memory:`) — no file, nothing to
 //   protect. There the more basic error must still win (the lead decision on #191).
 fn db_exempt(store_path: Option<&std::path::Path>) -> bool {
-    terminal_board::env("DB").map_or(false, |db| {
+    terminal_board::env("DB").is_some_and(|db| {
         // the store itself resolves the link (`fsperm::create_board` creates the link's
         // TARGET and the connection opens that target, which `store.path()` then reports),
         // so only the two tb directories need resolving here
         let boards = fsperm::resolve(&boards::boards_dir()).unwrap_or_else(|_| boards::boards_dir());
         let archive = fsperm::resolve(&boards::archive_dir()).unwrap_or_else(|_| boards::archive_dir());
-        store_path.map_or(true, |p| !(p.starts_with(&boards) || p.starts_with(&archive)))
+        store_path.is_none_or(|p| !(p.starts_with(&boards) || p.starts_with(&archive)))
     })
 }
 
