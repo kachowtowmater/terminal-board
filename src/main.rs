@@ -474,22 +474,23 @@ fn changes_the_board(cmd: &Cmd) -> bool {
     )
 }
 
-/// The card a command targets, as `<board>#<id>` — for the card-bound guard above. `None`
-/// when the command names no existing card (new cards, and `next`'s pick-a-branch flow).
-/// The board name comes from the parsed `--board`/positional, exactly as the command will
-/// run on; the same value every real write would land on. An exhaustive match whose
-/// catch-all is `None`: a command added later never trips the guard until someone names
-/// its card — the safe way round for a check that must not over-refuse reads.
-fn card_bound_target(cmd: Option<&Cmd>, positional_board: Option<&str>, flag_board: Option<&str>) -> Option<String> {
-    let (env_name, _ignored) = boards::env_board();
-    let board = positional_board
-        .or(flag_board)
-        .or(env_name.as_deref())
-        .unwrap_or(boards::DEFAULT_BOARD);
-    let id = match cmd? {
+/// What a command would WRITE, as far as a card is concerned — for the card-bound guard
+/// in `run`. `None` when it writes no card at all: every read, `import --dry-run`, and a
+/// single `edit` with no id (`--from FILE` is the bulk path and is refused with the new
+/// cards it carries). An exhaustive match whose catch-all is `None`: a command added
+/// later stays unguarded until somebody names its write — never over-refuse a read.
+#[derive(Debug, PartialEq, Eq)]
+enum CardWrite {
+    /// The card this command would change.
+    Card(i64),
+    /// A card this command would CREATE (`add`, a bulk `import`, `edit --from`).
+    NewCard,
+}
+
+fn card_bound_write(cmd: &Cmd) -> Option<CardWrite> {
+    match cmd {
         Cmd::Take { id, .. }
         | Cmd::Assign { id, .. }
-        | Cmd::Note { id, .. }
         | Cmd::Check { id, .. }
         | Cmd::Link { id, .. }
         | Cmd::Move { id, .. }
@@ -500,11 +501,17 @@ fn card_bound_target(cmd: Option<&Cmd>, positional_board: Option<&str>, flag_boa
         | Cmd::Rm { id, .. }
         | Cmd::Restore { id, .. }
         | Cmd::Prio { id, .. }
-        | Cmd::Mv { id, .. } => *id,
-        Cmd::Edit { id, .. } => id.unwrap_or(0),
-        _ => return None,
-    };
-    Some(format!("{board}#{id}"))
+        | Cmd::Mv { id, .. } => Some(CardWrite::Card(*id)),
+        Cmd::Edit { id: Some(id), .. } => Some(CardWrite::Card(*id)),
+        // `note` is the exempt command: a bound session reports what it finds on ANY card.
+        Cmd::Note { .. } => None,
+        // `import --dry-run` writes nothing (a dry run or a file with problems never
+        // writes — checked before the board opens); a real import, a bulk
+        // `edit --from`, and `add` all create a card this session did not bring
+        Cmd::Import { dry_run: true, .. } => None,
+        Cmd::Add { .. } | Cmd::Import { .. } | Cmd::Edit { from: Some(_), .. } => Some(CardWrite::NewCard),
+        _ => None,
+    }
 }
 
 /// The name a refusal shows for a command.
