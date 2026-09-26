@@ -131,7 +131,7 @@ alone unless a person asks you to.
 - Never approve your own work: REVIEW → DONE is a verifier's `tb done` (above). A board may also name who closes its cards (`tb config done-by`) or
   require a link first (`tb config done-needs-link LABEL`): the error says what to do. All of these catch an honest mistake — names, roles and labels
   are self-asserted — so never pass another agent's name, claim a role, or fake a link. A close whose identity looks like a person's but whose kernel
-  parent chain holds an agent binary (`omp`, `claude`, `codex`, `pi`) is also refused (`agent_as_person`).
+  parent chain holds an agent binary (`omp`, `claude`, `codex`, `pi`) is refused (`agent_as_person`), and so is any person-only config change.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused (`--force`

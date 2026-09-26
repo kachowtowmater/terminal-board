@@ -1000,12 +1000,15 @@ person turns it off) — there is no environment switch an agent could set.
 
 A close that looks like a person's but runs from an agent's process is refused
 (`agent_as_person`): the identity carries no harness, but the kernel's ancestry holds an
-agent binary (`omp`, `claude`, `codex`, `pi`). A real person in a terminal still closes.
+agent binary (`omp`, `claude`, `codex`, `pi`). The same check guards every person-only
+change — `config verifier-only`, `config verifiers`, deleting a board — so a scrubbed env
+cannot turn the rule off or list itself first. A real person in a terminal still closes.
 
 **Residual risk, stated plainly:** everything above runs as the same OS user as the caller.
 The registry directory, the board file and the environment are all writable by that user, so
 a determined same-uid attacker can still forge a close (edit the registry, `sqlite3` the
-board, scrub the env of a fresh process tree). The interim stops the env/script forge and
+board, scrub the env of a process started outside the agent's tree). The interim stops the
+env/script forge (closes and person-only settings alike) and
 the accident; the ancestry stamp makes everything else *visible* after the fact — a close
 whose recorded ancestry, identity and registry do not agree is the alarm a person reviews.
 The ancestry check also misses a command handed to a process outside the agent's tree

@@ -67,7 +67,8 @@ afterwards. tb sees an agent by
 its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables
 (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen,
 and counts as a person — unless the ancestry says otherwise (`agent_as_person`: a close that looks
-like a person's but runs from an agent's process is refused). `--force` gets past the
+like a person's but runs from an agent's process is refused — and so is a person-only change,
+such as `config verifier-only off`, made that way). `--force` gets past the
 rule and is logged; `tb config verifier-only off` lets any reviewer close a card on this board
 (still only from REVIEW, never their own work). A verifier also never closes from the same
 recorded session as the work: a session that took the card or moved it into review cannot close

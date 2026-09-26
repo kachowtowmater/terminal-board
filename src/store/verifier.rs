@@ -94,11 +94,16 @@ pub(super) fn person_only_err(key: &str, actor: &str, who: &Identity) -> BoardEr
     )
 }
 
-/// Refuse a change to `key` when this process is an agent.
+/// Refuse a change to `key` when this process is an agent — by its identity, or by its kernel
+/// parent chain when the identity says person (`agent_as_person`: a scrubbed env must not turn
+/// the rule off, card #169).
 fn person_only(key: &str, actor: &str) -> Result<()> {
     let who = super::actors::current();
     if is_agent(&who) {
         return Err(person_only_err(key, actor, &who));
+    }
+    if let Some(ancestry) = agent_as_person(actor, &who) {
+        return Err(agent_as_person_change_err(&format!("change '{key}'"), actor, &ancestry));
     }
     Ok(())
 }
@@ -113,6 +118,9 @@ pub fn person_only_to(what: &str) -> Result<()> {
             format!("only a person may {what} — this is {harness}, an agent. Ask the person who runs this board"),
             Code::PersonOnly,
         ));
+    }
+    if let Some(ancestry) = agent_as_person("this person", &who) {
+        return Err(agent_as_person_change_err(what, "this person", &ancestry));
     }
     Ok(())
 }
@@ -216,10 +224,28 @@ pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> 
              started by {} — an agent's process. tb records the kernel's parent chain with every close; \
              an agent does not close as a person. Close it from your own terminal, or as a verifier \
              in a registered session (or --force, logged)",
-            ancestry.iter().find(|n| is_agent_ancestry(std::slice::from_ref(n))).map(String::as_str).unwrap_or("an agent")
+            first_agent(ancestry)
         ),
         Code::AgentAsPerson,
     )
+}
+
+/// A person-only change (`person_only`, `person_only_to`) asked from an agent's process under
+/// a person's identity: the same refusal as a close, so no env scrub turns the rule off.
+pub(super) fn agent_as_person_change_err(what: &str, actor: &str, ancestry: &[String]) -> BoardError {
+    BoardError(
+        format!(
+            "only a person may {what} — {actor} says it is a person (no harness in its identity), but \
+             this command was started by {} — an agent's process. Do it from your own terminal",
+            first_agent(ancestry)
+        ),
+        Code::AgentAsPerson,
+    )
+}
+
+/// The first agent binary in `ancestry`, for the refusal text.
+fn first_agent(ancestry: &[String]) -> &str {
+    ancestry.iter().find(|n| is_agent_ancestry(std::slice::from_ref(n))).map(String::as_str).unwrap_or("an agent")
 }
 
 /// `verifier-only` — on unless the board says off.
@@ -456,10 +482,11 @@ pub(super) mod registry {
     /// REVIEW → DONE refusal when the session is not a registered verifier.
     pub(super) fn unregistered_err(id: i64, actor: &str, who: &Identity) -> BoardError {
         let session = who.session.as_deref().unwrap_or("none");
+        let harness = who.harness.as_deref().unwrap_or("none");
         BoardError(
             format!(
                 "only a registered verifier moves #{id} from review to done — {actor} runs in session \
-                 {session}, which tb-agent-start did not start as a verifier (harness claude-code). \
+                 {session}, which tb-agent-start did not start as a verifier (harness {harness}). \
                  Start the verifier with: tb-agent-start <name> --kind claude --model <model> --role verifier \
                  (or --force, logged)"
             ),

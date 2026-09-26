@@ -798,3 +798,57 @@ fn the_registry_refusal_names_the_fix_not_the_list() {
     assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "{e}");
     assert!(!e.contains("config verifiers"), "never teach the refused agent the list: {e}");
 }
+
+/// Runs `tb <args> --json --as <who>` as a 'person' (no harness in the env) from a shell
+/// whose kernel name is `omp` — a copy of bash — so the agent binary is a real ancestor.
+/// `; true` keeps bash from exec'ing tb in place (which would drop `omp` from the chain).
+/// None where the platform has no bash to copy.
+fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
+    let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
+    let omp = b.dir.path().join("omp");
+    std::fs::copy(&bash, &omp).ok()?;
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
+    line.extend(args.iter().map(|a| quote(a)));
+    line.extend(["--json".to_string(), "--as".to_string(), quote(who), "; true".to_string()]);
+    let o = Command::new(&omp)
+        .args(["-c", &line.join(" ")])
+        .env_clear()
+        .env("TB_DB", b.db())
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", "/nonexistent/gh")
+        .env("USER", "login-user")
+        .env("TZ", "UTC")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", b.dir.path())
+        .output()
+        .unwrap();
+    Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
+}
+
+#[test]
+fn a_person_under_an_agent_process_closes_nothing_and_changes_no_rule() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
+    let id = b.in_review("r7: scrubbed env under omp", "bot-1");
+    let Some(close) = under_omp(&b, "charles", &["done", &id]) else {
+        eprintln!("skipped: no bash to copy as omp");
+        return;
+    };
+    assert_eq!(close["code"], "agent_as_person", "the close: {close}");
+    assert_eq!(b.column(&id), "review");
+    // every person-only change is refused the same way (card #169 r2): the rule stays on and
+    // the list stays as the person set it
+    for args in [&["config", "verifier-only", "off"][..], &["config", "verifiers", "rv-1,charles"], &["config", "verifiers", "--off"]] {
+        let v = under_omp(&b, "charles", args).unwrap();
+        assert_eq!(v["code"], "agent_as_person", "{args:?}: {v}");
+    }
+    assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "on", "the rule is still on");
+    assert_eq!(b.json(&["config", "verifiers"])["config"]["value"], serde_json::json!(["rv-1"]), "the list is unchanged");
+    // and an unregistered omp 'verifier' still cannot close it afterwards
+    let omp: Vec<(&str, String)> = Board::str_env(&[("TB_HARNESS", "omp"), ("TB_ROLE", "verifier"), ("TB_SESSION", "nobody")]);
+    let (e, code) = b.refused_raw(&omp, "rv-forge", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("(harness omp)"), "the refusal names the caller's harness: {e}");
+    assert_eq!(b.column(&id), "review");
+}
