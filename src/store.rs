@@ -385,7 +385,9 @@ pub(crate) struct DoneCheck {
 /// Every guard a move of card `c` into DONE by `actor` would fail, in the order
 /// `transition_inner` applies them (see its doc comment). The ONE list both the transition and
 /// the full-screen board's force prompt read, so they can never disagree about what a forced
-/// close skips.
+/// close skips. `force` (the move's own flag) adds the FORCE-ONLY check on top when the list
+/// ends in a verifier-session refusal; the plain path (`done_would_skip`, force=false) never
+/// sees it, so it keeps naming exactly the rules a force WOULD skip.
 ///
 /// - review-first (store/verifier.rs, rule 1): only from REVIEW — binds everyone.
 /// - self-approval: never the card's author or last holder. Every way into DONE is guarded,
@@ -425,7 +427,7 @@ fn force_check(conn: &Connection, c: &Card, actor: &str, who: &Identity) -> Opti
     None
 }
 
-fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
+fn done_checks(conn: &Connection, c: &Card, actor: &str, force: bool) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
     if c.column != "review" {
@@ -470,7 +472,7 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             forced: format!("closed #{id} as a 'person' from an agent's process"),
         });
     }
-    if force_guard_failed(v.last()) {
+    if force && force_guard_failed(v.last()) {
         v.push(
             force_check(conn, c, actor, &who)
                 .expect("the check is only asked when a verifier-session rule refused the close"),
@@ -2565,7 +2567,7 @@ impl Store {
         if c.column == "done" {
             return Ok(Vec::new());
         }
-        Ok(done_checks(&self.conn, &c, actor)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+        Ok(done_checks(&self.conn, &c, actor, false)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
@@ -2811,7 +2813,7 @@ impl Store {
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor)? {
+            for check in done_checks(&tx, &c, actor, force)? {
                 if !force {
                     return Err(check.err);
                 }
