@@ -302,8 +302,11 @@ fn a_listed_name_with_no_role_and_no_registry_entry_is_refused() {
     let (e, code) = b.refused_raw(&forge, "rv-1", &["done", &id]);
     assert_eq!(code, "unregistered_verifier", "{e}");
     assert_eq!(b.column(&id), "review");
-    // --force is still the logged escape
-    b.ok_raw(&forge, "rv-1", &["done", &id, "--force"]);
+    // --force is no escape for the listed name (card #178, rv-lead-tb P6): a listed name is a
+    // grant of the role, not a registry entry, so its force is refused; a PERSON's force closes
+    let (e, code) = b.refused_raw(&forge, "rv-1", &["done", &id, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    b.ok(PERSON, "lead", &["done", &id, "--force"]);
     assert_eq!(b.column(&id), "done");
     // the real thing this guards: the REGISTERED session closes under the listed name
     let two = b.in_review("c3b: registered listed verifier", "bot-1");
@@ -649,7 +652,11 @@ fn no_session_on_either_side_never_matches() {
     // the original "a sessionless verifier was refused" assertion, restated for the registry era:
     // the close still cannot succeed without --force
     assert_eq!(code, "unregistered_verifier", "a sessionless verifier was refused: {e}");
-    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
+    // card #178 (rv-lead-tb P5): no session is no registry entry, so the sessionless agent's
+    // --force is refused too; the logged escape is a PERSON's force
+    let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    let o = b.run(&[], "anna", &["done", &two, "--force"]);
     assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
