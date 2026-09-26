@@ -400,17 +400,6 @@ pub(crate) struct DoneCheck {
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
 ///
-/// `force_guard_failed` reads the LAST guard in a `done_checks` list: when it is one of the
-/// verifier-session refusals (rule 2), the force that got past it must itself answer to the
-/// registry — `transition_inner` then applies the FORCE-ONLY check below, which no `--force`
-/// can skip (it guards the force, not the close).
-fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
-    matches!(
-        last.map(|d| d.err.1),
-        Some(Code::NotVerifier) | Some(Code::UnregisteredVerifier) | Some(Code::AgentAsPerson)
-    )
-}
-
 /// The force-only refusal (card #178, rv-169 probe P5b): the check `transition_inner` applies
 /// AFTER the skip list — a force that got past a verifier-session rule is itself refused when
 /// the session behind the force is not a registered verifier's (or a person's). It guards the
