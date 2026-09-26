@@ -1,3 +1,10 @@
+# Upgrading to 3.2.2
+
+Nothing to do: boards, commands and the JSON contract are unchanged from 3.2.1. The JSON
+output only gains the `force_needs_person` error code. One behaviour change: an agent's
+`tb done --force` on a REVIEW card is refused unless its session is a registered verifier
+(`tb-agent-start --role verifier`) — persons are unaffected.
+
 # Upgrading to 3.2.1
 
 Nothing to do: boards, commands and the JSON contract are unchanged from 3.2.0. The JSON

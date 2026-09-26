@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.2.2 — 2026-09-25
+
+### Highlights
+
+- **An agent's `tb done --force` is a person's act:** forcing a card REVIEW → DONE past the
+  verifier rules now needs a session `tb-agent-start` launched with `--role verifier` — an
+  agent writing its own log line is not the person the log exists for (#178).
+- **A fair send-back message:** a reasoned REVIEW → TODO send-back now says the card is
+  back in TODO, unowned, instead of "back in doing with its owner" (#181).
+- A ~1-in-5 flake in the `verifier_rule` test helper is fixed — no assertion weakened.
+
+### An agent's done --force needs a person or a registered verifier session
+
+- Forcing a close past `not_verifier`, `unregistered_verifier` or `agent_as_person` is a
+  person's act: an agent whose resolved session is not a registered verifier (by identity
+  or by kernel parent chain — the fake-person lane) is refused with `force_needs_person`
+  and nothing moves. A person's `--force` and a registered verifier's `--force` still
+  close, logged with ancestry as before.
+- The refusal names the fix: `tb-agent-start … --role verifier`. The TUI offers no force
+  prompt past the new refusal. `docs/JSON.md` lists the code; README narrows "gets past"
+  to a person's.
+
+### A REVIEW→TODO send-back says what happened
+
+- The send-back line is picked by the card's new column: TODO prints "#N is back in TODO,
+  unowned (round rN) — anyone can take it with `tb take N`"; REVIEW → DOING is unchanged.
+
+### A flaky verifier_rule test helper
+
+- `under_omp` copied `bash` straight over the `omp` stub, leaving the destination open for
+  writing while other test threads forked — an inherited write fd made the next exec fail
+  with ETXTBSY. The helper now copies to a temp file, closes it, chmods 0755 when needed,
+  and renames atomically, retrying the spawn up to 5 times on `ExecutableFileBusy`.
+
 ## 3.2.1 — 2026-09-25
 
 ### Highlights

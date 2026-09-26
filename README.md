@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.2:** forcing a REVIEW → DONE close past the verifier rules is a person's act
+now: an agent's `tb done --force` is refused (`force_needs_person`) unless its session was
+launched with `tb-agent-start --role verifier`. A reasoned REVIEW → TODO send-back says the
+card is back in TODO, unowned.
+
 **New in 3.2.1:** `tb release ID "why"` frees a DOING card whose holder is dead. An agent
 closing a card needs a verifier registry entry (`tb-agent-start --role verifier`) and a
 "person" close from inside an agent kernel is refused; DONE moves record the caller's
@@ -186,7 +191,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.1` | install that release instead of the latest (`3.2.1` works too) |
+| `--version v3.2.2` | install that release instead of the latest (`3.2.2` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
