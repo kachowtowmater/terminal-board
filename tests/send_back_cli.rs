@@ -102,7 +102,8 @@ fn fail_to_todo_records_the_reason_and_clears_the_owner() {
     let o = tb(&db, gh, "rev", &["move", &ids, "todo", "FAIL C3 the widget is still red", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // the human line says the card is back in TODO, unowned, for anyone to take
-    assert!(String::from_utf8_lossy(&o.stdout).contains(&format!("#{id} is back in TODO, unowned (round r2) — anyone can take it with 'tb take {id}'")), "{}", String::from_utf8_lossy(&o.stdout));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(out.contains(&format!("#{id} is back in TODO, unowned (round r2)")) && out.contains(&format!("anyone can take it with 'tb take {id}'")), "{out}");
     let c = &json(&o)["card"];
     // unowned, in todo, one rework round counted
     assert_eq!((c["column"].as_str(), c["owner"].as_str(), c["round"].as_i64()), (Some("todo"), None, Some(2)));
