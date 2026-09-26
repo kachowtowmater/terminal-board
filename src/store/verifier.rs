@@ -172,10 +172,15 @@ pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Resu
 
 /// May `actor`, with identity `who`, FORCE a REVIEW card into DONE (card #178)? The force
 /// skipped a verifier-session rule, so it rides on the same registry: a person always can, an
-/// agent only from a registered verifier session (name and harness), and `github` (the sync,
-/// which never forces) is out of scope — `done_checks` only asks this after a verifier rule
-/// refused the plain close.
+/// agent only from a registered verifier session (name and harness) — and a 'person' whose
+/// kernel parent chain holds an agent binary (`agent_as_person`) is an agent with no session
+/// to resolve, so its force is refused the same way. `github` (the sync, which never forces)
+/// is out of scope — `done_checks` only asks this after a verifier rule refused the plain
+/// close.
 pub(super) fn may_force(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if agent_as_person(actor, who).is_some() {
+        return Ok(false);
+    }
     if !is_agent(who) {
         return Ok(true);
     }
