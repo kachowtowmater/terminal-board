@@ -64,7 +64,7 @@ pub fn resolve(positional: Option<&str>, flag: Option<&str>, env: Option<&str>) 
     let ambient = env.filter(|e| !e.trim().is_empty());
     if positional.is_none() && flag.is_none() && ambient.is_none() {
         if let Some(saved) = saved_default_for_read()? {
-            if !path_for(&saved).exists() {
+            if !path_for(&saved)?.exists() {
                 let names = list();
                 let all = if names.is_empty() { "none yet".to_string() } else { names.join(", ") };
                 return Err(BoardError(format!(
@@ -209,42 +209,53 @@ pub fn set_default(name: Option<&str>) -> Result<()> {
     })
 }
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+/// `HOME` when it is set, refused with a hint that names both levers otherwise. tb never
+/// falls back to the current directory: a missing HOME once created `./.local` wherever tb
+/// happened to run, so any command that needs the state or boards dir asks for HOME (or
+/// `TB_DB`, which pins one board file and needs no HOME).
+fn home() -> Result<PathBuf> {
+    match std::env::var("HOME") {
+        Ok(h) => Ok(PathBuf::from(h)),
+        Err(_) => Err(BoardError(
+            "HOME is not set — set HOME, or TB_DB for a single board file".into(), Code::IoError,
+        )),
+    }
 }
 
 /// `~/.local/state/terminal-board`
-pub fn state_dir() -> PathBuf {
-    home().join(".local/state/terminal-board")
+pub fn state_dir() -> Result<PathBuf> {
+    Ok(home()?.join(".local/state/terminal-board"))
 }
 
 /// Where boards lived before the rename: `~/.local/state/ttyboard`.
-pub fn old_state_dir() -> PathBuf {
-    home().join(".local/state/ttyboard")
+pub fn old_state_dir() -> Result<PathBuf> {
+    Ok(home()?.join(".local/state/ttyboard"))
 }
 
 /// The fleet's record of who made which board (`time<TAB>board<TAB>key=value…`), read for a
 /// board that has no creator record of its own (`store::creator`).
-pub fn creations_log() -> PathBuf {
-    state_dir().join("board-creations.log")
+pub fn creations_log() -> Result<PathBuf> {
+    Ok(state_dir()?.join("board-creations.log"))
 }
 
-pub fn boards_dir() -> PathBuf {
-    state_dir().join("boards")
+pub fn boards_dir() -> Result<PathBuf> {
+    state_dir().map(|d| d.join("boards"))
 }
 
-/// DB file for a board. `TB_DB` (or the old `TTYBOARD_DB`) overrides everything.
-pub fn path_for(name: &str) -> PathBuf {
+/// DB file for a board. `TB_DB` (or the old `TTYBOARD_DB`) overrides everything, so a board
+/// is reachable with no `HOME` at all; without it the path sits under the state directory,
+/// which needs `HOME` (refused, never a current-directory fallback — see `home`).
+pub fn path_for(name: &str) -> Result<PathBuf> {
     match crate::env("DB") {
-        Some(p) => PathBuf::from(p),
-        _ => boards_dir().join(format!("{name}.db")),
+        Some(p) => Ok(PathBuf::from(p)),
+        _ => boards_dir().map(|d| d.join(format!("{name}.db"))),
     }
 }
 
 /// Where `tb boards archive` puts a retired board: `~/.local/state/terminal-board/archive`.
 /// Only an archived board can be deleted (`delete`): the archive is the undo window.
-pub fn archive_dir() -> PathBuf {
-    state_dir().join("archive")
+pub fn archive_dir() -> Result<PathBuf> {
+    state_dir().map(|d| d.join("archive"))
 }
 
 /// With `TB_DB` set there is one pinned file and no boards directory, so there is nothing to
@@ -348,7 +359,11 @@ fn counts_read_only(path: &Path) -> Option<([usize; 4], Option<Creator>)> {
 /// Every archived board, oldest first within a name (so the last one for a name is newest —
 /// `restore` takes that one).
 pub fn archived() -> Vec<ArchiveRow> {
-    let mut v: Vec<ArchiveRow> = std::fs::read_dir(archive_dir())
+    // A machine with no `HOME` has no archive and no boards to read; the empty list is
+    // exactly what `restore`'s refusal and `tb boards --archived` should say there.
+    let Some(dir) = archive_dir().ok() else { return Vec::new() };
+    let log = creations_log().ok();
+    let mut v: Vec<ArchiveRow> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .filter_map(|e| {
@@ -361,7 +376,7 @@ pub fn archived() -> Vec<ArchiveRow> {
                     let path = e.path();
                     let read = counts_read_only(&path);
                     let counts = read.as_ref().map(|r| r.0);
-                    let created_by = read.and_then(|r| r.1).or_else(|| creator::from_log(&creations_log(), name));
+                    let created_by = read.and_then(|r| r.1).or_else(|| log.as_deref().and_then(|l| creator::from_log_text(l, name)));
                     Some(ArchiveRow { name: name.to_string(), stamp: stamp.to_string(), path, counts, created_by })
                 })
                 .collect()
@@ -390,7 +405,7 @@ pub fn archive(name: &str) -> Result<PathBuf> {
             "'{name}' is the board a bare 'tb' opens — archive another board, or point TB_BOARD at a different one first"
         ), Code::DefaultBoard));
     }
-    let src = boards_dir().join(format!("{name}.db"));
+    let src = boards_dir()?.join(format!("{name}.db"));
     let _guard = store::lock_for_move(&src)?;
     // Re-checked UNDER the lock, which is what makes this check meaningful: nothing else can
     // be creating, writing or archiving `src` right now, so if it is not a file then either it
@@ -413,7 +428,7 @@ pub fn archive(name: &str) -> Result<PathBuf> {
     for ext in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", src.display()));
     }
-    let dir = archive_dir();
+    let dir = archive_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| {
         BoardError(format!("cannot create {}: {e} — check the state directory is writable", dir.display()), Code::IoError)
     })?;
@@ -446,7 +461,7 @@ pub fn archive(name: &str) -> Result<PathBuf> {
 pub fn restore(name: &str) -> Result<(PathBuf, PathBuf)> {
     validate(name)?;
     not_pinned("restore")?;
-    let dst = boards_dir().join(format!("{name}.db"));
+    let dst = boards_dir()?.join(format!("{name}.db"));
     let _guard = store::lock_for_move(&dst)?;
     // Checked UNDER the lock: nothing can be creating `dst` (or opening a Store on it) right
     // now, so a `.db` — or a stray `-wal`/`-shm` a pre-#80 hand-move left beside a name that
@@ -464,8 +479,9 @@ pub fn restore(name: &str) -> Result<(PathBuf, PathBuf)> {
     }
     let all = archived();
     let src = all.iter().rfind(|a| a.name == name).cloned().ok_or_else(|| no_archive_err(name, &all))?;
-    std::fs::create_dir_all(boards_dir()).map_err(|e| {
-        BoardError(format!("cannot create {}: {e} — check the state directory is writable", boards_dir().display()), Code::IoError)
+    let dir = boards_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        BoardError(format!("cannot create {}: {e} — check the state directory is writable", dir.display()), Code::IoError)
     })?;
     // sidecars first (only present on a hand-placed archive — `archive` above always
     // checkpoints and drops its own), the `.db` last: the database becoming visible at `dst`
@@ -500,7 +516,15 @@ pub struct Deleted {
 fn backups_of(name: &str, with_live_dir: bool) -> Vec<PathBuf> {
     let live = format!("{name}.db.before-");
     let archived = format!("{name}@");
-    let dirs = if with_live_dir { vec![boards_dir(), archive_dir()] } else { vec![archive_dir()] };
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(d) = archive_dir() {
+        dirs.push(d);
+    }
+    if with_live_dir {
+        if let Ok(d) = boards_dir() {
+            dirs.push(d);
+        }
+    }
     let mut v: Vec<PathBuf> = dirs
         .iter()
         .filter_map(|d| std::fs::read_dir(d).ok())
@@ -532,7 +556,7 @@ pub fn delete(name: &str, backups: bool) -> Result<Deleted> {
             "'{name}' is the board a bare 'tb' opens — point TB_BOARD or 'tb boards --default' at another board first"
         ), Code::DefaultBoard));
     }
-    let live = boards_dir().join(format!("{name}.db"));
+    let live = boards_dir()?.join(format!("{name}.db"));
     let all = archived();
     let mine: Vec<ArchiveRow> = all.iter().filter(|a| a.name == name).cloned().collect();
     if mine.is_empty() {
@@ -626,9 +650,11 @@ pub fn migrate(old: &Path, new: &Path) -> std::io::Result<Vec<String>> {
     Ok(notes)
 }
 
-/// Board names that exist on disk, sorted.
+/// Board names that exist on disk, sorted. A machine with no `HOME` (and no `TB_DB`) has no
+/// boards directory and so no boards — the same empty list every missing directory returns.
 pub fn list() -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(boards_dir())
+    let Ok(dir) = boards_dir() else { return Vec::new() };
+    let mut v: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .filter_map(|e| {
@@ -665,7 +691,7 @@ pub fn db_pinned() -> bool {
 pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
     let def = default_name();
     if db_pinned() {
-        let path = path_for(&def);
+        let path = path_for(&def)?;
         let store = Store::open(&path)?.named(&def);
         // create-on-first-use: whoever's command made the file is the board's creator
         if store.was_created() {
@@ -686,7 +712,7 @@ pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
     list()
         .iter()
         .filter_map(|n| {
-            let path = path_for(n);
+            let Ok(path) = path_for(n) else { return None };
             let store = match Store::open_if_exists(&path) {
                 Ok(Some(s)) => s.named(n),
                 Ok(None) => return None,
@@ -709,9 +735,10 @@ pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
 /// when neither knows, or when the board was archived since `rows()` looked (never
 /// re-created: `open_if_exists`, as in `rows`).
 pub fn creator_of(row: &BoardRow) -> Option<Creator> {
+    let from_log = |p: Option<&Path>| p.and_then(|p| creator::from_log(p, &row.name));
     match Store::open_if_exists(&row.path) {
         Ok(Some(s)) => s.named(&row.name).creator(),
-        _ => creator::from_log(&creations_log(), &row.name),
+        _ => from_log(creations_log().as_deref().ok()),
     }
 }
 

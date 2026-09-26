@@ -812,7 +812,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
                 return Err(BoardError(format!("'{name}' cannot copy itself — name another board: 'tb boards'"), Code::InvalidValue));
             }
             boards::validate(other)?;
-            let path = boards::path_for(other);
+            let path = boards::path_for(other)?;
             // atomic against a concurrent archive/restore (#80/#112) — see open_board
             let Some(store) = Store::open_if_exists(&path)? else {
                 let all = boards::list();
@@ -823,7 +823,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
         }
         None => None,
     };
-    let path = boards::path_for(name);
+    let path = boards::path_for(name)?;
     if path.exists() {
         return Err(BoardError(format!(
             "board '{name}' already exists — open it with 'tb {name}', or give its settings to a new one with 'tb new other-name --from {name}'"
@@ -865,7 +865,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 }
 
 fn open_board(name: &str, create: bool, actor: &str) -> Result<Store, BoardError> {
-    let path = boards::path_for(name);
+    let path = boards::path_for(name)?;
     if create {
         let store = Store::open(&path)?.named(name);
         // create-on-first-use: whoever's command made the file is the board's creator
@@ -904,7 +904,7 @@ fn list_boards(json_out: bool, long: bool, actor: &str) -> Result<(), BoardError
     // the `*` below cannot follow a saved default board that is unusable or gone: say why
     match boards::saved_default_for_read() {
         Err(e) => warn!("tb: {e}"),
-        Ok(Some(n)) if !boards::db_pinned() && !boards::path_for(&n).exists() => warn!(
+        Ok(Some(n)) if !boards::db_pinned() && boards::path_for(&n).map(|p| !p.exists()).unwrap_or(true) => warn!(
             "tb: the saved default board is '{n}', but there is no board '{n}' — no row is marked; choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'"
         ),
         Ok(_) => {}
@@ -1065,7 +1065,7 @@ fn list_archived(json_out: bool, long: bool) -> Result<(), BoardError> {
                 say!("    created by {}", a.created_by.as_ref().map_or_else(|| "unknown".to_string(), |c| c.line()));
             }
         }
-        say!("in {} — bring one back with 'tb boards restore NAME'", boards::archive_dir().display());
+        say!("in {} — bring one back with 'tb boards restore NAME'", boards::archive_dir()?.display());
     }
     Ok(())
 }
@@ -1096,7 +1096,7 @@ fn default_board_cmd(name: Option<&str>, clear: bool, json_out: bool) -> Result<
     // what is saved, whatever beats it in this shell (never read under TB_DB)
     let saved = if source == boards::DefaultSource::Pinned { None } else { boards::saved_default()? };
     // a saved board whose file is gone: plain `tb` refuses, so saying it opens it is a lie
-    let gone = saved.as_deref().filter(|n| !boards::db_pinned() && !boards::path_for(n).exists());
+    let gone = saved.as_deref().filter(|n| !boards::db_pinned() && boards::path_for(n).map(|p| !p.exists()).unwrap_or(true));
     if let Some(n) = gone {
         let fix = format!("there is no board '{n}' — plain 'tb' refuses until you choose another with 'tb boards --default NAME' or go back with 'tb boards --default --clear'");
         if json_out {
@@ -1210,7 +1210,7 @@ fn move_card(
             "no board '{to}' — boards: {all} · a card only moves to a board that exists: make it first with  tb {to} add \"…\""
         ), Code::NoBoard)
     };
-    let Some(mut dest) = Store::open_if_exists(&boards::path_for(to))?.map(|s| s.named(to)) else {
+    let Some(mut dest) = Store::open_if_exists(&boards::path_for(to)?)?.map(|s| s.named(to)) else {
         return Err(names_err());
     };
     store.move_to_board(id, &mut dest, actor, forced.as_deref())
@@ -1233,7 +1233,7 @@ fn across_boards(f: &filter::Filter, json_out: bool, explicit: Option<&str>) -> 
         // between that listing and this read must be skipped, not recreated empty and read as
         // if it had always been that (#80/#112) — `open_if_exists` is the same atomic check
         // `open_board` uses.
-        let store = match Store::open_if_exists(&boards::path_for(name)) {
+        let store = match Store::open_if_exists(&boards::path_for(name)?) {
             Ok(Some(s)) => s.named(name),
             Ok(None) => continue,
             Err(e) => {
@@ -1317,7 +1317,12 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // every event this process writes also records who `actor` is (store::actors)
     terminal_board::store::actors::use_environment();
     if !terminal_board::env("DB").is_some() {
-        match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
+        // `HOME` is checked HERE, once, for the whole run: a command that needs the
+        // boards/state directory is refused with the message that says what to set, and
+        // nothing is created under the current directory (#206). Commands that need no
+        // state at all — `-V`, `--help`, a board pinned with `TB_DB` — never reach it.
+        boards::state_dir()?;
+        match boards::migrate(&boards::old_state_dir()?, &boards::state_dir()?) {
             Ok(notes) => {
                 for n in notes {
                     warn!("tb: {n}");
@@ -1337,7 +1342,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     if let Some(Cmd::New { name, kind, from }) = &cli.cmd {
         let Some(name) = name else {
             // a board really called `new` is reachable, and this is where to say so
-            let hint = if boards::path_for("new").exists() && terminal_board::env("DB").is_none() {
+            let hint = if boards::path_for("new").map(|p| p.exists()).unwrap_or(false) && terminal_board::env("DB").is_none() {
                 " — the board called 'new' opens with 'tb -b new' (or TB_BOARD=new)"
             } else {
                 ""
