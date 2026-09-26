@@ -194,7 +194,7 @@ mod tests {
     }
 
     fn event(card_id: i64, ts: i64, actor: &str) -> (String, Event) {
-        (key(actor), Event { card_id, ts, actor: actor.into(), kind: "note".into(), text: "x".into(), actor_id: None })
+        (key(actor), Event { card_id, ts, actor: actor.into(), kind: "note".into(), text: "x".into(), actor_id: None, ancestry: None })
     }
 
     /// The near misses: two actors whose names are only the START of an agent's name, and a

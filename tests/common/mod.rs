@@ -142,3 +142,33 @@ pub fn pin_clock() {
         std::env::set_var("TB_NOW", noon.to_string());
     });
 }
+
+/// The verifier registry (card #169): one JSON file per session under
+/// `~/.local/state/terminal-board/verifiers/`, written by `tb-agent-start --role verifier`.
+///
+/// A CLI test that models a verifier writes its OWN registry dir and points the child's
+/// `TB_VERIFIERS_DIR` at it (the env the store reads; never set it in production), so the
+/// suite never writes the real machine's registry. `dir` must be a fresh, empty temp dir the
+/// test owns — `register` records one session exactly as the launcher does.
+pub struct VerifierRegistry {
+    pub dir: tempfile::TempDir,
+}
+
+impl VerifierRegistry {
+    pub fn new() -> VerifierRegistry {
+        VerifierRegistry { dir: tempfile::tempdir().unwrap() }
+    }
+
+    /// Register `session` for `name` on `harness`, the same file shape
+    /// `tb-agent-start` writes (`{"session","name","harness"}`).
+    pub fn register(&self, session: &str, name: &str, harness: &str) {
+        std::fs::create_dir_all(self.dir.path()).unwrap();
+        let entry = serde_json::json!({ "session": session, "name": name, "harness": harness });
+        std::fs::write(self.dir.path().join(session), serde_json::to_string(&entry).unwrap()).unwrap();
+    }
+
+    /// The env pair a child `tb` needs to see this registry (and nothing else's).
+    pub fn env(&self) -> [(&'static str, String); 1] {
+        [("TB_VERIFIERS_DIR", self.dir.path().to_string_lossy().into_owned())]
+    }
+}

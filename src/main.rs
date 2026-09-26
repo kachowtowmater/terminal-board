@@ -670,6 +670,9 @@ struct EventLine<'a> {
     /// The identity behind `actor`, inlined: a stream has no `actors[]` to look an id up in.
     actor_id: Option<i64>,
     identity: Option<terminal_board::store::actors::Actor>,
+    /// The kernel's parent chain behind the command that wrote it; absent where not recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ancestry: Option<Vec<String>>,
 }
 
 impl<'a> EventLine<'a> {
@@ -698,12 +701,13 @@ impl<'a> EventLine<'a> {
             text: &e.text,
             actor_id: e.actor_id,
             identity,
+            ancestry: e.ancestry.clone(),
         }
     }
 }
 
 /// NDJSON (or plain) board on every change; exits quietly when stdout closes.
-/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity}` line per
+/// With `events` (JSON only): one `{v, ts, card_id, actor, kind, from, to, text, actor_id, identity, ancestry}` line per
 /// event, resuming from `since` (unix seconds) after a restart.
 fn watch(
     store: &Store,

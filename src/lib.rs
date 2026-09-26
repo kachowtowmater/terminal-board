@@ -25,6 +25,7 @@ pub mod lock;
 pub mod machine;
 pub mod notice;
 pub mod plain;
+pub mod proc;
 pub mod roster;
 pub mod setup;
 pub mod store;

@@ -241,7 +241,7 @@ mod tests {
     use super::*;
 
     fn ev(actor: &str, kind: &str) -> Event {
-        Event { card_id: 1, ts: 0, actor: actor.into(), kind: kind.into(), text: String::new(), actor_id: None }
+        Event { card_id: 1, ts: 0, actor: actor.into(), kind: kind.into(), text: String::new(), actor_id: None, ancestry: None }
     }
 
     #[test]
