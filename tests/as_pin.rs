@@ -228,3 +228,133 @@ fn a_pinned_session_still_reads_under_its_own_name() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(Board::json(&o.stdout).as_array().unwrap().len(), 1);
 }
+
+/// A pinned session cannot CREATE a board under another `--as`: on create-on-first-use
+/// (`add` on a name nothing has opened yet), on `tb new`, and on `tb setup` — refused with
+/// `as_mismatch` BEFORE any board file is made (#200/#201). Its own name creates normally.
+mod creation {
+    use super::*;
+
+    #[test]
+    fn create_on_first_use_is_refused_and_makes_no_file() {
+        let b = Board::real();
+        let o = b.as_agent("b-x", &["freshb", "add", "forged", "--as", "b-y", "--json"]);
+        assert!(!o.status.success(), "the forged create must be refused");
+        assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
+        assert!(!b._dir.path().join(".local/state/terminal-board/boards/freshb.db").exists(), "no board file was made");
+    }
+
+    #[test]
+    fn tb_new_is_refused_and_makes_no_file() {
+        let b = Board::real();
+        let o = b.as_agent("b-x", &["new", "newb", "--json", "--as", "b-y"]);
+        assert!(!o.status.success(), "the forged tb new must be refused");
+        assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
+        assert!(!b._dir.path().join(".local/state/terminal-board/boards/newb.db").exists(), "no board file was made");
+    }
+
+    #[test]
+    fn setup_is_refused() {
+        let b = Board::real();
+        let o = b.as_agent("b-x", &["setup", "--yes", "--as", "b-y", "--json"]);
+        assert!(!o.status.success(), "the forged setup must be refused");
+        assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
+    }
+
+    #[test]
+    fn first_use_under_its_own_name_cre_normally() {
+        let b = Board::real();
+        let o = b.as_agent("b-x", &["freshb", "add", "own", "--json"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(Board::json(&o.stdout)["card"]["events"][0]["actor"], "b-x");
+    }
+
+    #[test]
+    fn a_missing_board_for_a_non_creating_command_still_reports_no_board() {
+        let b = Board::real();
+        let o = b.as_agent("b-x", &["typo-b", "next", "--as", "b-y", "--json"]);
+        assert!(!o.status.success(), "a missing board is still refused");
+        assert_eq!(Board::json(&o.stdout)["code"], "no_board", "{}", Board::json(&o.stdout));
+        assert!(!b._dir.path().join(".local/state/terminal-board/boards/typo-b.db").exists());
+    }
+}
+
+/// The `TB_DB` exemption is about WHERE the pinned file lives, not the variable itself: a
+/// `TB_DB` pointing at a REAL board file — anything under tb's boards directory or the
+/// archive — is a live board someone pinned, and the pin still refuses there. A fixture
+/// anywhere else (a temp dir, a symlink tail into the boards dir, an in-memory board) keeps
+/// free naming.
+mod db_scope {
+    use super::*;
+    use std::fs;
+
+    /// Puts `db` on a real board's file: seed the board first with a person's command, then
+    /// point `TB_DB` at that exact file.
+    fn real_board_db() -> (Board, std::path::PathBuf) {
+        let b = Board::real();
+        b.ok(&["pin-board", "add", "seed", "--as", "charles"]);
+        let db = b._dir.path().join(".local/state/terminal-board/boards/pin-board.db");
+        (b, db)
+    }
+
+    #[test]
+    fn a_tb_db_pointing_at_a_real_board_file_is_pinned() {
+        let (b, db) = real_board_db();
+        let o = b.as_agent("b-x", &["add", "forged", "--as", "b-y", "--json"]);
+        assert!(!o.status.success(), "TB_DB on a real board file must not skip the pin");
+        let v = Board::json(&o.stdout);
+        assert_eq!(v["code"], "as_mismatch", "{v}");
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains("b-x") && err.contains("b-y"), "{err}");
+        // the real board kept exactly its seed card: nothing was written under b-y
+        let n = b.ok(&["pin-board", "list", "--json", "--as", "charles"]);
+        assert_eq!(Board::json(&n.stdout).as_array().unwrap().len(), 1, "nothing was written");
+    }
+
+    #[test]
+    fn a_tb_db_pointing_at_an_archived_board_file_is_pinned() {
+        let (b, _db) = real_board_db();
+        b.ok(&["boards", "archive", "pin-board"]);
+        let arch = b._dir.path().join(".local/state/terminal-board/archive");
+        let db = fs::read_dir(&arch).unwrap().next().unwrap().unwrap().path();
+        let o = b.as_agent("b-x", &["add", "forged", "--as", "b-y", "--json"]);
+        assert!(!o.status.success(), "TB_DB on an archived board file must not skip the pin");
+        assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
+    }
+
+    #[test]
+    fn a_tb_db_fixture_outside_the_boards_dir_keeps_free_naming() {
+        let b = Board::pinned_db();
+        let o = b.as_agent("b-x", &["add", "fixture", "--as", "b-y", "--json"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(Board::json(&o.stdout)["card"]["events"][0]["actor"], "b-y");
+    }
+
+    #[test]
+    fn a_tb_db_reached_through_a_symlink_into_the_boards_dir_is_pinned() {
+        let (b, db) = real_board_db();
+        let link = b._dir.path().join("link.db");
+        std::os::unix::fs::symlink(&db, &link).unwrap();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(["add", "forged", "--as", "b-y", "--json"])
+            .env("TB_AS", "b-x").env("TB_HARNESS", "omp").env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder").env("TB_SESSION", "omp-b-x-1").env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC").env("TB_DB", &link);
+        let o = c.output().unwrap();
+        assert!(!o.status.success(), "a symlink tail into the boards dir is still a real board");
+        assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
+    }
+
+    #[test]
+    fn a_tb_db_pointing_at_a_real_board_file_still_allows_its_own_name() {
+        let (b, db) = real_board_db();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(["add", "own", "--json"])
+            .env("TB_AS", "b-x").env("TB_HARNESS", "omp").env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder").env("TB_SESSION", "omp-b-x-1").env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC").env("TB_DB", &db);
+        let o = c.output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(Board::json(&o.stdout)["card"]["events"][0]["actor"], "b-x");
+    }
+}
