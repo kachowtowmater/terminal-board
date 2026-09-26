@@ -13,6 +13,16 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+/// A builder's own session exports `TB_*` values that would leak INTO the tested process
+/// through `Command`'s inherited environment (the suite's `TB_DB` fixture, this session's
+/// `TB_CARD`) and change what the guard sees — every child here starts from a clean slate,
+/// then adds exactly what its role in the test names.
+fn scrub(c: &mut Command) {
+    for k in ["TB_CARD", "TB_AS", "TB_HARNESS", "TB_MODEL", "TB_ROLE", "TB_SESSION", "TB_DB", "TB_BOARD", "TB_HOST", "TB_NO_HERDR", "TB_READONLY", "TTYBOARD_CARD", "TTYBOARD_AS", "TTYBOARD_DB"] {
+        c.env_remove(k);
+    }
+}
+
 struct Board {
     _dir: tempfile::TempDir,
     db: Option<PathBuf>,
@@ -40,6 +50,7 @@ impl Board {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
+        scrub(&mut c);
         c.output().unwrap()
     }
 
@@ -85,6 +96,7 @@ impl Board {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
+        scrub(&mut c);
         c.output().unwrap()
     }
 
@@ -96,6 +108,7 @@ impl Board {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
+        scrub(&mut c);
         c.output().unwrap()
     }
 
