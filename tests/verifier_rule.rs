@@ -870,8 +870,10 @@ fn an_agent_force_is_refused_without_a_registered_verifier_session() {
     let id = b.in_review("f1: agent force, no registry", "bot-1");
     // the same-session rule cannot save this close: the force runs in the BUILDER's env shape
     // but a distinct session, so the session check passes only by absence — the registry is
-    // what refuses it
-    let (e, code) = b.refused(AGENT, "orch", &["done", &id, "--force"]);
+    // what refuses it. `refused_raw` (never registers) is the unregistered session's runner:
+    // `refused` would register this very session (the `with_registration` wrapper), and a
+    // REGISTERED verifier session's force closes — f4 below.
+    let (e, code) = b.refused_raw(&Board::str_env(AGENT), "orch", &["done", &id, "--force"]);
     assert_eq!(code, "force_needs_person", "{e}");
     assert!(e.contains("only a person or a registered verifier may force a card to done"), "{e}");
     assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "the refusal names the fix: {e}");
