@@ -26,7 +26,8 @@ impl Board {
     /// A `TB_DB` fixture: the shape every other test in the suite uses.
     fn pinned_db() -> Board {
         let dir = tempfile::tempdir().unwrap();
-        Board { _dir: dir, db: Some(dir.path().join("b.db")) }
+        let db = dir.path().join("b.db");
+        Board { _dir: dir, db: Some(db) }
     }
 
     fn run(&self, args: &[&str]) -> Output {
