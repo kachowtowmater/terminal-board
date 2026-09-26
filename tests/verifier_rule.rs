@@ -841,7 +841,7 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     // lifetime up to its exec — space them out.
     for (i, wait) in [0u64, 1, 2, 4, 8].into_iter().enumerate() {
         if wait > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(wait));
+            terminal_board::waits::pause("under_omp exec busy (ETXTBSY) retry backoff", std::time::Duration::from_millis(wait));
         }
         match c.output() {
             Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
