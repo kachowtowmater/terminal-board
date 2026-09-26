@@ -154,6 +154,7 @@ holding a DOING card is a warning.
 | variable | what it does | knob or test hook |
 |---|---|---|
 | `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
+| `TB_CARD` | `<board>#<id>` this session was started for (`tb-agent-start --card`): tb refuses every card WRITE on another card, or a new card, with `card_bound` — `note` on any card stays allowed, and `TB_DB` fixtures, persons and `TB_ROLE` `lead`/`orchestrator` are exempt; unsetting it (or forging a role) writes freely | knob |
 | `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
 | `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
 | `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
