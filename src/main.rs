@@ -1407,6 +1407,36 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     };
     let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
     let mut store = open_board(&name, creates, &actor)?;
+    // A session launched with `TB_AS` pinned (tb-agent-start exports it so every `tb` line is
+    // logged under the launched name) cannot act under ANOTHER name on a real board: every
+    // `--as` that differs is refused HERE, after the board is resolved and opened (#191 — a
+    // pinned session once created cards under whichever name the prompt carried). A missing
+    // board is the more basic error, so the no-board refusal above this runs first; the pin
+    // still stands between the open and every write, so nothing can be written under the
+    // wrong name. The comparison is the same one every stored-name check uses: trimmed,
+    // case-insensitive (`eq_ignore_ascii_case`). `TB_DB` — a test or fixture file, one per
+    // run — keeps free naming so the suite is unaffected, and a person (no `TB_AS`) is never
+    // touched: their name comes from the same chain this guard reads.
+    if let Some(pinned) = terminal_board::env("AS")
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+    {
+        // A hook's own `tb` call inside this board's pre-change hook (a live run ticket,
+        // `TB_HOOK_TOKEN` — `hooks::nested`) is tb acting through its own mechanism, not the
+        // session forging a name: the hook script legitimately acts for whoever it serves
+        // (tests/hooks.rs exercises exactly this). The pin yields there, as it does to
+        // `TB_DB`; everything else is refused.
+        let board_path = store.path().map(|p| std::fs::canonicalize(&p).unwrap_or(p).display().to_string()).unwrap_or_default();
+        let in_hook = !board_path.is_empty() && terminal_board::hooks::nested(&board_path).is_some();
+        if !in_hook && terminal_board::env("DB").is_none() && !actor.trim().eq_ignore_ascii_case(&pinned) {
+            return Err(BoardError(
+                format!(
+                    "this session was launched as {pinned}; it cannot act as {actor} — use --as {pinned}"
+                ),
+                Code::AsMismatch,
+            ));
+        }
+    }
     // a stored `tz` this build does not know must not be ignored silently: today then comes
     // from this machine's zone, and every command says so until the setting is fixed. Scoped
     // to `store.notice_key()` (the one function that computes this — see its doc comment on

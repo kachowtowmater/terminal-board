@@ -102,14 +102,32 @@ fn run_doc_mode(md: &str, name: &str, boards_mode: bool) -> usize {
         } else {
             c.env("TB_DB", &db);
         }
+        // An explicit `--as NAME` on the line is a person naming themselves; the fixture's
+        // `TB_AS=alice` session wrapper is only for lines that name nobody. With the #191
+        // pin, a doc command that acts as bob under the wrapper's pin would be refused —
+        // the doc is a fixture, not a pinned session, so the wrapper yields.
+        let named_other = {
+            let rest = cmd.strip_prefix("tb").unwrap_or("");
+            let mut it = rest.split_whitespace();
+            let mut found = false;
+            while let Some(w) = it.next() {
+                if w == "--as" {
+                    if let Some(name) = it.next() {
+                        found = !name.trim().eq_ignore_ascii_case("alice");
+                    }
+                    break;
+                }
+            }
+            found
+        };
         let o = c
             .env("TB_BIN", bin)
             .env("TB_AS", "alice")
             .env("TB_NO_HERDR", "1")
             .env("TB_GH", fake_gh_ok())
-            .env_remove("TB_BOARD")
-            .output()
-            .unwrap();
+            .env_remove("TB_BOARD");
+        let o = if named_other { o.env_remove("TB_AS") } else { o };
+        let o = o.output().unwrap();
         assert!(
             o.status.success(),
             "{name} command failed: {cmd}\nstdout: {}\nstderr: {}",

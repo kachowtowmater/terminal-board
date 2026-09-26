@@ -47,6 +47,27 @@ impl Home {
         String::from_utf8(o.stdout).unwrap()
     }
 
+    /// A fixture runner with `TB_AS` unset: the golden seeds cards as several DIFFERENT
+    /// names (`--as bot-1/bot-2/bot-3`), which the #191 pin on a real board path would
+    /// refuse — a fixture is not a session, so it names its actors freely.
+    fn ok_fixture(&self, args: &[&str]) -> String {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args)
+            .env("HOME", self.dir.path())
+            .env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC")
+            .env("TB_NOW", NOW.to_string())
+            .env_remove("TB_AS")
+            .env_remove("TB_DB")
+            .env_remove("TTYBOARD_DB")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("TB_BOARD")
+            .env_remove("HERDR_AGENT_NAME");
+        let o = c.output().unwrap();
+        assert!(o.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    }
+
     fn json(&self, args: &[&str]) -> serde_json::Value {
         let out = self.ok(args);
         serde_json::from_str(&out).unwrap_or_else(|e| panic!("{args:?}: {e}: {out}"))
@@ -409,18 +430,18 @@ fn deadline_kind_126x41_golden() {
     for (i, (title, col, owner, due)) in cards.iter().enumerate() {
         let id = (i + 1).to_string();
         match due {
-            Some(d) => h.ok(&["filings", "add", title, "--due", d]),
-            None => h.ok(&["filings", "add", title]),
+            Some(d) => h.ok_fixture(&["filings", "add", title, "--as", "alice", "--due", d]),
+            None => h.ok_fixture(&["filings", "add", title, "--as", "alice"]),
         };
         if *col != "todo" {
             let mut args = vec!["filings", "move", id.as_str(), *col, "--as", owner.unwrap_or("alice")];
             if *col == "done" {
                 args.push("--force"); // fixture only: nothing reaches done except from review (verifier rule), so a card seeded straight into done is a forced move
             }
-            h.ok(&args);
+            h.ok_fixture(&args);
         }
     }
-    h.ok(&["filings", "block", "7", "waiting for the signed copy", "--on", "#5", "--until", "2026-10-06", "--as", "bot-3"]);
+    h.ok_fixture(&["filings", "block", "7", "waiting for the signed copy", "--on", "#5", "--until", "2026-10-06", "--as", "bot-3"]);
     let s = Store::open(&h.db("filings")).unwrap().named("filings");
     let mut app = App::new(s.snapshot().unwrap(), "alice");
     app.reload(&s);
