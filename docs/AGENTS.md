@@ -60,7 +60,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | another agent holds the card you want to move/drop/edit/block/rm/check/prio | refused — use `--force` if you mean it (logged); the TUI asks y/n · a lead/orchestrator frees a DEAD holder's card with `tb release ID "why"` (refused while it is alive: `holder_alive`) |
 | record that you checked a card, without closing it (any card; stays in REVIEW) | `tb done ID --approve` |
 | hand it back: → TODO, owner cleared | `tb drop ID` |
-| send someone's work back: REVIEW → DOING (reviewer) | `tb move ID doing "what to fix"` |
+| send someone's work back: REVIEW → DOING keeps the owner; a FAILed card: REVIEW → TODO clears it (reviewer/verifier) | `tb move ID doing "what to fix"` · `tb move ID todo "why it failed"` |
 | put it in any column (`done` only from REVIEW, by a verifier) | `tb move ID todo|doing|review|done` |
 
 ### Create and delete cards, boards and settings
@@ -86,7 +86,7 @@ tb done ID                   # finished: DOING -> REVIEW
 
 `tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not the
 top position (`tb prio` there only orders cards sharing a date). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card;
-`tb move ID todo` clears the owner; sending REVIEW back needs a reason, keeps the owner and skips the WIP limit. Text arrives byte for byte from a file, blank space
+`tb move ID todo` clears the owner; sending REVIEW back (to doing, or to todo on a FAIL) needs a reason — keeps the owner going to doing, clears it going to todo — and skips the WIP limit. Text arrives byte for byte from a file, blank space
 trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--desc-file brief.md`; UTF-8, at most 256 KiB; `-` reads a pipe — never a terminal — and waits for it to close,
 `TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings
 alone unless a person asks you to.
@@ -99,7 +99,7 @@ alone unless a person asks you to.
   A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a stale claim). Check the done criteria, then `tb done ID` with a note of what
-  you checked, or send it back with `tb move ID doing "what is missing"` (it shows its round `r2`, `r3`, …). Too many rounds
+  you checked, or send it back with `tb move ID doing "what is missing"` (or FAIL it to TODO with `tb move ID todo "why it failed"`) (it shows its round `r2`, `r3`, …). Too many rounds
   (`tb config max-rounds`) marks it `escalate` — `tb next` skips it; you can still `tb take`/`tb done` it directly.
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
