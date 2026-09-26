@@ -806,16 +806,28 @@ fn the_registry_refusal_names_the_fix_not_the_list() {
 fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
     let omp = b.dir.path().join("omp");
-    // copied once per board: macOS's fs::copy (clonefile) refuses an existing destination
+    // Copied once per board, via temp+rename: other test threads fork concurrently and a fork
+    // can inherit the still-open write fd, making the exec'd path ETXTBSY. fs::copy opens the
+    // destination and leaves it that way — the closed temp file lands by atomic rename, so the
+    // path we exec never has an open writer. Temp is 0755 (tempfile default 0600); fs::copy
+    // is the one special case that preserves the source mode itself.
     if !omp.exists() {
-        std::fs::copy(&bash, &omp).ok()?;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = b.dir.path().join("omp.tmp");
+        let n = std::fs::copy(&bash, &tmp).ok()?; // clonefile: sets 0755 itself, no leak
+        if !(n & 0o111 == 0o111) {
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::rename(&tmp, &omp).ok()?;
     }
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
     line.extend(args.iter().map(|a| quote(a)));
     line.extend(["--json".to_string(), "--as".to_string(), quote(who), "; true".to_string()]);
-    let o = Command::new(&omp)
-        .args(["-c", &line.join(" ")])
+    // Retry the spawn on ETXTBSY (text file busy): a fork racing the exec can still hold a
+    // write-mode reference to the file between the rename check above and the exec here.
+    let mut c = Command::new(&omp);
+    c.args(["-c", &line.join(" ")])
         .env_clear()
         .env("TB_DB", b.db())
         .env("TB_NO_HERDR", "1")
@@ -823,9 +835,21 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
         .env("USER", "login-user")
         .env("TZ", "UTC")
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", b.dir.path())
-        .output()
-        .unwrap();
+        .env("HOME", b.dir.path());
+    let mut o = None;
+    for _ in 0..5 {
+        match c.output() {
+            Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => continue,
+            other => {
+                o = Some(other);
+                break;
+            }
+        }
+    }
+    let o = match o {
+        Some(o) => o,
+        None => c.output().expect("exec omp (a copy of bash) after 5 retries"),
+    };
     Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
 }
 
