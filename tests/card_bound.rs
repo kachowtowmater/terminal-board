@@ -18,7 +18,18 @@ use std::process::{Command, Output};
 /// `TB_CARD`) and change what the guard sees — every child here starts from a clean slate,
 /// then adds exactly what its role in the test names.
 fn scrub(c: &mut Command) {
-    for k in ["TB_CARD", "TB_AS", "TB_HARNESS", "TB_MODEL", "TB_ROLE", "TB_SESSION", "TB_DB", "TB_BOARD", "TB_HOST", "TB_NO_HERDR", "TB_READONLY", "TTYBOARD_CARD", "TTYBOARD_AS", "TTYBOARD_DB"] {
+    for k in [
+        "TB_CARD", "TB_AS", "TB_HARNESS", "TB_MODEL", "TB_ROLE", "TB_SESSION", "TB_DB", "TB_BOARD",
+        "TB_HOST", "TB_NO_HERDR", "TB_READONLY", "TTYBOARD_CARD", "TTYBOARD_AS", "TTYBOARD_DB",
+        // harness markers the GUARD reads indirectly (Identity::from_env): a builder's own
+        // pane exports one, and a child would otherwise inherit it
+        "AI_AGENT", "OMPCODE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
+        "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_CI", "PI_SESSION_ID", "PI_MODEL",
+        "HERDR_AGENT_NAME", "HERDR_PANE_ID", "HERDR_ENV", "HERDR_BIN_PATH",
+        // machine settings that would redirect boards
+        "XDG_STATE_HOME", "TB_CONFIG", "TTYBOARD_CONFIG", "TB_BOARD", "TTYBOARD_BOARD",
+        "TTYBOARD_READONLY", "TTYBOARD_NO_HERDR",
+    ] {
         c.env_remove(k);
     }
 }
