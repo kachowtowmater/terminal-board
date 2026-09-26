@@ -24,6 +24,25 @@ impl Board {
         Board { _dir: dir, db: None }
     }
 
+    /// The agent session of `Board::as_agent`, plus `HOME` and `TB_DB`: the pin reads the
+    /// boards dir from `HOME`, so the real-board cases need it even though the file comes
+    /// from `TB_DB` (the `Board::run` path only sets one of the two).
+    fn real_db_agent(&self, db: &std::path::Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("TB_AS", "b-x")
+            .env("TB_HARNESS", "omp")
+            .env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder")
+            .env("TB_SESSION", "omp-b-x-1")
+            .env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC")
+            .env("HOME", self._dir.path())
+            .env("TB_DB", db)
+            .output()
+            .unwrap()
+    }
+
     /// A `TB_DB` fixture: the shape every other test in the suite uses.
     fn pinned_db() -> Board {
         let dir = tempfile::tempdir().unwrap();
@@ -297,24 +316,6 @@ mod db_scope {
         (b, db)
     }
 
-    /// The agent session of `Board::as_agent`, plus `HOME` and `TB_DB`: the pin reads the
-    /// boards dir from `HOME`, so the real-board cases need it even though the file comes
-    /// from `TB_DB` (the `Board::run` path only sets one of the two).
-    fn real_db_agent(&self, db: &std::path::Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tb"))
-            .args(args)
-            .env("TB_AS", "b-x")
-            .env("TB_HARNESS", "omp")
-            .env("TB_MODEL", "g")
-            .env("TB_ROLE", "coder")
-            .env("TB_SESSION", "omp-b-x-1")
-            .env("TB_NO_HERDR", "1")
-            .env("TZ", "UTC")
-            .env("HOME", self._dir.path())
-            .env("TB_DB", db)
-            .output()
-            .unwrap()
-    }
 
     #[test]
     fn a_tb_db_pointing_at_a_real_board_file_is_pinned() {
