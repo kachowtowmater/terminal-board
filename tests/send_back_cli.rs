@@ -19,6 +19,21 @@ fn json(o: &Output) -> serde_json::Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("not json: {}", String::from_utf8_lossy(&o.stdout)))
 }
 
+/// The human line for a REVIEW->TODO send-back says the card is back in TODO,
+/// unowned, for anyone to take — printed on plain (non-JSON) output.
+#[test]
+fn review_to_todo_prints_a_todo_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let gh = Path::new("/nonexistent/gh");
+    let mut s = Store::open(&db).unwrap();
+    let id = in_review(&mut s, "widgets: fix the thing");
+    let o = tb(&db, gh, "rev", &["move", &id.to_string(), "todo", "FAIL C3 the widget is still red"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(out.contains(&format!("anyone can take it with 'tb take {id}'")), "{out}");
+    assert_eq!((s.card(id).unwrap().column.as_str(), s.card(id).unwrap().owner.as_deref()), ("todo", None));
+}
 /// A card that bot-1 took and moved to REVIEW.
 fn in_review(s: &mut Store, title: &str) -> i64 {
     let id = s.add(title, "", &[], "lead").unwrap();
