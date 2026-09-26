@@ -12,7 +12,7 @@ use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
-use terminal_board::store::due::{self, DueDate};
+use terminal_board::{fsperm, store::due::{self, DueDate}};
 use terminal_board::store::{BoardError, Code, Store, COLUMNS};
 use terminal_board::{boards, contract, export, filter, github, hooks, import, plain, resolve_actor, setup, textin, tui};
 
@@ -885,19 +885,15 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 //   protect. There the more basic error must still win (the lead decision on #191).
 fn db_exempt(store_path: Option<&std::path::Path>) -> bool {
     terminal_board::env("DB").map_or(false, |db| {
-        let db = std::fs::canonicalize(&db).unwrap_or_else(|_| std::path::PathBuf::from(&db));
-        store_path.map_or(true, |p| {
-            let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-            !(starts_in(&p, &boards::boards_dir()) || starts_in(&p, &boards::archive_dir()))
-        })
+        // the file the store would open resolves the link itself (`fsperm::create_board`
+        // creates the link's TARGET, and the connection opens that target) — compare the
+        // same two shapes the process sees
+        let db = fsperm::resolve(&std::path::PathBuf::from(&db))
+            .unwrap_or_else(|_| std::path::PathBuf::from(&db));
+        let boards = fsperm::resolve(&boards::boards_dir()).unwrap_or_else(|_| boards::boards_dir());
+        let archive = fsperm::resolve(&boards::archive_dir()).unwrap_or_else(|_| boards::archive_dir());
+        store_path.map_or(true, |p| !(p.starts_with(&boards) || p.starts_with(&archive)))
     })
-}
-
-/// `p` inside `dir` or equal to it; the tail of a symlinked `p` (`dir` itself is always
-/// canonicalized by its only caller) also counts, so a `TB_DB` reached through a link
-/// pointing into the boards dir is still a real board.
-fn starts_in(p: &std::path::Path, dir: &std::path::Path) -> bool {
-    p.starts_with(dir) || std::fs::read_link(p).map_or(false, |t| t.starts_with(dir))
 }
 
 fn as_pin_error(pinned: &str, actor: &str) -> BoardError {
