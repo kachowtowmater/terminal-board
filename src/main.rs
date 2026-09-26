@@ -1744,10 +1744,17 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let c = store.move_opts_bg(id, &column, &actor, force, reason.as_deref(), break_glass.as_deref())?;
             let human = if reason.is_some() {
                 let round = store.show(id)?.round;
-                format!(
-                    "#{id} is back in doing with {} (round r{round}) — they fix it and 'tb done {id}' again",
-                    c.owner.as_deref().unwrap_or("its owner")
-                )
+                if c.column == "todo" {
+                    format!(
+                        "#{id} is back in TODO, unowned (round r{round}) — anyone can take it with '{}'",
+                        cmd_hint(explicit, &format!("take {id}"))
+                    )
+                } else {
+                    format!(
+                        "#{id} is back in doing with {} (round r{round}) — they fix it and 'tb done {id}' again",
+                        c.owner.as_deref().unwrap_or("its owner")
+                    )
+                }
             } else {
                 format!("#{id} is now in {}", store.display()?.typed(&c.column))
             };
