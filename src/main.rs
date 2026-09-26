@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use terminal_board::store::due::{self, DueDate};
 use terminal_board::store::{BoardError, Code, Store, COLUMNS};
-use terminal_board::{boards, contract, export, filter, github, import, plain, resolve_actor, setup, textin, tui};
+use terminal_board::{boards, contract, export, filter, github, hooks, import, plain, resolve_actor, setup, textin, tui};
 
 const HELP: &str = "\
 tb {version} - Terminal Board: one shared task board for people and agents (todo > doing > review > done)
@@ -829,6 +829,8 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
             "board '{name}' already exists — open it with 'tb {name}', or give its settings to a new one with 'tb new other-name --from {name}'"
         ), Code::InvalidValue));
     }
+    // a pinned session cannot make a board under another name (#201): before the file exists
+    pin_guards_creation(&path, actor)?;
     let store = Store::open(&path)?.named(name);
     if store.was_created() {
         store.record_creator(actor)?;
@@ -864,9 +866,101 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     Ok(())
 }
 
+// A session launched with `TB_AS` pinned (tb-agent-start exports it so every `tb` line is
+// logged under the launched name) cannot act under ANOTHER name on a real board: every
+// `--as` that differs is refused. The refusal compares the same way every stored-name check
+// does: trimmed, case-insensitive (`eq_ignore_ascii_case`). Three exemptions, each one a
+// case where tb's own machinery or a test harness legitimately names someone else:
+//
+// - `TB_DB` — a test or fixture file, one per run — keeps free naming so the suite is
+//   unaffected. That trust does not extend to tb's OWN boards: a `TB_DB` pointing at a file
+//   under `boards::boards_dir()` or `boards::archive_dir()` IS a real board (someone pinned
+//   a live board's file), so the pin still refuses there. The exemption applies to the
+//   BOARD FILE tb would act on (checked when `store` is open); for the pre-open gate below
+//   the caller passes the file the command is about to open.
+// - a hook's own `tb` call inside a live run ticket (`TB_HOOK_TOKEN` — `hooks::nested`) is
+//   tb acting through its own mechanism, not the session forging a name.
+// - the board not being real at all: a missing non-default board (refused later with
+//   `no_board`) or an in-memory/default-board opening (`:memory:`) — no file, nothing to
+//   protect. There the more basic error must still win (the lead decision on #191).
+fn db_exempt(store_path: Option<&std::path::Path>) -> bool {
+    terminal_board::env("DB").map_or(false, |db| {
+        let db = std::fs::canonicalize(&db).unwrap_or_else(|_| std::path::PathBuf::from(&db));
+        store_path.map_or(true, |p| {
+            let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            !(starts_in(&p, &boards::boards_dir()) || starts_in(&p, &boards::archive_dir()))
+        })
+    })
+}
+
+/// `p` inside `dir` or equal to it; the tail of a symlinked `p` (`dir` itself is always
+/// canonicalized by its only caller) also counts, so a `TB_DB` reached through a link
+/// pointing into the boards dir is still a real board.
+fn starts_in(p: &std::path::Path, dir: &std::path::Path) -> bool {
+    p.starts_with(dir) || std::fs::read_link(p).map_or(false, |t| t.starts_with(dir))
+}
+
+fn as_pin_error(pinned: &str, actor: &str) -> BoardError {
+    BoardError(
+        format!("this session was launched as {pinned}; it cannot act as {actor} — use --as {pinned}"),
+        Code::AsMismatch,
+    )
+}
+
+/// The pre-open gate: a pinned session may not act as another name on anything that would
+/// CREATE a board file (`tb new`, `tb setup`, create-on-first-use `add`/`config`) — refused
+/// before any file is made (#200/#201). Non-creating commands keep the old order: the
+/// missing-board refusal (the more basic error) still wins over the pin, because the pin's
+/// refusal then says the same thing in stronger words on the next, existing board. The
+/// hook-ticket exemption (`hooks::nested`) is checked with the file the command would open,
+/// so a hook acting for a board it has a live ticket for still works.
+fn pin_guards_creation(board_path: &std::path::Path, actor: &str) -> Result<(), BoardError> {
+    let Some(pinned) = terminal_board::env("AS")
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+    else {
+        return Ok(());
+    };
+    if actor.trim().eq_ignore_ascii_case(&pinned) {
+        return Ok(());
+    }
+    let board_path = std::fs::canonicalize(board_path).unwrap_or_else(|_| board_path.to_path_buf());
+    if hooks::nested(&board_path.display().to_string()).is_some() || db_exempt(Some(&board_path)) {
+        return Ok(());
+    }
+    Err(as_pin_error(&pinned, actor))
+}
+
+/// The post-open gate: the same refusal for every OTHER case — the board is real (even if
+/// it only just came into being through create-on-first-use), so the pin stands between the
+/// open and every write.
+fn pin_guards_existing(store: &Store, actor: &str) -> Result<(), BoardError> {
+    let Some(pinned) = terminal_board::env("AS")
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+    else {
+        return Ok(());
+    };
+    if actor.trim().eq_ignore_ascii_case(&pinned) {
+        return Ok(());
+    }
+    let board_path = store
+        .path()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p).display().to_string())
+        .unwrap_or_default();
+    if !board_path.is_empty() && hooks::nested(&board_path).is_some() || db_exempt(store.path().as_deref()) {
+        return Ok(());
+    }
+    Err(as_pin_error(&pinned, actor))
+}
+
 fn open_board(name: &str, create: bool, actor: &str) -> Result<Store, BoardError> {
     let path = boards::path_for(name);
     if create {
+        // the pin is checked BEFORE the open on the create path: once the file existed,
+        // `was_created()` would be false and this branch could no longer tell a real
+        // first-use from an existing board — the refusal must precede the creation
+        pin_guards_creation(&path, actor)?;
         let store = Store::open(&path)?.named(name);
         // create-on-first-use: whoever's command made the file is the board's creator
         if store.was_created() {
@@ -1368,6 +1462,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         ));
     }
     if let Some(Cmd::Setup { yes, github, no_github, agents, no_agents, agents_md, dry_run }) = cli.cmd {
+        // a pinned session cannot run the wizard under another name — setup would create
+        // the board file before any later check could refuse (#201)
+        pin_guards_creation(&boards::path_for(&name), &actor)?;
         let agents = if agents { Some(true) } else if no_agents { Some(false) } else { None };
         let o = setup::Options { yes, github, no_github, agents, agents_md, dry_run, first_run: false, actor: Some(actor.clone()) };
         return setup::run(&name, o);
@@ -1407,36 +1504,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     };
     let creates = creates && bulk.as_ref().is_none_or(import::Request::will_write);
     let mut store = open_board(&name, creates, &actor)?;
-    // A session launched with `TB_AS` pinned (tb-agent-start exports it so every `tb` line is
-    // logged under the launched name) cannot act under ANOTHER name on a real board: every
-    // `--as` that differs is refused HERE, after the board is resolved and opened (#191 — a
-    // pinned session once created cards under whichever name the prompt carried). A missing
-    // board is the more basic error, so the no-board refusal above this runs first; the pin
-    // still stands between the open and every write, so nothing can be written under the
-    // wrong name. The comparison is the same one every stored-name check uses: trimmed,
-    // case-insensitive (`eq_ignore_ascii_case`). `TB_DB` — a test or fixture file, one per
-    // run — keeps free naming so the suite is unaffected, and a person (no `TB_AS`) is never
-    // touched: their name comes from the same chain this guard reads.
-    if let Some(pinned) = terminal_board::env("AS")
-        .map(|a| a.trim().to_string())
-        .filter(|a| !a.is_empty())
-    {
-        // A hook's own `tb` call inside this board's pre-change hook (a live run ticket,
-        // `TB_HOOK_TOKEN` — `hooks::nested`) is tb acting through its own mechanism, not the
-        // session forging a name: the hook script legitimately acts for whoever it serves
-        // (tests/hooks.rs exercises exactly this). The pin yields there, as it does to
-        // `TB_DB`; everything else is refused.
-        let board_path = store.path().map(|p| std::fs::canonicalize(&p).unwrap_or(p).display().to_string()).unwrap_or_default();
-        let in_hook = !board_path.is_empty() && terminal_board::hooks::nested(&board_path).is_some();
-        if !in_hook && terminal_board::env("DB").is_none() && !actor.trim().eq_ignore_ascii_case(&pinned) {
-            return Err(BoardError(
-                format!(
-                    "this session was launched as {pinned}; it cannot act as {actor} — use --as {pinned}"
-                ),
-                Code::AsMismatch,
-            ));
-        }
-    }
+    // ... every `--as` that differs is refused HERE, after the board is resolved and
+    // opened (#191 — a pinned session once created cards under whichever name the prompt
+    // carried); `pin_guards_creation` above `open_board` covers the paths that would MAKE a
+    // board. A missing board is the more basic error, so the no-board refusal above this
+    // runs first; the pin still stands between the open and every write, so nothing can be
+    // written under the wrong name. The comparison is the same one every stored-name check
+    // uses: trimmed, case-insensitive (`eq_ignore_ascii_case`).
+    pin_guards_existing(&store, &actor)?;
     // a stored `tz` this build does not know must not be ignored silently: today then comes
     // from this machine's zone, and every command says so until the setting is fixed. Scoped
     // to `store.notice_key()` (the one function that computes this — see its doc comment on
