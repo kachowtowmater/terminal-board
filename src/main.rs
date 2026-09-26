@@ -885,11 +885,9 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
 //   protect. There the more basic error must still win (the lead decision on #191).
 fn db_exempt(store_path: Option<&std::path::Path>) -> bool {
     terminal_board::env("DB").map_or(false, |db| {
-        // the file the store would open resolves the link itself (`fsperm::create_board`
-        // creates the link's TARGET, and the connection opens that target) — compare the
-        // same two shapes the process sees
-        let db = fsperm::resolve(&std::path::PathBuf::from(&db))
-            .unwrap_or_else(|_| std::path::PathBuf::from(&db));
+        // the store itself resolves the link (`fsperm::create_board` creates the link's
+        // TARGET and the connection opens that target, which `store.path()` then reports),
+        // so only the two tb directories need resolving here
         let boards = fsperm::resolve(&boards::boards_dir()).unwrap_or_else(|_| boards::boards_dir());
         let archive = fsperm::resolve(&boards::archive_dir()).unwrap_or_else(|_| boards::archive_dir());
         store_path.map_or(true, |p| !(p.starts_with(&boards) || p.starts_with(&archive)))
