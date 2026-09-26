@@ -77,6 +77,7 @@ impl Board {
             Some(db) => c.env("TB_DB", db),
             None => c.env("HOME", self._dir.path()),
         };
+        scrub(&mut c);
         c.output().unwrap()
     }
 
