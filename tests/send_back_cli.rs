@@ -19,6 +19,21 @@ fn json(o: &Output) -> serde_json::Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("not json: {}", String::from_utf8_lossy(&o.stdout)))
 }
 
+/// The human line for a REVIEW->TODO send-back says the card is back in TODO,
+/// unowned, for anyone to take — printed on plain (non-JSON) output.
+#[test]
+fn review_to_todo_prints_a_todo_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let gh = Path::new("/nonexistent/gh");
+    let mut s = Store::open(&db).unwrap();
+    let id = in_review(&mut s, "widgets: fix the thing");
+    let o = tb(&db, gh, "rev", &["move", &id.to_string(), "todo", "FAIL C3 the widget is still red"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(out.contains(&format!("#{id} is back in TODO, unowned (round r2)")) && out.contains(&format!("anyone can take it with 'tb take {id}'")), "{out}");
+    assert_eq!((s.card(id).unwrap().column.as_str(), s.card(id).unwrap().owner.as_deref()), ("todo", None));
+}
 /// A card that bot-1 took and moved to REVIEW.
 fn in_review(s: &mut Store, title: &str) -> i64 {
     let id = s.add(title, "", &[], "lead").unwrap();
@@ -101,9 +116,6 @@ fn fail_to_todo_records_the_reason_and_clears_the_owner() {
     let ids = id.to_string();
     let o = tb(&db, gh, "rev", &["move", &ids, "todo", "FAIL C3 the widget is still red", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // the human line says the card is back in TODO, unowned, for anyone to take
-    let out = String::from_utf8_lossy(&o.stdout).into_owned();
-    assert!(out.contains(&format!("#{id} is back in TODO, unowned (round r2)")) && out.contains(&format!("anyone can take it with 'tb take {id}'")), "{out}");
     let c = &json(&o)["card"];
     // unowned, in todo, one rework round counted
     assert_eq!((c["column"].as_str(), c["owner"].as_str(), c["round"].as_i64()), (Some("todo"), None, Some(2)));
