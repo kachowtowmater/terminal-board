@@ -41,7 +41,9 @@ fn first_run_drive(home: &std::path::Path, tb_line: &str, keys: &str) -> Output 
 #[test]
 fn the_first_run_wizard_refuses_a_forged_as_before_making_the_board() {
     let home = tempfile::tempdir().unwrap();
-    let o = first_run_drive(home.path(), "tb --as b-y", "");
+    // `tb` unquoted: the line needs the binary's absolute path (CARGO_BIN_EXE_tb), since a
+    // pty's sh resolves no PATH here — the plain `tb --as b-y` TEXT is what the pin compares.
+    let o = first_run_drive(home.path(), &format!("{tb} --as b-y"), "");
     let seen = String::from_utf8_lossy(&o.stdout);
     assert!(seen.contains("as_mismatch"), "the refusal never came: {seen:?}");
     assert!(!seen.contains("Set up Terminal Board now?"), "the wizard must never even ask: {seen:?}");
@@ -59,7 +61,8 @@ fn the_first_run_wizard_refuses_a_forged_as_before_making_the_board() {
 fn the_first_run_wizard_under_its_own_name_still_runs() {
     let home = tempfile::tempdir().unwrap();
     let dir = home.path();
-    let o = first_run_drive(dir, "tb", "s\\r");
+    let tb = env!("CARGO_BIN_EXE_tb");
+    let o = first_run_drive(dir, tb, "s\\r");
     let seen = String::from_utf8_lossy(&o.stdout);
     // Proof the refusal path did not eat the wizard itself: the same drive with the actor's
     // OWN name must still ask and still make the board (first_run_actor.rs proves the full
