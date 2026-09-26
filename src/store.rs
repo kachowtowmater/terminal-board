@@ -141,6 +141,9 @@ pub enum Code {
     DoneNeedsNote,
     /// `config done-needs-link` requires a link with that label before DONE.
     DoneNeedsLink,
+    /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
+    /// refused before anything is written (see `main::run`).
+    AsMismatch,
     /// A required argument or value was not given.
     ArgRequired,
     /// An unrecognized subcommand or command word.
@@ -221,6 +224,7 @@ impl Code {
             Code::PersonOnly => "person_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
+            Code::AsMismatch => "as_mismatch",
             Code::ArgRequired => "arg_required",
             Code::UnknownCommand => "unknown_command",
             Code::UnknownSetting => "unknown_setting",

@@ -1302,6 +1302,27 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         }
     }
     let actor = resolve_actor(cli.actor.as_deref());
+    // A session launched with `TB_AS` pinned (tb-agent-start exports it so every `tb` line is
+    // logged under the launched name) cannot act under ANOTHER name on a real board: every
+    // `--as` that differs is refused HERE, before anything is opened or written (#191 — a
+    // pinned session once created cards under whichever name the prompt carried). The
+    // comparison is the same one every stored-name check uses: trimmed, case-insensitive
+    // (`eq_ignore_ascii_case`). `TB_DB` — a test or fixture file, one per run — keeps free
+    // naming so the suite is unaffected, and a person (no `TB_AS`) is never touched: their
+    // name comes from the same chain this guard reads.
+    if let Some(pinned) = terminal_board::env("AS")
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+    {
+        if terminal_board::env("DB").is_none() && !actor.trim().eq_ignore_ascii_case(&pinned) {
+            return Err(BoardError(
+                format!(
+                    "this session was launched as {pinned}; it cannot act as {actor} — use --as {pinned}"
+                ),
+                Code::AsMismatch,
+            ));
+        }
+    }
     // `github` is the name tb's own GitHub sync acts under, and the store lets that name move
     // a card someone holds (its moves are evidence-driven). Nobody else may carry it: a write
     // — or the full-screen board — under that name is refused before anything opens.

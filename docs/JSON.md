@@ -312,6 +312,7 @@ Everyday failures:
 | `unknown_command` | an unrecognized subcommand or command word |
 | `unknown_setting` | an unrecognized `tb config` key |
 | `invalid_value` | a value given for a recognized field/setting/flag is not one it accepts |
+| `as_mismatch` | a session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` on a real board (no `TB_DB`): refused before anything is opened or written; the message names the launched identity — act as `--as $TB_AS` |
 | `db_error` | the database could not be opened, read or written (including "locked, try again") |
 | `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
 | `terminal_error` | the interactive TUI failed to start or run |
