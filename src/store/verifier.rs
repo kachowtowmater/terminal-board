@@ -170,6 +170,25 @@ pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Resu
     }
 }
 
+/// May `actor`, with identity `who`, FORCE a REVIEW card into DONE (card #178, rv-169 probe
+/// P5b)? The force got past a verifier-session rule, so it must answer for itself:
+/// - a 'person' whose kernel parent chain holds an agent binary cannot (`agent_as_person`):
+///   the env was scrubbed, and the force would close the work on the agent's machine;
+/// - a person always can — today's logged escape, unchanged;
+/// - any agent needs the session the force ran in to be a REGISTERED verifier's (name and
+///   harness) — `registered()`, the same question #169 asks a plain close. No session on
+///   record is no entry (refused), and a name on `config verifiers` is a grant of the ROLE,
+///   not a registry entry: its force answers the same registry question (rv-lead-tb P5/P6).
+pub(super) fn may_force(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if agent_as_person(actor, who).is_some() {
+        return Ok(false);
+    }
+    if !is_agent(who) {
+        return Ok(true);
+    }
+    registered(conn, actor, who)
+}
+
 /// The entry vouches for one harness: the identity's harness must be that one (card #169,
 /// lead decision 15:26 — tb-agent-start writes the true harness; tb hardcodes none). A blank
 /// harness on either side matches nothing.
@@ -201,6 +220,25 @@ pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
         }
         AGENT_BINARIES.contains(&n.as_str())
     })
+}
+
+/// The FORCE-ONLY refusal (card #178, rv-169 probe P5b): `--force` past a verifier-session
+/// rule (rule 2, `store.rs::done_checks`) is itself a person's act — or a registered
+/// verifier session's. An agent whose identity or whose kernel parent chain vouches for
+/// nothing cannot force a close.
+pub(super) fn force_needs_person_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+    let how = who.harness.as_deref().map(|h| format!("runs {h}, an agent")).unwrap_or_else(|| {
+        let ancestry = crate::proc::ancestry();
+        format!("was started by {} — an agent's process", first_agent(&ancestry))
+    });
+    BoardError(
+        format!(
+            "#{id}: only a person or a registered verifier may force a card to done — {actor} {how} \
+             in a session that is not one tb-agent-start launched as a verifier. Start the verifier \
+             with: tb-agent-start <name> --kind claude --model <model> --role verifier"
+        ),
+        Code::ForceNeedsPerson,
+    )
 }
 
 /// The `agent_as_person` check (card #169): a close by a 'person' (no harness in its
