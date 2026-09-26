@@ -408,20 +408,19 @@ pub(crate) struct DoneCheck {
 /// `may_force` passed without a question to answer (a person's force).
 fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCheck>> {
     let who = actors::current();
-    if verifier::may_force(conn, actor, &who)? {
-        if verifier::is_agent(&who) {
-            return Ok(Some(DoneCheck {
-                rule: "only a person or a registered verifier may force a close",
-                err: verifier::force_needs_person_err(c.id, actor, &who),
-                forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
-            }));
-        }
+    let allowed = verifier::may_force(conn, actor, &who)?;
+    if allowed && !verifier::is_agent(&who) {
         return Ok(None);
     }
+    let forced = if allowed {
+        format!("closed #{} with --force from a registered verifier session", c.id)
+    } else {
+        format!("closed #{} with --force from a session that is not a registered verifier", c.id)
+    };
     Ok(Some(DoneCheck {
         rule: "only a person or a registered verifier may force a close",
         err: verifier::force_needs_person_err(c.id, actor, &who),
-        forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
+        forced,
     }))
 }
 

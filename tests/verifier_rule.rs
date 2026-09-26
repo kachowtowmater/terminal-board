@@ -950,3 +950,49 @@ fn a_registered_verifier_force_and_a_person_force_still_close() {
     assert!(!forced.iter().any(|t| t.contains("registered") || t.contains("verifier")), "a person's force logs no verifier rule: {forced:?}");
 }
 
+
+/// rv-lead-tb P5: an agent with NO resolved session (an omp worker, no `TB_SESSION`) is not a
+/// registered verifier — no session is no registry entry — so its `--force` is refused.
+#[test]
+fn an_agent_force_without_a_session_is_refused() {
+    let b = Board::new();
+    let id = b.in_review("f6: agent force, no session", "bot-1");
+    let env = Board::str_env(&[("TB_HARNESS", "omp"), ("TB_MODEL", "glm"), ("TB_ROLE", "coder")]);
+    let (e, code) = b.refused_raw(&env, "b-x", &["done", &id, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert_eq!(b.column(&id), "review");
+    let (e, code) = b.refused_raw(&env, "b-x", &["move", &id, "done", "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// rv-lead-tb P6: a name on `config verifiers` is a person's grant of the ROLE, not a registry
+/// entry. An agent under that name in an unregistered session cannot force a close.
+#[test]
+fn a_config_verifier_force_from_an_unregistered_session_is_refused() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-listed"]);
+    let id = b.in_review("f7: listed name, unregistered session", "bot-1");
+    let env =
+        Board::str_env(&[("TB_HARNESS", "omp"), ("TB_MODEL", "glm"), ("TB_ROLE", "coder"), ("TB_SESSION", "unreg")]);
+    let (e, code) = b.refused_raw(&env, "rv-listed", &["done", &id, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// A registered verifier's force event says what it is: from a registered verifier session —
+/// never the unregistered wording.
+#[test]
+fn a_registered_verifier_force_event_names_the_registered_session() {
+    let b = Board::new();
+    let reg = common::VerifierRegistry::new();
+    reg.register(VUUID, "rv-reg", "claude-code");
+    let env: Vec<(&str, String)> = reg.env().into_iter().chain(Board::str_env(VERIFIER)).collect();
+    let id = b.in_review("f8: registered force text", "bot-1");
+    b.ok_raw(&env, "rv-reg", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
+    let forced: Vec<String> =
+        b.events(&id).iter().filter(|e| e["kind"] == "force").filter_map(|e| e["text"].as_str().map(String::from)).collect();
+    assert!(forced.iter().any(|t| t.contains("from a registered verifier session")), "{forced:?}");
+    assert!(!forced.iter().any(|t| t.contains("not a registered verifier")), "{forced:?}");
+}
