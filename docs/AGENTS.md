@@ -147,14 +147,14 @@ alone unless a person asks you to.
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb asks herdr for
 `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command (each command usually
 runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work;
-`TB_ROLE=verifier` is what lets you close a card, and only from a registered session; the session id is recorded with it too. Names are
-self-asserted — never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent
-holding a DOING card is a warning.
+`TB_ROLE=verifier` is what lets you close a card, and only from a registered session; the session id is recorded with it too. Names are self-asserted
+— never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent holding a DOING card is a
+warning.
 
 | variable | what it does | knob or test hook |
 |---|---|---|
 | `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
-| `TB_CARD` | `<board>#<id>` this session was started for (`tb-agent-start --card`): tb refuses every card WRITE on another card, or a new card, with `card_bound` — `note` on any card stays allowed, and `TB_DB` fixtures, persons and `TB_ROLE` `lead`/`orchestrator` are exempt; unsetting it (or forging a role) writes freely | knob |
+| `TB_CARD` | `<board>#<id>` this session was started for (`tb-agent-start --card`): every card WRITE on another card, or a new card, is refused with `card_bound` — `note` on any card stays allowed; `TB_DB` fixtures, persons and `TB_ROLE` `lead`/`orchestrator` are exempt, and unsetting it writes freely | knob |
 | `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
 | `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
 | `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
@@ -236,7 +236,6 @@ tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob
-tb take 2
 tb drop 2
 tb move 2 doing
 tb move 2 review
