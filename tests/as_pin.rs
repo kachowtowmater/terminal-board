@@ -297,10 +297,29 @@ mod db_scope {
         (b, db)
     }
 
+    /// The agent session of `Board::as_agent`, plus `HOME` and `TB_DB`: the pin reads the
+    /// boards dir from `HOME`, so the real-board cases need it even though the file comes
+    /// from `TB_DB` (the `Board::run` path only sets one of the two).
+    fn real_db_agent(&self, db: &std::path::Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_tb"))
+            .args(args)
+            .env("TB_AS", "b-x")
+            .env("TB_HARNESS", "omp")
+            .env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder")
+            .env("TB_SESSION", "omp-b-x-1")
+            .env("TB_NO_HERDR", "1")
+            .env("TZ", "UTC")
+            .env("HOME", self._dir.path())
+            .env("TB_DB", db)
+            .output()
+            .unwrap()
+    }
+
     #[test]
     fn a_tb_db_pointing_at_a_real_board_file_is_pinned() {
         let (b, db) = real_board_db();
-        let o = b.as_agent("b-x", &["add", "forged", "--as", "b-y", "--json"]);
+        let o = b.real_db_agent(&db, &["add", "forged", "--as", "b-y", "--json"]);
         assert!(!o.status.success(), "TB_DB on a real board file must not skip the pin");
         let v = Board::json(&o.stdout);
         assert_eq!(v["code"], "as_mismatch", "{v}");
@@ -317,7 +336,7 @@ mod db_scope {
         b.ok(&["boards", "archive", "pin-board"]);
         let arch = b._dir.path().join(".local/state/terminal-board/archive");
         let db = fs::read_dir(&arch).unwrap().next().unwrap().unwrap().path();
-        let o = b.as_agent("b-x", &["add", "forged", "--as", "b-y", "--json"]);
+        let o = b.real_db_agent(&db, &["add", "forged", "--as", "b-y", "--json"]);
         assert!(!o.status.success(), "TB_DB on an archived board file must not skip the pin");
         assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
     }
@@ -335,12 +354,7 @@ mod db_scope {
         let (b, db) = real_board_db();
         let link = b._dir.path().join("link.db");
         std::os::unix::fs::symlink(&db, &link).unwrap();
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(["add", "forged", "--as", "b-y", "--json"])
-            .env("TB_AS", "b-x").env("TB_HARNESS", "omp").env("TB_MODEL", "g")
-            .env("TB_ROLE", "coder").env("TB_SESSION", "omp-b-x-1").env("TB_NO_HERDR", "1")
-            .env("TZ", "UTC").env("TB_DB", &link);
-        let o = c.output().unwrap();
+        let o = b.real_db_agent(&link, &["add", "forged", "--as", "b-y", "--json"]);
         assert!(!o.status.success(), "a symlink tail into the boards dir is still a real board");
         assert_eq!(Board::json(&o.stdout)["code"], "as_mismatch");
     }
@@ -348,12 +362,7 @@ mod db_scope {
     #[test]
     fn a_tb_db_pointing_at_a_real_board_file_still_allows_its_own_name() {
         let (b, db) = real_board_db();
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(["add", "own", "--json"])
-            .env("TB_AS", "b-x").env("TB_HARNESS", "omp").env("TB_MODEL", "g")
-            .env("TB_ROLE", "coder").env("TB_SESSION", "omp-b-x-1").env("TB_NO_HERDR", "1")
-            .env("TZ", "UTC").env("TB_DB", &db);
-        let o = c.output().unwrap();
+        let o = b.real_db_agent(&db, &["add", "own", "--json"]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         assert_eq!(Board::json(&o.stdout)["card"]["events"][0]["actor"], "b-x");
     }
