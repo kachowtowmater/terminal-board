@@ -1,3 +1,15 @@
+# Upgrading to 3.2.1
+
+Nothing to do: boards, commands and the JSON contract are unchanged from 3.2.0. The JSON
+output only gains fields and codes: `events[].ancestry` (left out when nothing was
+recorded), and the `unregistered_verifier`, `agent_as_person` and `holder_alive` error
+codes. One behaviour change to know about: an agent closing a card REVIEW → DONE now needs
+a verifier registry entry — a file in
+`~/.local/state/terminal-board/verifiers/<session>` naming the verifier — written by
+`tb-agent-start --role verifier` when the verifier is launched (re-launch the verifier that
+way if it already exists; the same session keeps working). Persons are unaffected. While
+`verifier-only` is on, closing without that entry is refused with `unregistered_verifier`.
+
 # Upgrading to 3.2.0
 
 Nothing to do: boards, commands and the JSON contract are unchanged from 3.1.2. The JSON
