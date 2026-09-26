@@ -14,7 +14,6 @@
 
 use crate::hooks;
 use crate::lock;
-use crate::store::actors::Identity;
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
