@@ -57,8 +57,8 @@ impl Board {
     }
 
     /// A `mode:headless` placement note from the holder.
-    fn note(&self, id: &str, text: &str) {
-        assert!(self.run(&agent("coder"), &[], "hw", &["note", id, text]).status.success());
+    fn note(&self, id: &str, holder: &str, text: &str) {
+        assert!(self.run(&agent("coder"), &[], holder, &["note", id, text]).status.success());
     }
 
     /// (column, owner, every event text joined).
@@ -93,7 +93,7 @@ impl Board {
         let o = c.output().unwrap();
         assert!(o.status.success(), "tb-reap failed: {}", String::from_utf8_lossy(&o.stderr));
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-        v["dead_owner_detail"].as_array().map_or(false, |a| {
+        v["dead_owner_detail"].as_array().is_some_and(|a| {
             a.iter().any(|d| d["id"].as_i64() == id.parse::<i64>().ok())
         })
     }
@@ -130,7 +130,7 @@ impl Board {
 fn release_a_no_pid_headless_holder_counts_it_dead_and_releases() {
     let b = Board::new();
     let id = b.held_by("hw");
-    b.note(&id, "mode:headless placement (no pid known)");
+    b.note(&id, "hw", "mode:headless placement (no pid known)");
     b.release_ok("lead-x", &id, "headless worker gone, no pid");
     b.assert_released(&id, "hw");
 }
@@ -139,7 +139,7 @@ fn release_a_no_pid_headless_holder_counts_it_dead_and_releases() {
 fn release_a_headless_holder_whose_recorded_pid_runs_is_refused_holder_alive() {
     let b = Board::new();
     let id = b.held_by("hp");
-    b.note(&id, "mode:headless pid=4242");
+    b.note(&id, "hp", "mode:headless pid=4242");
     let (code, text) = b.refused_release("lead-x", &id, "try");
     assert_eq!(code, "holder_alive", "{text}");
     assert!(text.contains("headless pid 4242"), "{text}");
@@ -150,6 +150,6 @@ fn release_a_headless_holder_whose_recorded_pid_runs_is_refused_holder_alive() {
 fn reap_still_treats_a_no_pid_headless_holder_as_alive() {
     let b = Board::new();
     let id = b.held_by("hw");
-    b.note(&id, "mode:headless placement (no pid known)");
+    b.note(&id, "hw", "mode:headless placement (no pid known)");
     assert!(!b.reap_dead(&id), "tb-reap keeps the no-pid exemption: {id}");
 }
