@@ -24,12 +24,20 @@ impl Board {
         Board { _dir: dir, db: None }
     }
 
-    /// The agent session of `Board::as_agent`, plus `HOME` and `TB_DB`: the pin reads the
-    /// boards dir from `HOME`, so the real-board cases need it even though the file comes
-    /// from `TB_DB` (the `Board::run` path only sets one of the two).
+    /// A `TB_DB` fixture: the shape every other test in the suite uses.
+    fn pinned_db() -> Board {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("b.db");
+        Board { _dir: dir, db: Some(db) }
+    }
+
+    /// The agent session pinned to `b-x`, with `HOME` and `TB_DB` both set: the pin compares
+    /// the file it acts on with the boards dir it reads from `HOME`, so a case that names a
+    /// REAL board's file needs both (the `Board::run` path only sets one of the two).
     fn real_db_agent(&self, db: &std::path::Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tb"))
             .args(args)
+            .env("USER", "person")
             .env("TB_AS", "b-x")
             .env("TB_HARNESS", "omp")
             .env("TB_MODEL", "g")
@@ -41,13 +49,6 @@ impl Board {
             .env("TB_DB", db)
             .output()
             .unwrap()
-    }
-
-    /// A `TB_DB` fixture: the shape every other test in the suite uses.
-    fn pinned_db() -> Board {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("b.db");
-        Board { _dir: dir, db: Some(db) }
     }
 
     fn run(&self, args: &[&str]) -> Output {
