@@ -837,9 +837,17 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", b.dir.path());
     let mut o = None;
-    for _ in 0..5 {
+    // Back-to-back retries are ~1ms apart while the busy window is a forked child's whole
+    // lifetime up to its exec — space them out.
+    for (i, wait) in [0u64, 1, 2, 4, 8].into_iter().enumerate() {
+        if wait > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+        }
         match c.output() {
-            Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => continue,
+            Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                eprintln!("under_omp: exec busy (ETXTBSY), retry {}/5", i + 1);
+                o = None;
+            }
             other => {
                 o = Some(other);
                 break;
@@ -848,8 +856,8 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     }
     let o = match o {
         Some(Ok(o)) => o,
-        Some(Err(e)) => panic!("exec omp (a copy of bash) failed after retries: {e}"),
-        None => c.output().expect("exec omp (a copy of bash) after 5 retries"),
+        Some(Err(e)) => panic!("exec omp (a copy of bash) failed: {e}"),
+        None => c.output().unwrap_or_else(|e| panic!("exec omp (a copy of bash) still ETXTBSY after 5 retries: {e}")),
     };
     Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
 }
