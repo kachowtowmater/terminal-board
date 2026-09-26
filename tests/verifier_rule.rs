@@ -657,7 +657,7 @@ fn no_session_on_either_side_never_matches() {
     let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
     assert_eq!(code, "force_needs_person", "{e}");
     let o = b.run(&[], "anna", &["done", &two, "--force"]);
-    assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(o.status.success(), "a person's --force (no session) was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
     let three = b.in_review("x: a person closes", "bot-1");
