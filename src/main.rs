@@ -12,7 +12,7 @@ use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
-use terminal_board::{fsperm, store::due::{self, DueDate}};
+use terminal_board::{store::due::{self, DueDate}};
 use terminal_board::store::{BoardError, Code, Store, COLUMNS};
 use terminal_board::{boards, contract, export, filter, github, hooks, import, plain, resolve_actor, setup, textin, tui};
 
