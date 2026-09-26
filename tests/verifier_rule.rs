@@ -818,7 +818,8 @@ fn omp_executable() -> Option<&'static PathBuf> {
         }
         let omp = dir.path().join("omp");
         std::fs::rename(&tmp, &omp).ok()?;
-        Some(dir.into_path().join("omp"))
+        let kept = dir.keep(); // the dir must outlive every test thread; leaked on purpose
+        Some(kept.join("omp"))
     });
     OMP.as_ref()
 }
@@ -831,7 +832,7 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     line.extend(["--json".to_string(), "--as".to_string(), quote(who), "; true".to_string()]);
     // Retry the spawn on ETXTBSY (text file busy): a fork racing the exec can still hold a
     // write-mode reference to the file between the rename check above and the exec here.
-    let mut c = Command::new(&omp);
+    let mut c = Command::new(omp);
     c.args(["-c", &line.join(" ")])
         .env_clear()
         .env("TB_DB", b.db())
