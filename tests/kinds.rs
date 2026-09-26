@@ -62,11 +62,10 @@ impl Home {
             .env_remove("TTYBOARD_DB")
             .env_remove("XDG_STATE_HOME")
             .env_remove("TB_BOARD")
-            .env_remove("HERDR_AGENT_NAME")
-            .output()
-            .unwrap();
-        assert!(c.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&c.stderr));
-        String::from_utf8(c.stdout).unwrap()
+            .env_remove("HERDR_AGENT_NAME");
+        let o = c.output().unwrap();
+        assert!(o.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
     }
 
     fn json(&self, args: &[&str]) -> serde_json::Value {
