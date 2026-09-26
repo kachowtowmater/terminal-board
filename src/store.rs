@@ -400,21 +400,34 @@ pub(crate) struct DoneCheck {
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
 ///
-/// The force-only refusal (card #178, rv-169 probe P5b): the check `transition_inner` applies
-/// AFTER the skip list — a force that got past a verifier-session rule is itself refused when
-/// the session behind the force is not a registered verifier's (or a person's). It guards the
-/// force itself, so it never rides in `done_checks`'s list: there `--force` would log it and
-/// skip it, the exact hole the rule closes.
-fn force_check(conn: &Connection, c: &Card, actor: &str) -> Option<DoneCheck> {
+/// The force-only question (card #178, rv-169 probe P5b), asked by `transition_inner` AFTER
+/// the skip list — it guards the force itself, so it never rides in `done_checks`'s list:
+/// there `--force` would log it and skip it, the exact hole the rule closes. `Some(check)`
+/// when an AGENT's close met a verifier-session refusal (`force_guard_failed_last` decides
+/// when the question is even asked): `check.err` is the refusal when `may_force` says no, and
+/// `check.forced` is the one extra `force` event a passing force logs, naming the
+/// registered-session question it answered. A person's force is none of this — `None`.
+fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCheck>> {
     let who = actors::current();
-    if verifier::may_force(conn, actor, &who).unwrap_or(false) {
-        return None;
+    if !verifier::is_agent(&who) || !force_guard_failed_last(conn, c, actor)? {
+        return Ok(None);
     }
-    Some(DoneCheck {
+    Ok(Some(DoneCheck {
         rule: "only a person or a registered verifier may force a close",
         err: verifier::force_needs_person_err(c.id, actor, &who),
         forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
-    })
+    }))
+}
+
+/// Did the LAST guard a plain close of `c` would meet sit in the verifier-session block
+/// (`not_verifier`, `unregistered_verifier`, `agent_as_person`)? The force-only question is
+/// only asked then — a force that skipped none of those rules needs no person behind it.
+fn force_guard_failed_last(conn: &Connection, c: &Card, actor: &str) -> Result<bool> {
+    let v = done_checks(conn, c, actor)?;
+    Ok(matches!(
+        v.last().map(|d| d.err.1),
+        Some(Code::NotVerifier) | Some(Code::UnregisteredVerifier) | Some(Code::AgentAsPerson)
+    ))
 }
 
 fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
@@ -2803,11 +2816,18 @@ impl Store {
                 }
                 Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
             }
-            // the force-only rule (#178) is NOT part of the skippable list above — it guards
-            // the force itself, so it refuses even when `--force` is held: an agent whose
-            // resolved session is not a registered verifier's cannot log its way past it.
-            if let Some(check) = force_check(&tx, &c, actor) {
-                return Err(check.err);
+            // The force-only rule (#178) is NOT part of the skippable list above — it guards
+            // the force itself. `may_force` false: refused even under `--force` (an agent
+            // cannot log its way past the person behind a close). `may_force` true on an
+            // AGENT whose close met a verifier-session refusal: one more `force` event,
+            // naming the registered-session question it answered.
+            if let Some(check) = force_check(&tx, &c, actor)? {
+                let who = actors::current();
+                if force && verifier::may_force(&tx, actor, &who)? {
+                    Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+                } else {
+                    return Err(check.err);
+                }
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it

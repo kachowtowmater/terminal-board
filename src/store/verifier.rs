@@ -172,6 +172,8 @@ pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Resu
 
 /// May `actor`, with identity `who`, FORCE a REVIEW card into DONE (card #178, rv-169 probe
 /// P5b)? The force got past a verifier-session rule, so it must answer for itself:
+/// - a 'person' whose kernel parent chain holds an agent binary cannot (`agent_as_person`):
+///   the env was scrubbed, and the force would close the work on the agent's machine;
 /// - a person always can — today's logged escape, unchanged;
 /// - a name on `config verifiers` can: that list is a PERSON's grant of close authority to
 ///   the name (an agent cannot edit it, `person_only`), and it already lets the name close
@@ -181,6 +183,9 @@ pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Resu
 /// - any other agent needs the session the force ran in to be a REGISTERED verifier's (name
 ///   and harness) — `registered()`, the same question #169 asks a plain close.
 pub(super) fn may_force(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if agent_as_person(actor, who).is_some() {
+        return Ok(false);
+    }
     if !is_agent(who) || who.session.is_none() || verifiers_of(conn)?.iter().any(|n| n.eq_ignore_ascii_case(actor.trim())) {
         return Ok(true);
     }
