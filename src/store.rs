@@ -2806,16 +2806,17 @@ impl Store {
                 Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
             }
             // The force-only rule (#178) is NOT part of the skippable list above — it guards
-            // the force itself. `may_force` false: refused even under `--force` (an agent
-            // cannot log its way past the person behind a close). `may_force` true on an
-            // AGENT whose close met a verifier-session refusal: one more `force` event,
+            // the force itself, so it is asked ONLY when `--force` is held. `may_force`
+            // false: refused even under `--force` (an agent cannot log its way past the
+            // person behind a close). `may_force` true on an AGENT: one more `force` event,
             // naming the registered-session question it answered.
-            if let Some(check) = force_check(&tx, &c, actor)? {
-                let who = actors::current();
-                if force && verifier::may_force(&tx, actor, &who)? {
-                    Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
-                } else {
-                    return Err(check.err);
+            if force {
+                if let Some(check) = force_check(&tx, &c, actor)? {
+                    if verifier::may_force(&tx, actor, &actors::current())? {
+                        Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+                    } else {
+                        return Err(check.err);
+                    }
                 }
             }
         }
