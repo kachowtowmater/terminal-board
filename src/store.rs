@@ -2679,14 +2679,17 @@ impl Store {
                 let reason = reason.map(str::trim);
                 let c = get_card(&tx, id)?;
                 let send_back = c.column == "review" && column == "doing";
+                // a FAILed card goes back to TODO unowned, with the same `returned` event
+                // the review->doing send-back writes: the FAIL reason travels on the card.
+                let fail_to_todo = c.column == "review" && column == "todo";
                 if send_back && !matches!(reason, Some(r) if !r.is_empty()) {
                     return err(format!(
                         "say why it goes back — 'tb move {id} doing \"what to fix\"'"
                     ), Code::ReasonRequired);
                 }
-                if !send_back && reason.is_some() {
+                if !send_back && !fail_to_todo && reason.is_some() {
                     return err(format!(
-                        "a reason only goes with sending a REVIEW card back to doing — log it with 'tb note {id} \"...\"'"
+                        "a reason only goes with sending a REVIEW card back to doing or todo — log it with 'tb note {id} \"...\"'"
                     ), Code::InvalidValue);
                 }
                 if c.column == column {
@@ -2730,7 +2733,7 @@ impl Store {
             _ => None,
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
-
+        let fail_to_todo = kind == Kind::Move && c.column == "review" && column == "todo";
         // 2. the guards
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
@@ -2866,7 +2869,7 @@ impl Store {
                 } else {
                     Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
                 }
-                if let (true, Some(r)) = (send_back, reason) {
+                if let (true, Some(r)) = (send_back || fail_to_todo, reason) {
                     Self::log(&tx, id, actor, "returned", r)?;
                 }
             }
