@@ -186,11 +186,10 @@ fn a_forged_hook_token_does_not_bypass_the_pin() {
             .env("TB_NO_HERDR", "1")
             .env("TB_HOOK_TOKEN", token)
             .env("HOME", b._dir.path())
-            .env("TZ", "UTC")
-            .output()
-            .unwrap();
-        assert!(!c.status.success(), "token={token:?} got past the pin");
-        let v = Board::json(&c.stdout);
+            .env("TZ", "UTC");
+        let o = c.output().unwrap();
+        assert!(!o.status.success(), "token={token:?} got past the pin");
+        let v = Board::json(&o.stdout);
         assert_eq!(v["code"], "as_mismatch", "token={token:?}: {v}");
     }
     let n = b.ok(&["pin-board", "list", "--json", "--as", "charles"]);
