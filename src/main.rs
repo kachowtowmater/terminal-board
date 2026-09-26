@@ -1746,7 +1746,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 let round = store.show(id)?.round;
                 if c.column == "todo" {
                     format!(
-                        "#{id} is back in TODO, unowned (round r{round}) — anyone can take it with '{}'",
+                        "#{id} is back in TODO, unowned (round r{round}) — anyone can take it with {}",
                         cmd_hint(explicit, &format!("take {id}"))
                     )
                 } else {
