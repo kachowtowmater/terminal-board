@@ -15,7 +15,9 @@
 //!   6. one of the owner's tb actor sessions on this card is a live herdr agent's session
 //!      (an orchestrator or headless builder acting under the name);
 //!   7. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
-//!      conservatively alive.
+//!      conservatively alive — for `tb-reap`. An explicit `tb release` treats a no-pid
+//!      headless holder as DEAD (nothing but the note records it; the releaser has checked).
+//!      Both keep a no-pid holder alive by every other probe.
 //!
 //! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,PANES,SESSIONS,PROCS}` switches every
 //! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
@@ -37,6 +39,14 @@ const AGENT_BINS: &[&str] = &["codex", "omp", "claude", "pi", "aider", "opencode
 
 const FAKE_VARS: &[&str] =
     &["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"];
+
+/// Which caller is asking [`World::alive_by`]: the automatic `tb-reap` scan, or an explicit
+/// `tb release`. They share every probe; only a no-pid `mode:headless` note differs between
+/// them (see [`World::alive_by`]).
+pub enum Mode {
+    Reap,
+    Release,
+}
 
 /// Is any `TB_REAP_FAKE_*` set (even to "")? `std::env::var` directly (not `crate::env`,
 /// which treats "" as unset) so a test can assert "nothing is alive".
@@ -178,6 +188,21 @@ impl World {
     /// (herdr-agent, tmux, pane label, process N, actor-session, headless pid N,
     /// orchestrator, reaper-caller), not just "alive".
     pub fn alive_by(&self, store: &Store, card: &Card) -> Option<String> {
+        self.alive_impl(store, card, Mode::Reap)
+    }
+
+    /// The one liveness question an explicit `tb release` asks. Same probes, same wording —
+    /// but a no-pid `mode:headless` note does NOT vouch for the holder: nothing but that
+    /// note records the worker, and the releaser (a lead/orchestrator/person acting with a
+    /// reason) has already checked the holder is gone. tb-reap keeps its conservative
+    /// exemption ([`World::alive_by`]).
+    pub fn alive_for_release(&self, store: &Store, card: &Card) -> Option<String> {
+        self.alive_impl(store, card, Mode::Release)
+    }
+
+    /// Shared body of [`World::alive_by`] and [`World::alive_for_release`]; `mode` decides
+    /// only the no-pid-headless verdict.
+    fn alive_impl(&self, store: &Store, card: &Card, mode: Mode) -> Option<String> {
         let owner = card.owner.as_deref()?;
         let o = owner.trim();
         if eq_ci(o, "orch") || o.to_ascii_lowercase().starts_with("orch-") || self.protect.iter().any(|p| eq_ci(p, o)) {
@@ -213,12 +238,20 @@ impl World {
         {
             return Some("actor-session".into());
         }
-        // mode:headless — the newest such note decides; its pid, when it names one.
+        // mode:headless — the newest such note decides; its pid, when it names one. With a
+        // pid, both callers ask the process table: alive while it runs, dead once it is
+        // gone. With NO pid, tb-reap stays conservatively alive (its documented exemption —
+        // a reaped headless worker can't fight back), but an explicit `tb release` by a
+        // lead/orchestrator/person who has already checked the holder is gone treats it as
+        // dead: nothing records that worker but this note.
         if let Some(note) = detail.events.iter().rev().find(|e| e.kind == "note" && e.text.contains("mode:headless")) {
             return match headless_pid(&note.text) {
                 Some(pid) if self.pid_alive(pid) => Some(format!("headless pid {pid}")),
                 Some(_) => None,
-                None => Some("headless (no pid recorded)".into()),
+                None => match mode {
+                    Mode::Reap => Some("headless (no pid recorded)".into()),
+                    Mode::Release => None,
+                },
             };
         }
         None

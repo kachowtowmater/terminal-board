@@ -12,8 +12,10 @@
 //!    `TB_ROLE` is `lead` or `orchestrator` — the seats that run workers (`not_releaser`,
 //!    [`may_release`]);
 //! 4. the holder is dead by the SAME probes `tb-reap` uses (`crate::liveness`: herdr agent,
-//!    tmux session, pane label, agent process, live actor session, headless pid). While any
-//!    of them vouches for the holder, it is refused (`holder_alive`), naming which one
+//!    tmux session, pane label, agent process, live actor session, headless pid) — except a
+//!    no-pid `mode:headless` note, which keeps the holder alive only for `tb-reap`'s
+//!    automatic scan; a hand release with a reason does not trust it alone. While any of
+//!    them vouches for the holder, it is refused (`holder_alive`), naming which one
 //!    ([`holder_alive`]). `TB_REAP_FAKE_*` put the probes in fixture mode, as for tb-reap.
 //!
 //! There is no `--force` here on purpose: a live holder's card is taken with `tb move ID todo
@@ -38,9 +40,10 @@ pub fn may_release(who: &Identity) -> bool {
 }
 
 /// Why `card`'s holder counts as alive (the probe that vouches for it), or None when it is
-/// dead. The one liveness question `release` asks — the same `World::alive_by` tb-reap asks.
+/// dead. An explicit `tb release` asks [`World::alive_for_release`]: a no-pid
+/// `mode:headless` note alone does NOT vouch for the holder.
 pub fn holder_alive(store: &Store, card: &Card) -> Option<String> {
-    World::load().alive_by(store, card)
+    World::load().alive_for_release(store, card)
 }
 
 fn not_releaser_err(id: i64, actor: &str, who: &Identity) -> BoardError {
