@@ -847,7 +847,8 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
         }
     }
     let o = match o {
-        Some(o) => o,
+        Some(Ok(o)) => o,
+        Some(Err(e)) => panic!("exec omp (a copy of bash) failed after retries: {e}"),
         None => c.output().expect("exec omp (a copy of bash) after 5 retries"),
     };
     Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
