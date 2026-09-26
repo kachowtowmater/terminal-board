@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.3:** `tb release` frees a DOING card whose holder note is `mode:headless` with
+no pid and no other liveness — the holder is dead for release and the card returns to TODO,
+unowned (tb-reap keeps its no-pid exemption). A session launched with `TB_AS` pinned cannot
+act under another `--as` on a real board: the mismatch is refused (`as_mismatch`) before
+anything is written.
+
 **New in 3.2.2:** forcing a REVIEW → DONE close past the verifier rules is a person's act
 now: an agent's `tb done --force` is refused (`force_needs_person`) unless its session was
 launched with `tb-agent-start --role verifier`. A reasoned REVIEW → TODO send-back says the
@@ -191,7 +197,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.2` | install that release instead of the latest (`3.2.2` works too) |
+| `--version v3.2.3` | install that release instead of the latest (`3.2.3` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
