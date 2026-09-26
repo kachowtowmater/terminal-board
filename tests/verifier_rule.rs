@@ -855,3 +855,96 @@ fn a_person_under_an_agent_process_closes_nothing_and_changes_no_rule() {
     assert!(e.contains("(harness omp)"), "the refusal names the caller's harness: {e}");
     assert_eq!(b.column(&id), "review");
 }
+
+// --- the FORCE-ONLY rule (card #178, rv-169 probe P5b): `--force` past a refused REVIEW → DONE
+// --- is itself a person's act. An agent whose resolved session is not a registered verifier
+// --- gets `force_needs_person` and nothing moves; the tests below run through `*_raw`, which
+// --- never registers, so the force meets the unregistered-session refusal first.
+
+/// An unregistered agent's `done --force` on a REVIEW card is refused: nothing moves, and the
+/// refusal carries the new code. The plain close meets `unregistered_verifier` first (the
+/// guard list runs before the force check), so the force-only rule is the one that shows.
+#[test]
+fn an_agent_force_is_refused_without_a_registered_verifier_session() {
+    let b = Board::new();
+    let id = b.in_review("f1: agent force, no registry", "bot-1");
+    // the same-session rule cannot save this close: the force runs in the BUILDER's env shape
+    // but a distinct session, so the session check passes only by absence — the registry is
+    // what refuses it
+    let (e, code) = b.refused(AGENT, "orch", &["done", &id, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert!(e.contains("only a person or a registered verifier may force a card to done"), "{e}");
+    assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "the refusal names the fix: {e}");
+    assert_eq!(b.column(&id), "review");
+    // the same refusal on the move path
+    let (e, code) = b.refused(AGENT, "orch", &["move", &id, "done", "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// A role claim alone is not a person: a `TB_ROLE=verifier` agent whose session has no
+/// registry entry was already refused plain (`unregistered_verifier`); its `--force` is
+/// refused too, by the new rule. Asserts the force's own code so the two refusals stay apart.
+#[test]
+fn a_role_claiming_agent_force_is_refused_the_same_way() {
+    let b = Board::new();
+    let id = b.in_review("f2: role claim, no registry", "bot-1");
+    let env = Board::str_env(VERIFIER);
+    let (_, code) = b.refused_raw(&env, "rv-x", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "the plain close first");
+    let (e, code) = b.refused_raw(&env, "rv-x", &["done", &id, "--force"]);
+    assert_eq!(code, "force_needs_person", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// The forge this closes: a 'person' close (no harness keys) whose kernel ancestry holds an
+/// agent binary met `agent_as_person`; its `--force` escaped to the process's machine. Now
+/// the force-only rule demands a registered verifier session behind the force. The registry
+/// is wired but the session is absent (no id to resolve), so the close is refused.
+#[test]
+fn a_fake_persons_force_is_refused_without_a_registered_session() {
+    let b = Board::new();
+    let id = b.in_review("f3: scrubbed env force", "bot-1");
+    let Some(close) = under_omp(&b, "charles", &["done", &id]) else {
+        eprintln!("skipped: no bash to copy as omp");
+        return;
+    };
+    assert_eq!(close["code"], "agent_as_person", "the plain close: {close}");
+    assert_eq!(b.column(&id), "review");
+    let Some(force) = under_omp(&b, "charles", &["done", &id, "--force"]) else {
+        eprintln!("skipped: no bash to copy as omp");
+        return;
+    };
+    assert_eq!(force["code"], "force_needs_person", "the force: {force}");
+    assert!(force["error"].as_str().unwrap_or("").contains("only a person or a registered verifier may force a card to done"), "{force}");
+    assert_eq!(b.column(&id), "review");
+}
+
+/// The passes the rule leaves open: a REGISTERED verifier's `--force` still closes (its
+/// session resolves, name and harness match), and a PERSON's `--force` still closes. Both log
+/// the force events for the rules they got past — the registered verifier's log carries its
+/// own force line for the unregistered-session rule it skips, the person's carries none for
+/// the verifier rules it never met.
+#[test]
+fn a_registered_verifier_force_and_a_person_force_still_close() {
+    let b = Board::new();
+    // registered verifier force
+    let reg = common::VerifierRegistry::new();
+    reg.register(VUUID, "rv-reg", "claude-code");
+    let env: Vec<(&str, String)> =
+        reg.env().into_iter().chain(Board::str_env(VERIFIER)).collect();
+    let id = b.in_review("f4: registered force", "bot-1");
+    b.ok_raw(&env, "rv-reg", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
+    let forced: Vec<String> =
+        b.events(&id).iter().filter(|e| e["kind"] == "force").filter_map(|e| e["text"].as_str().map(String::from)).collect();
+    assert!(forced.iter().any(|t| t.contains("closed") && t.contains("registered")), "{forced:?}");
+    // a person's force
+    let two = b.in_review("f5: person force", "bot-1");
+    b.ok(PERSON, "charles", &["done", &two, "--force"]);
+    assert_eq!(b.column(&two), "done");
+    let forced: Vec<String> =
+        b.events(&two).iter().filter(|e| e["kind"] == "force").filter_map(|e| e["text"].as_str().map(String::from)).collect();
+    assert!(!forced.iter().any(|t| t.contains("registered") || t.contains("verifier")), "a person's force logs no verifier rule: {forced:?}");
+}
+

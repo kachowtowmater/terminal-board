@@ -130,6 +130,10 @@ pub enum Code {
     /// agent binary (omp, claude, codex, pi) — the env is clean, the parent chain is not
     /// (store/verifier.rs).
     AgentAsPerson,
+    /// `done --force` (REVIEW -> DONE) by an agent whose resolved session is not a registered
+    /// verifier — only a person, or a verifier in a registered session, may force a close
+    /// (store/verifier.rs).
+    ForceNeedsPerson,
     /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
     /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
     PersonOnly,
@@ -213,6 +217,7 @@ impl Code {
             Code::NotVerifier => "not_verifier",
             Code::UnregisteredVerifier => "unregistered_verifier",
             Code::AgentAsPerson => "agent_as_person",
+            Code::ForceNeedsPerson => "force_needs_person",
             Code::PersonOnly => "person_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
@@ -393,6 +398,16 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-note` (store/closing.rs): a note written during the stay being left. `github`
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
+/// Whether the LAST guard in a `done_checks` list is one of the verifier-session refusals
+/// (rule 2): `--force` past one of those still needs a person behind it, so #178 adds the
+/// FORCE-ONLY check below whenever the list ends in one.
+fn force_guard_failed(last: Option<&DoneCheck>) -> bool {
+    matches!(
+        last.map(|d| d.err.1),
+        Some(Code::NotVerifier) | Some(Code::UnregisteredVerifier) | Some(Code::AgentAsPerson)
+    )
+}
+
 fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
@@ -436,6 +451,13 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             rule: "a person's close starts from a person's terminal",
             err: verifier::agent_as_person_err(id, actor, &ancestry),
             forced: format!("closed #{id} as a 'person' from an agent's process"),
+        });
+    }
+    if force_guard_failed(v.last()) {
+        v.push(DoneCheck {
+            rule: "only a person or a registered verifier may force a close",
+            err: verifier::force_needs_person_err(id, actor, &who),
+            forced: format!("closed #{id} with --force from a session that is not a registered verifier"),
         });
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {

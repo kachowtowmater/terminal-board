@@ -203,6 +203,25 @@ pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
     })
 }
 
+/// The FORCE-ONLY refusal (card #178, rv-169 probe P5b): `--force` past a verifier-session
+/// rule (rule 2, `store.rs::done_checks`) is itself a person's act — or a registered
+/// verifier session's. An agent whose identity or whose kernel parent chain vouches for
+/// nothing cannot force a close.
+pub(super) fn force_needs_person_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+    let how = who.harness.as_deref().map(|h| format!("runs {h}, an agent")).unwrap_or_else(|| {
+        let ancestry = crate::proc::ancestry();
+        format!("was started by {} — an agent's process", first_agent(&ancestry))
+    });
+    BoardError(
+        format!(
+            "#{id}: only a person or a registered verifier may force a card to done — {actor} {how} \
+             in a session that is not one tb-agent-start launched as a verifier. Start the verifier \
+             with: tb-agent-start <name> --kind claude --model <model> --role verifier"
+        ),
+        Code::ForceNeedsPerson,
+    )
+}
+
 /// The `agent_as_person` check (card #169): a close by a 'person' (no harness in its
 /// identity) whose kernel parent chain holds an agent binary. Returns that chain when the
 /// close must be refused, `None` otherwise. Agents are the registry's lane, and `github` (the
