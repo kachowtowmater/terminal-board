@@ -130,6 +130,10 @@ pub enum Code {
     /// agent binary (omp, claude, codex, pi) — the env is clean, the parent chain is not
     /// (store/verifier.rs).
     AgentAsPerson,
+    /// `done --force` (REVIEW -> DONE) by an agent whose resolved session is not a registered
+    /// verifier — only a person, or a verifier in a registered session, may force a close
+    /// (store/verifier.rs).
+    ForceNeedsPerson,
     /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
     /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
     PersonOnly,
@@ -213,6 +217,7 @@ impl Code {
             Code::NotVerifier => "not_verifier",
             Code::UnregisteredVerifier => "unregistered_verifier",
             Code::AgentAsPerson => "agent_as_person",
+            Code::ForceNeedsPerson => "force_needs_person",
             Code::PersonOnly => "person_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
@@ -393,6 +398,32 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-note` (store/closing.rs): a note written during the stay being left. `github`
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
+///
+/// The force-only question (card #178, rv-169 probe P5b), asked by `transition_inner` AFTER
+/// the skip list, ONLY when `--force` is held — it guards the force itself, so it never
+/// rides in `done_checks`'s list: there `--force` would log it and skip it, the exact hole
+/// the rule closes. `Some(check)` whenever `may_force` answers for this identity — a person
+/// from a person's terminal answers `true` and logs the one extra `force` event only when an
+/// agent's close met the verifier-session block; every refusal is `check.err`. `None` when
+/// `may_force` passed without a question to answer (a person's force).
+fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCheck>> {
+    let who = actors::current();
+    let allowed = verifier::may_force(conn, actor, &who)?;
+    if allowed && !verifier::is_agent(&who) {
+        return Ok(None);
+    }
+    let forced = if allowed {
+        format!("closed #{} with --force from a registered verifier session", c.id)
+    } else {
+        format!("closed #{} with --force from a session that is not a registered verifier", c.id)
+    };
+    Ok(Some(DoneCheck {
+        rule: "only a person or a registered verifier may force a close",
+        err: verifier::force_needs_person_err(c.id, actor, &who),
+        forced,
+    }))
+}
+
 fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
@@ -2781,6 +2812,20 @@ impl Store {
                     return Err(check.err);
                 }
                 Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+            }
+            // The force-only rule (#178) is NOT part of the skippable list above — it guards
+            // the force itself, so it is asked ONLY when `--force` is held. `may_force`
+            // false: refused even under `--force` (an agent cannot log its way past the
+            // person behind a close). `may_force` true on an AGENT: one more `force` event,
+            // naming the registered-session question it answered.
+            if force {
+                if let Some(check) = force_check(&tx, &c, actor)? {
+                    if verifier::may_force(&tx, actor, &actors::current())? {
+                        Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+                    } else {
+                        return Err(check.err);
+                    }
+                }
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it

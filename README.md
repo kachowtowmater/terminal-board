@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.1:** `tb release ID "why"` frees a DOING card whose holder is dead. An agent
+closing a card needs a verifier registry entry (`tb-agent-start --role verifier`) and a
+"person" close from inside an agent kernel is refused; DONE moves record the caller's
+process ancestry in JSON. `tb new --from` stops copying another board's verifier settings,
+and REVIEW → TODO with a reason returns the card unowned with the reason recorded.
+
 **New in 3.2.0:** `tb-reap` releases a card stuck in DOING by a dead owner, and a verifier
 can no longer close a card from the session that did the work. Every board remembers who
 created it (`tb boards --long`, and `created_by` in JSON), and moving a card between boards
@@ -180,7 +186,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.0` | install that release instead of the latest (`3.2.0` works too) |
+| `--version v3.2.1` | install that release instead of the latest (`3.2.1` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
@@ -581,7 +587,9 @@ independent verifier (`TB_ROLE=verifier`, a name on `tb config verifiers`, or a 
 builder or orchestrator that runs `tb done` on a REVIEW card is refused (`not_verifier`) and
 should leave it for the verifier. A verifier running in the SAME recorded session as whoever
 took the card or moved it into review is refused too (`same_session`) — start the verifier in
-its own session — unless `--force` closes it, logged. See [Who moves a card](#who-moves-a-card).
+its own session. `--force` past a refused close stays open to a person, or to a verifier in a
+session `tb-agent-start` launched as a verifier (`rv-`); an AGENT whose session is not a
+registered verifier gets `force_needs_person` instead — see [Who moves a card](#who-moves-a-card).
 
 **Ownership.** A DOING card someone else holds is theirs: `move`, `done`, `drop`, `edit`,
 `block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
@@ -1004,6 +1012,13 @@ agent binary (`omp`, `claude`, `codex`, `pi`). The same check guards every perso
 change — `config verifier-only`, `config verifiers`, deleting a board — so a scrubbed env
 cannot turn the rule off or list itself first. A real person in a terminal still closes.
 
+**A person's `--force`, and only a person's.** Forcing past a refused close (`not_verifier`,
+`unregistered_verifier`, `agent_as_person`) is itself a person's act: a person, or a session
+`tb-agent-start` launched as a verifier, may `tb done ID --force` (logged, with ancestry);
+an AGENT whose resolved session is not a registered verifier gets `force_needs_person`
+instead. The agent's own machine runs the check too (`crate::proc`), so a scrubbed
+environment does not smuggle a force through.
+
 **Residual risk, stated plainly:** everything above runs as the same OS user as the caller.
 The registry directory, the board file and the environment are all writable by that user, so
 a determined same-uid attacker can still forge a close (edit the registry, `sqlite3` the
@@ -1012,8 +1027,8 @@ env/script forge (closes and person-only settings alike) and
 the accident; the ancestry stamp makes everything else *visible* after the fact — a close
 whose recorded ancestry, identity and registry do not agree is the alarm a person reviews.
 The ancestry check also misses a command handed to a process outside the agent's tree
-(`launchd`, `ssh localhost`, a `nohup` re-parented to pid 1), and `--force` still gets past
-every refusal (logged, with ancestry). One side effect: a person-closing test run from inside
+(`launchd`, `ssh localhost`, a `nohup` re-parented to pid 1), and a person's `--force` still
+gets past every refusal (logged, with ancestry). One side effect: a person-closing test run from inside
 an agent's shell (`cargo test` under Claude Code or omp) reads as that agent — run the suite
 from a plain terminal or CI. The real fix is privilege separation (the board held by a
 separate OS user or a broker that checks the caller's credentials); it is a design change,
