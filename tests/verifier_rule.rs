@@ -806,7 +806,10 @@ fn the_registry_refusal_names_the_fix_not_the_list() {
 fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
     let omp = b.dir.path().join("omp");
-    std::fs::copy(&bash, &omp).ok()?;
+    // copied once per board: macOS's fs::copy (clonefile) refuses an existing destination
+    if !omp.exists() {
+        std::fs::copy(&bash, &omp).ok()?;
+    }
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
     line.extend(args.iter().map(|a| quote(a)));
