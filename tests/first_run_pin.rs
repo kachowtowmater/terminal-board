@@ -25,9 +25,11 @@ fn first_run_drive(home: &std::path::Path, tb_line: &str, keys: &str) -> Output 
     let pty = if cfg!(target_os = "linux") {
         format!("script -q -e -c {0} /dev/null", shell_quote(tb_line))
     } else {
-        // macOS/BSD: the command is a bare operand — quote it whole so `script` runs the
-        // binary through sh (a bare multi-word operand would be taken as a filename).
-        format!("script -q /dev/null {0}", shell_quote(tb_line))
+        // macOS/BSD `script` takes the command as a bare OPERAND and does NOT run it
+        // through a shell: a multi-word operand is looked up as a single filename
+        // ("…/tb --as b-y: No such file or directory"). Wrap in `bash -c`, the same shape
+        // the gate's C1b line reaches after its own `bash -c` wrapper.
+        format!("script -q /dev/null bash -c {0}", shell_quote(tb_line))
     };
     let feed = format!(
         "(sleep 1; printf {keys}; sleep 2; sleep 1) | {pin} perl -e 'alarm shift @ARGV; exec @ARGV' 30 {pty} 2>&1",
