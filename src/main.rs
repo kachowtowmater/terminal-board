@@ -474,6 +474,39 @@ fn changes_the_board(cmd: &Cmd) -> bool {
     )
 }
 
+/// The card a command targets, as `<board>#<id>` — for the card-bound guard above. `None`
+/// when the command names no existing card (new cards, and `next`'s pick-a-branch flow).
+/// The board name comes from the parsed `--board`/positional, exactly as the command will
+/// run on; the same value every real write would land on. An exhaustive match whose
+/// catch-all is `None`: a command added later never trips the guard until someone names
+/// its card — the safe way round for a check that must not over-refuse reads.
+fn card_bound_target(cmd: &Cmd, positional_board: Option<&str>, flag_board: Option<&str>) -> Option<String> {
+    let (env_name, _ignored) = boards::env_board();
+    let board = positional_board
+        .or(flag_board)
+        .or(env_name)
+        .unwrap_or_else(|| boards::DEFAULT_BOARD.to_string());
+    let id = match cmd {
+        Cmd::Take { id, .. }
+        | Cmd::Assign { id, .. }
+        | Cmd::Note { id, .. }
+        | Cmd::Check { id, .. }
+        | Cmd::Link { id, .. }
+        | Cmd::Move { id, .. }
+        | Cmd::Done { id, .. }
+        | Cmd::Block { id, .. }
+        | Cmd::Drop { id, .. }
+        | Cmd::Release { id, .. }
+        | Cmd::Rm { id, .. }
+        | Cmd::Restore { id, .. }
+        | Cmd::Prio { id, .. }
+        | Cmd::Edit { id, .. }
+        | Cmd::Mv { id, .. } => *id,
+        _ => return None,
+    };
+    Some(format!("{board}#{id}"))
+}
+
 /// The name a refusal shows for a command.
 fn command_name(cmd: &Cmd) -> &'static str {
     match cmd {
@@ -1529,6 +1562,53 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // written under the wrong name. The comparison is the same one every stored-name check
     // uses: trimmed, case-insensitive (`eq_ignore_ascii_case`).
     pin_guards_existing(&store, &actor)?;
+    // A session launched against ONE card (`tb-agent-start --card`, exported as
+    // `TB_CARD=<board>#<id>`) is that card's builder: every card WRITE it asks for must
+    // target its own card. Enforced here — after the board is resolved and opened, beside
+    // the `TB_AS` pin above, before anything dispatches — so every shell-fed form of a
+    // command (bash <<<, echo|bash, cat|bash, tee|bash, xargs bash -c, `x=add; tb $x …` —
+    // default#613's Z-family) runs through the same check, and nothing is parsed from
+    // command text. The write is read from the parsed command itself; `note` is the one
+    // exempt command (a builder reports what it finds on other cards), and a command that
+    // changes no card (every read, `import --dry-run`) is none of the guard's business.
+    // Exempt like the `TB_AS` pin: a `TB_DB` fixture outside the boards/archive dirs
+    // (`db_exempt`, #201), a person (no `TB_CARD`) and a lead/orchestrator session —
+    // they steer boards, not one card.
+    if let Some(bound) = terminal_board::env("CARD").map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) {
+        let role = terminal_board::store::actors::Identity::from_env().role;
+        let steerer = role.as_deref().is_some_and(|r| {
+            r.trim().eq_ignore_ascii_case("lead") || r.trim().eq_ignore_ascii_case("orchestrator")
+        });
+        if !steerer && !db_exempt(store.path().as_deref()) {
+            if let Some(write) = cmd_ref.and_then(card_bound_write) {
+                let board = positional.as_deref().or(cli.board.as_deref()).unwrap_or(boards::DEFAULT_BOARD);
+                match write {
+                    // a card WRITE on another card — or on another board's card with the
+                    // same number — is not this session's work
+                    CardWrite::Card(id) => {
+                        let want = format!("{board}#{id}");
+                        if want != bound {
+                            return Err(BoardError(
+                                format!(
+                                    "this session is bound to {bound}; it cannot change {want} — work on {bound} (notes on other cards are still allowed)"
+                                ),
+                                Code::CardBound,
+                            ));
+                        }
+                    }
+                    // a new card is never this session's work: it is bound to one that exists
+                    CardWrite::NewCard => {
+                        return Err(BoardError(
+                            format!(
+                                "this session is bound to {bound}; it cannot add a card — work on {bound} (notes on other cards are still allowed)"
+                            ),
+                            Code::CardBound,
+                        ));
+                    }
+                }
+            }
+        }
+    }
     // a stored `tz` this build does not know must not be ignored silently: today then comes
     // from this machine's zone, and every command says so until the setting is fixed. Scoped
     // to `store.notice_key()` (the one function that computes this — see its doc comment on
