@@ -362,7 +362,7 @@ pub fn archived() -> Vec<ArchiveRow> {
     // A machine with no `HOME` has no archive and no boards to read; the empty list is
     // exactly what `restore`'s refusal and `tb boards --archived` should say there.
     let Some(dir) = archive_dir().ok() else { return Vec::new() };
-    let log = creations_log().ok();
+    let log = creations_log().ok().map(|p| std::fs::read_to_string(p).unwrap_or_default());
     let mut v: Vec<ArchiveRow> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
