@@ -88,6 +88,47 @@ fn send_back_needs_a_reason_keeps_the_owner_and_counts_rounds() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("a reason only goes with sending a REVIEW card back"));
 }
 
+/// A verifier FAILs a card: `tb move ID todo "<reason>"` from REVIEW puts it in TODO
+/// UNOWNED (someone must take it fresh), with the same `returned` event the
+/// review->doing send-back logs, so the reason travels on the card and the round counts.
+#[test]
+fn fail_to_todo_records_the_reason_and_clears_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    let gh = Path::new("/nonexistent/gh");
+    let mut s = Store::open(&db).unwrap();
+    let id = in_review(&mut s, "widgets: fix the thing");
+    let ids = id.to_string();
+    let o = tb(&db, gh, "rev", &["move", &ids, "todo", "FAIL C3 the widget is still red", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let c = &json(&o)["card"];
+    // unowned, in todo, one rework round counted
+    assert_eq!((c["column"].as_str(), c["owner"].as_str(), c["round"].as_i64()), (Some("todo"), None, Some(2)));
+    let ev = c["events"].as_array().unwrap();
+    let last = ev.last().unwrap();
+    assert_eq!((last["kind"].as_str(), last["actor"].as_str()), (Some("returned"), Some("rev")));
+    assert_eq!(last["text"], "FAIL C3 the widget is still red");
+    // the plain-text view carries the reason
+    let o = tb(&db, gh, "rev", &["show", &ids]);
+    let shown = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(shown.contains("FAIL C3 the widget is still red") && shown.contains("r2"), "{shown}");
+    // TODO again: the fresh owner is whoever takes it
+    let o = tb(&db, gh, "bot-1", &["take", &ids, "--json"]);
+    assert_eq!(json(&o)["card"]["owner"].as_str(), Some("bot-1"));
+    // a second FAIL: round 3, unowned again
+    assert!(tb(&db, gh, "bot-1", &["done", &ids]).status.success());
+    let o = tb(&db, gh, "rev", &["move", &ids, "todo", "still red", "--json"]);
+    let c = &json(&o)["card"];
+    assert_eq!((c["column"].as_str(), c["owner"].as_str(), c["round"].as_i64()), (Some("todo"), None, Some(3)));
+    // a reason on any other ->todo move is still refused
+    let o = tb(&db, gh, "bot-1", &["take", &ids]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = tb(&db, gh, "bot-1", &["move", &ids, "todo", "no reason here"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("a reason only goes with sending a REVIEW card back"));
+    assert_eq!((s.card(id).unwrap().column.as_str(), s.card(id).unwrap().owner.as_deref()), ("doing", Some("bot-1")));
+}
+
 #[test]
 fn send_back_is_not_blocked_by_a_full_doing_column() {
     let dir = tempfile::tempdir().unwrap();

@@ -305,17 +305,17 @@ fn from_leaves_behind_the_settings_that_belong_to_one_board() {
     h.ok(&["filings", "config", "wip", "5"]);
     h.ok(&["filings", "config", "tz", "America/Los_Angeles"]);
     h.ok(&["filings", "config", "done-by", "anna,ben"]);
-    // set the two that need no external check straight in the file
+    // an agent may not set these (person_only), so they go straight into the file too
     {
         let c = rusqlite::Connection::open(h.db("filings")).unwrap();
-        for (k, v) in [("github", "acme/widgets"), ("file-mode", "shared")] {
+        for (k, v) in [("github", "acme/widgets"), ("file-mode", "shared"), ("verifiers", "carol"), ("verifier-only", "off")] {
             c.execute("INSERT INTO config(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [k, v]).unwrap();
         }
     }
     let out = h.ok(&["new", "matters", "--from", "filings"]);
-    assert!(out.contains("(not done-by, file-mode, github: each belongs to one board)"), "it says what it left: {out}");
+    assert!(out.contains("(not done-by, file-mode, github, verifier-only, verifiers: each belongs to one board)"), "it says what it left: {out}");
     let copied: Vec<String> = h.config_rows("matters").into_iter().map(|(k, _)| k).collect();
-    for never in ["github", "done-by", "file-mode"] {
+    for never in ["github", "done-by", "file-mode", "verifiers", "verifier-only"] {
         assert!(!copied.contains(&never.to_string()), "{never} was copied: {copied:?}");
     }
     // what a person copies a board FOR did travel
@@ -327,6 +327,29 @@ fn from_leaves_behind_the_settings_that_belong_to_one_board() {
     assert!(!cfg.contains("done-by"), "and does not decide who may close its cards:\n{cfg}");
     assert!(!cfg.contains("shared"), "and claims no file mode it does not have:\n{cfg}");
     assert_eq!(h.ok(&["matters", "config", "done-by"]).trim(), "anyone");
+}
+
+/// #177: the verifier rule is a person's setting on each board (`person_only` guards both
+/// keys), so a copy of a board never inherits its list of verifiers or its `verifier-only`
+/// state — a new board starts with no list and the rule at its default (on). A setting a
+/// person copies a board for, like the WIP limit, still travels.
+#[test]
+fn from_leaves_behind_the_verifier_settings_too() {
+    let h = Home::new();
+    h.ok(&["new", "filings"]);
+    h.ok(&["filings", "config", "wip", "7"]);
+    h.ok(&["filings", "config", "verifiers", "anna,ben"]);
+    h.ok(&["filings", "config", "verifier-only", "off"]);
+    let out = h.ok(&["new", "matters", "--from", "filings"]);
+    assert!(out.contains("(not verifier-only, verifiers: each belongs to one board)"), "it says what it left: {out}");
+    let copied: Vec<String> = h.config_rows("matters").into_iter().map(|(k, _)| k).collect();
+    for never in ["verifiers", "verifier-only"] {
+        assert!(!copied.contains(&never.to_string()), "{never} was copied: {copied:?}");
+    }
+    assert!(copied.contains(&"wip".to_string()), "wip did not travel: {copied:?}");
+    let cfg = h.ok(&["matters", "config"]);
+    assert_eq!(h.ok(&["matters", "config", "verifiers"]).trim(), "none — only an agent with TB_ROLE=verifier, or a person, may close a card", "the new board has no list of verifiers:\n{cfg}");
+    assert_eq!(h.ok(&["matters", "config", "verifier-only"]).trim(), "on", "the new board keeps the default verifier rule:\n{cfg}");
 }
 
 /// D6/D7 (review of #121): the default kind writes nothing, not even an event; and a machine

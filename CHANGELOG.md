@@ -1,5 +1,58 @@
 # Changelog
 
+## 3.2.1 — 2026-09-25
+
+### Highlights
+
+- **`tb release` frees a dead holder's card:** a DOING card owned by a session that is gone
+  (the same liveness checks `tb-reap` uses) goes back to TODO, unowned, with a `released`
+  event — when you give a reason and no one else is holding it.
+- **Only a registered verifier closes a card:** an agent moving a card REVIEW → DONE needs
+  a verifier registry entry (`tb-agent-start --role verifier`); a "person" close from inside
+  an agent kernel is refused, and DONE moves record the calling process's ancestry in JSON.
+- **Boards keep their own verifier rules:** `tb new --from` no longer copies another
+  board's `verifiers` list or `verifier-only` switch, and sending a card REVIEW → TODO with
+  a reason now returns it to TODO, unowned, with the reason on the card.
+
+### tb release ID "why" frees a dead holder's DOING card
+
+- `tb BOARD release ID "why"`: a DOING card whose holder is dead — no live herdr pane or
+  tmux session, the same probes `tb-reap` uses, now shared in `src/liveness.rs` — goes to
+  TODO, unowned, with a `released` event. Lead/orchestrator role or a person only.
+- It is refused while the holder is alive (`holder_alive`), for other agents
+  (`not_releaser`), without a reason, or off DOING (`not_in_doing`). There is no `--force`
+  path.
+
+### A verifier registry and process ancestry
+
+- An agent can move a card REVIEW → DONE only when its resolved session has an entry in
+  `~/.local/state/terminal-board/verifiers/<session>` (`{"session","name","harness"}`,
+  written by `tb-agent-start --role verifier`), and that entry's name and harness must match
+  the caller. Persons are exempt. The check applies while `verifier-only` is on, with no
+  env off-switch; closing without a registry entry is refused with `unregistered_verifier`.
+- A "person" close with no harness is refused when the calling process's ancestry includes
+  `omp`, `claude`, `codex` or `pi` (`agent_as_person`).
+- Ancestry is recorded on DONE moves, `force` events and verifier-config changes, and shows
+  as `events[].ancestry` in show/board/log/watch `--json`. The key is additive and left out
+  when nothing was recorded.
+- With the same uid the registry and the database are still editable by any process, and
+  launchd/ssh reparenting can slip past the ancestry check; the real fix is privilege
+  separation. `--force` still works and is logged.
+
+### tb new --from stops copying verifiers / verifier-only
+
+- `tb new X --from P` copied P's `verifiers` list and its `verifier-only off` switch, so a
+  new board could start with its verifier gating disabled by a setting a person made for
+  another board. Both keys are now in the not-copied list: who may verify a card, and
+  whether only a verifier may close one, belong to each board's own people.
+
+### A FAIL reason on REVIEW -> todo returns the card unowned
+
+- `move ID todo "<reason>"` from REVIEW records a `returned` event carrying the reason (the
+  same kind as a review→doing send-back) and clears the owner, so the next worker takes the
+  card fresh. review→doing with a reason is unchanged (keeps the owner); a reason on any
+  other →todo move (e.g. doing→todo) is still refused.
+
 ## 3.2.0 — 2026-09-25
 
 ### Highlights
