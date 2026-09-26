@@ -313,7 +313,7 @@ fn from_leaves_behind_the_settings_that_belong_to_one_board() {
         }
     }
     let out = h.ok(&["new", "matters", "--from", "filings"]);
-    assert!(out.contains("(not done-by, file-mode, github: each belongs to one board)"), "it says what it left: {out}");
+    assert!(out.contains("(not done-by, file-mode, github, verifier-only, verifiers: each belongs to one board)"), "it says what it left: {out}");
     let copied: Vec<String> = h.config_rows("matters").into_iter().map(|(k, _)| k).collect();
     for never in ["github", "done-by", "file-mode", "verifiers", "verifier-only"] {
         assert!(!copied.contains(&never.to_string()), "{never} was copied: {copied:?}");
@@ -341,7 +341,7 @@ fn from_leaves_behind_the_verifier_settings_too() {
     h.ok(&["filings", "config", "verifiers", "anna,ben"]);
     h.ok(&["filings", "config", "verifier-only", "off"]);
     let out = h.ok(&["new", "matters", "--from", "filings"]);
-    assert!(out.contains("(not done-by, verifier-only, verifiers: each belongs to one board)"), "it says what it left: {out}");
+    assert!(out.contains("(not verifier-only, verifiers: each belongs to one board)"), "it says what it left: {out}");
     let copied: Vec<String> = h.config_rows("matters").into_iter().map(|(k, _)| k).collect();
     for never in ["verifiers", "verifier-only"] {
         assert!(!copied.contains(&never.to_string()), "{never} was copied: {copied:?}");
