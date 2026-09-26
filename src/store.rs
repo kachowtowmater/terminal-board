@@ -142,7 +142,7 @@ pub enum Code {
     /// `config done-needs-link` requires a link with that label before DONE.
     DoneNeedsLink,
     /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
-    /// refused before anything is written (see `main::run`).
+    /// refused before anything is written, after the board resolves (see `main::run`).
     AsMismatch,
     /// A required argument or value was not given.
     ArgRequired,

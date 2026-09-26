@@ -1,7 +1,8 @@
 //! #191: a session launched with `TB_AS` pinned (tb-agent-start exports it so every `tb`
 //! line lands under the launched name) cannot act under a DIFFERENT `--as` on a real board —
-//! refused with JSON code `as_mismatch`, naming the launched identity, before anything is
-//! opened or written. `TB_DB` (a test/fixture file) keeps free naming so the suite is
+//! refused with JSON code `as_mismatch`, naming the launched identity, after the board is
+//! resolved/opened and before anything is written. A missing board is the more basic error
+//! and still wins. `TB_DB` (a test/fixture file) keeps free naming so the suite is
 //! unaffected, and a person (no `TB_AS`) is never touched.
 //!
 //! The refusal cases run on a REAL board path (a temp `HOME`, no `TB_DB`) so they cover
@@ -166,8 +167,9 @@ fn a_tb_db_fixture_keeps_free_naming() {
     );
 }
 
-/// The refusal fires before anything is opened: a pinned session cannot CREATE a real board
-/// under another name either (the writes()-gated create path), while its own name can.
+/// The pin stands between the board being opened and every write: a pinned session cannot
+/// CREATE a real board under another name either (the writes()-gated create path), while
+/// its own name can.
 #[test]
 fn the_refusal_precedes_board_creation() {
     let b = Board::real();
