@@ -179,7 +179,7 @@ pub(super) fn may_force(conn: &Connection, actor: &str, who: &Identity) -> Resul
     if !is_agent(who) {
         return Ok(true);
     }
-    Ok(registered(conn, actor, who)?)
+    registered(conn, actor, who)
 }
 
 /// The entry vouches for one harness: the identity's harness must be that one (card #169,
