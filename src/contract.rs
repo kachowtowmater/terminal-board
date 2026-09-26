@@ -29,12 +29,18 @@ pub struct EventJ {
     /// The identity behind `actor`: an `id` in the top-level `actors[]`; null when nothing but
     /// the name is known.
     pub actor_id: Option<i64>,
+    /// The kernel's record of the parent chain the mover ran under (`store::proc`), oldest
+    /// ancestor first — on the writes of consequence only (a move into DONE, a `force`, a
+    /// verifier-config change); the key is absent on every other event (additive: older
+    /// readers' key lists never see it on an event that does not record one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestry: Option<Vec<String>>,
 }
 
 impl EventJ {
     /// The JSON form of a stored event.
     pub fn of(e: crate::store::Event) -> EventJ {
-        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id }
+        EventJ { ts: e.ts, actor: e.actor, kind: e.kind, text: e.text, actor_id: e.actor_id, ancestry: e.ancestry }
     }
 }
 
@@ -206,7 +212,7 @@ pub fn card_with(
             .events
             .iter()
             .skip(skip)
-            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id })
+            .map(|e| EventJ { ts: e.ts, actor: e.actor.clone(), kind: e.kind.clone(), text: e.text.clone(), actor_id: e.actor_id, ancestry: e.ancestry.clone() })
             .collect(),
         links: d.links.clone(),
     })

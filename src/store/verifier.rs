@@ -21,6 +21,16 @@
 //!    A verifier that sends a card back and later returns it to review does not become its
 //!    author by that move (`store::author_of`).
 //!
+//! Card #169 adds two questions on top of rule 2, so an env-only claim stops being enough:
+//! - **The session must be registered** (`unregistered_verifier`): a close that rode on a
+//!   verifier role is refused unless THIS session has an entry in the registry
+//!   `tb-agent-start` writes at launch (`~/.local/state/terminal-board/verifiers/<session>`)
+//!   with the same name and harness — `TB_ROLE=verifier` typed into any shell, including a
+//!   script the agent writes itself, is no longer a verifier (the `registry` module below).
+//! - **A 'person' close is refused from an agent's process** (`agent_as_person`): an
+//!   identity with no harness in it can still be an agent that scrubbed its env — the
+//!   kernel's parent chain (`store::proc`) is what settles it.
+//!
 //! Rule 2 is on by default and can be turned off per board (`tb config verifier-only off`,
 //! logged on the board); rule 1 cannot. Who is on `config verifiers`, and whether rule 2
 //! applies at all, are a person's settings: an agent that changes either is refused
@@ -84,11 +94,16 @@ pub(super) fn person_only_err(key: &str, actor: &str, who: &Identity) -> BoardEr
     )
 }
 
-/// Refuse a change to `key` when this process is an agent.
+/// Refuse a change to `key` when this process is an agent — by its identity, or by its kernel
+/// parent chain when the identity says person (`agent_as_person`: a scrubbed env must not turn
+/// the rule off, card #169).
 fn person_only(key: &str, actor: &str) -> Result<()> {
     let who = super::actors::current();
     if is_agent(&who) {
         return Err(person_only_err(key, actor, &who));
+    }
+    if let Some(ancestry) = agent_as_person(actor, &who) {
+        return Err(agent_as_person_change_err(&format!("change '{key}'"), actor, &ancestry));
     }
     Ok(())
 }
@@ -103,6 +118,9 @@ pub fn person_only_to(what: &str) -> Result<()> {
             format!("only a person may {what} — this is {harness}, an agent. Ask the person who runs this board"),
             Code::PersonOnly,
         ));
+    }
+    if let Some(ancestry) = agent_as_person("this person", &who) {
+        return Err(agent_as_person_change_err(what, "this person", &ancestry));
     }
     Ok(())
 }
@@ -124,6 +142,110 @@ pub(super) fn may_verify(conn: &Connection, actor: &str, who: &Identity) -> Resu
         return Ok(true);
     }
     Ok(verifiers_of(conn)?.iter().any(|n| n.eq_ignore_ascii_case(actor.trim())))
+}
+
+/// The one question the interim (card #169) adds on top of `may_verify`: is the SESSION this
+/// agent runs in one tb-agent-start really launched as a verifier?
+///
+/// Applies to every agent whose close rides on a verifier role. A session is identified by
+/// what tb records as the identity's session (`actors::session_token` of `TB_SESSION` or the
+/// harness's exported id) — the same token `same_session` compares, and the same one the
+/// registry file names. No session on record = no entry = refused: the env is the only claim
+/// behind such a close, and the registry exists to answer exactly that.
+///
+/// Applies wherever the board keeps its verifier rule (`verifier-only`, on by default): a
+/// person who turned that off (`tb config verifier-only off`, person-only) opted the board out
+/// of verifier gating, the registry included. There is no environment switch: an env knob
+/// would be one more thing the agent it guards could set.
+pub(super) fn registered(conn: &Connection, actor: &str, who: &Identity) -> Result<bool> {
+    if !verifier_only_of(conn)? {
+        return Ok(true);
+    }
+    let Some(session) = who.session.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(false);
+    };
+    match registry::of_session(session) {
+        Some(e) => Ok(harness_matches(&e.harness, who) && e.name.eq_ignore_ascii_case(actor.trim())),
+        None => Ok(false),
+    }
+}
+
+/// The entry vouches for one harness: the identity's harness must be that one (card #169,
+/// lead decision 15:26 — tb-agent-start writes the true harness; tb hardcodes none). A blank
+/// harness on either side matches nothing.
+pub(super) fn harness_matches(entry_harness: &str, who: &Identity) -> bool {
+    let entry = entry_harness.trim();
+    let own = who.harness.as_deref().unwrap_or("").trim();
+    !entry.is_empty() && entry.eq_ignore_ascii_case(own)
+}
+
+/// REVIEW → DONE refusal for a close that rode on a role but no registry entry.
+pub(super) fn unregistered_verifier_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+    registry::unregistered_err(id, actor, who)
+}
+
+/// The agent binaries one name covers: a 'person' close whose ancestry holds any of these
+/// came OUT of an agent, whatever its environment said.
+pub(super) const AGENT_BINARIES: [&str; 4] = ["omp", "claude", "codex", "pi"];
+
+/// Is `ancestry` (oldest ancestor first) a person's? A person's chain names shells and
+/// system processes (`bash`, `zsh`, `sshd`, `tmux`, `herdr`, `login`, …). It is an agent's
+/// when one entry's name (without an extension, case-insensitive) is an agent binary.
+pub(super) fn is_agent_ancestry(ancestry: &[String]) -> bool {
+    ancestry.iter().any(|name| {
+        // the extension is stripped case-insensitively first (`CLAUDE.EXE` is claude too),
+        // then the name is folded to lowercase for the whole-name match
+        let mut n = name.trim().to_ascii_lowercase();
+        if n.len() > 4 && n.ends_with(".exe") {
+            n.truncate(n.len() - 4);
+        }
+        AGENT_BINARIES.contains(&n.as_str())
+    })
+}
+
+/// The `agent_as_person` check (card #169): a close by a 'person' (no harness in its
+/// identity) whose kernel parent chain holds an agent binary. Returns that chain when the
+/// close must be refused, `None` otherwise. Agents are the registry's lane, and `github` (the
+/// sync, which runs with no identity) is exempt.
+pub(super) fn agent_as_person(actor: &str, who: &Identity) -> Option<Vec<String>> {
+    if is_agent(who) || actor == "github" {
+        return None;
+    }
+    let ancestry = crate::proc::ancestry();
+    is_agent_ancestry(&ancestry).then_some(ancestry)
+}
+
+/// The 'person' close whose parent chain says agent: the env was scrubbed (`env -u`, a
+/// heredoc script), the kernel's record was not.
+pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> BoardError {
+    BoardError(
+        format!(
+            "#{id}: {actor} says it is a person (no harness in its identity), but this command was \
+             started by {} — an agent's process. tb records the kernel's parent chain with every close; \
+             an agent does not close as a person. Close it from your own terminal, or as a verifier \
+             in a registered session (or --force, logged)",
+            first_agent(ancestry)
+        ),
+        Code::AgentAsPerson,
+    )
+}
+
+/// A person-only change (`person_only`, `person_only_to`) asked from an agent's process under
+/// a person's identity: the same refusal as a close, so no env scrub turns the rule off.
+pub(super) fn agent_as_person_change_err(what: &str, actor: &str, ancestry: &[String]) -> BoardError {
+    BoardError(
+        format!(
+            "only a person may {what} — {actor} says it is a person (no harness in its identity), but \
+             this command was started by {} — an agent's process. Do it from your own terminal",
+            first_agent(ancestry)
+        ),
+        Code::AgentAsPerson,
+    )
+}
+
+/// The first agent binary in `ancestry`, for the refusal text.
+fn first_agent(ancestry: &[String]) -> &str {
+    ancestry.iter().find(|n| is_agent_ancestry(std::slice::from_ref(n))).map(String::as_str).unwrap_or("an agent")
 }
 
 /// `verifier-only` — on unless the board says off.
@@ -227,7 +349,7 @@ impl Store {
         self.set_config("verifier-only", if on { "on" } else { "off" })?;
         if old != on {
             let said = |b: bool| if b { "on" } else { "off" };
-            Self::log_board(&self.conn, actor, "verifier-only", &format!("verifier-only {} -> {}", said(old), said(on)))?;
+            Self::log_board_with_ancestry(&self.conn, actor, "verifier-only", &format!("verifier-only {} -> {}", said(old), said(on)))?;
         }
         Ok(on)
     }
@@ -265,7 +387,7 @@ impl Store {
         }
         if old != names {
             let said = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
-            Self::log_board(&self.conn, actor, "verifiers", &format!("verifiers {} -> {}", said(&old), said(&names)))?;
+            Self::log_board_with_ancestry(&self.conn, actor, "verifiers", &format!("verifiers {} -> {}", said(&old), said(&names)))?;
         }
         Ok(names)
     }
@@ -287,6 +409,89 @@ impl Store {
             v.push(("verifiers".to_string(), names.join(",")));
         }
         Ok(v)
+    }
+}
+
+/// The verifier registry: which sessions tb-agent-start really launched as verifiers.
+///
+/// An env forge (`TB_ROLE=verifier` in a script the agent writes itself) is indistinguishable
+/// from a real verifier launch by the env alone, so REVIEW → DONE by an agent is refused
+/// (`unregistered_verifier`) unless THIS process's resolved session has an entry under
+/// `~/.local/state/terminal-board/verifiers/<session>` — written by `tb-agent-start --role
+/// verifier` at launch, one JSON object `{"session","name","harness"}` per file. All three
+/// must match this command's resolved identity: the session it runs in, the `--as` name it
+/// ran under, and the harness that session belongs to. `TB_ROLE` / `TB_AS` alone never
+/// suffice — that is the forge this stops.
+///
+/// The registry is same-uid-writable (docs/AGENTS.md, residual risk), so it stops the env
+/// forge and the accident, not a determined attacker with a shell on the same account — the
+/// kernel-ancestry stamp on every close answers for that (store::proc).
+pub(super) mod registry {
+    use super::{BoardError, Code, Identity};
+    use crate::boards::state_dir;
+    use std::path::PathBuf;
+
+    /// One registry entry, as `tb-agent-start` writes it.
+    #[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+    pub struct Entry {
+        pub session: String,
+        pub name: String,
+        pub harness: String,
+    }
+
+    /// The directory the registry lives in: `~/.local/state/terminal-board/verifiers`,
+    /// moved wholesale by `TB_VERIFIERS_DIR` (tests — never set it in production; a person
+    /// moving it changes who may close their board).
+    pub fn dir() -> PathBuf {
+        match crate::env("VERIFIERS_DIR") {
+            Some(d) => PathBuf::from(d),
+            None => state_dir().join("verifiers"),
+        }
+    }
+
+    /// The entry `session_id` carries, when the file exists and parses. Read errors (a
+    /// directory that cannot be listed, a file that vanished mid-read) count as missing:
+    /// tb refuses the close, and says so, rather than inventing an entry.
+    pub fn of_session(session_id: &str) -> Option<Entry> {
+        let name = session_file_name(session_id)?;
+        let dir = dir();
+        // session ids are compared case-insensitively everywhere else (`same_session`), and
+        // macOS filesystems fold case while Linux keeps it: read any file whose NAME matches
+        // the id case-insensitively, so a registry minted on the Mac matches on Linux too.
+        let path = (|| {
+            std::fs::read_dir(&dir)
+                .ok()?
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&name))
+                .map(|e| e.path())
+        })()
+        .unwrap_or_else(|| dir.join(&name));
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str::<Entry>(&raw).ok()
+    }
+
+    /// A session id as a file name: the ids tb records are already tokens (`actors::
+    /// session_token` — no path, no separator), but a caller-crafted id must never reach
+    /// the FS as one. Anything but plain name characters is refused.
+    fn session_file_name(session_id: &str) -> Option<String> {
+        let ok = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+        (session_id.chars().all(ok) && !session_id.starts_with('.'))
+            .then(|| session_id.to_string())
+    }
+
+    /// REVIEW → DONE refusal when the session is not a registered verifier.
+    pub(super) fn unregistered_err(id: i64, actor: &str, who: &Identity) -> BoardError {
+        let session = who.session.as_deref().unwrap_or("none");
+        let harness = who.harness.as_deref().unwrap_or("none");
+        BoardError(
+            format!(
+                "only a registered verifier moves #{id} from review to done — {actor} runs in session \
+                 {session}, which tb-agent-start did not start as a verifier (harness {harness}). \
+                 Start the verifier with: tb-agent-start <name> --kind claude --model <model> --role verifier \
+                 (or --force, logged)"
+            ),
+            Code::UnregisteredVerifier,
+        )
     }
 }
 
@@ -329,5 +534,24 @@ mod tests {
         let e = same_session_err(4, "S1", "bld-1");
         assert_eq!(e.1, Code::SameSession);
         assert!(e.0.contains("(S1)") && e.0.contains("bld-1") && e.0.contains("TB_ROLE=verifier"), "{}", e.0);
+    }
+
+    #[test]
+    fn an_agent_binary_anywhere_up_the_chain_makes_the_ancestry_an_agents() {
+        let p = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<String>>();
+        assert!(is_agent_ancestry(&p(&["bash", "omp"])));
+        assert!(is_agent_ancestry(&p(&["claude", "bash", "sshd", "launchd"])));
+        assert!(is_agent_ancestry(&p(&["sshd", "CLAUDE.EXE"])), "case and extension are ignored");
+        assert!(!is_agent_ancestry(&p(&["bash", "zsh", "sshd", "tmux", "launchd"])));
+        assert!(!is_agent_ancestry(&p(&["herdrcopy", "claude-helper"])), "only whole names match");
+        assert!(!is_agent_ancestry(&p(&[])), "an unreadable chain is a person's");
+    }
+
+    #[test]
+    fn the_agent_as_person_refusal_names_the_agent_and_the_way_out() {
+        let e = agent_as_person_err(7, "charles", &["bash".to_string(), "omp".to_string()]);
+        assert_eq!(e.1, Code::AgentAsPerson);
+        assert!(e.0.contains("started by omp") && e.0.contains("#7") && e.0.contains("charles"), "{}", e.0);
+        assert!(e.0.contains("--force, logged"), "{}", e.0);
     }
 }

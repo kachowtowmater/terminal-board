@@ -4,6 +4,8 @@
 //! `config verifiers`, or a person. Everything here drives the real `tb` binary with a
 //! controlled environment (so whatever harness runs the suite never leaks in) and only
 //! through the CLI, so a tree without the rule fails these by assertion, not by compile error.
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -22,11 +24,13 @@ const PERSON: &[(&str, &str)] = &[];
 
 struct Board {
     dir: tempfile::TempDir,
+    /// A lazily-created registry dir this board registers its role-claiming runners in.
+    registry: std::sync::OnceLock<common::VerifierRegistry>,
 }
 
 impl Board {
     fn new() -> Board {
-        let b = Board { dir: tempfile::tempdir().unwrap() };
+        let b = Board { dir: tempfile::tempdir().unwrap(), registry: std::sync::OnceLock::new() };
         b.ok(PERSON, "lead", &["config", "wip", "9"]);
         b
     }
@@ -35,7 +39,7 @@ impl Board {
         self.dir.path().join("b.db")
     }
 
-    fn run(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> Output {
+    fn run_raw(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env_clear();
         c.env("TB_DB", self.db())
@@ -46,26 +50,94 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        c.envs(env.iter().copied());
+        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
         c.output().unwrap()
     }
 
-    fn ok(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> String {
+    /// The entry point every helper runs through: role-claiming envs are registered first.
+    fn run<'a>(&self, env: &'a [(&'a str, String)], who: &str, args: &[&str]) -> Output {
+        let env = self.with_registration(env, who);
+        self.run_raw(&env, who, args)
+    }
+
+    /// The registering runner under its original name at call sites that built envs as
+    /// `Vec<(&str, String)>` before the wrapper existed.
+    fn run_s<'a>(&self, env: &'a [(&'a str, String)], who: &str, args: &[&str]) -> Output {
+        self.run(env, who, args)
+    }
+
+    fn ok(&self, env: &[(&'static str, &str)], who: &str, args: &[&str]) -> String {
+        self.ok_s(&Self::str_env(env), who, args)
+    }
+
+    fn ok_raw(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> String {
+        let o = self.run_raw(env, who, args);
+        assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    }
+
+    fn ok_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> String {
         let o = self.run(env, who, args);
         assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8(o.stdout).unwrap()
     }
 
     /// The `--json` refusal: (error text, code). Asserts it WAS refused.
-    fn refused(&self, env: &[(&str, &str)], who: &str, args: &[&str]) -> (String, String) {
+    fn refused(&self, env: &[(&'static str, &str)], who: &str, args: &[&str]) -> (String, String) {
+        self.refused_s(&Self::str_env(env), who, args)
+    }
+
+    fn refused_s(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> (String, String) {
         let mut a = args.to_vec();
         a.push("--json");
         let o = self.run(env, who, &a);
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
         assert!(!o.status.success(), "{who}: tb {args:?} was allowed: {v}");
-        // `--json` splits the message at its first ` — `: `error` is what happened, `hint` what to do
         let text = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
         (text, v["code"].as_str().unwrap_or("").to_string())
+    }
+
+    /// The registry's own r1-r6 tests manage registration by hand and assert exact refusals,
+    /// so they run the command as-is — no automatic registration.
+    fn refused_raw(&self, env: &[(&str, String)], who: &str, args: &[&str]) -> (String, String) {
+        let mut a = args.to_vec();
+        a.push("--json");
+        let o = self.run_raw(env, who, &a);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+        assert!(!o.status.success(), "{who}: tb {args:?} was allowed: {v}");
+        let text = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
+        (text, v["code"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Lifts a compile-time env literal (`[(key, "value"); N]`) into the `(key, String)` pairs
+    /// the `*_s` runners take.
+    fn str_env(env: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+        env.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    /// Every AGENT close needs its session REGISTERED (card #169, incl. the C3b widening):
+    /// the runners register any agent env (a harness on record) whose session resolves, so
+    /// the pre-registry tests above keep testing the role and list rules alone. The
+    /// registry's own r1–r6 tests pass envs built at runtime and call
+    /// `VerifierRegistry::register` directly, so they run through `*_raw` with no automatic
+    /// registration; a test that wants an UNREGISTERED agent close asserts
+    /// `unregistered_verifier` and uses `*_raw`.
+    fn with_registration<'a>(&self, env: &'a [(&'a str, String)], who: &str) -> Vec<(&'a str, String)> {
+        // role or not: any agent (a harness in the env, the thing `is_agent` reads) closing
+        // REVIEW -> DONE must run in a registered session; a person env (no harness keys)
+        // never registers and stays exempt (fake persons are `agent_as_person`'s lane).
+        let is_agent = env.iter().any(|(k, _)| matches!(*k, "CLAUDECODE" | "OMPCODE" | "AI_AGENT" | "CODEX_SESSION_ID" | "CODEX_THREAD_ID" | "CODEX_SANDBOX" | "CODEX_CI" | "TB_HARNESS" | "TB_SESSION"));
+        if !is_agent {
+            return env.to_vec();
+        }
+        let reg = self.registry.get_or_init(common::VerifierRegistry::new);
+        let session = env.iter().find(|(k, _)| *k == "CLAUDE_CODE_SESSION_ID" || *k == "CODEX_SESSION_ID").map(|(_, v)| v.clone());
+        if let Some(session) = session {
+            reg.register(&session, who, "claude-code");
+        }
+        let mut out: Vec<(&'a str, String)> = reg.env().to_vec();
+        out.extend(env.iter().cloned());
+        out
     }
 
     fn json(&self, args: &[&str]) -> serde_json::Value {
@@ -138,8 +210,8 @@ fn an_agent_without_a_verifier_role_is_refused_review_to_done() {
         assert!(!e.contains("config verifiers"), "a refused agent is never shown how to list itself: {e}");
     }
     // a role that is not a verifier's is refused just the same
-    let builder = [("CLAUDECODE", "1"), ("TB_ROLE", "builder")];
-    let (e, code) = b.refused(&builder, "orch", &["done", &id]);
+    let builder = Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "builder")]);
+    let (e, code) = b.refused_s(&builder, "orch", &["done", &id]);
     assert_eq!(code, "not_verifier", "{e}");
     assert!(e.contains("role builder"), "{e}");
     assert_eq!(b.column(&id), "review", "nothing moved");
@@ -161,7 +233,9 @@ fn a_verifier_role_closes_and_the_done_event_carries_its_whole_identity() {
     assert_eq!(b.column(&id), "done");
     // `reviewer` is a verifier's role too, in any case
     let two = b.in_review("e: reviewed work", "bot-1");
-    b.ok(&[("CLAUDECODE", "1"), ("TB_ROLE", "Reviewer")], "rv-2", &["move", &two, "done"]);
+    // a session of its own, registered: the registry (card #169) answers role claims, and
+    // `Reviewer` is matched case-insensitively both by the role rule and by the wrapper
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID), ("TB_ROLE", "Reviewer")]), "rv-2", &["move", &two, "done"]);
     assert_eq!(b.column(&two), "done");
     // the trace: the move into DONE names who made it, and the identity behind the name —
     // harness, model, role, session, host — in `tb show --json`
@@ -201,8 +275,8 @@ fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let id = b.in_review("g: listed verifier", "bot-1");
     let (_, code) = b.refused(AGENT, "rv-2", &["done", &id]);
     assert_eq!(code, "not_verifier", "not on the list, no role");
-    let listed = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)];
-    b.ok(listed, "RV-1", &["done", &id]);
+    let listed = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]);
+    b.ok_s(&listed, "RV-1", &["done", &id]);
     assert_eq!(b.column(&id), "done", "on the list, whatever case it is typed in");
     // the change is on the board's own log
     let log = b.ok(PERSON, "lead", &["log"]);
@@ -212,6 +286,32 @@ fn a_name_on_the_board_verifier_list_closes_without_a_role() {
     let two = b.in_review("h: list cleared", "bot-1");
     let (_, code) = b.refused(AGENT, "rv-1", &["done", &two]);
     assert_eq!(code, "not_verifier");
+}
+
+/// The C3b forge: an agent with NO role whose name is on `tb config verifiers` and whose
+/// session has NO registry entry — the name alone (set by `TB_AS`) closes nothing. A listed
+/// name is only a pass for the session `tb-agent-start` launched as a verifier's, so a real
+/// listed verifier registers its session and closes as before.
+#[test]
+fn a_listed_name_with_no_role_and_no_registry_entry_is_refused() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
+    let id = b.in_review("c3b: listed-name forge", "bot-1");
+    let forge: Vec<(&str, String)> =
+        Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]).into_iter().collect();
+    let (e, code) = b.refused_raw(&forge, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert_eq!(b.column(&id), "review");
+    // --force is still the logged escape
+    b.ok_raw(&forge, "rv-1", &["done", &id, "--force"]);
+    assert_eq!(b.column(&id), "done");
+    // the real thing this guards: the REGISTERED session closes under the listed name
+    let two = b.in_review("c3b: registered listed verifier", "bot-1");
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register(VUUID, "rv-1", "claude-code");
+    let env: Vec<(&str, String)> = reg.env().into_iter().chain(Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)])).collect();
+    b.ok_raw(&env, "rv-1", &["done", &two]);
+    assert_eq!(b.column(&two), "done");
 }
 
 #[test]
@@ -233,7 +333,7 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
     assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "off");
     assert!(b.ok(PERSON, "lead", &["log"]).contains("verifier-only on -> off"), "the change is logged on the board");
     let id = b.in_review("j: rule off", "bot-1");
-    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "orch", &["done", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "orch", &["done", &id]);
     assert_eq!(b.column(&id), "done");
     // review-first is not part of the switch
     let todo = b.add("k: still review first");
@@ -252,19 +352,24 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
 #[test]
 fn codex_is_an_agent_too() {
     // what `codex exec` hands its shell: none of AI_AGENT, CLAUDECODE or OMPCODE
-    let codex = [("CODEX_SESSION_ID", UUID), ("CODEX_THREAD_ID", "thread-9"), ("CODEX_SANDBOX", "seatbelt"), ("CODEX_CI", "1")];
+    let codex: Vec<(&str, String)> = Board::str_env(&[("CODEX_SESSION_ID", UUID), ("CODEX_THREAD_ID", "thread-9"), ("CODEX_SANDBOX", "seatbelt"), ("CODEX_CI", "1")]);
     let b = Board::new();
     let id = b.in_review("m: codex closes it", "bot-1");
-    let (e, code) = b.refused(&codex, "cx", &["done", &id]);
+    let (e, code) = b.refused_s(&codex, "cx", &["done", &id]);
     assert_eq!(code, "not_verifier", "{e}");
     assert!(e.contains("cx is codex with no role"), "{e}");
     assert_eq!(b.column(&id), "review");
     // with the role it closes, and the trace says codex with its session — in a session of
     // its own, not the builder's (`same_session` would refuse that)
     let mut role = codex.to_vec();
-    role[0].1 = VUUID;
-    role.push(("TB_ROLE", "verifier"));
-    b.ok(&role, "cx", &["done", &id]);
+    role[0].1 = VUUID.to_string();
+    role.push(("TB_ROLE", "verifier".to_string()));
+    // the role claim needs its session registered (card #169); the entry vouches for the
+    // codex harness this identity carries
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register(VUUID, "cx", "codex");
+    let env: Vec<(&str, String)> = reg.env().into_iter().chain(role).collect();
+    b.ok_raw(&env, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
     assert_eq!((who["harness"].as_str(), who["session"].as_str()), (Some("codex"), Some(VUUID)));
@@ -353,7 +458,7 @@ fn a_verifier_that_sent_a_card_back_and_returned_it_itself_still_closes_it() {
     let (e, code) = b.refused(VERIFIER, "bot-1", &["done", &id]);
     assert_eq!(code, "self_approve", "the builder closed its own card: {e}");
     assert_eq!(b.column(&id), "review");
-    let o = b.run(VERIFIER, "rv-1", &["done", &id]);
+    let o = b.run_s(&Board::str_env(VERIFIER), "rv-1", &["done", &id]);
     assert!(o.status.success(), "the verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -366,8 +471,8 @@ fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
     let id = b.in_review("m: listed verifier", "bot-1");
     b.ok(AGENT, "rv-2", &["move", &id, "todo"]);
     b.ok(AGENT, "rv-2", &["move", &id, "review"]);
-    let listed = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)];
-    let o = b.run(listed, "rv-2", &["done", &id]);
+    let listed = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]);
+    let o = b.run_s(&listed, "rv-2", &["done", &id]);
     assert!(o.status.success(), "the listed verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -383,7 +488,7 @@ fn a_listed_verifier_closes_it_from_the_same_session_it_moved_it_in() {
     let rv_l = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "cccccccc-3333-4444-5555-666666666666")];
     b.ok(rv_l, "rv-l", &["move", &id, "todo"]);
     b.ok(rv_l, "rv-l", &["move", &id, "review"]);
-    let o = b.run(rv_l, "rv-l", &["done", &id]);
+    let o = b.run_s(&Board::str_env(rv_l), "rv-l", &["done", &id]);
     assert!(o.status.success(), "closing from the session it moved it in was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -415,15 +520,15 @@ fn a_verifier_in_the_builders_session_is_refused_whatever_its_name_or_role() {
     let b = Board::new();
     let id = b.in_review("p: same session, new name", "bot-1");
     // the verifier is in the builder's session, under another name, claiming the role
-    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
-    let (e, code) = b.refused(same, "rv-other", &["done", &id]);
+    let same = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")]);
+    let (e, code) = b.refused_s(&same, "rv-other", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
     assert!(e.contains("shares your session (0b9f6a52"), "{e}");
     assert!(e.contains("bot-1"), "{e}");
     assert!(e.contains("its own session"), "{e}");
     assert_eq!(b.column(&id), "review", "nothing moved");
     // `tb move` meets the same rule
-    let (_, code) = b.refused(same, "rv-other", &["move", &id, "done"]);
+    let (_, code) = b.refused_s(&same, "rv-other", &["move", &id, "done"]);
     assert_eq!(code, "same_session");
     // the message never shows how to get past it another way
     assert!(!e.contains("config verifiers"), "{e}");
@@ -435,8 +540,8 @@ fn a_verifier_in_the_builders_session_is_refused_whatever_its_name_or_role() {
 fn force_gets_past_the_same_session_rule_and_is_logged() {
     let b = Board::new();
     let id = b.in_review("q: forced same session", "bot-1");
-    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
-    b.ok(same, "rv-other", &["done", &id, "--force"]);
+    let same = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")]);
+    b.ok_s(&same, "rv-other", &["done", &id, "--force"]);
     assert_eq!(b.column(&id), "done");
     let forced: Vec<String> =
         b.events(&id).iter().filter(|e| e["kind"] == "force").filter_map(|e| e["text"].as_str().map(String::from)).collect();
@@ -455,7 +560,7 @@ fn a_session_that_only_took_notes_or_routed_the_card_still_closes_it() {
     // the mover IS the verifier here, so let another verifier close it — its session matches
     // the note only
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-note"]);
-    let o = b.run(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "rv-note", &["done", &id]);
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-note", &["done", &id]);
     assert!(o.status.success(), "a session that only noted was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 
@@ -464,7 +569,7 @@ fn a_session_that_only_took_notes_or_routed_the_card_still_closes_it() {
     b.ok(PERSON, "lead", &["assign", &two, "bot-1"]);
     b.ok(AGENT, "bot-1", &["done", &two]);
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-lead"]);
-    let o = b.run(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)], "rv-lead", &["done", &two]);
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "rv-lead", &["done", &two]);
     assert!(o.status.success(), "the assigning session's verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
 }
@@ -480,11 +585,11 @@ fn a_verifier_movers_own_sessions_are_skipped_but_the_builders_never() {
     b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
     b.ok(VERIFIER, "rv-1", &["move", &id, "review"]);
     // the builder's session, again under a fresh name — still refused
-    let same = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")];
-    let (e, code) = b.refused(same, "rv-other", &["done", &id]);
+    let same = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", UUID), ("TB_ROLE", "verifier"), ("TB_MODEL", "model-x"), ("TB_HOST", "lab")]);
+    let (e, code) = b.refused_s(&same, "rv-other", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
     // the verifier that round-tripped it, in ITS session, closes it: its moves were skipped
-    let o = b.run(VERIFIER, "rv-1", &["done", &id]);
+    let o = b.run_s(&Board::str_env(VERIFIER), "rv-1", &["done", &id]);
     assert!(o.status.success(), "the verifier's own send-back round was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
 }
@@ -512,15 +617,15 @@ fn a_builder_that_took_with_a_verifier_role_is_never_skipped() {
 fn a_session_from_any_round_is_refused() {
     let b = Board::new();
     let id = b.add("u: two rounds");
-    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")], "bot-1", &["take", &id]);
-    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")], "bot-1", &["drop", &id]);
-    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")], "bot-2", &["take", &id]);
-    b.ok(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")], "bot-2", &["done", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")]), "bot-1", &["take", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444")]), "bot-1", &["drop", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")]), "bot-2", &["take", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888")]), "bot-2", &["done", &id]);
     let (e, code) =
-        b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888"), ("TB_ROLE", "verifier")], "rv-b", &["done", &id]);
+        b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "bbbbbbbb-5555-6666-7777-888888888888"), ("TB_ROLE", "verifier")]), "rv-b", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
     let (e, code) =
-        b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444"), ("TB_ROLE", "verifier")], "rv-a", &["done", &id]);
+        b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-1111-2222-3333-444444444444"), ("TB_ROLE", "verifier")]), "rv-a", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
     assert_eq!(b.column(&id), "review");
 }
@@ -537,9 +642,14 @@ fn no_session_on_either_side_never_matches() {
     b.ok(AGENT, "bot-1", &["done", &id]);
     b.ok(VERIFIER, "rv-1", &["done", &id]);
     assert_eq!(b.column(&id), "done");
-    // the verifier has no session but the builder does: closes it too
+    // the verifier has no session but the builder does: the close rode on a role with no
+    // session to register (card #169), so it is refused, and only --force closes it, logged
     let two = b.in_review("w: verifier sessionless", "bot-1");
-    let o = b.run(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")], "rv-none", &["done", &two]);
+    let (e, code) = b.refused_s(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two]);
+    // the original "a sessionless verifier was refused" assertion, restated for the registry era:
+    // the close still cannot succeed without --force
+    assert_eq!(code, "unregistered_verifier", "a sessionless verifier was refused: {e}");
+    let o = b.run(&Board::str_env(&[("CLAUDECODE", "1"), ("TB_ROLE", "verifier")]), "rv-none", &["done", &two, "--force"]);
     assert!(o.status.success(), "a sessionless verifier was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&two), "done");
     // a person closes it regardless: no session to match, and never a refusal
@@ -556,8 +666,8 @@ fn a_builder_with_no_session_and_a_verifier_with_one_is_allowed() {
     let b = Board::new();
     // the work ran under a harness with no session id exported, so nothing was recorded
     let id = b.add("6c: no-session builder");
-    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["take", &id]);
-    b.ok(&[("CLAUDECODE", "1")], "bot-1", &["done", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1")]), "bot-1", &["take", &id]);
+    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1")]), "bot-1", &["done", &id]);
     b.ok(VERIFIER, "rv-y", &["done", &id]);
     assert_eq!(b.column(&id), "done");
 }
@@ -568,7 +678,11 @@ fn a_builder_with_no_session_and_a_verifier_with_one_is_allowed() {
 fn a_session_matches_after_trim_and_case() {
     let b = Board::new();
     let id = b.in_review("y: padded session", "bot-1");
-    let (e, code) = b.refused(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")], "rv-pad", &["done", &id]);
+    let reg = b.registry.get_or_init(common::VerifierRegistry::new);
+    reg.register("0b9f6a52-7c1d-4e0a-9f3b-2a6c1d8e4f70", "rv-pad", "claude-code");
+    let env: Vec<(&str, String)> =
+        reg.env().into_iter().chain(Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "  0B9F6A52-7C1D-4E0A-9F3B-2A6C1D8E4F70  "), ("TB_ROLE", "verifier")])).collect();
+    let (e, code) = b.refused_raw(&env, "rv-pad", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
 }
 
@@ -583,4 +697,161 @@ fn same_session_applies_with_verifier_only_off() {
     assert_eq!(code, "same_session", "{e}");
     b.ok(AGENT, "rv-other", &["done", &id, "--force"]);
     assert_eq!(b.column(&id), "done");
+}
+
+// --- the verifier registry (card #169): TB_ROLE=verifier is a claim; the session must be one
+// --- tb-agent-start launched as a verifier (a JSON entry {"session","name","harness"} per file).
+
+/// Every verifier env gets the test registry wired in: `TB_VERIFIERS_DIR` (tests) pointing at
+/// a fresh temp dir, so the suite never writes the machine's real
+/// `~/.local/state/terminal-board/verifiers`. Existing tests above run WITHOUT it: no
+/// registry anywhere, so a role-claiming close is refused as `unregistered_verifier` — the
+/// assertions above that say `not_verifier` are the AGENT-without-role cases, which refuse
+/// before the registry is consulted.
+fn registered(verifier_registry: &common::VerifierRegistry, session: &str, name: &str) -> Vec<(&'static str, String)> {
+    verifier_registry.register(session, name, "claude-code");
+    Board::str_env(VERIFIER).into_iter().chain(verifier_registry.env()).collect()
+}
+
+#[test]
+fn a_role_claim_without_a_registry_entry_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r1: env-only verifier", "bot-1");
+    let env: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_raw(&env, "rv-x", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("tb-agent-start did not start") && e.contains(&id), "{e}");
+    assert!(e.contains("--force, logged"), "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_registered_session_closes_with_its_own_name_and_harness() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r2: registered verifier", "bot-1");
+    let env = registered(&reg, VUUID, "rv-1");
+    b.ok_raw(&env, "rv-1", &["done", &id]);
+    assert_eq!(b.column(&id), "done");
+    // the trace still carries the whole identity
+    let show = b.json(&["show", &id]);
+    let moved = show["events"].as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
+    let who = show["actors"].as_array().unwrap().iter().find(|a| a["id"] == moved["actor_id"]).cloned().unwrap();
+    assert_eq!((who["role"].as_str(), who["session"].as_str()), (Some("verifier"), Some(VUUID)));
+    // the move into DONE records the kernel's parent chain; every other event omits the key
+    assert!(moved["ancestry"].as_array().is_some_and(|a| !a.is_empty()), "done event ancestry: {moved}");
+    let created = show["events"].as_array().unwrap().iter().find(|e| e["kind"] == "created").cloned().unwrap();
+    assert!(created.get("ancestry").is_none(), "no ancestry key on a created event: {created}");
+    // `tb log --json` carries the same chain on the same event
+    let log = b.json(&["log"]);
+    let done = log.as_array().unwrap().iter().find(|e| e["text"] == "review -> done").cloned().unwrap();
+    assert_eq!(done["ancestry"], moved["ancestry"], "log and show agree: {done}");
+}
+
+#[test]
+fn a_registered_session_under_another_name_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r3: session borrowed", "bot-1");
+    let env = registered(&reg, VUUID, "rv-1");
+    let (e, code) = b.refused_raw(&env, "rv-z", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    // a name the entry does not carry closes nothing, even with the role claimed
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_registered_session_with_another_harness_is_refused() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r4: harness swapped", "bot-1");
+    reg.register(VUUID, "rv-1", "claude-code");
+    // same role/session, but the identity says omp — the entry's harness is claude-code
+    let with_harness: Vec<(&str, String)> =
+        Board::str_env(VERIFIER).into_iter().chain(reg.env()).chain([("TB_HARNESS", "omp".to_string())]).collect();
+    let (e, code) = b.refused_raw(&with_harness, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert_eq!(b.column(&id), "review");
+}
+
+#[test]
+fn a_session_file_with_bad_or_missing_json_is_no_entry() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r5: corrupt entry", "bot-1");
+    std::fs::create_dir_all(reg.dir.path()).unwrap();
+    std::fs::write(reg.dir.path().join(VUUID), "{not json").unwrap();
+    let full: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_raw(&full, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+}
+
+#[test]
+fn the_registry_refusal_names_the_fix_not_the_list() {
+    let reg = common::VerifierRegistry::new();
+    let b = Board::new();
+    let id = b.in_review("r6: message check", "bot-1");
+    let full: Vec<(&str, String)> = Board::str_env(VERIFIER).into_iter().chain(reg.env()).collect();
+    let (e, code) = b.refused_raw(&full, "rv-1", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("tb-agent-start") && e.contains("--role verifier"), "{e}");
+    assert!(!e.contains("config verifiers"), "never teach the refused agent the list: {e}");
+}
+
+/// Runs `tb <args> --json --as <who>` as a 'person' (no harness in the env) from a shell
+/// whose kernel name is `omp` — a copy of bash — so the agent binary is a real ancestor.
+/// `; true` keeps bash from exec'ing tb in place (which would drop `omp` from the chain).
+/// None where the platform has no bash to copy.
+fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
+    let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
+    let omp = b.dir.path().join("omp");
+    // copied once per board: macOS's fs::copy (clonefile) refuses an existing destination
+    if !omp.exists() {
+        std::fs::copy(&bash, &omp).ok()?;
+    }
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
+    line.extend(args.iter().map(|a| quote(a)));
+    line.extend(["--json".to_string(), "--as".to_string(), quote(who), "; true".to_string()]);
+    let o = Command::new(&omp)
+        .args(["-c", &line.join(" ")])
+        .env_clear()
+        .env("TB_DB", b.db())
+        .env("TB_NO_HERDR", "1")
+        .env("TB_GH", "/nonexistent/gh")
+        .env("USER", "login-user")
+        .env("TZ", "UTC")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", b.dir.path())
+        .output()
+        .unwrap();
+    Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
+}
+
+#[test]
+fn a_person_under_an_agent_process_closes_nothing_and_changes_no_rule() {
+    let b = Board::new();
+    b.ok(PERSON, "lead", &["config", "verifiers", "rv-1"]);
+    let id = b.in_review("r7: scrubbed env under omp", "bot-1");
+    let Some(close) = under_omp(&b, "charles", &["done", &id]) else {
+        eprintln!("skipped: no bash to copy as omp");
+        return;
+    };
+    assert_eq!(close["code"], "agent_as_person", "the close: {close}");
+    assert_eq!(b.column(&id), "review");
+    // every person-only change is refused the same way (card #169 r2): the rule stays on and
+    // the list stays as the person set it
+    for args in [&["config", "verifier-only", "off"][..], &["config", "verifiers", "rv-1,charles"], &["config", "verifiers", "--off"]] {
+        let v = under_omp(&b, "charles", args).unwrap();
+        assert_eq!(v["code"], "agent_as_person", "{args:?}: {v}");
+    }
+    assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "on", "the rule is still on");
+    assert_eq!(b.json(&["config", "verifiers"])["config"]["value"], serde_json::json!(["rv-1"]), "the list is unchanged");
+    // and an unregistered omp 'verifier' still cannot close it afterwards
+    let omp: Vec<(&str, String)> = Board::str_env(&[("TB_HARNESS", "omp"), ("TB_ROLE", "verifier"), ("TB_SESSION", "nobody")]);
+    let (e, code) = b.refused_raw(&omp, "rv-forge", &["done", &id]);
+    assert_eq!(code, "unregistered_verifier", "{e}");
+    assert!(e.contains("(harness omp)"), "the refusal names the caller's harness: {e}");
+    assert_eq!(b.column(&id), "review");
 }

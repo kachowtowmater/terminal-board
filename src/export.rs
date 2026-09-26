@@ -246,7 +246,7 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
                     "kind": e.kind,
                     "text": e.text,
                 }),
-                LogEvent::Board { ts, actor, kind, text, actor_id } => serde_json::json!({
+                LogEvent::Board { ts, actor, kind, text, actor_id, .. } => serde_json::json!({
                     "v": contract::SCHEMA_VERSION,
                     "ts": ts,
                     "card_id": null,
@@ -259,6 +259,15 @@ pub fn log(store: &Store, out: &mut dyn Write, since: i64, json_out: bool) -> Re
             // additive: the whole identity inline, as `tb watch --events` carries it (a log
             // is a flat list with no `actors[]` to look an id up in); null when none is known
             line["identity"] = serde_json::to_value(&who).unwrap_or(serde_json::Value::Null);
+            // additive (card #169): the kernel's parent chain, only on the events that record
+            // one — the key is absent elsewhere, so older readers' key lists hold
+            let ancestry = match &e {
+                LogEvent::Card(e) => e.ancestry.as_ref(),
+                LogEvent::Board { ancestry, .. } => ancestry.as_ref(),
+            };
+            if let Some(a) = ancestry {
+                line["ancestry"] = serde_json::json!(a);
+            }
             let text = serde_json::to_string(&crate::clean_json(&line)).unwrap_or_else(|_| "null".into());
             let r = out.write_all(if first { b"  " } else { b",\n  " }).and_then(|()| out.write_all(text.as_bytes()));
             first = false;

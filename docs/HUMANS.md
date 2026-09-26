@@ -55,13 +55,29 @@ person may change that list or `verifier-only` — an agent is refused, `person_
 whoever did the work. Nothing reaches DONE except from REVIEW — not `tb move 3 done`, not `d` on a
 TODO card, not the GitHub sync. Every move into DONE records who made it and the identity behind
 the name (harness, model, role, session, machine) — `tb show 3` lists it, and `tb log` prints it on
-the line that moved the card into DONE. tb sees an agent by its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables (codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen, and counts as a person. `--force` gets past the
+the line that moved the card into DONE. Every close by an AGENT — a `TB_ROLE=verifier` claim
+or just a name on `tb config verifiers` — also needs a **registered session**:
+`tb-agent-start --role verifier` writes one small file per verifier launch
+(`~/.local/state/terminal-board/verifiers/<session>`), and a close from any other session is
+refused (`unregistered_verifier`) — a role (or a listed name) typed into a shell (or into a
+script an agent wrote) is no longer a verifier. Moves into DONE, `force` events and changes
+to who verifies also record the kernel's process ancestry (`ancestry` in `--json`): what
+actually ran the command, so a close whose story does not hold together is visible
+afterwards. tb sees an agent by
+its harness: `TB_HARNESS`, `AI_AGENT` (Claude Code, pi), `OMPCODE` (omp), the `CODEX_*` variables
+(codex), `CLAUDECODE`, or a herdr pane's record; a harness that exports none of these is not seen,
+and counts as a person — unless the ancestry says otherwise (`agent_as_person`: a close that looks
+like a person's but runs from an agent's process is refused — and so is a person-only change,
+such as `config verifier-only off`, made that way). `--force` gets past the
 rule and is logged; `tb config verifier-only off` lets any reviewer close a card on this board
 (still only from REVIEW, never their own work). A verifier also never closes from the same
 recorded session as the work: a session that took the card or moved it into review cannot close
 it either, whatever name it wears (`same_session` — start the verifier in its own session).
 Like every name in tb, a role is self-asserted:
-this stops an honest mistake, not someone set on getting round it.
+this stops an honest mistake, not someone set on getting round it — and because everything runs
+as the same OS user, a determined attacker on this account can still forge registry, board file
+or environment; the real fix is running the board under a separate user (see README,
+"Who moves a card", residual risk).
 
 ## Cards
 

@@ -121,6 +121,15 @@ pub enum Code {
     /// REVIEW -> DONE by an agent with no verifier role and not on `config verifiers`
     /// (store/verifier.rs).
     NotVerifier,
+    /// REVIEW -> DONE by an agent whose resolved session has no verifier-registry entry
+    /// (`~/.local/state/terminal-board/verifiers/<session>`): `TB_ROLE=verifier` claimed
+    /// from the environment alone, in a session tb-agent-start did not start as a verifier
+    /// (store/verifier.rs).
+    UnregisteredVerifier,
+    /// A 'person' close (no harness in the identity) whose kernel process ancestry holds an
+    /// agent binary (omp, claude, codex, pi) — the env is clean, the parent chain is not
+    /// (store/verifier.rs).
+    AgentAsPerson,
     /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
     /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
     PersonOnly,
@@ -202,6 +211,8 @@ impl Code {
             Code::DoneByRestricted => "done_by_restricted",
             Code::NotFromReview => "not_from_review",
             Code::NotVerifier => "not_verifier",
+            Code::UnregisteredVerifier => "unregistered_verifier",
+            Code::AgentAsPerson => "agent_as_person",
             Code::PersonOnly => "person_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
@@ -408,6 +419,24 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
             err: verifier::not_verifier_err(id, actor, &who),
             forced: format!("closed #{id} with no verifier role"),
         });
+    } else if verifier::is_agent(&who) && !verifier::registered(conn, actor, &who)? {
+        // an agent's close rides on a role claim or a listed name — both self-asserted — so
+        // its SESSION must be one tb-agent-start launched as a verifier (card #169, incl. the
+        // C3b listed-name forge). A person's close is exempt: it never had a registry row,
+        // and a fake person is `agent_as_person`'s lane below.
+        v.push(DoneCheck {
+            rule: "the session is not a registered verifier",
+            err: verifier::unregistered_verifier_err(id, actor, &who),
+            forced: format!("closed #{id} from an unregistered verifier session"),
+        });
+    } else if let Some(ancestry) = verifier::agent_as_person(actor, &who) {
+        // 'person' close with an agent somewhere up the parent chain (card #169): the env
+        // was scrubbed, the kernel's record was not.
+        v.push(DoneCheck {
+            rule: "a person's close starts from a person's terminal",
+            err: verifier::agent_as_person_err(id, actor, &ancestry),
+            forced: format!("closed #{id} as a 'person' from an agent's process"),
+        });
     }
     if let Some((session, builder)) = verifier::same_session_of(conn, id, &who)? {
         v.push(DoneCheck {
@@ -580,13 +609,20 @@ pub struct Event {
     /// The identity behind `actor` (`actors.id`, see `store::actors`); None when nothing but
     /// the name is known, and on every event written before identities were recorded.
     pub actor_id: Option<i64>,
+    /// The kernel's record of the parent chain this command ran under (`store::proc`),
+    /// oldest ancestor first, as one JSON list — recorded on moves into DONE, `force` events
+    /// and the verifier-config changes (the writes of consequence). NULL on everything else
+    /// and on events written before it existed. Deserialized on read into `Vec<String>`.
+    /// Serialized only when recorded (the key is absent otherwise — additive JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestry: Option<Vec<String>>,
 }
 
 /// One row of `Store::for_each_log_event`: a card event, or a board-level one (no card —
 /// `card_id` is `None` everywhere this is rendered). See `board_events` and #106.
 pub enum LogEvent {
     Card(Event),
-    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64> },
+    Board { ts: i64, actor: String, kind: String, text: String, actor_id: Option<i64>, ancestry: Option<Vec<String>> },
 }
 
 /// An event with its database id (for `tb watch --events` resumption).
@@ -940,6 +976,10 @@ fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         kind: r.get(3)?,
         text: r.get(4)?,
         actor_id: r.get(5)?,
+        // stored as a JSON list; malformed text (never tb's own write) reads as none
+        ancestry: r
+            .get::<_, Option<String>>(6)?
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()),
     })
 }
 
@@ -1541,6 +1581,23 @@ impl Store {
         Ok(())
     }
 
+    /// `log`, with the kernel's parent chain recorded alongside (`store::proc`). Only the
+    /// writes of consequence use it: a move into DONE, each `force` event, the verifier
+    /// settings. The walk is best-effort — a failed read stores an empty list, never a
+    /// refusal of the command (an ancestry is evidence, not a gate that must run).
+    fn log_with_ancestry(conn: &Connection, id: i64, actor: &str, kind: &str, text: &str) -> Result<()> {
+        access::guard_actor(conn, actor)?;
+        let ts = now();
+        let actor_id = actors::stamp(conn, actor, ts)?;
+        let chain = crate::proc::ancestry();
+        let ancestry = if chain.is_empty() { String::new() } else { serde_json::to_string(&chain).unwrap_or_default() };
+        conn.execute(
+            "INSERT INTO events(card_id, ts, actor, kind, text, actor_id, ancestry) VALUES (?,?,?,?,?,?,?)",
+            params![id, ts, actor, kind, text, actor_id, ancestry],
+        )?;
+        Ok(())
+    }
+
     /// Like `log`, for the one event kind (`assigned`) whose holder must survive a reworded
     /// message: `assignee` carries the name in its OWN column, so `last_holder_of` (#111) never
     /// has to parse it back out of `text`. `text` stays the same human-readable "assigned to
@@ -1564,6 +1621,20 @@ impl Store {
         conn.execute(
             "INSERT INTO board_events(ts, actor, kind, text, actor_id) VALUES (?,?,?,?,?)",
             params![ts, actor, kind, text, actor_id],
+        )?;
+        Ok(())
+    }
+
+    /// `log_board` with the kernel's parent chain recorded: a change to who verifies (or
+    /// whether the verifier rule applies) is one of the writes of consequence (card #169).
+    pub(crate) fn log_board_with_ancestry(conn: &Connection, actor: &str, kind: &str, text: &str) -> Result<()> {
+        let ts = now();
+        let actor_id = actors::stamp(conn, actor, ts)?;
+        let chain = crate::proc::ancestry();
+        let ancestry = if chain.is_empty() { String::new() } else { serde_json::to_string(&chain).unwrap_or_default() };
+        conn.execute(
+            "INSERT INTO board_events(ts, actor, kind, text, actor_id, ancestry) VALUES (?,?,?,?,?,?)",
+            params![ts, actor, kind, text, actor_id, ancestry],
         )?;
         Ok(())
     }
@@ -1983,7 +2054,7 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut st = self.conn.prepare(
-            "SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id",
+            "SELECT card_id, ts, actor, kind, text, actor_id, ancestry FROM events WHERE card_id=? ORDER BY ts, id",
         )?;
         let events = st.query_map([id], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let round = round_of(&events);
@@ -2012,7 +2083,7 @@ impl Store {
     pub fn for_each_event(&self, from_ts: i64, f: &mut dyn FnMut(&Event) -> Result<()>) -> Result<()> {
         let mut st = self
             .conn
-            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id, ancestry FROM events WHERE ts >= ? ORDER BY ts, id")?;
         let mut rows = st.query([from_ts])?;
         while let Some(r) = rows.next()? {
             f(&row_event(r)?)?;
@@ -2028,19 +2099,20 @@ impl Store {
     pub fn for_each_log_event(&self, from_ts: i64, f: &mut dyn FnMut(LogEvent) -> Result<()>) -> Result<()> {
         let mut cst = self
             .conn
-            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE ts >= ? ORDER BY ts, id")?;
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id, ancestry FROM events WHERE ts >= ? ORDER BY ts, id")?;
         let mut crows = cst.query([from_ts])?;
-        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
+        let mut bst = self.conn.prepare("SELECT ts, actor, kind, text, actor_id, ancestry FROM board_events WHERE ts >= ? ORDER BY ts, id")?;
         let mut brows = bst.query([from_ts])?;
 
         /// One `board_events` row, held between cursor advances (a named struct, not a
-        /// 5-tuple, so the type stays readable).
+        /// 6-tuple, so the type stays readable).
         struct BoardRow {
             ts: i64,
             actor: String,
             kind: String,
             text: String,
             actor_id: Option<i64>,
+            ancestry: Option<Vec<String>>,
         }
 
         fn next_card(rows: &mut rusqlite::Rows<'_>) -> Result<Option<Event>> {
@@ -2051,7 +2123,7 @@ impl Store {
         }
         fn next_board(rows: &mut rusqlite::Rows<'_>) -> Result<Option<BoardRow>> {
             Ok(match rows.next()? {
-                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)? }),
+                Some(r) => Some(BoardRow { ts: r.get(0)?, actor: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, actor_id: r.get(4)?, ancestry: r.get::<_, Option<String>>(5)?.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) }),
                 None => None,
             })
         }
@@ -2069,8 +2141,8 @@ impl Store {
                 f(LogEvent::Card(c_cur.take().unwrap()))?;
                 c_cur = next_card(&mut crows)?;
             } else {
-                let BoardRow { ts, actor, kind, text, actor_id } = b_cur.take().unwrap();
-                f(LogEvent::Board { ts, actor, kind, text, actor_id })?;
+                let BoardRow { ts, actor, kind, text, actor_id, ancestry } = b_cur.take().unwrap();
+                f(LogEvent::Board { ts, actor, kind, text, actor_id, ancestry })?;
                 b_cur = next_board(&mut brows)?;
             }
         }
@@ -2082,7 +2154,7 @@ impl Store {
     pub fn all_events_of(&self, id: i64) -> Result<Vec<crate::contract::EventJ>> {
         let mut st = self
             .conn
-            .prepare("SELECT card_id, ts, actor, kind, text, actor_id FROM events WHERE card_id=? ORDER BY ts, id")?;
+            .prepare("SELECT card_id, ts, actor, kind, text, actor_id, ancestry FROM events WHERE card_id=? ORDER BY ts, id")?;
         let v = st
             .query_map([id], row_event)?
             .map(|e| e.map(crate::contract::EventJ::of))
@@ -2094,7 +2166,7 @@ impl Store {
     pub fn events_since(&self, after: i64) -> Result<Vec<WatchEvent>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, card_id, ts, actor, kind, text, actor_id FROM events WHERE id > ? ORDER BY id")?;
+            .prepare("SELECT id, card_id, ts, actor, kind, text, actor_id, ancestry FROM events WHERE id > ? ORDER BY id")?;
         let v = st
             .query_map([after], |r| {
                 Ok(WatchEvent {
@@ -2106,6 +2178,10 @@ impl Store {
                         kind: r.get(4)?,
                         text: r.get(5)?,
                         actor_id: r.get(6)?,
+                        // stored as a JSON list; malformed text reads as none (row_event)
+                        ancestry: r
+                            .get::<_, Option<String>>(7)?
+                            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()),
                     },
                 })
             })?
@@ -2129,7 +2205,7 @@ impl Store {
         let mut rounds: HashMap<i64, i64> = HashMap::new();
         let mut actor_last: HashMap<String, Event> = HashMap::new();
         let mut st = self.conn.prepare(
-            "SELECT card_id, ts, actor, kind, text, actor_id FROM events ORDER BY card_id, ts, id",
+            "SELECT card_id, ts, actor, kind, text, actor_id, ancestry FROM events ORDER BY card_id, ts, id",
         )?;
         for e in st.query_map([], row_event)? {
             let e = e?;
@@ -2673,7 +2749,7 @@ impl Store {
                         Kind::Drop => format!("moved #{id} held by {owner} back to todo"),
                         _ => format!("moved #{id} held by {owner} to {column}"),
                     };
-                    Self::log(&tx, id, actor, "force", &text)?;
+                    Self::log_with_ancestry(&tx, id, actor, "force", &text)?;
                 }
             }
         }
@@ -2704,7 +2780,7 @@ impl Store {
                 if !force {
                     return Err(check.err);
                 }
-                Self::log(&tx, id, actor, "force", &check.forced)?;
+                Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it
@@ -2786,7 +2862,13 @@ impl Store {
                 if block_cleared {
                     Self::log(&tx, id, actor, "unblocked", "cleared on done")?;
                 }
-                Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+                if column == "done" {
+                    // a close is a write of consequence: the kernel's parent chain goes on
+                    // the `moved` event (card #169) — the trace of what actually ran this
+                    Self::log_with_ancestry(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+                } else {
+                    Self::log(&tx, id, actor, "moved", &format!("{} -> {column}", c.column))?;
+                }
                 if let (true, Some(r)) = (send_back || fail_to_todo, reason) {
                     Self::log(&tx, id, actor, "returned", r)?;
                 }

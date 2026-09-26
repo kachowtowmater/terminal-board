@@ -1045,8 +1045,11 @@ impl App {
     /// Would the verifier rule refuse this actor closing `id`? If so, say so on the status
     /// line (true); a board that cannot tell reports that instead.
     fn verifier_refuses(&mut self, id: i64, store: &Store) -> bool {
+        let refused = |c: &crate::store::Code| {
+            matches!(c, crate::store::Code::NotVerifier | crate::store::Code::UnregisteredVerifier | crate::store::Code::AgentAsPerson)
+        };
         match store.done_would_skip(id, &self.actor) {
-            Ok(skips) if skips.iter().any(|(_, c)| *c == crate::store::Code::NotVerifier) => {
+            Ok(skips) if skips.iter().any(|(_, c)| refused(c)) => {
                 self.status = Some((
                     format!("#{id} is your own work, and only a verifier closes a card — leave it in review for an independent verifier"),
                     true,
