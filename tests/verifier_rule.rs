@@ -802,24 +802,29 @@ fn the_registry_refusal_names_the_fix_not_the_list() {
 /// Runs `tb <args> --json --as <who>` as a 'person' (no harness in the env) from a shell
 /// whose kernel name is `omp` — a copy of bash — so the agent binary is a real ancestor.
 /// `; true` keeps bash from exec'ing tb in place (which would drop `omp` from the chain).
-/// None where the platform has no bash to copy.
-fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
-    let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
-    let omp = b.dir.path().join("omp");
-    // Copied once per board, via temp+rename: other test threads fork concurrently and a fork
-    // can inherit the still-open write fd, making the exec'd path ETXTBSY. fs::copy opens the
-    // destination and leaves it that way — the closed temp file lands by atomic rename, so the
-    // path we exec never has an open writer. Temp is 0755 (tempfile default 0600); fs::copy
-    // is the one special case that preserves the source mode itself.
-    if !omp.exists() {
+/// `omp` itself: bash copied ONCE per test process so the copy→exec ETXTBSY window exists
+/// once, not once per concurrently-forking thread. The copy lands by write-temp → close →
+/// chmod 0755 → rename, so the exec'd path never has an open writer; a fork inheriting the
+/// copy's write fd is then the only remaining race, and under_omp retries it.
+fn omp_executable() -> Option<&'static PathBuf> {
+    static OMP: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = b.dir.path().join("omp.tmp");
+        let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().map(PathBuf::from).find(|p| p.exists())?;
+        let dir = tempfile::tempdir().ok()?; // leaked via into_path: must outlive every thread
+        let tmp = dir.path().join("omp.tmp");
         let n = std::fs::copy(&bash, &tmp).ok()?; // clonefile: sets 0755 itself, no leak
         if !(n & 0o111 == 0o111) {
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        let omp = dir.path().join("omp");
         std::fs::rename(&tmp, &omp).ok()?;
-    }
+        Some(dir.into_path().join("omp"))
+    });
+    OMP.as_ref()
+}
+
+fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
+    let omp = omp_executable()?;
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
     line.extend(args.iter().map(|a| quote(a)));
@@ -837,15 +842,15 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", b.dir.path());
     let mut o = None;
-    // Back-to-back retries are ~1ms apart while the busy window is a forked child's whole
-    // lifetime up to its exec — space them out.
-    for (i, wait) in [0u64, 1, 2, 4, 8].into_iter().enumerate() {
+    // A forked child holding the write fd execs (or dies) within milliseconds, but on a
+    // heavily loaded box the window can stretch — retry for up to ~1s total, growing to 200ms.
+    for (i, wait) in [0u64, 10, 25, 50, 100, 200, 200, 200, 200, 200].into_iter().enumerate() {
         if wait > 0 {
             terminal_board::waits::pause("under_omp exec busy (ETXTBSY) retry backoff", std::time::Duration::from_millis(wait));
         }
         match c.output() {
             Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                eprintln!("under_omp: exec busy (ETXTBSY), retry {}/5", i + 1);
+                eprintln!("under_omp: exec busy (ETXTBSY), retry {}/10", i + 1);
                 o = None;
             }
             other => {
@@ -857,7 +862,7 @@ fn under_omp(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
     let o = match o {
         Some(Ok(o)) => o,
         Some(Err(e)) => panic!("exec omp (a copy of bash) failed: {e}"),
-        None => c.output().unwrap_or_else(|e| panic!("exec omp (a copy of bash) still ETXTBSY after 5 retries: {e}")),
+        None => c.output().unwrap_or_else(|e| panic!("exec omp (a copy of bash) still ETXTBSY after 10 retries: {e}")),
     };
     Some(serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null))
 }
