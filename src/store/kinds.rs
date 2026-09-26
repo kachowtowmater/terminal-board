@@ -47,12 +47,15 @@ pub fn bundle(kind: &str) -> Vec<(&'static str, &'static str)> {
 /// Settings that belong to ONE board and are never copied by `--from`, with the reason.
 ///
 /// A new board must not start life wired to another board's repository, holding another
-/// board's list of who may close a card, or claiming a file mode its own file does not have.
+/// board's list of who may close or verify a card, whether only a verifier may close, or
+/// claiming a file mode its own file does not have.
 /// Everything else — the look, the ordering, the dates, the WIP limit, the kind — is what
 /// somebody copies a board FOR.
-pub const NOT_COPIED: [(&str, &str); 3] = [
+pub const NOT_COPIED: [(&str, &str); 5] = [
     ("github", "a new board must not start syncing to another board's issues"),
     ("done-by", "who may close a card is a decision about this board's people"),
+    ("verifiers", "who may verify a card is a decision about this board's people"),
+    ("verifier-only", "whether only a verifier may close is a decision about this board's people"),
     ("file-mode", "the file's own permissions decide this, and they are set when it is created"),
 ];
 
