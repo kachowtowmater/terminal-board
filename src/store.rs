@@ -401,15 +401,22 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
 ///
 /// The force-only question (card #178, rv-169 probe P5b), asked by `transition_inner` AFTER
-/// the skip list — it guards the force itself, so it never rides in `done_checks`'s list:
-/// there `--force` would log it and skip it, the exact hole the rule closes. `Some(check)`
-/// whenever an AGENT closes a card into DONE (every such close meets the verifier-session
-/// block, refusing or passing): `check.err` is the refusal when `may_force` says no, and
-/// `check.forced` is the one extra `force` event a passing force logs, naming the
-/// registered-session question it answered. A person's force is none of this — `None`.
+/// the skip list, ONLY when `--force` is held — it guards the force itself, so it never
+/// rides in `done_checks`'s list: there `--force` would log it and skip it, the exact hole
+/// the rule closes. `Some(check)` whenever `may_force` answers for this identity — a person
+/// from a person's terminal answers `true` and logs the one extra `force` event only when an
+/// agent's close met the verifier-session block; every refusal is `check.err`. `None` when
+/// `may_force` passed without a question to answer (a person's force).
 fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCheck>> {
     let who = actors::current();
-    if !verifier::is_agent(&who) {
+    if verifier::may_force(conn, actor, &who)? {
+        if verifier::is_agent(&who) {
+            return Ok(Some(DoneCheck {
+                rule: "only a person or a registered verifier may force a close",
+                err: verifier::force_needs_person_err(c.id, actor, &who),
+                forced: format!("closed #{} with --force from a session that is not a registered verifier", c.id),
+            }));
+        }
         return Ok(None);
     }
     Ok(Some(DoneCheck {
