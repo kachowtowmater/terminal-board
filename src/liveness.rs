@@ -30,7 +30,8 @@
 //! `;`-separated. A PROCS line whose argv0 is `tmux` is skipped by the process probe (see
 //! probe 5), so a test can pin a tmux server line and assert it vouches for nobody. Any one
 //! of them set (even to "") puts EVERY probe in fixture mode: a test must never half-ask the
-//! real world.
+//! real world. Fixture PROCS are NEVER filtered by ancestry — the exclusion is about the
+//! caller's own process tree, which a fixture table does not contain.
 //!
 //! The five probe sources are asked ONCE per run (`World::load`) and the answer reused for
 //! every card: a release pass over a board must not re-ask herdr, tmux and the process table
@@ -38,6 +39,7 @@
 
 use crate::herdr::{self, Agent, AgentsState};
 use crate::store::{actors, Card, Store};
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Agent binaries whose running process vouches for a name (probe 5). Not every process —
@@ -106,16 +108,43 @@ fn herdr_json(args: &[&str]) -> Option<serde_json::Value> {
 
 fn load_procs() -> Vec<(i64, String)> {
     // macOS: -E appends each process's environment (own user only) — where TB_AS lives.
-    // Linux procps has no -E; fall back to argv alone.
-    let tries: [&[&str]; 2] = [&["-E", "-ww", "-A", "-o", "pid=,command="], &["-ww", "-A", "-o", "pid=,command="]];
+    // Linux procps has no -E; fall back to argv alone. The ppid column rides along on both:
+    // the probe never counts the caller's own process tree (exclude_ancestry), and a row's
+    // ppid is what the walk needs, so one ps answers the whole probe.
+    let tries: [&[&str]; 2] = [&["-E", "-ww", "-A", "-o", "pid=,ppid=,command="], &["-ww", "-A", "-o", "pid=,ppid=,command="]];
     for args in tries {
         if let Ok(o) = Command::new("ps").args(args).output() {
             if o.status.success() {
-                return parse_procs(&String::from_utf8_lossy(&o.stdout), '\n');
+                let (mut procs, ppids) = parse_procs_with_ppids(&String::from_utf8_lossy(&o.stdout), '\n');
+                exclude_ancestry(&mut procs, &ppids);
+                return procs;
             }
         }
     }
     Vec::new()
+}
+
+/// The caller's own pid and every ppid-chain ancestor, walked through the snapshot's ppid
+/// column. The probe must never count tb's OWN process — its argv is e.g.
+/// `tb release 140 "… b-140 …"`, which names the holder — or the agent shell that launched
+/// it, whose argv may name a holder the shell merely typed. The chain stops at the kernel
+/// pair, a repeat or an ancestor the snapshot lost — never an error: dropping what it proved
+/// is safe, and one missed ancestor only weakens the exclusion, never adds a vouch.
+/// Fixture mode never calls this: a fixture table does not contain the caller's tree.
+fn exclude_ancestry(procs: &mut Vec<(i64, String)>, ppids: &HashMap<i64, i64>) {
+    let own = std::process::id() as i64;
+    let mut pids = vec![own];
+    let mut cur = own;
+    for _ in 0..crate::proc::MAX_DEPTH {
+        match ppids.get(&cur).copied() {
+            Some(p) if p > 1 && !pids.contains(&p) => {
+                pids.push(p);
+                cur = p;
+            }
+            _ => break,
+        }
+    }
+    procs.retain(|(p, _)| !pids.contains(p));
 }
 
 fn parse_procs(text: &str, sep: char) -> Vec<(i64, String)> {
@@ -126,6 +155,30 @@ fn parse_procs(text: &str, sep: char) -> Vec<(i64, String)> {
             Some((pid.parse().ok()?, rest.trim().to_string()))
         })
         .collect()
+}
+
+/// The real `ps` snapshot, with each row's ppid: `(pid, command line + environment)` rows
+/// for the probe, and a `pid -> ppid` map for the own-tree walk. One column further than
+/// `parse_procs`; the fixture parser stays the 2-column shape its env var documents.
+fn parse_procs_with_ppids(text: &str, sep: char) -> (Vec<(i64, String)>, HashMap<i64, i64>) {
+    let mut procs = Vec::new();
+    let mut ppids = HashMap::new();
+    for l in text.split(sep) {
+        let l = l.trim();
+        let Some((pid, rest)) = l.split_once(char::is_whitespace) else { continue };
+        let Ok(pid) = pid.parse::<i64>() else { continue };
+        let rest = rest.trim();
+        match rest.split_once(char::is_whitespace) {
+            // `pid ppid command…` — the ppid is a bare integer only when a command follows
+            Some((ppid, cmd)) if ppid.chars().all(|c| c.is_ascii_digit()) && !ppid.is_empty() => {
+                ppids.insert(pid, ppid.parse::<i64>().unwrap_or(0));
+                procs.push((pid, cmd.trim().to_string()));
+            }
+            // no ppid on the row (a ps without the column): keep the row, leave the map empty
+            _ => procs.push((pid, rest.to_string())),
+        }
+    }
+    (procs, ppids)
 }
 
 impl World {
@@ -282,4 +335,65 @@ fn headless_pid(text: &str) -> Option<i64> {
     let rest = lower[i + 3..].trim_start_matches(|c: char| c == '=' || c == ':' || c.is_whitespace());
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #227: the walk excludes tb's own pid and every snapshot-resolvable ancestor, and
+    /// stops at pid 1 / a repeat / a missing row. `std::process::id()` is this process, so
+    /// the real row (if the test host's ps has it) is dropped too — in a no-ps environment
+    /// the map is empty and only `own` is excluded, which is still correct.
+    #[test]
+    fn exclude_ancestry_drops_the_own_ppid_chain() {
+        let own = std::process::id() as i64;
+        let parent = 100 + own % 10; // an arbitrary, definitely-unrelated ppid for the row
+        let grand = 200 + own % 10;
+        let mut procs = vec![
+            (own, "tb release 1 omp b-140 finished".into()),
+            (parent, "omp -c 'tb release 3 b-141' b-141".into()),
+            (grand, "bash".into()),
+            (7, "omp --as b-8".into()), // unrelated live agent: must survive
+        ];
+        let mut ppids = HashMap::new();
+        ppids.insert(own, parent);
+        ppids.insert(parent, grand);
+        ppids.insert(grand, 1); // init: the chain stops here
+        exclude_ancestry(&mut procs, &ppids);
+        assert_eq!(procs, vec![(7, "omp --as b-8".to_string())], "own tree gone, unrelated live agent kept");
+    }
+
+    #[test]
+    fn exclude_ancestry_survives_a_cycle_and_a_missing_row() {
+        let own = std::process::id() as i64;
+        let mut procs = vec![(own, "tb release 1 x".into()), (9, "omp --as b-8".into())];
+        let mut ppids = HashMap::new();
+        ppids.insert(own, 5); // 5 is not on the table: the chain ends after this hop
+        ppids.insert(5, own); // would loop back to own
+        exclude_ancestry(&mut procs, &ppids);
+        assert_eq!(procs, vec![(9, "omp --as b-8".to_string())]);
+    }
+
+    /// A snapshot row without a ppid (an older ps) still parses; the walk then has no hops
+    /// and only `own` is dropped.
+    #[test]
+    fn parse_procs_with_ppids_tolerates_a_ppidless_row() {
+        let (procs, ppids) = parse_procs_with_ppids("  4242 omp --as b-8\n  77 bash\n", '\n');
+        assert_eq!(procs.len(), 2, "{procs:?}");
+        assert!(ppids.is_empty(), "no ppid column: {ppids:?}");
+        // with a ppid column, the map is filled and the command keeps its words
+        let (procs, ppids) = parse_procs_with_ppids("  4242  77  omp --as b-8\n", '\n');
+        assert_eq!(procs, vec![(4242, "omp --as b-8".to_string())], "{procs:?}");
+        assert_eq!(ppids.get(&4242), Some(&77));
+    }
+
+    /// A command that itself begins with digits must not read as a ppid (`ps -o pid=,ppid=`
+    /// always prints the ppid, but the tolerant branch must not swallow command text).
+    #[test]
+    fn parse_procs_with_ppids_keeps_a_command_that_looks_numeric() {
+        let (procs, ppids) = parse_procs_with_ppids("  4242 77 omp 4242 --as b-8\n", '\n');
+        assert_eq!(ppids.get(&4242), Some(&77));
+        assert_eq!(procs, vec![(4242, "omp 4242 --as b-8".to_string())], "{procs:?}");
+    }
 }
