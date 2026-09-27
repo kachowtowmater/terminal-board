@@ -24,7 +24,7 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | resto
 Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
-Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID todo \"why\" | move ID doing \"why\" | prio ID top|bottom
+Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID todo \"why\" | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] [--long] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
 Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"

@@ -64,6 +64,8 @@ fn help_fits_one_screen() {
     }
     assert!(out.starts_with(&format!("tb {} - Terminal Board", env!("CARGO_PKG_VERSION"))) && !out.contains("ttyboard"), "{out}");
     assert_eq!(out.lines().last().unwrap(), "agents: run 'tb guide' for the full agent manual");
+    // #228: the FAIL -> TODO form stays alongside the doing send-back, and prio names all four forms again after #221 trimmed it
+    assert!(out.contains(r#"move ID todo "why""#) && out.contains(r#"move ID doing "why""#) && out.contains("prio ID top|bottom|up|down"), "{out}");
 }
 
 /// M4: bare run with stdout not a TTY prints the board once and exits.
