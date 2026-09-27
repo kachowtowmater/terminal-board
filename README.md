@@ -552,6 +552,18 @@ tb config github-panel hidden
 tb config github-panel shown
 ```
 
+### Commit identities on pull requests
+
+On every pull request, CI runs `scripts/commit-identity-check.sh` over the PR's own
+commits (`base..head`) and fails if any commit is authored or committed with an address
+that is not a GitHub no-reply address (`<id>+<user>@users.noreply.github.com`), so no
+personal e-mail lands in the public history. Pin your identity before your first commit:
+
+<!-- no-test -->
+```sh
+git config user.email "<id>+<user>@users.noreply.github.com"
+```
+
 ## Agents
 
 Terminal Board is designed so AI coding agents can take work from it, report progress and
