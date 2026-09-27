@@ -110,6 +110,30 @@ impl Board {
         c.output().unwrap()
     }
 
+    /// The card-bound worker session with extra environment on top (`TB_BOARD`, …) — for
+    /// the board-redirect probes (#209 R2): the selector comes from the environment, so
+    /// the guard must follow it.
+    fn as_bound_env(&self, bound: &str, args: &[&str], extra: &[(&str, &str)]) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args).env("TZ", "UTC");
+        scrub(&mut c);
+        c.env("TB_CARD", bound)
+            .env("TB_AS", "b-1")
+            .env("TB_HARNESS", "omp")
+            .env("TB_MODEL", "g")
+            .env("TB_ROLE", "coder")
+            .env("TB_SESSION", "omp-b-1-x")
+            .env("TB_NO_HERDR", "1");
+        for (k, v) in extra {
+            c.env(k, v);
+        }
+        match &self.db {
+            Some(db) => c.env("TB_DB", db),
+            None => c.env("HOME", self._dir.path()),
+        };
+        c.output().unwrap()
+    }
+
     /// A plain person: no `TB_CARD`, no `TB_AS`, no role.
     fn as_person(&self, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
@@ -283,4 +307,72 @@ fn the_refusal_precedes_card_writes() {
     }
     b.as_bound("p#1", &["p", "note", "2", "a note is not a write on the card", "--as", "b-1"]);
     assert_eq!(b.count("p"), 2, "nothing was written");
+}
+
+/// The board in `TB_CARD` is about the CARD, not the board selector: a session bound to
+/// `default#1` still works its own card when the command picks board `p` by position
+/// (#220's shape). Positional board name still resolves correctly.
+#[test]
+fn a_bound_session_writes_its_own_card_via_positional_board() {
+    let b = Board::real();
+    b.ok(&["p", "add", "own", "--as", "charles"]);
+    b.ok(&["default", "add", "other", "--as", "charles"]);
+    let o = b.as_bound("p#1", &["p", "note", "1", "own card via positional board", "--as", "b-1"]);
+    assert!(o.status.success(), "own card via positional board works: {}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// `TB_BOARD=p` cannot redirect a session bound to `default#1` onto `p#2`: the target is
+/// the board the store OPENS (`p`), and the refusal names that real target.
+#[test]
+fn tb_board_cannot_redirect_a_bound_session() {
+    let b = Board::real();
+    b.ok(&["p", "add", "p1", "--as", "charles"]);
+    b.ok(&["p", "add", "p2", "--as", "charles"]);
+    b.ok(&["default", "add", "d1", "--as", "charles"]);
+    let o = b.as_bound_env("default#1", &["edit", "2", "--title", "HIJACK-A", "--as", "b-d", "--json"], &["TB_BOARD", "p"]);
+    assert!(!o.status.success(), "the TB_BOARD hijack must be refused: {}", String::from_utf8_lossy(&o.stderr));
+    let v = Board::json(&o.stdout);
+    assert_eq!(v["code"], "card_bound", "{v}");
+    let err = v["error"].as_str().unwrap();
+    assert!(err.contains("default#1"), "the refusal names the bound card: {err}");
+    assert!(err.contains("p#2"), "the refusal names the REAL target p#2 (the opened board), not default#2: {err}");
+    // nothing was written on p#2
+    let t = b.ok(&["p", "show", "2", "--json", "--as", "charles"]);
+    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
+    assert_eq!(title, "p2", "the hijacked edit must not have landed: {title}");
+}
+
+/// The session's OWN card still works when it is reached through `TB_BOARD`.
+#[test]
+fn its_own_card_works_via_tb_board() {
+    let b = Board::real();
+    b.ok(&["p", "add", "p1", "--as", "charles"]);
+    b.ok(&["default", "add", "d1", "--as", "charles"]);
+    b.as_bound_env("p#1", &["note", "1", "own via TB_BOARD", "--as", "b-1"], &["TB_BOARD", "p"]);
+    let o = b.as_bound_env("p#1", &["edit", "1", "--title", "OWN-OK", "--as", "b-1", "--json"], &["TB_BOARD", "p"]);
+    assert!(o.status.success(), "its own card via TB_BOARD works: {}", String::from_utf8_lossy(&o.stderr));
+    let t = b.ok(&["p", "show", "1", "--json", "--as", "charles"]);
+    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
+    assert_eq!(title, "OWN-OK", "the edit must have landed");
+}
+
+/// A SAVED default board cannot redirect a bound session either: `tb boards --default p`
+/// turns bare `edit 2` into a write on `p#2`, and the guard must refuse it.
+#[test]
+fn a_saved_default_board_cannot_redirect_a_bound_session() {
+    let b = Board::real();
+    b.ok(&["p", "add", "p1", "--as", "charles"]);
+    b.ok(&["p", "add", "p2", "--as", "charles"]);
+    b.ok(&["default", "add", "d1", "--as", "charles"]);
+    b.ok(&["boards", "--default", "p", "--as", "charles"]);
+    let o = b.as_bound("default#1", &["edit", "2", "--title", "HIJACK-B", "--as", "b-d", "--json"]);
+    assert!(!o.status.success(), "the saved-default hijack must be refused: {}", String::from_utf8_lossy(&o.stderr));
+    let v = Board::json(&o.stdout);
+    assert_eq!(v["code"], "card_bound", "{v}");
+    let err = v["error"].as_str().unwrap();
+    assert!(err.contains("default#1"), "the refusal names the bound card: {err}");
+    assert!(err.contains("p#2"), "the refusal names the REAL target p#2: {err}");
+    let t = b.ok(&["p", "show", "2", "--json", "--as", "charles"]);
+    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
+    assert_eq!(title, "p2", "the hijacked edit must not have landed: {title}");
 }

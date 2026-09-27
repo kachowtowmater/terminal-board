@@ -1588,12 +1588,14 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
         });
         if !steerer && !db_exempt(store.path().as_deref()) {
             if let Some(write) = cmd_ref.and_then(card_bound_write) {
-                let board = positional.as_deref().or(cli.board.as_deref()).unwrap_or(boards::DEFAULT_BOARD);
+                // the board the command targets is the one the store OPENS — `name` from
+                // `boards::resolve`, which honours TB_BOARD and the saved default board; a
+                // positional id number alone says nothing about which board it is on
                 match write {
                     // a card WRITE on another card — or on another board's card with the
                     // same number — is not this session's work
                     CardWrite::Card(id) => {
-                        let want = format!("{board}#{id}");
+                        let want = format!("{name}#{id}");
                         if want != bound {
                             return Err(BoardError(
                                 format!(
