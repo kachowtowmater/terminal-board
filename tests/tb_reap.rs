@@ -131,6 +131,7 @@ fn no_home_refuses_and_creates_nothing() {
     }
 }
 
+#[derive(Debug)]
 enum HomeMode {
     Unset,
     Empty,
