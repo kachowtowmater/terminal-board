@@ -269,7 +269,7 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
     b.ok(PERSON, "lead", &["take", &d]);
     b.ok(PERSON, "lead", &["done", &d]);
     b.ok(VERIFIER, "rv-x", &["done", &d]);
-    let Some(scrub) = under_claude(&b, "charles", &["rm", &t, "--force"]) else {
+    let Some(scrub) = under_claude(&b, "charles", &["rm", &t, "--force"], &[]) else {
         eprintln!("skipped: no bash to copy as claude");
         return;
     };
@@ -291,8 +291,11 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
         "the scrubbed refusal is logged: {}",
         b.log()
     );
-    // a registered verifier's rm on the SAME scrubbed chain still deletes
-    let Some(keep) = under_claude(&b, "rv-x", &["rm", &d]) else {
+    // a registered verifier's rm on the SAME scrubbed chain still deletes: its identity is
+    // an agent's (a harness on record), so agent_as_person is not its lane, and the
+    // registered() lookup rides on the session the registry entry was written for
+    // (TB_SESSION — the env the registry entry was minted against).
+    let Some(keep) = under_claude(&b, "rv-x", &["rm", &d], &[("TB_SESSION", UUID)]) else {
         panic!("no bash to copy as claude")
     };
     assert_eq!(
@@ -306,8 +309,14 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
 /// Runs `tb <args> --json --as <who>` as a 'person' (no harness in the env) from a shell
 /// whose kernel name is `claude` — a copy of bash — so the agent binary is a real ancestor,
 /// the way an env-scrubbed rm from a claude parent reaches tb. The copy-once setup and the
-/// ETXTBSY retry follow `under_omp` in tests/verifier_rule.rs.
-fn under_claude(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value> {
+/// ETXTBSY retry follow `under_omp` in tests/verifier_rule.rs. `extra_env` carries what an
+/// env-scrubbed call would still have had to name its own session (`TB_SESSION`).
+fn under_claude(
+    b: &Board,
+    who: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> Option<serde_json::Value> {
     let claude = claude_executable()?;
     let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let mut line = vec![quote(env!("CARGO_BIN_EXE_tb"))];
@@ -329,6 +338,7 @@ fn under_claude(b: &Board, who: &str, args: &[&str]) -> Option<serde_json::Value
         .env("TZ", "UTC")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", b.dir.path());
+    c.envs(extra_env.iter().copied());
     for (i, wait) in [0u64, 10, 25, 50, 100, 200, 200, 200, 200, 200]
         .into_iter()
         .enumerate()
