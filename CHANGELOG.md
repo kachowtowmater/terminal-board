@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **`tb release` no longer counts its own process tree as proof the holder is alive.** The
+  process probe reads every process's command line (on macOS with the environment appended,
+  `ps -E`) and vouched for an owner name it saw anywhere — including inside the releasing
+  `tb release 140 "<reason naming b-140>"` command's own argv, or inside the agent shell
+  that launched it, so a release whose reason merely named the holder was refused with a
+  new pid on every call. The process table now excludes the caller's own process and every
+  ppid-chain ancestor, so they never vouch; unrelated live agent processes still do (#227).
 - **The `--help` Flow line names `prio ID top|bottom|up|down` again, alongside both send-back
   forms (`move ID todo "why"`, `move ID doing "why"`):** #221 had trimmed it to `top|bottom` to
   fit the line caps, dropping two forms that still work (#228).
