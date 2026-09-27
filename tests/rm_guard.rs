@@ -265,10 +265,6 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
     let b = Board::new();
     b.registry.register(UUID, "rv-x", "claude-code");
     let t = b.add("t: scrub");
-    let d = b.add("d: done");
-    b.ok(PERSON, "lead", &["take", &d]);
-    b.ok(PERSON, "lead", &["done", &d]);
-    b.ok(VERIFIER, "rv-x", &["done", &d]);
     let Some(scrub) = under_claude(&b, "charles", &["rm", &t, "--force"], &[]) else {
         eprintln!("skipped: no bash to copy as claude");
         return;
@@ -292,10 +288,9 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
         b.log()
     );
     // a registered verifier's rm on the SAME scrubbed chain still deletes: its identity is
-    // an agent's (a harness on record), so agent_as_person is not its lane, and the
-    // registered() lookup rides on the session the registry entry was written for
-    // (TB_SESSION — the env the registry entry was minted against).
-    let Some(keep) = under_claude(&b, "rv-x", &["rm", &d], &[("TB_SESSION", UUID)]) else {
+    // an agent's (a harness on record), so the parent-chain lane is not its lane, and the
+    // registered() lookup rides on the session the registry entry was minted for
+    let Some(keep) = under_claude(&b, "rv-x", &["rm", &t], VERIFIER) else {
         panic!("no bash to copy as claude")
     };
     assert_eq!(
@@ -303,7 +298,7 @@ fn an_env_scrubbed_person_rm_follows_the_parent_chain() {
         serde_json::Value::Null,
         "the registered verifier rm went through: {keep}"
     );
-    assert!(!b.on_board(&d), "the verifier rm deleted the done card");
+    assert!(!b.on_board(&t), "the verifier rm deleted the card");
 }
 
 /// Runs `tb <args> --json --as <who>` as a 'person' (no harness in the env) from a shell
