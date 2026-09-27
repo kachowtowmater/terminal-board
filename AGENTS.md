@@ -32,7 +32,9 @@ there (it adds a marked block you can re-run safely), or paste
   `tui.rs` + `tui/layouts.rs` = the board, `setup.rs` = the wizard, `github.rs`, `herdr.rs`).
 - Before you finish: `cargo test`, `cargo clippy --all-targets -- -D warnings`,
   `shellcheck install.sh tests/install_test.sh scripts/*.sh`,
-  `cargo build && tests/install_test.sh target/debug/tb`, `scripts/privacy-check.sh`.
+  `cargo build && tests/install_test.sh target/debug/tb`, `scripts/privacy-check.sh`,
+  `bash scripts/commit-identity-check.sh origin/main..HEAD` (your commits must use the
+  no-reply e-mail: `git config user.email "<id>+<user>@users.noreply.github.com"`).
 - Layout changes: `tests/layout.rs` renders every view at fixed sizes; the half-h golden is
   `tests/golden/half_h_126x41.txt` (refresh with `TB_UPDATE_GOLDEN=1` only on purpose).
 - Every `tb` line in README.md and the walkthrough in docs/AGENTS.md is executed by

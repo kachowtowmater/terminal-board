@@ -36,3 +36,15 @@ jobs:
           bash tests/install_test.sh target/debug/tb
       - name: privacy check
         run: bash scripts/privacy-check.sh
+
+  commit-identity:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: commit identity check
+        run: |
+          bash scripts/commit-identity-check.sh \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"

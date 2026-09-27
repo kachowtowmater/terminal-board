@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **PR commits stay no-reply:** on every pull request, CI now runs
+  `scripts/commit-identity-check.sh` over the PR's own commits (`base..head`) and fails
+  when an author or committer uses an address that is not a GitHub no-reply address.
+  The check is documented in README.md and AGENTS.md.
+
 ## 3.2.4 — 2026-09-27
 
 ### Highlights
