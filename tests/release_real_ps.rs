@@ -112,11 +112,13 @@ fn real_ps_release_succeeds_when_only_an_omp_shell_ancestor_names_the_holder() {
     // The agent shell running tb: argv0 basename omp, argv names the holder (`-c` keeps
     // the shell as tb's live ancestor — no exec-away), so the ppid walk must drop it.
     let omp = b.dir.path().join("omp");
+    let tb_bin = b.dir.path().join("tb");
+    std::fs::copy(env!("CARGO_BIN_EXE_tb"), &tb_bin).expect("copy tb");
     std::fs::copy("/bin/sh", &omp).expect("copy /bin/sh as omp");
     let sh = Command::new(&omp)
         .arg("-c")
         .arg(format!(
-            "export {env}; \"$PWD/omp\" release {id} 'holder gone' --as lead-x; echo TBRC=$?",
+            "export {env}; ./tb release {id} 'holder gone' --as lead-x; echo TBRC=$?",
             env = shell_env("lead")
         ))
         .arg("b-141")
