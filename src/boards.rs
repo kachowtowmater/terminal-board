@@ -209,6 +209,9 @@ pub fn set_default(name: Option<&str>) -> Result<()> {
     })
 }
 
+/// `HOME` for the state directory. The refusal for a missing one lives where the state
+/// directory is resolved (`main::run`, #206): tb never falls back to the current directory,
+/// which once created `./.local` wherever tb happened to run.
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
 }

@@ -1464,6 +1464,16 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     }
     // every event this process writes also records who `actor` is (store::actors)
     terminal_board::store::actors::use_environment();
+    // HOME, once, before any command that can reach the boards/state directory (#206): tb
+    // never fell back to the current directory on purpose — with HOME unset it used to
+    // create ./.local/state/… wherever it ran. Refuse instead, naming both levers; TB_DB
+    // pins one board file and needs no HOME at all, and commands that read no state (-V,
+    // --help) never run this.
+    if terminal_board::env("DB").is_none() && std::env::var_os("HOME").filter(|h| !h.is_empty()).is_none() {
+        return Err(BoardError(
+            "HOME is not set — set HOME, or TB_DB for a single board file".to_string(), Code::IoError,
+        ));
+    }
     if !terminal_board::env("DB").is_some() {
         match boards::migrate(&boards::old_state_dir(), &boards::state_dir()) {
             Ok(notes) => {
