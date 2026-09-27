@@ -24,7 +24,7 @@ Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | resto
 Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
 Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
-Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID doing \"why\" | prio ID top|bottom|up|down
+Flow    next [--review] | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID todo \"why\" | move ID doing \"why\" | prio ID top|bottom
 Boards  boards [--default [NAME|--clear]] | boards [--archived] [--long] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
 Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
@@ -1839,7 +1839,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             let rules = first_time_rules(&store, &actor)?;
             let banner = rules.as_deref().map(|r| format!("this board's rules:\n{r}\n\n")).unwrap_or_default();
             let human = format!(
-                "{banner}{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"' to send it back",
+                "{banner}{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"', or 'tb move {id} todo \"why it failed\"' to FAIL it back to TODO",
                 plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
                 id = card.id
             );

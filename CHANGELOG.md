@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The `--help` Flow line, the `tb next --review` hint and the README command table now name
+  `tb move ID todo "why"` alongside the doing form: a FAILed card goes back to TODO, unowned
+  (#221).
 - A headless `tmux new-session` SERVER (and any tmux client) no longer vouches for the agent
   it was first started for: its cmdline keeps the first session's `TB_AS` and agent binary
   forever, so `tb release` refused to free a finished headless card while another headless

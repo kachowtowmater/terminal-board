@@ -680,6 +680,7 @@ tb --version
 | `tb config wip-counts-blocked yes\|no` / `tb config waiting-lane shown\|hidden` | whether a blocked card uses a work slot / gives blocked cards their own section |
 | `tb move ID todo\|doing\|review\|done` | move a card (`--force` to move someone else's DOING card) |
 | `tb move ID doing "why"` | send a REVIEW card back to its owner, with the reason (shows `r2`) |
+| `tb move ID todo "why"` | FAIL a REVIEW card back to TODO, unowned, with the reason (shows r2) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW → DONE (only a verifier, never whoever did the work; TODO → DONE is refused) |
 | `tb config verifiers NAME,NAME` / `--off` · `tb config verifier-only on\|off` | names that may verify whatever their role · the verifier rule (on by default); a person only — see [Who closes a card](#who-closes-a-card) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
