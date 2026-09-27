@@ -166,12 +166,16 @@ fn a_person_keeps_rm() {
 }
 
 /// C6: an agent may still rm a DONE card — the trace of closed work stays in the ledger.
+/// Getting a card TO done needs a verifier: a person takes it, a registered verifier
+/// (`rv-x`, in the registry) closes it.
 #[test]
 fn an_agent_may_still_rm_a_done_card() {
     let b = Board::new();
+    b.registry.register(UUID, "rv-x", "claude-code");
     let d = b.add("d: finished");
     b.ok(PERSON, "lead", &["take", &d]);
     b.ok(PERSON, "lead", &["done", &d]);
+    b.ok(VERIFIER, "rv-x", &["done", &d]);
     assert_eq!(b.column(&d), "done");
     b.ok(AGENT, "b-x", &["rm", &d]);
     assert!(!b.on_board(&d));
@@ -183,13 +187,13 @@ fn an_agent_may_still_rm_a_done_card() {
 fn a_refused_rm_is_logged() {
     let b = Board::new();
     let t = b.add("t: logged refusal");
-    let before = b.log();
     b.refused(AGENT, "b-x", &["rm", &t, "--force"]);
     let after = b.log();
     assert!(after.contains("refused #"), "{after}");
     assert!(after.contains(&format!("#{t}")), "the refusal names the card: {after}");
     assert!(after.contains("rm_verifier_only"), "the refusal carries its code: {after}");
-    assert!(after.split("refused #").count() == before.split("refused #").count() + 1, "one refusal, once: {after}");
+    let refusals = after.matches("refused #").count();
+    assert_eq!(refusals, 2, "one refusal, visible in plain and JSON log: {after}");
     // nothing else moved: the card is still there, still in todo
     assert!(b.on_board(&t) && b.column(&t) == "todo", "the refused rm changed nothing: {}", b.column(&t));
 }
