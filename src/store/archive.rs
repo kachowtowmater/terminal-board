@@ -17,7 +17,7 @@
 //! name, so a column another part of tb adds to `cards` later is archived and restored
 //! without this file knowing about it.
 
-use super::{Code, bottom_of, err, get_card, now, ownership_err, wip_full_err, wip_of, BoardError, Card, Result, Store};
+use super::{Code, bottom_of, err, get_card, now, ownership_err, verifier, wip_full_err, wip_of, BoardError, Card, Result, Store};
 use rusqlite::{params, types::ValueRef, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
@@ -242,6 +242,17 @@ impl Store {
         // reach the check in `Store::log`: ask here, like the other hand-written writers
         crate::store::access::guard_actor(&tx, actor)?;
         let c = get_card(&tx, id)?;
+        // card #225: a non-done card is not an agent's to delete unless a registered
+        // verifier session asks — the refusal rolls this transaction back, so the log line
+        // naming it goes in its own write (below, outside the tx)
+        if let Err(e) = rm_guard(&tx, id, actor, &c.column) {
+            let _ = tx.finish();
+            board_log(&self.conn, actor, "rm", &format!(
+                "refused #{} \"{}\" ({}): {}",
+                id, c.title, e.1, e.0
+            ))?;
+            return Err(e);
+        }
         let forced = holder_guard(&tx, &c, actor, force, if archive { "archive it" } else { "delete it" })?;
         let verb = if archive { "archived" } else { "deleted" };
         if let Some(owner) = &forced {
@@ -354,4 +365,54 @@ impl Store {
         tx.commit()?;
         Ok(c)
     }
+}
+
+/// The #225 rule: `tb rm` on a card whose column is not `done` is a person's call or a
+/// REGISTERED verifier's — a lead/orchestrator may force-close its own work, so nothing stops
+/// a builder (or a role-forging shell) from deleting the card a review would have failed.
+///
+/// - a person keeps rm everywhere (`is_agent`: a harness on record — the plain-terminal
+///   limit of a self-reported identity, the same line `done` draws);
+/// - an agent may still rm the RESULT of closed work: a DONE card's trace lives in its DONE
+///   events and, on an archive board, in `archived_cards`;
+/// - a role (`TB_ROLE=verifier`) alone is self-asserted (#169's lesson), so a role-carrying
+///   agent must be a REGISTERED verifier (`registered()`: the session tb-agent-start
+///   launched as a verifier, under the same name and harness as the registry entry);
+/// - an agent with no role (builder, lead/orchestrator) is refused outright;
+/// - `--force` does not lift this: it guards a hold, not the delete itself, and the only
+///   escape the column offers is the move the hint names.
+///
+/// The refusal rolls `remove_card`'s transaction back — archive copy, checklist, links,
+/// events, the card — so the caller logs it in its own write: a log entry written inside the
+/// refused transaction dies with it. The kind is `rm`, on the BOARD log (a delete destroys
+/// the card's own event rows, so a card log line would never show).
+fn rm_guard(conn: &Connection, id: i64, actor: &str, column: &str) -> Result<()> {
+    let who = super::actors::current();
+    if !verifier::is_agent(&who) {
+        return Ok(()); // a person (no harness in the identity): today's rm, everywhere
+    }
+    if column == "done" {
+        return Ok(()); // an agent may rm closed work
+    }
+    if !verifier::has_verifier_role(&who) || !verifier::registered(conn, actor, &who)? {
+        return Err(rm_verifier_only_err(id, actor, &who));
+    }
+    Ok(())
+}
+
+/// The refusal, pointing at the move it names instead: REVIEW with a CLOSE note.
+fn rm_verifier_only_err(id: i64, actor: &str, who: &super::actors::Identity) -> BoardError {
+    let harness = who.harness.as_deref().unwrap_or("an agent");
+    let role = match who.role.as_deref() {
+        Some(r) => format!("role {r}"),
+        None => "no role".to_string(),
+    };
+    BoardError(
+        format!(
+            "only a person or a registered verifier may rm #{id} while it is not done — {actor} is \
+             {harness} with {role} (card #225). Leave it for review with a CLOSE note instead: \
+             'tb note {id} \"CLOSE: why\"' then 'tb move {id} review'"
+        ),
+        Code::RmVerifierOnly,
+    )
 }
