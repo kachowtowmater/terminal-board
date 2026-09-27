@@ -215,3 +215,68 @@ fn a_live_agent_process_still_vouches_next_to_a_tmux_server() {
     );
     b.assert_doing(&id, "b-100");
 }
+
+/// Probe 5 marks a process as tmux ONLY by its own executable — argv0 basename = tmux. A
+/// tmux word anywhere else (env TERM_PROGRAM=tmux, TERM=tmux-256color, a prompt that
+/// mentions tmux) is not the process's executable and must change nothing. rv-lead-tb's
+/// probe cases, one test each (rv/probe.sh: omp_plain, omp_in_tmux, claude_in_tmux,
+/// omp_brief_says_tmux — every release refused, rc=1 col=doing).
+#[test]
+fn omp_plain_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-500");
+    b.note(&id, "b-500", "mode:headless pid:4501 log:/tmp/b-500.log");
+    let (code, _) = b.refused_release(
+        "lead-x",
+        &id,
+        "live omp with no tmux anywhere",
+        &[("TB_REAP_FAKE_PROCS", "4501 omp -p --approval-mode yolo TB_AS=b-500 TERM=xterm-256color")],
+    );
+    assert_eq!(code, "holder_alive");
+    b.assert_doing(&id, "b-500");
+}
+
+#[test]
+fn omp_started_inside_tmux_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-501");
+    b.note(&id, "b-501", "mode:headless pid:4502 log:/tmp/b-501.log");
+    let (code, _) = b.refused_release(
+        "lead-x",
+        &id,
+        "env TERM_PROGRAM=tmux is not an argv0",
+        &[("TB_REAP_FAKE_PROCS", "4502 omp -p --approval-mode yolo TB_AS=b-501 TERM_PROGRAM=tmux TERM=tmux-256color")],
+    );
+    assert_eq!(code, "holder_alive");
+    b.assert_doing(&id, "b-501");
+}
+
+#[test]
+fn claude_started_inside_tmux_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-502");
+    b.note(&id, "b-502", "mode:headless pid:4503 log:/tmp/b-502.log");
+    let (code, _) = b.refused_release(
+        "lead-x",
+        &id,
+        "claude under TERM_PROGRAM=tmux still vouches",
+        &[("TB_REAP_FAKE_PROCS", "4503 /opt/homebrew/bin/claude --agent verify-lead TB_AS=b-502 TERM_PROGRAM=tmux")],
+    );
+    assert_eq!(code, "holder_alive");
+    b.assert_doing(&id, "b-502");
+}
+
+#[test]
+fn omp_prompt_mentioning_tmux_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-503");
+    b.note(&id, "b-503", "mode:headless pid:4504 log:/tmp/b-503.log");
+    let (code, _) = b.refused_release(
+        "lead-x",
+        &id,
+        "prompt text naming tmux is not an argv0",
+        &[("TB_REAP_FAKE_PROCS", "4504 omp -p You are b-503. Do not open tmux panes. TB_AS=b-503")],
+    );
+    assert_eq!(code, "holder_alive");
+    b.assert_doing(&id, "b-503");
+}

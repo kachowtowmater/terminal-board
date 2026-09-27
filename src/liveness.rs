@@ -232,14 +232,17 @@ impl World {
             // A tmux process (the SERVER spawned by the first headless `tmux new-session`,
             // and any tmux CLIENT) is never the agent itself: its cmdline keeps the FIRST
             // session's `-e TB_AS=<owner>` and agent binary forever, so it names an owner
-            // it merely hosts. Only a non-tmux argv0 counts.
+            // it merely hosts. ONLY argv0 basename = tmux marks it — a tmux word anywhere
+            // else (env TERM_PROGRAM=tmux, TERM=tmux-256color, prompt text) is not the
+            // process's executable and changes nothing.
             let argv0_agentish = toks.iter().any(|t| {
                 let base = t.rsplit('/').next().unwrap_or(t);
                 AGENT_BINS.iter().any(|b| base.eq_ignore_ascii_case(b))
             });
             let is_tmux = toks
-                .iter()
-                .any(|t| t.rsplit('/').next().is_some_and(|b| b.eq_ignore_ascii_case("tmux")));
+                .first()
+                .and_then(|t| t.rsplit('/').next())
+                .is_some_and(|b| b.eq_ignore_ascii_case("tmux"));
             argv0_agentish && !is_tmux && toks.iter().any(|t| eq_ci(t, o))
         }) {
             return Some(format!("process {pid}"));
