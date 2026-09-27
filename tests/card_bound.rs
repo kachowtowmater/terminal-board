@@ -329,7 +329,7 @@ fn tb_board_cannot_redirect_a_bound_session() {
     b.ok(&["p", "add", "p1", "--as", "charles"]);
     b.ok(&["p", "add", "p2", "--as", "charles"]);
     b.ok(&["default", "add", "d1", "--as", "charles"]);
-    let o = b.as_bound_env("default#1", &["edit", "2", "--title", "HIJACK-A", "--as", "b-d", "--json"], &[("TB_BOARD", "p")]);
+    let o = b.as_bound_env("default#1", &["edit", "2", "--title", "HIJACK-A", "--as", "b-1", "--json"], &[("TB_BOARD", "p")]);
     assert!(!o.status.success(), "the TB_BOARD hijack must be refused: {}", String::from_utf8_lossy(&o.stderr));
     let v = Board::json(&o.stdout);
     assert_eq!(v["code"], "card_bound", "{v}");
@@ -365,7 +365,7 @@ fn a_saved_default_board_cannot_redirect_a_bound_session() {
     b.ok(&["p", "add", "p2", "--as", "charles"]);
     b.ok(&["default", "add", "d1", "--as", "charles"]);
     b.ok(&["boards", "--default", "p", "--as", "charles"]);
-    let o = b.as_bound("default#1", &["edit", "2", "--title", "HIJACK-B", "--as", "b-d", "--json"]);
+    let o = b.as_bound("default#1", &["edit", "2", "--title", "HIJACK-B", "--as", "b-1", "--json"]);
     assert!(!o.status.success(), "the saved-default hijack must be refused: {}", String::from_utf8_lossy(&o.stderr));
     let v = Board::json(&o.stdout);
     assert_eq!(v["code"], "card_bound", "{v}");
