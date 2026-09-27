@@ -104,7 +104,6 @@ fn a_builder_cannot_rm_open_work() {
     let b = Board::new();
     let t = b.add("t: build it");
     let d = b.add("d: mine in doing");
-    let r = b.add("r: in review");
     b.ok(PERSON, "lead", &["take", &d]);
     b.ok(PERSON, "lead", &["done", &d]);
     let d = b.add("d2: agent doing");

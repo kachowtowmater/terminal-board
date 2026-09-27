@@ -134,9 +134,9 @@ alone unless a person asks you to.
   parent chain holds an agent binary (`omp`, `claude`, `codex`, `pi`) is refused (`agent_as_person`), and so is any person-only config change.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
 - No `--force` unless a person told you to use it.
-- `tb rm ID` on a card that is not DONE is a person's call or a registered verifier's: an agent (any harness, role included — a lead/orchestrator, a
-  builder, a forged `TB_ROLE=verifier` with no registry entry) is refused (`rm_verifier_only`), `--force` included, and the refusal is logged on the
-  board's log. Close out the card instead — `tb note ID "CLOSE: why"` then `tb move ID review` — or, on a DONE card, rm stays allowed for cleanup.
+- `tb rm ID` on a card not in DONE is a person's call or a registered verifier's: an agent (any role — builder, lead/orchestrator, forged `TB_ROLE=verifier` with
+  no registry entry) is refused (`rm_verifier_only`), `--force` included, and the refusal is logged. Close it out instead: `tb note ID "CLOSE: why"` then
+  `tb move ID review`; on a DONE card rm stays allowed.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused (`--force`
   overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — it adds to a card, it does not take it over.
   `github` is tb's own sync: never act under it. `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log
