@@ -154,7 +154,8 @@ warning.
 | variable | what it does | knob or test hook |
 |---|---|---|
 | `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
-| `TB_CARD` | `<board>#<id>` this session is bound to (`tb-agent-start --card`): a card WRITE on another card, or a new card, is refused (`card_bound`); `note` on any card stays allowed; `TB_DB`, persons, lead/orchestrator roles exempt; unsetting writes freely | knob |
+| `TB_CARD` | `<board>#<id>` this session is bound to (`tb-agent-start --card`): a card WRITE on another card — target = the OPENED board (`TB_BOARD`, saved default) — or a new card refused (`card_bound`); `note` anywhere allowed; `TB_DB`, persons, lead/orch exempt | knob |
+| ^ unsetting `TB_CARD` writes freely | knob |
 | `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
 | `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
 | `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
@@ -223,7 +224,6 @@ The long form is beside it: [README.md](../README.md) (commands, due dates, `TB_
 tb add "docs: write the install guide" -d "Done = guide merged" --check "draft" --check "review"
 tb add "ops: rotate API tokens"
 tb next --as alice
-tb show 1
 tb note 1 "draft written"
 tb check 1 1
 tb check 1 --add "add screenshots"
