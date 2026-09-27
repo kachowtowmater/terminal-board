@@ -122,9 +122,11 @@ impl Board {
         (v["code"].as_str().unwrap_or("").to_string(), format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or("")))
     }
 
-    /// A release by lead `who`; asserts it SUCCEEDED.
-    fn release_ok(&self, who: &str, id: &str, reason: &str) {
-        let o = self.run(&agent("lead"), &[], who, &["release", id, reason, "--json"]);
+    /// A release by lead `who` under the liveness fixture `fake`; asserts it SUCCEEDED.
+    /// Same fixture rule as [`Board::refused_release`]: pass the `TB_REAP_FAKE_*` values
+    /// the case needs (fixture mode is already on via `run`'s all-empty base).
+    fn release_ok(&self, who: &str, id: &str, reason: &str, fake: &[(&str, &str)]) {
+        let o = self.run(&agent("lead"), fake, who, &["release", id, reason, "--json"]);
         assert!(o.status.success(), "tb release {id} by {who} was refused: {}", String::from_utf8_lossy(&o.stderr));
     }
 }
@@ -134,7 +136,7 @@ fn release_a_no_pid_headless_holder_counts_it_dead_and_releases() {
     let b = Board::new();
     let id = b.held_by("hw");
     b.note(&id, "hw", "mode:headless placement (no pid known)");
-    b.release_ok("lead-x", &id, "headless worker gone, no pid");
+    b.release_ok("lead-x", &id, "headless worker gone, no pid", &[]);
     b.assert_released(&id, "hw");
 }
 
@@ -177,7 +179,12 @@ fn a_tmux_server_process_does_not_vouch_for_the_agent_it_was_started_for() {
     let id = b.held_by("b-157");
     b.note(&id, "b-157", "mode:headless pid:910157 log:/tmp/b-157.log session:tbh-b-157");
     b.assert_doing(&id, "b-157");
-    b.release_ok("lead-x", &id, "b-157 finished; its tmux session is gone");
+    b.release_ok(
+        "lead-x",
+        &id,
+        "b-157 finished; its tmux session is gone",
+        &[("TB_REAP_FAKE_PROCS", &tmux_server("b-157"))],
+    );
     b.assert_released(&id, "b-157");
 }
 
