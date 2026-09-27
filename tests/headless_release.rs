@@ -220,12 +220,14 @@ fn a_live_agent_process_still_vouches_next_to_a_tmux_server() {
 /// tmux word anywhere else (env TERM_PROGRAM=tmux, TERM=tmux-256color, a prompt that
 /// mentions tmux) is not the process's executable and must change nothing. rv-lead-tb's
 /// probe cases, one test each (rv/probe.sh: omp_plain, omp_in_tmux, claude_in_tmux,
-/// omp_brief_says_tmux — every release refused, rc=1 col=doing).
+/// omp_brief_says_tmux — every release refused, rc=1 col=doing). Each note carries NO pid
+/// (Release mode treats a no-pid headless note as DEAD), so the FAKE_PROCS line is the
+/// ONLY possible vouch — the assertion tests the process probe, not the note.
 #[test]
 fn omp_plain_still_vouches() {
     let b = Board::new();
     let id = b.held_by("b-500");
-    b.note(&id, "b-500", "mode:headless pid:4501 log:/tmp/b-500.log");
+    b.note(&id, "b-500", "mode:headless log:/tmp/b-500.log");
     let (code, _) = b.refused_release(
         "lead-x",
         &id,
@@ -240,7 +242,7 @@ fn omp_plain_still_vouches() {
 fn omp_started_inside_tmux_still_vouches() {
     let b = Board::new();
     let id = b.held_by("b-501");
-    b.note(&id, "b-501", "mode:headless pid:4502 log:/tmp/b-501.log");
+    b.note(&id, "b-501", "mode:headless log:/tmp/b-501.log");
     let (code, _) = b.refused_release(
         "lead-x",
         &id,
@@ -255,7 +257,7 @@ fn omp_started_inside_tmux_still_vouches() {
 fn claude_started_inside_tmux_still_vouches() {
     let b = Board::new();
     let id = b.held_by("b-502");
-    b.note(&id, "b-502", "mode:headless pid:4503 log:/tmp/b-502.log");
+    b.note(&id, "b-502", "mode:headless log:/tmp/b-502.log");
     let (code, _) = b.refused_release(
         "lead-x",
         &id,
@@ -270,7 +272,7 @@ fn claude_started_inside_tmux_still_vouches() {
 fn omp_prompt_mentioning_tmux_still_vouches() {
     let b = Board::new();
     let id = b.held_by("b-503");
-    b.note(&id, "b-503", "mode:headless pid:4504 log:/tmp/b-503.log");
+    b.note(&id, "b-503", "mode:headless log:/tmp/b-503.log");
     let (code, _) = b.refused_release(
         "lead-x",
         &id,
