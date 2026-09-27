@@ -154,7 +154,7 @@ warning.
 | variable | what it does | knob or test hook |
 |---|---|---|
 | `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
-| `TB_CARD` | `<board>#<id>` this session was started for (`tb-agent-start --card`): every card WRITE on another card, or a new card, is refused with `card_bound` — `note` on any card stays allowed; `TB_DB` fixtures, persons and `TB_ROLE` `lead`/`orchestrator` are exempt, and unsetting it writes freely | knob |
+| `TB_CARD` | `<board>#<id>` this session is bound to (`tb-agent-start --card`): a card WRITE on another card, or a new card, is refused (`card_bound`); `note` on any card stays allowed; `TB_DB`, persons, lead/orchestrator roles exempt; unsetting writes freely | knob |
 | `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
 | `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
 | `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
