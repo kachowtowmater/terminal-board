@@ -1,3 +1,12 @@
+# Upgrading to 3.2.5
+
+Nothing to do: boards and commands are unchanged from 3.2.4. Behaviour changes: `tb rm` on
+a card that is not `done` is refused for agents that are not registered verifiers
+(`rm_verifier_only` — a person, or a registered verifier, keeps rm everywhere; the way out
+is `tb note ID "CLOSE: why"` then `tb move ID review`); a tmux server process no longer
+vouches in liveness (its argv0 must be `tmux` for the tmux check to apply); the JSON
+output only gains the `rm_verifier_only` error code.
+
 # Upgrading to 3.2.4
 
 Nothing to do: boards and commands are unchanged from 3.2.3. The JSON output only gains the
