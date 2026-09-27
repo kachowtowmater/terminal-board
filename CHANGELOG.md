@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A headless `tmux new-session` SERVER (and any tmux client) no longer vouches for the agent
+  it was first started for: its cmdline keeps the first session's `TB_AS` and agent binary
+  forever, so `tb release` refused to free a finished headless card while another headless
+  agent ran on the same tmux server (#223). The tmux check is now argv0-only: a tmux word
+  anywhere else (env `TERM_PROGRAM=tmux`, a prompt that mentions tmux) never strips an
+  agent process's vouch.
 - **PR commits stay no-reply:** on every pull request, CI now runs
   `scripts/commit-identity-check.sh` over the PR's own commits (`base..head`) and fails
   when an author or committer uses an address that is not a GitHub no-reply address.
