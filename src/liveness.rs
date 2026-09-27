@@ -227,7 +227,7 @@ impl World {
         if self.pane_labels.iter().any(|l| names_token(l, o)) {
             return Some("pane-label".into());
         }
-        if let Some((pid, cmd)) = self.procs.iter().find(|(pid, cmd)| {
+        if let Some((pid, _)) = self.procs.iter().find(|(_, cmd)| {
             let toks: Vec<&str> = cmd.split(|c: char| c.is_whitespace() || c == '=').collect();
             // A tmux process (the SERVER spawned by the first headless `tmux new-session`,
             // and any tmux CLIENT) is never the agent itself: its cmdline keeps the FIRST
