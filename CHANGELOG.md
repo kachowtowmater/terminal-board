@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The `--help` Flow line, the `tb next --review` hint and the README command table now name
+  `tb move ID todo "why"` alongside the doing form: a FAILed card goes back to TODO, unowned
+  (#221).
+
 ## 3.2.4 — 2026-09-27
 
 ### Highlights
