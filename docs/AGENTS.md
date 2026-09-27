@@ -133,10 +133,8 @@ alone unless a person asks you to.
   are self-asserted — so never pass another agent's name, claim a role, or fake a link. A close whose identity looks like a person's but whose kernel
   parent chain holds an agent binary (`omp`, `claude`, `codex`, `pi`) is refused (`agent_as_person`), and so is any person-only config change.
 - `tb add "…" --tag KEY` / `tb edit ID --tag KEY|none` sets the tag explicitly (digits, spaces and hyphens allowed); without it, tb guesses one only from a plain `tag:` prefix.
-- No `--force` unless a person told you to use it.
-- `tb rm ID` on a card not in DONE is a person's call or a registered verifier's: an agent (any role — builder, lead/orchestrator, forged `TB_ROLE=verifier` with
-  no registry entry) is refused (`rm_verifier_only`), `--force` included, and the refusal is logged. Close it out instead: `tb note ID "CLOSE: why"` then
-  `tb move ID review`; on a DONE card rm stays allowed.
+- No `--force` unless a person told you to use it. `tb rm ID` on a card not in DONE is likewise a person's or a registered verifier's (`rm_verifier_only`,
+  `--force` included, refusal logged, `rm` on a DONE card still fine): close it out instead — `tb note ID "CLOSE: why"` then `tb move ID review`.
 - A card someone else holds in DOING is theirs: `done`, `drop`, `move`, `edit`, `block`, `rm`, `check` and `prio` are refused (`--force`
   overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — it adds to a card, it does not take it over.
   `github` is tb's own sync: never act under it. `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log
@@ -209,7 +207,7 @@ command that succeeded — is for your operator: pass it on.
 | `issue gh#N still open on GitHub` | close the issue / merge the PR first |
 | `you did this work — ask another person or agent to review it` | leave it in REVIEW for another agent |
 | `nothing reaches done except from review` (`not_from_review`) / `only a verifier moves` (`not_verifier`) / `only a registered verifier` (`unregistered_verifier`) | `tb done` from DOING (→ REVIEW); leave REVIEW to a verifier launched by `tb-agent-start --role verifier` |
-| `only a person or a registered verifier may rm #ID` (`rm_verifier_only`) | the card is not done and you are an agent with no registered verifier session: do not delete it — close it out: `tb note ID "CLOSE: why"` then `tb move ID review` |
+| `only a person or a registered verifier may rm #ID` (`rm_verifier_only`) | not your delete: `tb note ID "CLOSE: why"` then `tb move ID review` (above) |
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` · `no card #ID`: `tb list` |
 | `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
