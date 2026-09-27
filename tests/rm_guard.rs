@@ -322,7 +322,7 @@ fn under_claude(
         quote(who),
         "; true".to_string(),
     ]);
-    let mut c = Command::new(&claude);
+    let mut c = Command::new(claude);
     c.args(["-c", &line.join(" ")])
         .env_clear()
         .env("TB_DB", b.db())
