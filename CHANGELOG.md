@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A headless `tmux new-session` SERVER (and any tmux client) no longer vouches for the agent
+  it was first started for: its cmdline keeps the first session's `TB_AS` and agent binary
+  forever, so `tb release` refused to free a finished headless card while another headless
+  agent ran on the same tmux server (#223).
+
 ## 3.2.4 — 2026-09-27
 
 ### Highlights

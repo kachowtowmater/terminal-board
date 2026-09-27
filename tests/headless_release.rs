@@ -157,3 +157,51 @@ fn reap_still_treats_a_no_pid_headless_holder_as_alive() {
     b.note(&id, "hw", "mode:headless placement (no pid known)");
     assert!(!b.reap_dead(&id), "tb-reap keeps the no-pid exemption: {id}");
 }
+
+/// The tmux SERVER line a headless launch leaves behind: started for the FIRST agent, its
+/// cmdline keeps that agent's `-e TB_AS` and agent binary forever, and `bash -c` wraps the
+/// agent command the server will run for any later session.
+fn tmux_server(first: &str) -> String {
+    format!(
+        "3441 tmux new-session -d -s tbh-{first} -c /w -e TB_MODEL=glm-5.3-flash -e TB_ROLE=coder \
+         -e TB_AS={first} -e TB_SESSION=s-{first} -e TB_CARD=tb#1 \
+         bash -c wrap _ /tmp/{first}.log {first} omp --approval-mode yolo --max-time 35m"
+    )
+}
+
+/// A tmux server (or client) process naming an agent must NOT vouch for it — it carries the
+/// FIRST session's TB_AS forever and hosts other agents' sessions on the same server.
+#[test]
+fn a_tmux_server_process_does_not_vouch_for_the_agent_it_was_started_for() {
+    let b = Board::new();
+    let id = b.held_by("b-157");
+    b.note(&id, "b-157", "mode:headless pid:910157 log:/tmp/b-157.log session:tbh-b-157");
+    b.assert_doing(&id, "b-157");
+    b.release_ok("lead-x", &id, "b-157 finished; its tmux session is gone");
+    b.assert_released(&id, "b-157");
+}
+
+/// A live agent process (omp with `TB_AS=<owner>`) still vouches, even with a tmux server
+/// for another agent on the same fixture table.
+#[test]
+fn a_live_agent_process_still_vouches_next_to_a_tmux_server() {
+    let b = Board::new();
+    let id = b.held_by("b-100");
+    b.note(&id, "b-100", "mode:headless pid:4100 log:/tmp/b-100.log session:tbh-b-100");
+    let (code, text) = b.refused_release(
+        "lead-x",
+        &id,
+        "should be refused",
+        &[
+            ("TB_REAP_FAKE_PROCS", &format!(
+                "{};4100 bash -c wrap _ /tmp/b-100.log b-100 omp --approval-mode yolo TB_AS=b-100;\
+                 4101 omp --approval-mode yolo TB_AS=b-100 TB_ROLE=coder",
+                tmux_server("b-157")
+            )),
+            ("TB_REAP_FAKE_TMUX", "tbh-b-100"),
+        ],
+    );
+    assert_eq!(code, "holder_alive", "{text}");
+    assert!(text.contains("headless pid 4100"), "{text}");
+    b.assert_doing(&id, "b-100");
+}
