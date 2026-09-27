@@ -1,3 +1,13 @@
+# Upgrading to 3.2.4
+
+Nothing to do: boards and commands are unchanged from 3.2.3. The JSON output only gains the
+`card_bound` error code. Behaviour changes: a session with `TB_AS` pinned cannot create a
+board or use `TB_DB` on a real board file under another `--as` (`as_mismatch`; `TB_DB`
+fixtures and persons are unaffected); tb refuses to run with `HOME` unset and no `TB_DB`,
+and `tb-reap` refuses with `HOME` unset or empty; a card-bound session (`TB_CARD`) may
+only write its own card (`card_bound`; notes on other cards stay allowed; leads,
+orchestrators and persons are exempt).
+
 # Upgrading to 3.2.3
 
 Nothing to do: boards and commands are unchanged from 3.2.2. The JSON output only gains the

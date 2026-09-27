@@ -1,5 +1,52 @@
 # Changelog
 
+## 3.2.4 — 2026-09-27
+
+### Highlights
+
+- **A card-bound session stays on its own card:** a session launched against one card
+  (`TB_CARD=board#id`) is refused every WRITE on any other card, with the JSON code
+  `card_bound` (#209). Notes on other cards stay allowed; reads are untouched.
+- **A pinned session cannot forge its way in anymore:** board creation and `setup` under a
+  forged `--as` are refused before any file is made, and `TB_DB` pointed at a live board's
+  file no longer skips the pin (#201).
+- **tb refuses to run with no HOME:** with `HOME` unset or empty and no `TB_DB`, tb stops
+  instead of creating `./.local/…` under whatever directory it ran in (#206). `tb-reap`
+  refuses the same way (#212).
+
+### A card-bound session may only write its own card
+
+- A session launched against ONE card (`tb-agent-start --card`, exported as
+  `TB_CARD=<board>#<id>`) may only WRITE its own card: every write on another card —
+  including another board's card with the same number — is refused with the JSON code
+  `card_bound`, naming the bound card. Covered: `take`, `assign`, `edit ID`, `check`,
+  `link`, `move`, `done`, `block`, `drop`, `release`, `rm`, `restore`, `prio`, `mv`;
+  new-card writes (`add`, `import`, `edit --from`) are always refused.
+- `note` on ANY card stays allowed (a builder reports what it finds), and every read is
+  untouched. Exempt: `TB_DB` fixtures outside the boards/archive dirs, persons (no
+  `TB_CARD`), and `TB_ROLE=lead|orchestrator` sessions. Residual, stated in
+  `docs/JSON.md`: a session that deliberately unsets `TB_CARD` or forges `TB_ROLE` can
+  still write — the environment is the session's own.
+
+### The as-pin is checked before anything is created, and TB_DB cannot skip it
+
+- Board creation under a forged `--as` (create-on-first-use `add`/`config`, `tb new`,
+  `tb setup`) is refused with `as_mismatch` BEFORE any file is made; the #191 order is kept
+  on non-creating commands, so a mistyped board on `next` still says `no board` (#201).
+- The `TB_DB` exemption now applies only to files outside tb's boards and archive dirs
+  (resolved like the store resolves them — a symlink tail into the boards dir is still a
+  real board): pinning a LIVE board's file with `TB_DB` no longer lets a session act under
+  another name. Fixtures elsewhere stay free; persons (no `TB_AS`) are unaffected.
+
+### tb refuses to run without HOME instead of creating ./.local in the cwd
+
+- With `TB_DB` unset and `HOME` unset or empty, one upfront check in `main::run` refuses
+  before anything can reach the boards/state directory (`HOME is not set — set HOME, or
+  TB_DB for a single board file`). `TB_DB` still works with no HOME; `tb -V`/`--help` never
+  touch the check (#206).
+- `tb-reap` refuses the same way: `HOME` unset or empty names `HOME` on stderr and exits 1
+  before any path resolution, creating nothing (#212).
+
 ## 3.2.3 — 2026-09-26
 
 ### Highlights
