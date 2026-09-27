@@ -11,7 +11,12 @@
 //!   3. a tmux session with that name;
 //!   4. a herdr pane (plain panes included) whose LABEL names the owner as a whole token;
 //!   5. a running agent process (codex / omp / claude / pi / aider / opencode / gemini) whose
-//!      argv or environment names the owner as a whole token (`TB_AS=<owner>`, `--as <owner>`);
+//!      argv or environment names the owner as a whole token (`TB_AS=<owner>`, `--as <owner>`).
+//!      A tmux process is NEVER this probe's proof — the SERVER spawned by the first headless
+//!      `tmux new-session -s tbh-<owner> -e TB_AS=<owner> …` (and any tmux client) keeps that
+//!      first session's `-e TB_AS` and agent binary in its cmdline long after that session is
+//!      gone and other agents run on the same server — so a process whose argv0 basename is
+//!      `tmux` is skipped, however agent-shaped its arguments look;
 //!   6. one of the owner's tb actor sessions on this card is a live herdr agent's session
 //!      (an orchestrator or headless builder acting under the name);
 //!   7. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
@@ -22,8 +27,10 @@
 //! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,PANES,SESSIONS,PROCS}` switches every
 //! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
 //! TMUX, SESSIONS are comma lists; PANES (labels) and PROCS (`<pid> <command line>`) are
-//! `;`-separated. Any one of them set (even to "") puts EVERY probe in fixture mode: a test
-//! must never half-ask the real world.
+//! `;`-separated. A PROCS line whose argv0 is `tmux` is skipped by the process probe (see
+//! probe 5), so a test can pin a tmux server line and assert it vouches for nobody. Any one
+//! of them set (even to "") puts EVERY probe in fixture mode: a test must never half-ask the
+//! real world.
 //!
 //! The five probe sources are asked ONCE per run (`World::load`) and the answer reused for
 //! every card: a release pass over a board must not re-ask herdr, tmux and the process table
@@ -222,11 +229,21 @@ impl World {
         }
         if let Some((pid, _)) = self.procs.iter().find(|(_, cmd)| {
             let toks: Vec<&str> = cmd.split(|c: char| c.is_whitespace() || c == '=').collect();
-            let agentish = toks.iter().any(|t| {
+            // A tmux process (the SERVER spawned by the first headless `tmux new-session`,
+            // and any tmux CLIENT) is never the agent itself: its cmdline keeps the FIRST
+            // session's `-e TB_AS=<owner>` and agent binary forever, so it names an owner
+            // it merely hosts. ONLY argv0 basename = tmux marks it — a tmux word anywhere
+            // else (env TERM_PROGRAM=tmux, TERM=tmux-256color, prompt text) is not the
+            // process's executable and changes nothing.
+            let argv0_agentish = toks.iter().any(|t| {
                 let base = t.rsplit('/').next().unwrap_or(t);
                 AGENT_BINS.iter().any(|b| base.eq_ignore_ascii_case(b))
             });
-            agentish && toks.iter().any(|t| eq_ci(t, o))
+            let is_tmux = toks
+                .first()
+                .and_then(|t| t.rsplit('/').next())
+                .is_some_and(|b| b.eq_ignore_ascii_case("tmux"));
+            argv0_agentish && !is_tmux && toks.iter().any(|t| eq_ci(t, o))
         }) {
             return Some(format!("process {pid}"));
         }

@@ -128,6 +128,10 @@ fn a_session_is_recorded_with_every_event_and_shown_with_the_card() {
     b.ok(&env, &["note", "1", "first", "--as", "lead"]);
     b.ok(&env, &["config", "wip", "5", "--as", "lead"]);
     b.ok(&env, &["add", "another", "--as", "lead"]);
+    // #225: an agent (a role on record, no registry entry) may not rm a card that is not
+    // DONE — the card is closed here the one way an identity-less person can, and the rm
+    // below is the agent's on the closed work
+    b.ok(&[], &["done", "2", "--force", "--as", "lead"]);
     b.ok(&env, &["rm", "2", "--as", "lead"]);
     assert_eq!(b.actors(), [format!("lead|claude-code|model-x|orchestrator|{UUID}|box")], "the harness without its version, the host's first label");
     assert_eq!(b.actor_ids("events"), [Some(1), Some(1)], "card events");

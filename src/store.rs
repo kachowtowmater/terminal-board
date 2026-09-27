@@ -137,6 +137,10 @@ pub enum Code {
     /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
     /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
     PersonOnly,
+    /// `tb rm` on a card whose column is not done, asked by an agent with no registered
+    /// verifier session (store/archive.rs `rm_guard`, card #225) — the column, not --force,
+    /// is the escape: move it to review with a CLOSE note.
+    RmVerifierOnly,
     /// `config done-needs-note` requires a note written during this stay before DONE.
     DoneNeedsNote,
     /// `config done-needs-link` requires a link with that label before DONE.
@@ -226,6 +230,7 @@ impl Code {
             Code::AgentAsPerson => "agent_as_person",
             Code::ForceNeedsPerson => "force_needs_person",
             Code::PersonOnly => "person_only",
+            Code::RmVerifierOnly => "rm_verifier_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::AsMismatch => "as_mismatch",

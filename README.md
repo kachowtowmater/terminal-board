@@ -552,6 +552,18 @@ tb config github-panel hidden
 tb config github-panel shown
 ```
 
+### Commit identities on pull requests
+
+On every pull request, CI runs `scripts/commit-identity-check.sh` over the PR's own
+commits (`base..head`) and fails if any commit is authored or committed with an address
+that is not a GitHub no-reply address (`<id>+<user>@users.noreply.github.com`), so no
+personal e-mail lands in the public history. Pin your identity before your first commit:
+
+<!-- no-test -->
+```sh
+git config user.email "<id>+<user>@users.noreply.github.com"
+```
+
 ## Agents
 
 Terminal Board is designed so AI coding agents can take work from it, report progress and
@@ -612,6 +624,12 @@ registered verifier gets `force_needs_person` instead — see [Who moves a card]
 `block`, `rm`, `check` and `prio` on it are refused for anyone else, with `--force` to go
 ahead anyway (each override is logged as its own `force` event). `tb note` stays open to
 everyone: a progress note adds to a card, it does not take it over.
+
+**Deleting open work.** `tb rm ID` on a card that is not DONE is refused for an agent that is
+not a registered verifier (`rm_verifier_only`) — a builder, a lead/orchestrator, or a forged
+`TB_ROLE=verifier` with no registry entry — `--force` included, and the refusal is logged on
+the board's log. Close the card out instead: `tb note ID "CLOSE: why"` then `tb move ID
+review`. A person keeps rm everywhere, and an agent may still rm a DONE card.
 
 ## Command-line reference
 
@@ -678,7 +696,7 @@ tb --version
 | `tb prio ID top\|bottom\|up\|down` | reorder within the column (`--force` on someone else's held card, logged; `note` is always open to everyone) |
 | `tb edit ID [--title T] [--desc D \| --desc-file PATH]` | change title/description |
 | `tb add … --due DATE` / `tb edit ID --due DATE\|none` | set, change or clear a card's due date — see [Due dates](#due-dates) |
-| `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive` |
+| `tb rm ID [--force]` | delete a card — or archive it, on a board set to `tb config rm archive`. A card not in DONE is refused for an agent that is not a registered verifier (`rm_verifier_only`); move it to review with a CLOSE note instead |
 | `tb list --archived` / `tb restore ID` | the archived cards / bring one back with its checklist and whole history |
 | `tb board --json` / `tb watch --json` | the whole board as JSON / a live stream |
 | `tb watch --events --json [--since TS]` | one NDJSON line per event instead of the whole board |
