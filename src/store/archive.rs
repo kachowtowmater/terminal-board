@@ -389,7 +389,13 @@ impl Store {
 fn rm_guard(conn: &Connection, id: i64, actor: &str, column: &str) -> Result<()> {
     let who = super::actors::current();
     if !verifier::is_agent(&who) {
-        return Ok(()); // a person (no harness in the identity): today's rm, everywhere
+        // a person (no harness in the identity) — unless the kernel says the process came out
+        // of an agent: the env was scrubbed, the parent chain was not (#169, the same check a
+        // close and every person-only change run). Its rm rides that lane.
+        if let Some(ancestry) = verifier::agent_as_person(actor, &who) {
+            return Err(verifier::agent_as_person_change_err(&format!("rm #{id}"), actor, &ancestry));
+        }
+        return Ok(()); // a person's rm, everywhere
     }
     if column == "done" {
         return Ok(()); // an agent may rm closed work
