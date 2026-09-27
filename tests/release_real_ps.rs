@@ -140,6 +140,15 @@ fn real_ps_release_succeeds_when_only_an_omp_shell_ancestor_names_the_holder() {
     assert_eq!((col.as_str(), owner.as_str()), ("todo", "-"));
 }
 
+/// Whether a live process naming `holder` shows in the real ps table right now.
+fn has_omp_row() -> bool {
+    Command::new("ps")
+        .args(["-ww", "-A", "-o", "command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().any(|t| t == "omp")))
+        .unwrap_or(false)
+}
+
 #[test]
 fn real_ps_an_unrelated_live_agent_process_naming_the_holder_still_vouches() {
     if !has_ps() {
@@ -151,7 +160,14 @@ fn real_ps_an_unrelated_live_agent_process_naming_the_holder_still_vouches() {
     let omp = b.dir.path().join("omp");
     std::fs::copy("/bin/sh", &omp).expect("copy /bin/sh as omp");
     let mut live = Command::new(&omp).arg("-c").arg("sleep 6; true").arg("b-8").spawn().expect("spawn live omp");
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // spin until the live process is visible in ps (ps is asked whole-table, so one pass
+    // has it as soon as it is scheduled; a plain sleep is refused by clippy.toml here)
+    for _ in 0..50 {
+        if has_omp_row() {
+            break;
+        }
+        std::hint::spin_loop();
+    }
     let (rc, out) = b.release_json(&id, "is it dead");
     assert_ne!(rc, 0, "a live omp naming b-8 must vouch: {out}");
     assert!(out.contains("holder_alive"), "names the code: {out}");
