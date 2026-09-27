@@ -239,7 +239,10 @@ impl World {
                 let base = t.rsplit('/').next().unwrap_or(t);
                 AGENT_BINS.iter().any(|b| base.eq_ignore_ascii_case(b))
             });
-            let is_tmux = toks.iter().any(|t| eq_ci(t, "tmux"));
+            let is_tmux = toks
+                .first()
+                .and_then(|t| t.rsplit('/').next())
+                .is_some_and(|b| b.eq_ignore_ascii_case("tmux"));
             argv0_agentish && !is_tmux && toks.iter().any(|t| eq_ci(t, o))
         }) {
             return Some(format!("process {pid}"));
