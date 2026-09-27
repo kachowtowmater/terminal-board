@@ -120,8 +120,8 @@ alone unless a person asks you to.
   Running as a verifier: `TB_ROLE=verifier tb next --review --as <your-name>` — started by `tb-agent-start`, so the session is registered.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   start the verifier in its own session. Nor delete it: `tb rm ID` on a card not in DONE is refused for every agent that is not a REGISTERED
-  verifier (builder, lead/orchestrator, forged role), `--force` included, refusal logged (`rm_verifier_only`); the way out is a close, not a
-  delete: `tb note ID "CLOSE: why"`, `tb move ID review` (persons keep rm; an agent may rm a DONE card).
+  verifier, `--force` included, logged (`rm_verifier_only`); the way out is a close: `tb note ID "CLOSE: why"`, `tb move ID review`.
+
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
@@ -215,10 +215,8 @@ command that succeeded — is for your operator: pass it on.
 ## Brief line for orchestrators
 > Your work is on Terminal Board: run `tb next --as <your-name>`, log each step with `tb note`, tick `tb check`, and `tb done` when
 > finished (`tb drop` if you stop, `tb block` if stuck); a separate verifier (`TB_ROLE=verifier`) moves REVIEW → DONE. Full manual: `tb guide`.
-
-## More detail
-The long form is beside it: [README.md](../README.md) (commands, due dates, `TB_MODEL`/`TB_ROLE`), [HUMANS.md](HUMANS.md) (the board people see),
-[JSON.md](JSON.md) + [SCHEMA.md](SCHEMA.md) (the contracts).
+> Long form beside it: [README.md](../README.md) (commands, due dates, `TB_MODEL`/`TB_ROLE`), [HUMANS.md](HUMANS.md),
+> [JSON.md](JSON.md) + [SCHEMA.md](SCHEMA.md) (the contracts).
 
 ## Walkthrough (every command above, run in order by the test suite)
 
@@ -234,13 +232,15 @@ tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
 tb block 1 "#2"
 tb block 1 --clear
-tb prio 2 top && tb done 1
+tb prio 2 top
+tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob
 tb drop 2
 tb move 2 doing
 tb move 2 review
-tb move 2 doing "add the rollback step" --as bob && tb move 2 todo
+tb move 2 doing "add the rollback step" --as bob
+tb move 2 todo
 tb list
 tb board --json
 tb show 1 --json
