@@ -89,6 +89,53 @@ fn dead(v: &serde_json::Value) -> i64 {
     v["dead_owner_cards"].as_i64().unwrap_or(-1)
 }
 
+// ---- no HOME --------------------------------------------------------------------------------
+
+/// #212: HOME unset must refuse naming HOME, before anything resolves or creates a path.
+#[test]
+fn no_home_refuses_and_creates_nothing() {
+    for mode in [HomeMode::Unset, HomeMode::Empty] {
+        let f = fx();
+        let dir = f._dir.path();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb-reap"));
+        c.args(["--dry-run", "--json"])
+            .current_dir(dir)
+            .env("TB_REAP_KILLSWITCH", "/nonexistent/killswitch")
+            .env("TB_REAP_STATE_DIR", "") // pin to empty so the fallback would hit ./ under cwd
+            .env("TB_REAP_FAKE_AGENTS", "")
+            .env("TB_REAP_FAKE_TMUX", "")
+            .env("TB_REAP_FAKE_PANES", "")
+            .env("TB_REAP_FAKE_SESSIONS", "")
+            .env("TB_REAP_FAKE_PROCS", "")
+            .env_remove("TB_DB")
+            .env_remove("TB_BOARD")
+            .env_remove("TB_AS")
+            .env_remove("TB_REAP_MODE");
+        match mode {
+            HomeMode::Unset => {
+                c.env_remove("HOME");
+            }
+            HomeMode::Empty => {
+                c.env("HOME", "");
+            }
+        }
+        let o = c.output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success(), "mode {mode:?}: expected refusal, got success: {err}");
+        assert!(err.contains("HOME"), "mode {mode:?}: stderr must name HOME: {err}");
+        assert!(
+            !dir.join(".local").exists(),
+            "mode {mode:?}: tb-reap created ./.local under the cwd: {}",
+            std::fs::read_dir(dir).map(|d| d.collect::<Vec<_>>().len()).unwrap_or(0)
+        );
+    }
+}
+
+enum HomeMode {
+    Unset,
+    Empty,
+}
+
 // ---- liveness: one test per false positive ------------------------------------------------
 
 /// Control: an owner with no agent, pane, process, session or orchestrator name IS dead —
