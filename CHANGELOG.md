@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- **The `--help` Flow line names `prio ID top|bottom|up|down` again:** #221 had trimmed it
-  to `top|bottom` to fit the line caps, dropping two forms that still work. The now
-  redundant `move ID doing "why"` form gives back the room (#228).
+- **The `--help` Flow line names `prio ID top|bottom|up|down` again, alongside both send-back
+  forms (`move ID todo "why"`, `move ID doing "why"`):** #221 had trimmed it to `top|bottom` to
+  fit the line caps, dropping two forms that still work (#228).
 
 ## 3.2.5 — 2026-09-27
 
