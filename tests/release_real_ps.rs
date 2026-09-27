@@ -116,7 +116,7 @@ fn real_ps_release_succeeds_when_only_an_omp_shell_ancestor_names_the_holder() {
     let sh = Command::new(&omp)
         .arg("-c")
         .arg(format!(
-            "export {env}; \"$PWD/omp2\" release {id} 'holder gone' --as lead-x; echo TBRC=$?",
+            "export {env}; \"$PWD/omp\" release {id} 'holder gone' --as lead-x; echo TBRC=$?",
             env = shell_env("lead")
         ))
         .arg("b-141")
