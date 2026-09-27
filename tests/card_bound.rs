@@ -329,7 +329,7 @@ fn tb_board_cannot_redirect_a_bound_session() {
     b.ok(&["p", "add", "p1", "--as", "charles"]);
     b.ok(&["p", "add", "p2", "--as", "charles"]);
     b.ok(&["default", "add", "d1", "--as", "charles"]);
-    let o = b.as_bound_env("default#1", &["edit", "2", "--title", "HIJACK-A", "--as", "b-d", "--json"], &["TB_BOARD", "p"]);
+    let o = b.as_bound_env("default#1", &["edit", "2", "--title", "HIJACK-A", "--as", "b-d", "--json"], &[("TB_BOARD", "p")]);
     assert!(!o.status.success(), "the TB_BOARD hijack must be refused: {}", String::from_utf8_lossy(&o.stderr));
     let v = Board::json(&o.stdout);
     assert_eq!(v["code"], "card_bound", "{v}");
@@ -348,8 +348,8 @@ fn its_own_card_works_via_tb_board() {
     let b = Board::real();
     b.ok(&["p", "add", "p1", "--as", "charles"]);
     b.ok(&["default", "add", "d1", "--as", "charles"]);
-    b.as_bound_env("p#1", &["note", "1", "own via TB_BOARD", "--as", "b-1"], &["TB_BOARD", "p"]);
-    let o = b.as_bound_env("p#1", &["edit", "1", "--title", "OWN-OK", "--as", "b-1", "--json"], &["TB_BOARD", "p"]);
+    b.as_bound_env("p#1", &["note", "1", "own via TB_BOARD", "--as", "b-1"], &[("TB_BOARD", "p")]);
+    let o = b.as_bound_env("p#1", &["edit", "1", "--title", "OWN-OK", "--as", "b-1", "--json"], &[("TB_BOARD", "p")]);
     assert!(o.status.success(), "its own card via TB_BOARD works: {}", String::from_utf8_lossy(&o.stderr));
     let t = b.ok(&["p", "show", "1", "--json", "--as", "charles"]);
     let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
