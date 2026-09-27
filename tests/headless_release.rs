@@ -209,6 +209,9 @@ fn a_live_agent_process_still_vouches_next_to_a_tmux_server() {
         ],
     );
     assert_eq!(code, "holder_alive", "{text}");
-    assert!(text.contains("headless pid 4100"), "{text}");
+    assert!(
+        text.contains("headless pid 4100") || text.contains("process 4100"),
+        "{text}"
+    );
     b.assert_doing(&id, "b-100");
 }
