@@ -144,6 +144,10 @@ pub enum Code {
     /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
     /// refused before anything is written, after the board resolves (see `main::run`).
     AsMismatch,
+    /// A session launched against ONE card (`TB_CARD=<board>#<id>`, tb-agent-start --card)
+    /// asked for a card WRITE on another card — or a new card at all — refused before
+    /// anything is written, after the board resolves (see `main::run`).
+    CardBound,
     /// A required argument or value was not given.
     ArgRequired,
     /// An unrecognized subcommand or command word.
@@ -225,6 +229,7 @@ impl Code {
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::AsMismatch => "as_mismatch",
+            Code::CardBound => "card_bound",
             Code::ArgRequired => "arg_required",
             Code::UnknownCommand => "unknown_command",
             Code::UnknownSetting => "unknown_setting",

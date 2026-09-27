@@ -313,6 +313,7 @@ Everyday failures:
 | `unknown_setting` | an unrecognized `tb config` key |
 | `invalid_value` | a value given for a recognized field/setting/flag is not one it accepts |
 | `as_mismatch` | a session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` on a real board (no `TB_DB`): refused after the board resolves, before anything is written (a missing board still errors first); the message names the launched identity — act as `--as $TB_AS` |
+| `card_bound` | a session launched against ONE card (`TB_CARD=<board>#<id>`, `tb-agent-start --card`) asked for a card WRITE on another card — including a new card (`add`, `import`) and any card on another board: refused after the board resolves (the target is the board the store opens: a positional name, `-b`, `TB_BOARD` or the saved default), before anything is written (a missing board still errors first); the message names the card this session is bound to. `note` on any card stays allowed, reads are unaffected, and `TB_DB` fixtures, persons (no `TB_CARD`) and `TB_ROLE` `lead`/`orchestrator` sessions are exempt. Residual: a session that deliberately unsets `TB_CARD` or forges `TB_ROLE` can still write — the guard is inside tb, but the environment is the session's own |
 | `db_error` | the database could not be opened, read or written (including "locked, try again") |
 | `io_error` | reading or writing a file (settings, text-from-file, stdin, export) failed |
 | `terminal_error` | the interactive TUI failed to start or run |

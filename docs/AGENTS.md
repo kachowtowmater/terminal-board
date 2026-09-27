@@ -147,13 +147,15 @@ alone unless a person asks you to.
 You are, in order: `--as NAME`, `$TB_AS`, `$HERDR_AGENT_NAME`, then — inside a herdr pane — the herdr agent name of your pane (tb asks herdr for
 `$HERDR_PANE_ID`), then `$USER`. Inside a named herdr agent you can leave out `--as`; anywhere else pass it on every command (each command usually
 runs in a fresh shell, so an exported `TB_AS` does not last). Use the same name every time; set `TB_MODEL` / `TB_ROLE` too (recorded with your work;
-`TB_ROLE=verifier` is what lets you close a card, and only from a registered session; the session id is recorded with it too. Names are
-self-asserted — never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent
-holding a DOING card is a warning.
+`TB_ROLE=verifier` is what lets you close a card, and only from a registered session; the session id is recorded with it too. Names are self-asserted
+— never pass another agent's name to get past a rule. The AGENTS panel matches your name to your herdr pane; an idle agent holding a DOING card is a
+warning.
 
 | variable | what it does | knob or test hook |
 |---|---|---|
 | `TB_AS` / `TTYBOARD_AS` | your name when no `--as` is passed | knob |
+| `TB_CARD` | `<board>#<id>` this session is bound to (`tb-agent-start --card`): a card WRITE on another card — target = the OPENED board (`TB_BOARD`, saved default) — or a new card refused (`card_bound`); `note` anywhere allowed; `TB_DB`, persons, lead/orch exempt | knob |
+| ^ unsetting `TB_CARD` writes freely | knob |
 | `TB_BOARD` / `TTYBOARD_BOARD` | the board used by bare `tb` | knob |
 | `TB_DB` / `TTYBOARD_DB` | pin ONE board file (board names are then refused) | knob |
 | `TB_GH` / `TTYBOARD_GH` | the `gh` binary to run (tests point it at a fake) | test hook |
@@ -222,7 +224,6 @@ The long form is beside it: [README.md](../README.md) (commands, due dates, `TB_
 tb add "docs: write the install guide" -d "Done = guide merged" --check "draft" --check "review"
 tb add "ops: rotate API tokens"
 tb next --as alice
-tb show 1
 tb note 1 "draft written"
 tb check 1 1
 tb check 1 --add "add screenshots"
@@ -235,7 +236,6 @@ tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob
-tb take 2
 tb drop 2
 tb move 2 doing
 tb move 2 review
