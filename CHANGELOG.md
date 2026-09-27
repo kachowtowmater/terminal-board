@@ -1,10 +1,27 @@
 # Changelog
 
-## Unreleased
+## 3.2.5 — 2026-09-27
 
-- The `--help` Flow line, the `tb next --review` hint and the README command table now name
-  `tb move ID todo "why"` alongside the doing form: a FAILed card goes back to TODO, unowned
-  (#221).
+### Highlights
+
+- **`tb rm` on open work is a person's or a registered verifier's:** `tb rm` on a card
+  that is not `done` is refused for any agent that is not a REGISTERED verifier, with and
+  without `--force` (JSON code `rm_verifier_only`), naming the CLOSE-note → REVIEW way out
+  (#225). A person keeps rm everywhere, and an agent may still rm a DONE card.
+- **A tmux server no longer vouches for the agent it was started for:** the liveness tmux
+  check is argv0-only, so a headless `tmux new-session` server (and any tmux client)
+  cannot keep the first session's `TB_AS` alive forever, and `tb release` frees a finished
+  headless card while another headless agent runs on the same tmux server (#223).
+- **PR commits stay no-reply:** on every pull request, CI runs
+  `scripts/commit-identity-check.sh` over the PR's own commits (`base..head`) and fails on
+  an author or committer address that is not a GitHub no-reply address (#224).
+- **tb's own text names the FAIL → TODO send-back:** the `--help` Flow line, the
+  `tb next --review` hint and the README command table say `tb move ID todo "why"`
+  alongside the doing form (#221).
+- Nothing needs doing to upgrade from 3.2.4; see [UPGRADING.md](UPGRADING.md).
+
+### A tmux server no longer vouches for the agent it was started for
+
 - A headless `tmux new-session` SERVER (and any tmux client) no longer vouches for the agent
   it was first started for: its cmdline keeps the first session's `TB_AS` and agent binary
   forever, so `tb release` refused to free a finished headless card while another headless
@@ -13,8 +30,8 @@
   agent process's vouch.
 - **PR commits stay no-reply:** on every pull request, CI now runs
   `scripts/commit-identity-check.sh` over the PR's own commits (`base..head`) and fails
-  when an author or committer uses an address that is not a GitHub no-reply address.
-  The check is documented in README.md and AGENTS.md.
+  when an author or committer uses an address that is not a GitHub no-reply address
+  (gh#20). The check is documented in README.md and AGENTS.md.
 
 ### `tb rm` on open work is a person's or a registered verifier's
 

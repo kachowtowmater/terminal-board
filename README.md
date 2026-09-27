@@ -20,6 +20,14 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.5:** `tb rm` on a card that is not `done` is refused for any agent that is
+not a registered verifier (JSON code `rm_verifier_only`); a tmux server or client no
+longer vouches for the agent it was first started for, so `tb release` frees a finished
+headless card while another headless agent runs on the same tmux server; PR CI runs a
+commit-identity check that fails a pull request whose commits are not authored with a
+GitHub no-reply address; and tb's own help, hints and README name `tb move ID todo "why"`
+for sending a FAILed card back to TODO.
+
 **New in 3.2.4:** a card-bound session (`TB_CARD`) may only WRITE its own card — every
 write on another card is refused with the JSON code `card_bound`. The `TB_AS` pin is now
 checked before a board can be created under a forged `--as`, and `TB_DB` pointed at a real
@@ -203,7 +211,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.4` | install that release instead of the latest (`3.2.4` works too) |
+| `--version v3.2.5` | install that release instead of the latest (`3.2.5` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
