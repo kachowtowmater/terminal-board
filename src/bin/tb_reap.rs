@@ -226,6 +226,16 @@ fn apply_refusals() -> (Vec<String>, Vec<serde_json::Value>) {
 }
 
 fn main() {
+    // No HOME -> the state fallbacks resolve under the CWD (`./.local/...`); refuse like `tb`
+    // after #206, before anything resolves or creates a path.
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => {}
+        _ => {
+            eprintln!("tb-reap: HOME is not set (or empty); refusing to run");
+            std::process::exit(1);
+        }
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let apply = args.iter().any(|a| a == "--apply");
     let mode = if apply { Mode::Apply } else { Mode::DryRun };
