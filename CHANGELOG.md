@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 3.2.6 — 2026-09-27
+
+### Highlights
+
+- **`tb release` no longer counts its own process tree as proof the holder is alive**, so a
+  release whose reason merely names the holder works the first time (#227).
+- **`--help` names `prio ID top|bottom|up|down` again**, alongside both send-back forms
+  (`move ID todo "why"`, `move ID doing "why"`), as the README and docs always had (#228).
+- Nothing needs doing to upgrade from 3.2.5; see [UPGRADING.md](UPGRADING.md).
 
 ### Fixed
 - **`tb release` no longer counts its own process tree as proof the holder is alive.** The

@@ -1,3 +1,10 @@
+# Upgrading to 3.2.6
+
+Nothing to do: boards and commands are unchanged from 3.2.5. Behaviour changes: `tb release`
+and `tb-reap` never count the releasing process's own process tree (the caller and its
+ppid-chain ancestors) as proof the holder is alive; `--help` names `prio ID top|bottom|up|down`
+again. The JSON contract only gains the `as_mismatch` error code.
+
 # Upgrading to 3.2.5
 
 Nothing to do: boards and commands are unchanged from 3.2.4. Behaviour changes: `tb rm` on
