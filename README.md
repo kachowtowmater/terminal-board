@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.4:** a card-bound session (`TB_CARD`) may only WRITE its own card — every
+write on another card is refused with the JSON code `card_bound`. The `TB_AS` pin is now
+checked before a board can be created under a forged `--as`, and `TB_DB` pointed at a real
+board file no longer skips the pin. tb and tb-reap refuse to run when `HOME` is unset (or
+empty) with no `TB_DB`, instead of creating `./.local/…` in the current directory.
+
 **New in 3.2.3:** `tb release` frees a DOING card whose holder note is `mode:headless` with
 no pid and no other liveness — the holder is dead for release and the card returns to TODO,
 unowned (tb-reap keeps its no-pid exemption). A session launched with `TB_AS` pinned cannot
@@ -197,7 +203,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.3` | install that release instead of the latest (`3.2.3` works too) |
+| `--version v3.2.4` | install that release instead of the latest (`3.2.4` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
