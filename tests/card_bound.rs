@@ -155,6 +155,13 @@ impl Board {
         let n = self.ok(&[board, "list", "--json", "--as", "charles"]);
         Board::json(&n.stdout).as_array().unwrap().len()
     }
+
+    /// The title of a card on the named board, read as a person (`show --json` is flat:
+    /// the detail fields sit at the top level, not under `card`).
+    fn title(&self, board: &str, id: &str) -> String {
+        let n = self.ok(&[board, "show", id, "--json", "--as", "charles"]);
+        Board::json(&n.stdout)["title"].as_str().unwrap().to_string()
+    }
 }
 
 /// Every write on another card is refused with `card_bound`, naming the bound card, and
@@ -337,9 +344,7 @@ fn tb_board_cannot_redirect_a_bound_session() {
     assert!(err.contains("default#1"), "the refusal names the bound card: {err}");
     assert!(err.contains("p#2"), "the refusal names the REAL target p#2 (the opened board), not default#2: {err}");
     // nothing was written on p#2
-    let t = b.ok(&["p", "show", "2", "--json", "--as", "charles"]);
-    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
-    assert_eq!(title, "p2", "the hijacked edit must not have landed: {title}");
+    assert_eq!(b.title("p", "2"), "p2", "the hijacked edit must not have landed");
 }
 
 /// The session's OWN card still works when it is reached through `TB_BOARD`.
@@ -351,9 +356,7 @@ fn its_own_card_works_via_tb_board() {
     b.as_bound_env("p#1", &["note", "1", "own via TB_BOARD", "--as", "b-1"], &[("TB_BOARD", "p")]);
     let o = b.as_bound_env("p#1", &["edit", "1", "--title", "OWN-OK", "--as", "b-1", "--json"], &[("TB_BOARD", "p")]);
     assert!(o.status.success(), "its own card via TB_BOARD works: {}", String::from_utf8_lossy(&o.stderr));
-    let t = b.ok(&["p", "show", "1", "--json", "--as", "charles"]);
-    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
-    assert_eq!(title, "OWN-OK", "the edit must have landed");
+    assert_eq!(b.title("p", "1"), "OWN-OK", "the edit must have landed");
 }
 
 /// A SAVED default board cannot redirect a bound session either: `tb boards --default p`
@@ -372,7 +375,5 @@ fn a_saved_default_board_cannot_redirect_a_bound_session() {
     let err = v["error"].as_str().unwrap();
     assert!(err.contains("default#1"), "the refusal names the bound card: {err}");
     assert!(err.contains("p#2"), "the refusal names the REAL target p#2: {err}");
-    let t = b.ok(&["p", "show", "2", "--json", "--as", "charles"]);
-    let title = Board::json(&t.stdout)["card"]["title"].as_str().unwrap().to_string();
-    assert_eq!(title, "p2", "the hijacked edit must not have landed: {title}");
+    assert_eq!(b.title("p", "2"), "p2", "the hijacked edit must not have landed");
 }
