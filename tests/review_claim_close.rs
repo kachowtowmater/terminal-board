@@ -55,6 +55,7 @@ impl Board {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env_clear();
         c.env("TB_DB", self.db())
+            .env("TB_AS", who)
             .env("TB_NO_HERDR", "1")
             .env("TB_GH", "/nonexistent/gh")
             .env("USER", "login-user")
