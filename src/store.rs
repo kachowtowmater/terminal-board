@@ -528,12 +528,14 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
         }
     }
     if let Some(r) = c.reviewer.as_deref() {
-        if !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
+        if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
             // `tb next --review` set this claim (card #169's sibling question: a claim is a
             // hand-off between sessions, like the verifier registry, not a name a shell can
-            // forge). ANOTHER verifier may not close it — default#813: rv-sweep closed a
+            // forge). ANOTHER VERIFIER may not close it — default#813: rv-sweep closed a
             // card whose claim rv-lead held, and its cleanup tore down rv-lead's in-flight
-            // work. The message names the claimant and both ways out.
+            // work. A person's close keeps main's behaviour (a person is the one actor that
+            // can free a claim, and the verifier rule already keeps its closes rare); the
+            // message names the claimant and both ways out.
             v.push(DoneCheck {
                 rule: "the review claim is someone else's",
                 err: BoardError(

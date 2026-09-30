@@ -203,3 +203,16 @@ fn a_freed_claim_closes_and_an_unclaimed_card_never_refuses() {
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &plain], true);
     assert_eq!(b.column(&plain), "done");
 }
+
+/// A person's close over a live claim keeps main's behaviour: the verifier rule scopes the
+/// claim refusal to verifiers, so the close proceeds — a person is the one actor that can
+/// free a claim (`tb move ID review`) and override a close.
+#[test]
+fn a_person_closes_over_a_live_claim() {
+    let b = Board::new();
+    let id = b.in_review("person: the claim is rv-a's, a person closes anyway", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["next", "--review"], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    b.ok(&person(), "lead", &["done", &id], true);
+    assert_eq!(b.column(&id), "done");
+}
