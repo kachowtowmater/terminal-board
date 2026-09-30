@@ -1,3 +1,11 @@
+# Upgrading to 3.2.7
+
+Nothing to do: boards, commands and the docs flow are unchanged from 3.2.6. A REVIEW →
+DONE close by a verifier other than the one holding the card's live reviewer claim is
+refused with the `claimed_by_other` error; a stale claim (its claimant dead) is freed
+automatically and the close proceeds. The JSON contract only gains the `claimed_by_other`
+error code.
+
 # Upgrading to 3.2.6
 
 Nothing to do: boards and commands are unchanged from 3.2.5. Behaviour changes: `tb release`

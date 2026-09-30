@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.2.7:** a verifier close of a REVIEW card (`tb done`, `tb move ID done`) is
+refused unless it is the verifier holding the card's live reviewer claim — the refusal
+names the claimant (`claimed_by_other`); a stale claim is freed automatically and the
+close proceeds.
+
 **New in 3.2.6:** `tb release` never counts its own process tree as proof the holder is
 alive — the probe drops the caller's process and its ppid-chain ancestors, so a release
 whose reason merely names the holder is accepted the first time. `--help` names
@@ -216,7 +221,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.2.6` | install that release instead of the latest (`3.2.6` works too) |
+| `--version v3.2.7` | install that release instead of the latest (`3.2.7` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
