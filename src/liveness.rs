@@ -197,7 +197,7 @@ impl World {
                 tmux: fake_split("TB_REAP_FAKE_TMUX", ','),
                 pane_labels: fake_split("TB_REAP_FAKE_PANES", ';'),
                 sessions: fake_split("TB_REAP_FAKE_SESSIONS", ','),
-                procs: Vec::new(), // fixture mode: a test controls the probes, never the box's process table
+                procs,
                 protect,
                 me,
             };
