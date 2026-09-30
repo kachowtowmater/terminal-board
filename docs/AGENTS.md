@@ -100,7 +100,7 @@ alone unless a person asks you to.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a claim). The claim is yours to close: another verifier's `tb done` is refused
   (`claimed_by_other`); a dead claimant's claim is freed as stale and the close proceeds. Check the done criteria, then `tb done ID` with a note of
-  what you checked, or send it back: `tb move ID doing "what is missing"` (FAIL: `tb move ID todo "why"`). Too many rounds mark it `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
+  what you checked, or send it back: `tb move ID doing "what is missing"` (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
 ## Who moves a card
