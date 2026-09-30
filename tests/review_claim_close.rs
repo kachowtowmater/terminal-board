@@ -106,7 +106,7 @@ impl Board {
     fn json(&self, args: &[&str]) -> serde_json::Value {
         let mut a = args.to_vec();
         a.push("--json");
-        serde_json::from_str(&self.ok(person(), "lead", &a, false)).unwrap()
+        serde_json::from_str(&self.ok(&person(), "lead", &a, false)).unwrap()
     }
 
     fn add(&self, title: &str) -> String {
