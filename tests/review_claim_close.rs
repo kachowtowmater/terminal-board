@@ -65,6 +65,7 @@ impl Board {
             c.env(v, "");
         }
         c.env("TB_REAP_FAKE_AGENTS", if claimant_alive { "rv-a" } else { "" });
+        c.env("TB_REAP_PROTECT", if claimant_alive { "rv-a" } else { "" });
         c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
         c.output().unwrap()
     }
