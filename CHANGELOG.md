@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.2.7 — 2026-09-29
+
+### Highlights
 
 - **A reviewer claim is the claimant's to close (REVIEW → DONE):** `tb done`/`tb move ID
   done` by a verifier other than the one holding the card's live `reviewer` claim
