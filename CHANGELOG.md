@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **A reviewer claim is the claimant's to close (REVIEW → DONE):** `tb done`/`tb move ID
+  done` by a verifier other than the one holding the card's live `reviewer` claim
+  (`tb next --review`) is refused with a named error (`claimed_by_other`) that names the
+  claimant, and the refusal is logged on the board log (`tb log`). A STALE claim — its
+  claimant dead by the same liveness probes `tb release` asks — is freed instead, an
+  event in `tb show` says the claim was stale, and the close proceeds; the claimant
+  itself, an unclaimed card, and a claim freed with `tb move ID review` behave as before
+  (default#813).
+
 ## 3.2.6 — 2026-09-27
 
 ### Highlights
