@@ -58,7 +58,10 @@ pub enum Mode {
 }
 
 /// Is any `TB_REAP_FAKE_*` set (even to "")? `std::env::var` directly (not `crate::env`,
-/// which treats "" as unset) so a test can assert "nothing is alive".
+/// which treats "" as unset) so a test can assert "nothing is alive". In fixture mode the
+/// REAL process table is never read: a test owns every probe, and the box's live processes
+/// (test runners, ssh, other agents' sessions) must never vouch for a name a fixture meant
+/// to be dead (#235).
 pub fn fixture_mode() -> bool {
     FAKE_VARS.iter().any(|v| std::env::var(v).is_ok())
 }
