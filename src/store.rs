@@ -536,7 +536,7 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
             // work. The message names the claimant and both ways out.
             v.push(DoneCheck {
                 rule: "the review claim is someone else's",
-                err: BoardError(
+                err: err(
                     format!(
                         "#{id} is claimed by {r} ('tb next --review') — {r} closes it, or a person frees the claim with 'tb move {id} review'"
                     ),
