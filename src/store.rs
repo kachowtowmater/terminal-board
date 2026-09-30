@@ -2858,6 +2858,19 @@ impl Store {
         if column == "done" && c.column != "done" {
             for check in done_checks(&tx, &c, actor, claimant_alive)? {
                 if !force {
+                    // the claim refusal (default#813) is the one guard a person must be able
+                    // to SEE: a refused transaction rolls back, so its log line goes in its
+                    // own write after the rollback — the shape store/archive.rs used for
+                    // `rm`'s verifier refusal (card #225)
+                    if check.err.1 == Code::ClaimedByOther {
+                        let _ = tx.finish();
+                        board_log(
+                            &self.conn,
+                            actor,
+                            "done",
+                            &format!("refused close of #{id}: {}", check.err.0),
+                        )?;
+                    }
                     return Err(check.err);
                 }
                 Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
