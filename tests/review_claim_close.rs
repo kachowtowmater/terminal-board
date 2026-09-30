@@ -16,7 +16,7 @@ use std::process::{Command, Output};
 const AUUID: &str = "2a6c1d8e-4f70-4b9f-a52c-9f3b2a6c1d8e";
 const BUUID: &str = "3b7d2e9f-5a81-4c0a-b63d-0a4c3b7d2e9f";
 /// An agent: a harness on record, no role (the builder that sends work to review).
-const AGENT: &[(&str, &str)] = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", AUUID)];
+const AGENT: &[(&str, &str)] = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "4c8e3f01-9b2a-4d57-8e6f-1a2b3c4d5e6f")];
 /// A verifier in its OWN session, with the role.
 fn verifier(session: &str) -> Vec<(&'static str, String)> {
     vec![
