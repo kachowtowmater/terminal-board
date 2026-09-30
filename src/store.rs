@@ -2864,7 +2864,7 @@ impl Store {
                     // `rm`'s verifier refusal (card #225)
                     if check.err.1 == Code::ClaimedByOther {
                         let _ = tx.finish();
-                        board_log(
+                        archive::board_log(
                             &self.conn,
                             actor,
                             "done",
