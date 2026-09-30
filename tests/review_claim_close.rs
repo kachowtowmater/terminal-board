@@ -145,10 +145,9 @@ fn another_verifier_cannot_close_a_live_claim() {
     let id = b.in_review("claimed: rv-b may not close rv-a's claim", "bot-1");
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["next", "--review"], true);
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
-    for args in [vec!["done", id.clone()], vec!["move", id.clone(), "done".to_string()]] {
-        let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &a, true);
-        assert_eq!(code, "claimed_by_other", "{a:?}: {e}");
+    for args in [vec!["done", id.as_str()], vec!["move", id.as_str(), "done"]] {
+        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &args, true);
+        assert_eq!(code, "claimed_by_other", "{args:?}: {e}");
         assert!(e.contains("rv-a") && e.contains(&format!("tb move {id} review")), "{e}");
         assert_eq!(b.column(&id), "review", "nothing moved");
         assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
