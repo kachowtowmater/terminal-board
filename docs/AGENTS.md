@@ -98,10 +98,9 @@ alone unless a person asks you to.
 - **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`.
   A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
-  the same one (atomic; `tb move ID review` frees a stale claim). The claim is yours to close: another verifier's `tb done` is refused
-  (`claimed_by_other`) unless your session is dead — a dead claimant's claim is freed as stale and the close proceeds. Check the done criteria, then `tb done ID` with a note of what
-  you checked, or send it back with `tb move ID doing "what is missing"` (or FAIL it to TODO with `tb move ID todo "why it failed"`) (it shows its round `r2`, `r3`, …). Too many rounds
-  (`tb config max-rounds`) marks it `escalate` — `tb next` skips it; you can still `tb take`/`tb done` it directly.
+  the same one (atomic; `tb move ID review` frees a claim). The claim is yours to close: another verifier's `tb done` is refused
+  (`claimed_by_other`); a dead claimant's claim is freed as stale and the close proceeds. Check the done criteria, then `tb done ID` with a note of
+  what you checked, or send it back: `tb move ID doing "what is missing"` (FAIL: `tb move ID todo "why"`). Too many rounds mark it `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
 ## Who moves a card
