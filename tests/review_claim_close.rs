@@ -53,7 +53,7 @@ impl Board {
     fn run(&self, env: &[(&'static str, String)], who: &str, args: &[&str], claimant_alive: bool) -> Output {
         let env = self.with_registration(env, who);
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
-        c.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).env_clear();
+        c.args(args).env_clear();
         c.env("TB_DB", self.db())
             .env("TB_NO_HERDR", "1")
             .env("TB_GH", "/nonexistent/gh")
