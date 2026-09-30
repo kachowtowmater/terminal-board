@@ -39,7 +39,7 @@ struct Board {
 impl Board {
     fn new() -> Board {
         let b = Board { dir: tempfile::tempdir().unwrap(), registry: std::sync::LazyLock::new(common::VerifierRegistry::new) };
-        b.ok(person(), "lead", &["config", "wip", "9"], false);
+        b.ok(&person(), "lead", &["config", "wip", "9"], false);
         b
     }
 
@@ -155,7 +155,7 @@ fn another_verifier_cannot_close_a_live_claim() {
     }
     // the refusal is logged so a person sees WHY a claim sat there: on the board log
     // (`tb log`), in its own write (a refused move rolls back)
-    let board_log = b.ok(person(), "lead", &["log"], true);
+    let board_log = b.ok(&person(), "lead", &["log"], true);
     let low = board_log.to_lowercase();
     assert!(low.contains("refused") && low.contains("claim"), "{board_log}");
 }
@@ -193,7 +193,7 @@ fn a_freed_claim_closes_and_an_unclaimed_card_never_refuses() {
     let b = Board::new();
     let id = b.in_review("freed: a person releases the claim", "bot-1");
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["next", "--review"], true);
-    b.ok(person(), "lead", &["move", &id, "review"], true);
+    b.ok(&person(), "lead", &["move", &id, "review"], true);
     assert_eq!(b.reviewer_of(&id), None, "the claim is freed");
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
