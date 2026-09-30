@@ -191,7 +191,9 @@ impl World {
             .unwrap_or_default();
         let me = std::env::var("TB_AS").ok().filter(|s| !s.trim().is_empty());
         if fixture_mode() {
-            let procs = std::env::var("TB_REAP_FAKE_PROCS").map(|v| parse_procs(&v, ';')).unwrap_or_default();
+            // fixture mode: a test owns the probes — the box's real process table must never
+    // vouch for a name the fixture meant to be dead (#235)
+
             return World {
                 agents: Agents::Fake(fake_split("TB_REAP_FAKE_AGENTS", ',')),
                 tmux: fake_split("TB_REAP_FAKE_TMUX", ','),
