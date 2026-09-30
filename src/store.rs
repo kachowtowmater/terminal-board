@@ -14,6 +14,7 @@
 
 use crate::hooks;
 use crate::lock;
+use crate::liveness::World;
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
@@ -145,6 +146,10 @@ pub enum Code {
     DoneNeedsNote,
     /// `config done-needs-link` requires a link with that label before DONE.
     DoneNeedsLink,
+    /// REVIEW -> DONE by a verifier other than the one holding the card's live `reviewer`
+    /// claim (default#813): `tb next --review` set the claim, and this actor is not it.
+    /// A STALE claim (the claimant dead by the liveness probes) is freed instead of refusing.
+    ClaimedByOther,
     /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
     /// refused before anything is written, after the board resolves (see `main::run`).
     AsMismatch,
@@ -233,6 +238,7 @@ impl Code {
             Code::RmVerifierOnly => "rm_verifier_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
+            Code::ClaimedByOther => "claimed_by_other",
             Code::AsMismatch => "as_mismatch",
             Code::CardBound => "card_bound",
             Code::ArgRequired => "arg_required",
@@ -412,6 +418,10 @@ pub(crate) struct DoneCheck {
 /// - `done-needs-note` (store/closing.rs): a note written during the stay being left. `github`
 ///   is exempt — a merged PR is its own trace.
 /// - `done-needs-link` (store/links.rs): a link with the required label. `github` is exempt.
+/// - the reviewer claim (default#813): a live `reviewer` claim from `tb next --review` is
+///   the claimant's to close. Another verifier is refused (`claimed_by_other`); a STALE
+///   claim (its claimant dead by the same liveness World `tb release` asks) is freed
+///   before the move proceeds, logged with a `stale` event.
 ///
 /// The force-only question (card #178, rv-169 probe P5b), asked by `transition_inner` AFTER
 /// the skip list, ONLY when `--force` is held — it guards the force itself, so it never
@@ -438,7 +448,13 @@ fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCh
     }))
 }
 
-fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck>> {
+/// `claimant_alive` is None when `c` carries no `reviewer` claim. When it carries one, the
+/// caller has already asked the liveness World (`src/liveness.rs`, the same probes `tb
+/// release` uses) whether the claimant is still alive — the answer decides refusal vs. a
+/// freed stale claim. `None` here is only for the one caller that cannot ask (the
+/// full-screen board's read-only `done_would_skip`), and means "a live claim": a claim is
+/// the claimant's to close unless someone has PROVEN it dead.
+fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<bool>) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
     if c.column != "review" {
@@ -509,6 +525,25 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str) -> Result<Vec<DoneCheck
                     forced: format!("closed #{id} without a link labeled {label}"),
                 });
             }
+        }
+    }
+    if let Some(r) = c.reviewer.as_deref() {
+        if !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
+            // `tb next --review` set this claim (card #169's sibling question: a claim is a
+            // hand-off between sessions, like the verifier registry, not a name a shell can
+            // forge). ANOTHER verifier may not close it — default#813: rv-sweep closed a
+            // card whose claim rv-lead held, and its cleanup tore down rv-lead's in-flight
+            // work. The message names the claimant and both ways out.
+            v.push(DoneCheck {
+                rule: "the review claim is someone else's",
+                err: err(
+                    format!(
+                        "#{id} is claimed by {r} ('tb next --review') — {r} closes it, or a person frees the claim with 'tb move {id} review'"
+                    ),
+                    Code::ClaimedByOther,
+                ),
+                forced: format!("closed #{id} claimed by {r}"),
+            });
         }
     }
     Ok(v)
@@ -2572,7 +2607,7 @@ impl Store {
         if c.column == "done" {
             return Ok(Vec::new());
         }
-        Ok(done_checks(&self.conn, &c, actor)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+        Ok(done_checks(&self.conn, &c, actor, None)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
@@ -2820,8 +2855,17 @@ impl Store {
         // `done-needs-link`. Each refuses unless `--force`, which logs one `force` event per
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
+        // The reviewer claim's liveness is asked BEFORE the transaction (it needs &Store, not
+        // the &Connection the guards run under) and carried in: a live claim held by someone
+        // else refuses the close; a STALE claim (claimant dead) is freed just below.
+        let claimant_alive = c.reviewer.as_deref().map(|r| {
+            let mut claimant = c.clone();
+            claimant.owner = Some(r.to_string());
+            World::load().alive_for_release(self, &claimant).is_some()
+        });
+        eprintln!("DBG235 reviewer={:?} actor={actor} column={column} alive={claimant_alive:?}", c.reviewer);
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive)? {
                 if !force {
                     return Err(check.err);
                 }
@@ -2840,6 +2884,16 @@ impl Store {
                         return Err(check.err);
                     }
                 }
+            }
+        }
+        // A STALE claim frees here, inside the same transaction as the close: the claimant is
+        // dead by the same liveness World `tb release` asks (computed above), so nothing is
+        // lost by clearing it — the close proceeds and the event log says the claim was
+        // stale, not silently dropped.
+        if column == "done" && claimant_alive == Some(false) {
+            if let Some(r) = c.reviewer.as_deref() {
+                tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+                Self::log(&tx, id, actor, "unclaimed", &format!("stale claim by {r} — the claimant's session is gone; the close proceeds"))?;
             }
         }
         // a returned card is its owner's existing work, not new work: WIP does not block it
