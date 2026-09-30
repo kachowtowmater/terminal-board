@@ -172,7 +172,6 @@ fn a_stale_claim_is_freed_and_the_close_proceeds() {
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &id], false);
     assert_eq!(b.column(&id), "done");
     let events = b.events(&id);
-    eprintln!("DBG events={events:?} show={}", b.json(&["show", &id]));
     let stale: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
     assert!(stale.iter().any(|t| t.contains("stale") && t.contains("rv-a")), "{stale:?}");
     // the close itself still carries its own trace

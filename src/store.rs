@@ -2708,7 +2708,7 @@ impl Store {
     /// 3. the change, then its events.
     ///
     /// A new persona-independent guard (not a hook) belongs in step 2, after the ones there.
-    fn transition_inner(&mut self, change: Change<'_>, actor: &str, force: bool, snapshot: Option<(i64, &str, Option<&str>)>) -> Result<Card> {
+    fn transition_inner(&mut self, change: Change<'_>, actor: &str, force: bool, snapshot: Option<(i64, &str, Option<&str>)>, claimant_alive: Option<bool>) -> Result<Card> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // A pre-change hook (if `transition` asked one) approved a change to exactly this card
         // in exactly this state. Checked FIRST, before step 1's own refusals: a card someone
@@ -2855,15 +2855,6 @@ impl Store {
         // `done-needs-link`. Each refuses unless `--force`, which logs one `force` event per
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
-        // The reviewer claim's liveness is asked BEFORE the transaction (it needs &Store, not
-        // the &Connection the guards run under) and carried in: a live claim held by someone
-        // else refuses the close; a STALE claim (claimant dead) is freed just below.
-        let claimant_alive = c.reviewer.as_deref().map(|r| {
-            let mut claimant = c.clone();
-            claimant.owner = Some(r.to_string());
-            World::load().alive_for_release(self, &claimant).is_some()
-        });
-        eprintln!("DBG235 reviewer={:?} actor={actor} column={column} alive={claimant_alive:?}", c.reviewer);
         if column == "done" && c.column != "done" {
             for check in done_checks(&tx, &c, actor, claimant_alive)? {
                 if !force {
@@ -3093,7 +3084,24 @@ impl Store {
             }
         }
         let snapshot = approved.as_ref().map(|(id, col, owner, _)| (*id, col.as_str(), owner.as_deref()));
-        let result = self.transition_inner(change, actor, force, snapshot);
+        // The reviewer claim's liveness is asked HERE, before `transition_inner` opens its
+        // write transaction (the question needs &Store, not the &Connection the guards run
+        // under): a live claim held by someone else refuses a close; a STALE claim (its
+        // claimant dead by the same probes `tb release` asks, `src/liveness.rs`) is freed
+        // inside the close's transaction. The claimant card is the real one with the
+        // claimant's name in `owner` — the exact shape a `tb release` of that person asks.
+        let claimant_alive = match &change {
+            Change::Move { id, .. } => {
+                let c = get_card(&self.conn, *id)?;
+                c.reviewer.as_deref().map(|r| {
+                    let mut claimant = c.clone();
+                    claimant.owner = Some(r.to_string());
+                    World::load().alive_for_release(self, &claimant).is_some()
+                })
+            }
+            _ => None,
+        };
+        let result = self.transition_inner(change, actor, force, snapshot, claimant_alive);
         if let (Ok(c), Some((name, why))) = (&result, &break_glass) {
             let _ = self.log_break_glass(c.id, actor, name, why);
         }
