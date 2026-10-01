@@ -196,11 +196,14 @@ fn a_freed_claim_closes_and_an_unclaimed_card_never_refuses() {
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["next", "--review"], true);
     b.ok(&person(), "lead", &["move", &id, "review"], true);
     assert_eq!(b.reviewer_of(&id), None, "the claim is freed");
+    // #236: an AGENT close needs a held claim — rv-b re-claims the freed card, then closes it
+    b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
-    // and an UNCLAIMED review card closes as before, whoever asks
+    // an UNCLAIMED review card still closes without a claim — when a PERSON asks (#236 keeps
+    // that door open); an agent is refused with close_needs_claim (C5, its own test below)
     let plain = b.in_review("unclaimed: no claim at all", "bot-1");
-    b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &plain], true);
+    b.ok(&person(), "lead", &["done", &plain], true);
     assert_eq!(b.column(&plain), "done");
 }
 
