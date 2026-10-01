@@ -204,6 +204,8 @@ fn an_agent_may_still_rm_a_done_card() {
     let d = b.add("d: finished");
     b.ok(PERSON, "lead", &["take", &d]);
     b.ok(PERSON, "lead", &["done", &d]);
+    // #236: an AGENT close needs a held claim — rv-x claims, then closes
+    b.ok(VERIFIER, "rv-x", &["claim", &d]);
     b.ok(VERIFIER, "rv-x", &["done", &d]);
     assert_eq!(b.column(&d), "done");
     b.ok(AGENT, "b-x", &["rm", &d]);
