@@ -520,14 +520,14 @@ fn done_checks(
     if let Some(names) = closing::may_close(conn, actor)? {
         v.push(DoneCheck { rule: "done-by", err: closing::not_allowed(id, actor, &names), forced: format!("closed #{id}, not on the done-by list") });
     }
-    if actor != "github" && closing::needs_note(conn, id)? {
+    if actor != "github" && target_column == "done" && closing::needs_note(conn, id)? {
         v.push(DoneCheck {
             rule: "done-needs-note",
             err: closing::no_note_err(id),
             forced: format!("closed #{id} with no note since it entered {}", c.column),
         });
     }
-    if actor != "github" {
+    if actor != "github" && target_column == "done" {
         if let Some(label) = links::required_label(conn)? {
             if !links::has_label(conn, id, &label)? {
                 v.push(DoneCheck {
