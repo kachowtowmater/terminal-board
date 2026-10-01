@@ -150,6 +150,10 @@ pub enum Code {
     /// claim (default#813): `tb next --review` set the claim, and this actor is not it.
     /// A STALE claim (the claimant dead by the liveness probes) is freed instead of refusing.
     ClaimedByOther,
+    /// REVIEW -> DONE by an agent with NO `reviewer` claim on the card (#236): the close
+    /// needs a held claim, so one verifier works a card. Claim with `tb claim ID` or
+    /// `tb next --review`. A person still closes an unclaimed card.
+    CloseNeedsClaim,
     /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
     /// refused before anything is written, after the board resolves (see `main::run`).
     AsMismatch,
@@ -239,6 +243,7 @@ impl Code {
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::ClaimedByOther => "claimed_by_other",
+            Code::CloseNeedsClaim => "close_needs_claim",
             Code::AsMismatch => "as_mismatch",
             Code::CardBound => "card_bound",
             Code::ArgRequired => "arg_required",
@@ -454,7 +459,13 @@ fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCh
 /// freed stale claim. `None` here is only for the one caller that cannot ask (the
 /// full-screen board's read-only `done_would_skip`), and means "a live claim": a claim is
 /// the claimant's to close unless someone has PROVEN it dead.
-fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<bool>) -> Result<Vec<DoneCheck>> {
+fn done_checks(
+    conn: &Connection,
+    c: &Card,
+    actor: &str,
+    claimant_alive: Option<bool>,
+    target_column: &str,
+) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
     if c.column != "review" {
@@ -509,14 +520,14 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
     if let Some(names) = closing::may_close(conn, actor)? {
         v.push(DoneCheck { rule: "done-by", err: closing::not_allowed(id, actor, &names), forced: format!("closed #{id}, not on the done-by list") });
     }
-    if actor != "github" && closing::needs_note(conn, id)? {
+    if actor != "github" && target_column == "done" && closing::needs_note(conn, id)? {
         v.push(DoneCheck {
             rule: "done-needs-note",
             err: closing::no_note_err(id),
             forced: format!("closed #{id} with no note since it entered {}", c.column),
         });
     }
-    if actor != "github" {
+    if actor != "github" && target_column == "done" {
         if let Some(label) = links::required_label(conn)? {
             if !links::has_label(conn, id, &label)? {
                 v.push(DoneCheck {
@@ -547,6 +558,40 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
                 forced: format!("closed #{id} claimed by {r}"),
             });
         }
+    }
+    // #236: the lock covers every move OUT of review, not just the close — a send-back
+    // (review -> doing / todo) is the claimant's act too. The refusal names the claimant
+    // and the free-with-a-person path, same message shape as the close refusal above.
+    if target_column != "done" && c.column == "review" {
+        if let Some(r) = c.reviewer.as_deref() {
+            if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
+                v.push(DoneCheck {
+                    rule: "the review claim is someone else's",
+                    err: BoardError(
+                        format!(
+                            "#{id} is claimed by {r} ('tb next --review') — {r} sends it back, or a person frees the claim with 'tb move {id} review'"
+                        ),
+                        Code::ClaimedByOther,
+                    ),
+                    forced: format!("sent #{id} back, claimed by {r}"),
+                });
+            }
+        }
+    }
+    // #236: an agent closing a card with NO claim at all is refused — the claim is the
+    // lock that keeps one verifier per card, and there is no auto-claim. `tb claim {id}`
+    // or `tb next --review` takes the claim first; a person still closes unclaimed work.
+    if target_column == "done" && c.reviewer.is_none() && verifier::is_agent(&who) {
+        v.push(DoneCheck {
+            rule: "an agent close needs a held claim",
+            err: BoardError(
+                format!(
+                    "#{id} is unclaimed — claim it first with 'tb claim {id}' or 'tb next --review', then close it; a person can close it as-is"
+                ),
+                Code::CloseNeedsClaim,
+            ),
+            forced: format!("closed unclaimed #{id}"),
+        });
     }
     Ok(v)
 }
@@ -2405,6 +2450,66 @@ impl Store {
         Ok(card)
     }
 
+    /// `tb claim ID`: claim exactly this REVIEW card (#236). A review claim is the lock that
+    /// keeps one verifier on a card, so it is the same `BEGIN IMMEDIATE` + compare-and-swap
+    /// as `next_review`, on a card NAMED instead of picked. A stale claim (its claimant dead
+    /// by the same liveness World `tb release` asks, `src/liveness.rs`) is freed and taken;
+    /// a re-claim of your own claim is a no-op success. Does not count against the WIP limit.
+    pub fn claim_review(&mut self, id: i64, actor: &str) -> Result<Card> {
+        // The liveness question needs &Store, not the &Connection the transaction runs under,
+        // so it is asked BEFORE the write transaction opens — the same shape `transition`'s
+        // `claimant_alive` uses. The CAS below still decides who wins: a claim that changed
+        // between the probe and the tx loses on `reviewer=?` not matching.
+        let c = get_card(&self.conn, id)?;
+        let claimant_alive = c.reviewer.as_deref().map(|r| {
+            let mut claimant = c.clone();
+            claimant.owner = Some(r.to_string());
+            World::load().alive_for_release(self, &claimant).is_some()
+        });
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let c = get_card(&tx, id)?;
+        if c.column != "review" {
+            return err(
+                format!("card #{id} is in {}, not review — claim a REVIEW card, or take new work with 'tb next'", c.column),
+                Code::InvalidValue,
+            );
+        }
+        if author_of(&tx, &c)?.is_some_and(|a| a.eq_ignore_ascii_case(actor)) {
+            return err(
+                format!("#{id} is your own work — ask another person or agent to review it"),
+                Code::Unknown,
+            );
+        }
+        if let Some(r) = c.reviewer.as_deref() {
+            if r.eq_ignore_ascii_case(actor) {
+                // re-claiming your own claim is a no-op success
+                tx.commit()?;
+                return Ok(c);
+            }
+            if claimant_alive != Some(false) {
+                return err(
+                    format!("#{id} is claimed by {r} ('tb next --review') — {r} closes it, or a person frees the claim with 'tb move {id} review'"),
+                    Code::ClaimedByOther,
+                );
+            }
+            // a STALE claim frees and is taken, inside the same transaction, with an event
+            // whose text names it stale
+            tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
+            Self::log(&tx, id, actor, "unclaimed", &format!("stale claim by {r} — the claimant's session is gone; the claim passes to {actor}"))?;
+        }
+        let changed = tx.execute(
+            r#"UPDATE cards SET reviewer=? WHERE id=? AND "column"='review' AND (reviewer IS NULL OR reviewer=?)"#,
+            params![actor, id, actor],
+        )?;
+        if changed != 1 {
+            return err(format!("card #{id} was claimed by someone else — try 'tb next --review'"), Code::Unknown);
+        }
+        Self::log(&tx, id, actor, "reviewing", "")?;
+        let card = get_card(&tx, id)?;
+        tx.commit()?;
+        Ok(card)
+    }
+
     /// Atomically take a specific todo card.
     pub fn take(&mut self, id: i64, actor: &str) -> Result<Card> {
         self.take_bg(id, actor, None)
@@ -2609,7 +2714,7 @@ impl Store {
         if c.column == "done" {
             return Ok(Vec::new());
         }
-        Ok(done_checks(&self.conn, &c, actor, None)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+        Ok(done_checks(&self.conn, &c, actor, None, "done")?.into_iter().map(|d| (d.rule, d.err.1)).collect())
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
@@ -2816,6 +2921,37 @@ impl Store {
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
         let fail_to_todo = kind == Kind::Move && c.column == "review" && column == "todo";
+        // #236: a send-back (review -> doing / todo) is the claimant's act. The same guard
+        // list the close runs (`done_checks`) checks the claim here — refusing instead of
+        // letting a second verifier FAIL another's claim. `claimant_alive` is None on
+        // send-backs by the claimant itself and by persons (lazy World, #237).
+        if send_back || fail_to_todo {
+            // #236: the lock covers every move OUT of review — but ONLY the claim rule.
+            // A send-back is a move, not a close: the close-only guards (`done-by`,
+            // self-approval, the verifier rule, review-first) keep the reach done_checks
+            // had on main — a person carol may still FAIL a card to todo (tests/closing.rs),
+            // an agent may still send back its own unclaimed work — so the checks here are
+            // filtered to `claimed_by_other`, the one rule #236 extends to send-backs.
+            for check in
+                done_checks(&tx, &c, actor, claimant_alive, &column)?.into_iter().filter(|check| check.err.1 == Code::ClaimedByOther)
+            {
+                if !force {
+                    // a refused send-back logs like a refused close (the transaction rolls
+                    // back, so its own write afterwards — card #225's shape)
+                    if check.err.1 == Code::ClaimedByOther {
+                        let _ = tx.finish();
+                        archive::board_log(
+                            &self.conn,
+                            actor,
+                            "move",
+                            &format!("refused send-back of #{id}: {}", check.err.0),
+                        )?;
+                    }
+                    return Err(check.err);
+                }
+                Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+            }
+        }
         // 2. the guards
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
@@ -2858,7 +2994,7 @@ impl Store {
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor, claimant_alive)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive, &column)? {
                 if !force {
                     // the claim refusal (default#813) is the one guard a person must be able
                     // to SEE: a refused transaction rolls back, so its log line goes in its
@@ -2895,8 +3031,10 @@ impl Store {
         // A STALE claim frees here, inside the same transaction as the close: the claimant is
         // dead by the same liveness World `tb release` asks (computed above), so nothing is
         // lost by clearing it — the close proceeds and the event log says the claim was
-        // stale, not silently dropped.
-        if column == "done" && claimant_alive == Some(false) {
+        // stale, not silently dropped. #236: the claimant closing its OWN card never logs
+        // "stale claim by <self>" — its claimant_alive is None by the lazy World (#237), but
+        // a forced close of its own card also passes here with claimant_alive Some(false).
+        if column == "done" && claimant_alive == Some(false) && !c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor)) {
             if let Some(r) = c.reviewer.as_deref() {
                 tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
                 Self::log(&tx, id, actor, "unclaimed", &format!("stale claim by {r} — the claimant's session is gone; the close proceeds"))?;
@@ -3105,14 +3243,23 @@ impl Store {
         // claimant dead by the same probes `tb release` asks, `src/liveness.rs`) is freed
         // inside the close's transaction. The claimant card is the real one with the
         // claimant's name in `owner` — the exact shape a `tb release` of that person asks.
+        // #237: the probe runs only when the move LEAVES review AND the actor is not the
+        // claimant — the claimant's own moves, notes and `tb move ID review` never pay for
+        // a herdr/tmux/ps sweep they cannot change.
         let claimant_alive = match &change {
-            Change::Move { id, .. } => {
+            Change::Move { id, column, .. } => {
                 let c = get_card(&self.conn, *id)?;
-                c.reviewer.as_deref().map(|r| {
-                    let mut claimant = c.clone();
-                    claimant.owner = Some(r.to_string());
-                    World::load().alive_for_release(self, &claimant).is_some()
-                })
+                let leaves_review = c.column == "review" && !column.eq_ignore_ascii_case("review");
+                let self_move = c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor));
+                if leaves_review && !self_move {
+                    c.reviewer.as_deref().map(|r| {
+                        let mut claimant = c.clone();
+                        claimant.owner = Some(r.to_string());
+                        World::load().alive_for_release(self, &claimant).is_some()
+                    })
+                } else {
+                    None
+                }
             }
             _ => None,
         };
