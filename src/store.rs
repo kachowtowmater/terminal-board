@@ -459,7 +459,13 @@ fn force_check(conn: &Connection, c: &Card, actor: &str) -> Result<Option<DoneCh
 /// freed stale claim. `None` here is only for the one caller that cannot ask (the
 /// full-screen board's read-only `done_would_skip`), and means "a live claim": a claim is
 /// the claimant's to close unless someone has PROVEN it dead.
-fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<bool>) -> Result<Vec<DoneCheck>> {
+fn done_checks(
+    conn: &Connection,
+    c: &Card,
+    actor: &str,
+    claimant_alive: Option<bool>,
+    target_column: &str,
+) -> Result<Vec<DoneCheck>> {
     let id = c.id;
     let mut v = Vec::new();
     if c.column != "review" {
@@ -575,7 +581,7 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
     // #236: an agent closing a card with NO claim at all is refused — the claim is the
     // lock that keeps one verifier per card, and there is no auto-claim. `tb claim {id}`
     // or `tb next --review` takes the claim first; a person still closes unclaimed work.
-    if column == "done" && c.reviewer.is_none() && verifier::is_agent(&who) {
+    if target_column == "done" && c.reviewer.is_none() && verifier::is_agent(&who) {
         v.push(DoneCheck {
             rule: "an agent close needs a held claim",
             err: BoardError(
@@ -2648,7 +2654,7 @@ impl Store {
         if c.column == "done" {
             return Ok(Vec::new());
         }
-        Ok(done_checks(&self.conn, &c, actor, None)?.into_iter().map(|d| (d.rule, d.err.1)).collect())
+        Ok(done_checks(&self.conn, &c, actor, None, "done")?.into_iter().map(|d| (d.rule, d.err.1)).collect())
     }
 
     pub fn move_to(&mut self, id: i64, column: &str, actor: &str) -> Result<Card> {
@@ -2860,7 +2866,7 @@ impl Store {
         // letting a second verifier FAIL another's claim. `claimant_alive` is None on
         // send-backs by the claimant itself and by persons (lazy World, #237).
         if send_back || fail_to_todo {
-            for check in done_checks(&tx, &c, actor, claimant_alive)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive, column)? {
                 if !force {
                     // a refused send-back logs like a refused close (the transaction rolls
                     // back, so its own write afterwards — card #225's shape)
@@ -2920,7 +2926,7 @@ impl Store {
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor, claimant_alive)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive, column)? {
                 if !force {
                     // the claim refusal (default#813) is the one guard a person must be able
                     // to SEE: a refused transaction rolls back, so its log line goes in its
