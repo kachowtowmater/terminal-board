@@ -369,9 +369,9 @@ mod tests {
         let e = s.move_to(id, "done", "carol").unwrap_err().to_string();
         assert!(e.starts_with("this board needs a closing note before DONE"), "{e}");
         // a note written during THIS review stay finally satisfies it — carol claims the
-        // card first (#236: an agent's close needs a held claim)
-        s.claim_review(id, "carol").unwrap();
+        // card first (#236: an agent's close needs a held claim), then notes, then closes
         s.note(id, "re-checked, good", "carol").unwrap();
+        s.claim_review(id, "carol").unwrap();
         s.move_to(id, "done", "carol").unwrap();
         assert_eq!(s.card(id).unwrap().column, "done");
     }
