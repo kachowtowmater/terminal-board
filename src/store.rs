@@ -3181,7 +3181,7 @@ impl Store {
         let claimant_alive = match &change {
             Change::Move { id, column, .. } => {
                 let c = get_card(&self.conn, *id)?;
-                let leaves_review = c.column == "review" && column.to_ascii_lowercase() != "review";
+                let leaves_review = c.column == "review" && !column.eq_ignore_ascii_case("review");
                 let self_move = c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor));
                 if leaves_review && !self_move {
                     c.reviewer.as_deref().map(|r| {
