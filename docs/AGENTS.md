@@ -102,11 +102,10 @@ alone unless a person asks you to.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a claim). `tb claim ID` claims exactly that REVIEW card instead of the top one.
   An agent's close needs a held claim: `tb done ID` on an UNCLAIMED card is refused (`close_needs_claim` — claim it first with
-  `tb claim ID` or `tb next --review`); a person can close an unclaimed card. The claim is yours to close and to send back: another
-  verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale and the
-  act proceeds. Check the done criteria, then `tb done ID` with a note of what you checked, or send it back:
-  `tb move ID doing "what is missing"` (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next`
-  skips it; you can still `tb take`/`tb done` it directly).
+  `tb claim ID` or `tb next --review`; a person can close an unclaimed card). The claim is yours to close and to send back: another
+  verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check
+  the done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
+  (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
 ## Who moves a card
@@ -133,9 +132,9 @@ alone unless a person asks you to.
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
 - `doing is full (3/3: …)` is the board-wide limit, `you already hold 1 of 1` this board's per-agent one (`wip-per-owner`); both say what YOU can do — finish one of yours. Never finish or drop someone else's card, and do not raise either limit.
 - A board may keep a list of names (`tb config actors`) and refuse an `--as` it does not know, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write. Neither ever refuses a read.
-- Every error message ends with what to run next. Read it and do that.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
-- Tick only what is really done, never ahead. Leave a note before you stop, drop or block a card.
+- Every error message ends with what to run next. Read it and do that.
+- Tick only what is really done, never ahead; leave a note before you stop, drop or block a card.
 - Never approve your own work: REVIEW → DONE is a verifier's `tb done` (above). A board may also name who closes its cards (`tb config done-by`) or
   require a link first (`tb config done-needs-link LABEL`): the error says what to do. All of these catch an honest mistake — names, roles and labels
   are self-asserted — so never pass another agent's name, claim a role, or fake a link. A close whose identity looks like a person's but whose kernel
@@ -250,4 +249,3 @@ tb config
 tb boards
 tb rm 2
 ```
-
