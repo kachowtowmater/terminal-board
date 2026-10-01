@@ -562,7 +562,7 @@ fn done_checks(
     // #236: the lock covers every move OUT of review, not just the close — a send-back
     // (review -> doing / todo) is the claimant's act too. The refusal names the claimant
     // and the free-with-a-person path, same message shape as the close refusal above.
-    if column != "done" && c.column == "review" {
+    if target_column != "done" && c.column == "review" {
         if let Some(r) = c.reviewer.as_deref() {
             if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
                 v.push(DoneCheck {
@@ -2866,7 +2866,7 @@ impl Store {
         // letting a second verifier FAIL another's claim. `claimant_alive` is None on
         // send-backs by the claimant itself and by persons (lazy World, #237).
         if send_back || fail_to_todo {
-            for check in done_checks(&tx, &c, actor, claimant_alive, column)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive, &column)? {
                 if !force {
                     // a refused send-back logs like a refused close (the transaction rolls
                     // back, so its own write afterwards — card #225's shape)
@@ -2926,7 +2926,7 @@ impl Store {
         // guard it gets past. The full-screen board asks the same list (`done_would_skip`)
         // before it offers to force a close, so its prompt can never skip a rule it did not name.
         if column == "done" && c.column != "done" {
-            for check in done_checks(&tx, &c, actor, claimant_alive, column)? {
+            for check in done_checks(&tx, &c, actor, claimant_alive, &column)? {
                 if !force {
                     // the claim refusal (default#813) is the one guard a person must be able
                     // to SEE: a refused transaction rolls back, so its log line goes in its
