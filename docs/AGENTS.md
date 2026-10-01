@@ -97,14 +97,13 @@ alone unless a person asks you to.
 
 - **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`.
 - **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
-- **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`.
-  A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
+- **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`. A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a claim). `tb claim ID` claims exactly that REVIEW card instead of the top one.
   An agent's close needs a held claim: `tb done ID` on an UNCLAIMED card is refused (`close_needs_claim` — claim it first with
   `tb claim ID` or `tb next --review`; a person can close an unclaimed card). The claim is yours to close and to send back: another
-  verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check
-  the done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
+  verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check the
+  done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
   (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
 - **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
 
