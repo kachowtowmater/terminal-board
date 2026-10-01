@@ -1839,7 +1839,7 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
             }
         }
         Cmd::Claim { id } => {
-            let card = store.claim_review(*id, &actor)?;
+            let card = store.claim_review(id, &actor)?;
             let human = format!(
                 "{}\nreviewing by {actor} — check it against its Done criteria, then 'tb done {id}' with a note of what you checked, or 'tb move {id} doing \"what is missing\"', or 'tb move {id} todo \"why it failed\"' to FAIL it back to TODO",
                 plain::detail_on(&store.show(card.id)?, now, &store.display()?).trim_end(),
