@@ -20,7 +20,7 @@ log each step with `tb note`, tick `tb check`, and `tb done` when finished (`tb 
 | owner | who holds it (you, once you take it) | `tb next` · `tb take` · `tb drop` |
 | column | `todo`, `doing`, `review`, `done` — these internal names are the API (commands, JSON `column`); a board may show its own words (`column_label`): labels are chrome | `tb done` · `tb move` · `tb drop` |
 | blocked | what it waits on: `--on NAME\|#ID` (a DONE card unblocks it), `--until DATE` (when to look again) | `tb block ID "…" [--on #7] [--until DATE]` · `--clear` |
-| due | a date `YYYY-MM-DD` (`tb config tz` sets the board's today; `!` = soon/overdue) | `tb edit ID --due DATE` · `--due none` |
+| due | a date `YYYY-MM-DD` (`tb config tz` sets the board's today; `due-warn` how early `!` says soon; `!` = soon/overdue) | `tb edit ID --due DATE` · `--due none` |
 | links | evidence: a path, sha or URL under a label — tb stores and shows it, never reads or fetches it | `tb link ID VALUE --label LABEL` · `tb link ID --rm N` |
 
 ## Start here: the five commands you need (one card, start to finish)
