@@ -150,6 +150,10 @@ pub enum Code {
     /// claim (default#813): `tb next --review` set the claim, and this actor is not it.
     /// A STALE claim (the claimant dead by the liveness probes) is freed instead of refusing.
     ClaimedByOther,
+    /// REVIEW -> DONE by an agent with NO `reviewer` claim on the card (#236): the close
+    /// needs a held claim, so one verifier works a card. Claim with `tb claim ID` or
+    /// `tb next --review`. A person still closes an unclaimed card.
+    CloseNeedsClaim,
     /// A session launched with `TB_AS` pinned (tb-agent-start) named a DIFFERENT `--as` —
     /// refused before anything is written, after the board resolves (see `main::run`).
     AsMismatch,
@@ -239,6 +243,7 @@ impl Code {
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
             Code::ClaimedByOther => "claimed_by_other",
+            Code::CloseNeedsClaim => "close_needs_claim",
             Code::AsMismatch => "as_mismatch",
             Code::CardBound => "card_bound",
             Code::ArgRequired => "arg_required",
@@ -547,6 +552,40 @@ fn done_checks(conn: &Connection, c: &Card, actor: &str, claimant_alive: Option<
                 forced: format!("closed #{id} claimed by {r}"),
             });
         }
+    }
+    // #236: the lock covers every move OUT of review, not just the close — a send-back
+    // (review -> doing / todo) is the claimant's act too. The refusal names the claimant
+    // and the free-with-a-person path, same message shape as the close refusal above.
+    if column != "done" && c.column == "review" {
+        if let Some(r) = c.reviewer.as_deref() {
+            if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
+                v.push(DoneCheck {
+                    rule: "the review claim is someone else's",
+                    err: BoardError(
+                        format!(
+                            "#{id} is claimed by {r} ('tb next --review') — {r} sends it back, or a person frees the claim with 'tb move {id} review'"
+                        ),
+                        Code::ClaimedByOther,
+                    ),
+                    forced: format!("sent #{id} back, claimed by {r}"),
+                });
+            }
+        }
+    }
+    // #236: an agent closing a card with NO claim at all is refused — the claim is the
+    // lock that keeps one verifier per card, and there is no auto-claim. `tb claim {id}`
+    // or `tb next --review` takes the claim first; a person still closes unclaimed work.
+    if column == "done" && c.reviewer.is_none() && verifier::is_agent(&who) {
+        v.push(DoneCheck {
+            rule: "an agent close needs a held claim",
+            err: BoardError(
+                format!(
+                    "#{id} is unclaimed — claim it first with 'tb claim {id}' or 'tb next --review', then close it; a person can close it as-is"
+                ),
+                Code::CloseNeedsClaim,
+            ),
+            forced: format!("closed unclaimed #{id}"),
+        });
     }
     Ok(v)
 }
@@ -2816,6 +2855,29 @@ impl Store {
         };
         let send_back = kind == Kind::Move && c.column == "review" && column == "doing";
         let fail_to_todo = kind == Kind::Move && c.column == "review" && column == "todo";
+        // #236: a send-back (review -> doing / todo) is the claimant's act. The same guard
+        // list the close runs (`done_checks`) checks the claim here — refusing instead of
+        // letting a second verifier FAIL another's claim. `claimant_alive` is None on
+        // send-backs by the claimant itself and by persons (lazy World, #237).
+        if send_back || fail_to_todo {
+            for check in done_checks(&tx, &c, actor, claimant_alive)? {
+                if !force {
+                    // a refused send-back logs like a refused close (the transaction rolls
+                    // back, so its own write afterwards — card #225's shape)
+                    if check.err.1 == Code::ClaimedByOther {
+                        let _ = tx.finish();
+                        archive::board_log(
+                            &self.conn,
+                            actor,
+                            "move",
+                            &format!("refused send-back of #{id}: {}", check.err.0),
+                        )?;
+                    }
+                    return Err(check.err);
+                }
+                Self::log_with_ancestry(&tx, id, actor, "force", &check.forced)?;
+            }
+        }
         // 2. the guards
         // Card ids are small shared integers: an off-by-one must not move someone else's
         // work. Leaving DOING requires the owner (or --force, logged as its own event).
@@ -2895,8 +2957,10 @@ impl Store {
         // A STALE claim frees here, inside the same transaction as the close: the claimant is
         // dead by the same liveness World `tb release` asks (computed above), so nothing is
         // lost by clearing it — the close proceeds and the event log says the claim was
-        // stale, not silently dropped.
-        if column == "done" && claimant_alive == Some(false) {
+        // stale, not silently dropped. #236: the claimant closing its OWN card never logs
+        // "stale claim by <self>" — its claimant_alive is None by the lazy World (#237), but
+        // a forced close of its own card also passes here with claimant_alive Some(false).
+        if column == "done" && claimant_alive == Some(false) && !c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor)) {
             if let Some(r) = c.reviewer.as_deref() {
                 tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
                 Self::log(&tx, id, actor, "unclaimed", &format!("stale claim by {r} — the claimant's session is gone; the close proceeds"))?;
@@ -3105,14 +3169,23 @@ impl Store {
         // claimant dead by the same probes `tb release` asks, `src/liveness.rs`) is freed
         // inside the close's transaction. The claimant card is the real one with the
         // claimant's name in `owner` — the exact shape a `tb release` of that person asks.
+        // #237: the probe runs only when the move LEAVES review AND the actor is not the
+        // claimant — the claimant's own moves, notes and `tb move ID review` never pay for
+        // a herdr/tmux/ps sweep they cannot change.
         let claimant_alive = match &change {
-            Change::Move { id, .. } => {
+            Change::Move { id, column, .. } => {
                 let c = get_card(&self.conn, *id)?;
-                c.reviewer.as_deref().map(|r| {
-                    let mut claimant = c.clone();
-                    claimant.owner = Some(r.to_string());
-                    World::load().alive_for_release(self, &claimant).is_some()
-                })
+                let leaves_review = c.column == "review" && column.to_ascii_lowercase() != "review";
+                let self_move = c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor));
+                if leaves_review && !self_move {
+                    c.reviewer.as_deref().map(|r| {
+                        let mut claimant = c.clone();
+                        claimant.owner = Some(r.to_string());
+                        World::load().alive_for_release(self, &claimant).is_some()
+                    })
+                } else {
+                    None
+                }
             }
             _ => None,
         };
