@@ -12,16 +12,9 @@
   `tb next --review`; a person still closes anything.
 - **Send-backs respect the lock too.** REVIEW → TODO/DOING by an agent other than the live
   claimant is refused with `claimed_by_other`; the card and the claim are kept.
-- **Lazy liveness (#237).** Claimant liveness is reaped on demand at the guard — no polling
-  loop — so a dead claimant's claim is freed with a `stale` event and the act proceeds.
-- A pinned session (`TB_AS`) can no longer create a board or pin a live board's file with
-  `TB_DB` under a forged name (#201, PR #220): the pin is checked before any board-creating
-  path, and the `TB_DB` exemption applies only to files outside the boards/archive dirs.
-- With `HOME` unset/empty and no `TB_DB`, `tb` refuses instead of creating `./.local` in
-  the current directory (#206, PR #222), and `tb-reap` refuses the same way (#212, PR #224).
-- A card-bound session (`TB_CARD=board#id`) may only write its own card — every other card
-  write is refused with the `card_bound` JSON code (#209, PR #223); notes on any card stay
-  allowed.
+- **Lazy liveness (#237).** The liveness probes (herdr, tmux, ps) now run only when a
+  non-claimant moves a claimed card out of REVIEW; the claimant's own moves, notes and
+  `tb move ID review` never ask them.
 
 ## 3.2.7 — 2026-09-29
 
