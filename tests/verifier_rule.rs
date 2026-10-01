@@ -323,6 +323,7 @@ fn a_listed_name_with_no_role_and_no_registry_entry_is_refused() {
     let reg = b.registry.get_or_init(common::VerifierRegistry::new);
     reg.register(VUUID, "rv-1", "claude-code");
     let env: Vec<(&str, String)> = reg.env().into_iter().chain(Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)])).collect();
+    b.ok_raw(&env, "rv-1", &["claim", &two]);
     b.ok_raw(&env, "rv-1", &["done", &two]);
     assert_eq!(b.column(&two), "done");
 }
@@ -346,7 +347,9 @@ fn verifier_only_off_lets_any_reviewer_close_but_never_from_outside_review() {
     assert_eq!(b.json(&["config", "verifier-only"])["config"]["value"], "off");
     assert!(b.ok(PERSON, "lead", &["log"]).contains("verifier-only on -> off"), "the change is logged on the board");
     let id = b.in_review("j: rule off", "bot-1");
-    b.ok_s(&Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]), "orch", &["done", &id]);
+    let orch = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]);
+    b.ok_s(&orch, "orch", &["claim", &id]);
+    b.ok_s(&orch, "orch", &["done", &id]);
     assert_eq!(b.column(&id), "done");
     // review-first is not part of the switch
     let todo = b.add("k: still review first");
@@ -382,6 +385,7 @@ fn codex_is_an_agent_too() {
     let reg = b.registry.get_or_init(common::VerifierRegistry::new);
     reg.register(VUUID, "cx", "codex");
     let env: Vec<(&str, String)> = reg.env().into_iter().chain(role).collect();
+    b.ok_raw(&env, "cx", &["claim", &id]);
     b.ok_raw(&env, "cx", &["done", &id]);
     let show = b.json(&["show", &id]);
     let who = show["actors"].as_array().unwrap().iter().find(|a| a["actor"] == "cx" && a["role"] == "verifier").cloned().unwrap();
@@ -423,6 +427,7 @@ fn only_a_person_changes_who_verifies_or_whether_the_rule_applies() {
 fn tb_log_carries_the_identity_of_whoever_moved_a_card_to_done() {
     let b = Board::new();
     let id = b.in_review("o: the trace", "bot-1");
+    b.claim(VERIFIER, "rv-1", &id);
     b.ok(VERIFIER, "rv-1", &["done", &id]);
     // plain text: the line that moved the card into DONE says who, in full
     let log = b.ok(PERSON, "lead", &["log"]);
@@ -455,6 +460,8 @@ fn a_verifier_that_failed_a_card_closes_it_after_the_fix() {
     b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
     b.ok(AGENT, "bot-1", &["take", &id]);
     b.ok(AGENT, "bot-1", &["done", &id]);
+    // the send-back freed the claim (#236): the fixed card is claimed again before the close
+    b.claim(VERIFIER, "rv-1", &id);
     b.ok(VERIFIER, "rv-1", &["done", &id]);
     assert_eq!(b.column(&id), "done");
 }
@@ -473,6 +480,7 @@ fn a_verifier_that_sent_a_card_back_and_returned_it_itself_still_closes_it() {
     let (e, code) = b.refused(VERIFIER, "bot-1", &["done", &id]);
     assert_eq!(code, "self_approve", "the builder closed its own card: {e}");
     assert_eq!(b.column(&id), "review");
+    b.claim(VERIFIER, "rv-1", &id);
     let o = b.run_s(&Board::str_env(VERIFIER), "rv-1", &["done", &id]);
     assert!(o.status.success(), "the verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
@@ -488,6 +496,7 @@ fn a_listed_verifier_that_sent_a_card_back_and_returned_it_still_closes_it() {
     b.ok(AGENT, "rv-2", &["move", &id, "todo"]);
     b.ok(AGENT, "rv-2", &["move", &id, "review"]);
     let listed = Board::str_env(&[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", VUUID)]);
+    b.ok_s(&listed, "rv-2", &["claim", &id]);
     let o = b.run_s(&listed, "rv-2", &["done", &id]);
     assert!(o.status.success(), "the listed verifier that sent it back was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
@@ -502,9 +511,10 @@ fn a_listed_verifier_closes_it_from_the_same_session_it_moved_it_in() {
     b.ok(PERSON, "lead", &["config", "verifiers", "rv-l"]);
     let id = b.in_review("6a: listed mover, one session", "bot-1");
     let rv_l = &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "cccccccc-3333-4444-5555-666666666666")];
-    b.claim(AGENT, "rv-l", &id);
+    b.claim(rv_l, "rv-l", &id);
     b.ok(rv_l, "rv-l", &["move", &id, "todo"]);
     b.ok(rv_l, "rv-l", &["move", &id, "review"]);
+    b.claim(rv_l, "rv-l", &id);
     let o = b.run_s(&Board::str_env(rv_l), "rv-l", &["done", &id]);
     assert!(o.status.success(), "closing from the session it moved it in was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
@@ -516,7 +526,6 @@ fn a_listed_verifier_closes_it_from_the_same_session_it_moved_it_in() {
 fn a_verifier_that_built_the_card_is_still_refused_after_a_send_back() {
     let b = Board::new();
     let id = b.in_review("n: verifier built it", "rv-1");
-    b.claim(VERIFIER, "rv-1", &id);
     b.ok(VERIFIER, "rv-1", &["move", &id, "todo"]);
     b.ok(VERIFIER, "rv-1", &["move", &id, "review"]);
     let (e, code) = b.refused(VERIFIER, "rv-1", &["done", &id]);
@@ -610,6 +619,7 @@ fn a_verifier_movers_own_sessions_are_skipped_but_the_builders_never() {
     let (e, code) = b.refused_s(&same, "rv-other", &["done", &id]);
     assert_eq!(code, "same_session", "{e}");
     // the verifier that round-tripped it, in ITS session, closes it: its moves were skipped
+    b.claim(VERIFIER, "rv-1", &id);
     let o = b.run_s(&Board::str_env(VERIFIER), "rv-1", &["done", &id]);
     assert!(o.status.success(), "the verifier's own send-back round was refused: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
