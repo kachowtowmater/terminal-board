@@ -162,7 +162,7 @@ fn an_off_list_agent_is_refused_reads_and_writes() {
         let (e, code) = b.refused(env, who, &["add", "sneaky: from the outside"]);
         assert_eq!(code, "not_a_reader", "{what}: add too: {e}");
     }
-    assert_eq!(b.json(&["list", "--json"])["columns"]["todo"].as_array().map(|a| a.len()), Some(1), "no sneaky card was made");
+    assert_eq!(b.json(&["list", "--json"]).as_array().map(|a| a.len()), Some(1), "no sneaky card was made");
 }
 
 /// An agent acting under a listed name passes (trimmed, case-insensitive), a person passes
