@@ -231,7 +231,7 @@ tb check 1 --add "add screenshots"
 tb check 1 --rm 3
 tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
-tb block 1 "#2" --clear
+tb block 1 "#2"; tb block 1 --clear
 tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
