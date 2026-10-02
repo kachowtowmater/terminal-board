@@ -80,8 +80,7 @@ tb done ID                   # finished: DOING -> REVIEW
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --long` (who created each) · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
 | retire a board without deleting it, or bring one back; list what is archived (deleting one is a person's call) | `tb boards archive NAME` (prints the restore line) · `tb boards restore NAME` · `tb boards --archived` |
 | make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
-| read the settings (WIP limit, GitHub repo, …) | `tb config` |
-| see the agents and the card each holds | `tb agents` |
+| read the settings (WIP limit, GitHub repo, …); see the agents and the card each holds | `tb config` · `tb agents` |
 
 `tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not the
 top position (`tb prio` there only orders cards sharing a date). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card;
@@ -91,8 +90,7 @@ trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--
 
 ## Recipes
 
-- **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`.
-- **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
+- **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`. **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
 - **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`. A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a claim). `tb claim ID` claims exactly that REVIEW card instead of the top one.
