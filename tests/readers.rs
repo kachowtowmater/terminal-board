@@ -40,8 +40,10 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        // `"-"` = no name at all: no TB_AS, no --as — the identity-less caller
-        if who != "-" {
+        // `"-"` = no name at all: no TB_AS, no --as — the identity-less caller. It still
+        // carries its harness env so `is_agent` sees it; `who` is only what tb names in
+        // refusals (the login name, `resolve_actor`'s last resort).
+        if who != "-" && who != "nobody" {
             c.env("TB_AS", who);
         }
         c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
@@ -112,7 +114,7 @@ fn only_a_person_changes_readers() {
     for (what, env, who) in [
         ("a listed agent", AGENT, "tb-box-enforcer"),
         ("an unlisted agent", AGENT, "intruder"),
-        ("an identity-less agent", PERSON, "nobody"),
+        ("an identity-less agent", PERSON, "-"),
     ] {
         for args in [&["config", "readers", "intruder"][..], &["config", "readers", "--off"]] {
             // a board with readers refuses the off-list agent at the open (`not_a_reader`)
