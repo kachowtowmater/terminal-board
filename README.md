@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.3.1:** a shared omp broker never vouches. `tb release` and `tb-reap` no longer
+treat omp's shared worker broker (`__omp_worker_daemon_broker`) as a live holder — probe 5
+skips it like a tmux server — so a dead worker's card can be released while the broker it
+left behind still runs.
+
 **New in 3.3.0:** the REVIEW claim is a lock. An agent verifier claims a REVIEW card with
 `tb claim ID` (or takes one with `tb next --review`) and only the claimant may close it —
 a close or send-back by anyone else over a live claim is refused (`claimed_by_other`); a
@@ -226,7 +231,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.3.0` | install that release instead of the latest (`3.3.0` works too) |
+| `--version v3.3.1` | install that release instead of the latest (`3.3.1` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
