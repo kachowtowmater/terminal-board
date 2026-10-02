@@ -43,7 +43,7 @@ impl Board {
         // `"-"` = no name at all: no TB_AS, no --as — the identity-less caller. It still
         // carries its harness env so `is_agent` sees it; `who` is only what tb names in
         // refusals (the login name, `resolve_actor`'s last resort).
-        if who != "-" && who != "nobody" {
+        if who != "-" {
             c.env("TB_AS", who);
         }
         c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
