@@ -147,9 +147,9 @@ fn an_off_list_agent_is_refused_reads_and_writes() {
 
     // a read, by harness and by nothing-but-ancestry-later (this one: harness env)
     for (what, env, who) in [("a harness agent", AGENT, "lead-fleet"), ("no name at all", AGENT, "-")] {
-        let empty: &[(&str, &str)] = &[];
-        let env = if what == "no name at all" { empty } else { env }; // no TB_AS, no name
-        let caller = if who == "-" { "login-user" } else { who }; // the login name is what the refusal can name
+        // "no name at all" still carries the harness env: it is the agent's identity, and the
+        // refusal names the login name (`resolve_actor`'s last resort) as the caller
+        let caller = if who == "-" { "login-user" } else { who };
         let (e, code) = b.refused(env, who, &["list"]);
         assert_eq!(code, "not_a_reader", "{what}: {e}");
         assert!(e.contains("board 'default'"), "{what}: the refusal names the board: {e}");
