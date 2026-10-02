@@ -1,3 +1,11 @@
+# Upgrading to 3.4.0
+
+Nothing changes until a person sets a reader list. The new person-only setting
+`tb config readers NAME,NAME` (`off` clears it) stores a reader list on a board; when it
+is set, agents not acting under a listed name are refused every command on that board —
+read or write, including identity-less agents. The JSON contract only gains the new error
+code `not_a_reader`; reader names are self-asserted until privilege separation (#915).
+
 # Upgrading to 3.3.2
 
 Nothing to do: boards and the JSON contract are unchanged from 3.3.1. A herdr pane label
