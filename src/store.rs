@@ -1615,15 +1615,14 @@ impl Store {
         creator::migrate(&conn)?;
         // The board's reader list (store/readers.rs): one check at THE open every command
         // goes through, so no command — read or write, a named board or `TB_DB` — can skip
-        // it. The name resolves the one way every actor resolves (`crate::resolve_actor`:
-        // an explicit `--as` wins, then `TB_AS`, then the herdr pane, then the login name);
-        // `main` re-runs this check after the open with the actor it dispatches under, which
-        // is also what covers the in-memory default-board open that skips this tail. An
-        // agent under a name the list holds passes; every other agent is refused with the
-        // board's own refusal, which names the list and who may change it. A board without a
-        // list passes unchanged.
+        // it. No name is resolved here: the caller's name reaches the check through `main`'s
+        // later `check_readers(Some(actor))` (`resolve_actor` can ask herdr for the pane's
+        // name, and a board without a list must never pay for that). An agent under a name
+        // the list holds passes; every other agent is refused with the board's own refusal,
+        // which names the list and who may change it. A board without a list passes
+        // unchanged.
         let store = Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock, created };
-        store.check_readers(&crate::resolve_actor(None))?;
+        store.check_readers(None)?;
         Ok(store)
     }
 

@@ -878,7 +878,7 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     let store = Store::open(&path)?.named(name);
     // the reader list (store/readers.rs): `tb new --from` copies the source's settings, so
     // the reader list of a private board must not be changed by an agent that copies it
-    store.check_readers(actor)?;
+    store.check_readers(Some(actor))?;
     if store.was_created() {
         store.record_creator(actor)?;
     }
@@ -1588,13 +1588,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // written under the wrong name. The comparison is the same one every stored-name check
     // uses: trimmed, case-insensitive (`eq_ignore_ascii_case`).
     pin_guards_existing(&store, &actor)?;
-    // The board's reader list (store/readers.rs): `Store::open` asked the same question with
-    // the env-resolved name; this is the same check with the actor this dispatch really runs
-    // under — the one that covers an explicit `--as` and the in-memory default-board open
-    // that skips `open`'s tail. A person passes; an agent under a listed name passes; any
-    // other agent (harness in the identity, or an agent binary in the kernel's ancestry) is
-    // refused everything, read or write.
-    store.check_readers(&actor)?;
+    // The board's reader list (store/readers.rs): `Store::open` asked the same question
+    // without a name (and resolved none when the board has no list); this is the same check
+    // with the actor this dispatch really runs under — the one that covers an explicit `--as`
+    // and the in-memory default-board open that skips `open`'s tail. A person passes; an
+    // agent under a listed name passes; any other agent (harness in the identity, or an agent
+    // binary in the kernel's ancestry) is refused everything, read or write.
+    store.check_readers(Some(&actor))?;
     // A session launched against ONE card (`tb-agent-start --card`, exported as
     // `TB_CARD=<board>#<id>`) is that card's builder: every card WRITE it asks for must
     // target its own card. Enforced here — after the board is resolved and opened, beside
@@ -2429,6 +2429,8 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                 }
                 ("readers", value) => {
                     let names = match &value {
+                        // the word a person typed to drop the list: the same clearing `--off` does
+                        Some(v) if v.trim().eq_ignore_ascii_case("off") => store.set_readers(None, &actor)?,
                         Some(v) => store.set_readers(Some(v), &actor)?,
                         None => store.readers()?,
                     };

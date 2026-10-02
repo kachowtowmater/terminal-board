@@ -104,6 +104,31 @@ fn a_person_sets_prints_and_clears_readers() {
     assert_eq!(code, "arg_required", "{e}");
 }
 
+/// `off` as the VALUE (`tb config readers off`, the form the refusal text names) is the
+/// clearing `--off` is: the word is never stored as a name list, and a board a person turned
+/// off really is open again — an agent that was refused the second before passes now.
+#[test]
+fn the_word_off_clears_the_list_and_reopens_the_board() {
+    let b = Board::new();
+    b.ok(PERSON, "charles", &["config", "readers", "tb-box-enforcer"]);
+    let (e, code) = b.refused(AGENT, "-", &["list"]);
+    assert_eq!(code, "not_a_reader", "the refusal is live before the off: {e}");
+    b.ok(PERSON, "charles", &["config", "readers", "off"]);
+    // the board answers as one with no readers: nothing listed, no agent refused
+    let out = b.ok(PERSON, "charles", &["config", "readers"]);
+    assert!(out.contains("readers is off"), "{out}");
+    let v = b.json(&["config", "readers", "--json"]);
+    assert_eq!(v["config"]["value"], serde_json::json!([]), "no names were stored: {v}");
+    let listing = b.ok(PERSON, "charles", &["config"]);
+    assert!(!listing.lines().any(|l| l.starts_with("readers")), "{listing}");
+    b.ok(AGENT, "tb-box-enforcer", &["list"]);
+    b.ok(AGENT, "-", &["list"]);
+    // a later person-off leaves the same shape: an off-list agent reads after either form
+    b.ok(PERSON, "charles", &["config", "readers", "tb-box-enforcer"]);
+    b.ok(PERSON, "charles", &["config", "readers", "--off"]);
+    b.ok(AGENT, "-", &["list"]);
+}
+
 /// An agent (by harness, listed or not) can never set, edit or clear the list — and a
 /// 'person' identity inside an agent's process (the `omp`-ancestor shape card #169's
 /// `agent_as_person` catches) cannot either.

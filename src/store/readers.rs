@@ -32,7 +32,12 @@ use rusqlite::OptionalExtension;
 fn readers_of(conn: &Connection) -> Result<Vec<String>> {
     let v: Option<String> =
         conn.query_row("SELECT value FROM config WHERE key='readers'", [], |r| r.get(0)).optional()?;
-    Ok(v.map(|s| super::closing::parse_names(&s)).unwrap_or_default())
+    // `off` is the word a person typed to drop the list — a name nobody carries, and the
+    // value an older binary of this same feature once stored literally (a round-2 build).
+    // Whatever wrote it, the board it left must read as "no readers": any agent may open it.
+    Ok(v.filter(|s| !s.trim().eq_ignore_ascii_case("off"))
+        .map(|s| super::closing::parse_names(&s))
+        .unwrap_or_default())
 }
 
 /// May this caller run a command on the board behind `conn`?
@@ -99,6 +104,9 @@ impl Store {
         if is_agent(&who) || agent_as_person(actor, &who).is_some() {
             return Err(readers_person_only_err(actor, &who));
         }
+        // `off` as the value is the clearing `--off` is: the word a person typed to drop the
+        // list (a person-only change either way), never a name to store
+        let list = list.filter(|l| !l.trim().eq_ignore_ascii_case("off"));
         let names = match list {
             Some(l) => {
                 let names = super::closing::parse_names(l);
@@ -143,15 +151,26 @@ impl Store {
     /// without one (every board until a person sets `config readers`) the check is a single
     /// config SELECT and asks nobody anything — a herdr pane, in particular, is not asked
     /// `agent list` for it, so an ordinary command behaves byte-for-byte as it did before.
-    pub fn check_readers(&self, actor: &str) -> Result<()> {
+    /// `actor` is `None` only from `Store::open`, which has not resolved a name yet; the
+    /// dispatch later re-asks with the name it runs under.
+    pub fn check_readers(&self, actor: Option<&str>) -> Result<()> {
         let readers = readers_of(&self.conn)?;
         if readers.is_empty() {
             return Ok(());
         }
+        // the caller's name: the one the dispatch resolved when it has one (`--as`/TB_AS),
+        // else the one `resolve_actor` finds — an agent under an agent ancestor has to ask
+        // herdr for the pane's name, and that question is only worth asking on a board that
+        // actually keeps a list (a board without one asks nobody anything, so an ordinary
+        // command behaves byte-for-byte as it did before this module existed)
+        let actor = match actor {
+            Some(a) => a.trim().to_string(),
+            None => crate::resolve_actor(None),
+        };
         let who = super::actors::current();
-        if may_read(&self.conn, actor, &who)? {
+        if may_read(&self.conn, &actor, &who)? {
             return Ok(());
         }
-        Err(not_a_reader_err(&self.name, actor, &readers))
+        Err(not_a_reader_err(&self.name, &actor, &readers))
     }
 }
