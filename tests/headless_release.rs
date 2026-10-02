@@ -282,3 +282,70 @@ fn omp_prompt_mentioning_tmux_still_vouches() {
     assert_eq!(code, "holder_alive");
     b.assert_doing(&id, "b-503");
 }
+
+/// The omp SHARED worker broker line a worker-profile launch leaves behind: `omp
+/// __omp_worker_daemon_broker` with ppid 1, inherited by every omp worker-profile session,
+/// so its cmdline keeps the FIRST worker's `TB_AS` forever. argv[1] exactly
+/// `__omp_worker_daemon_broker` — it vouches for nobody (same shape as the tmux-server
+/// skip, default#998).
+#[test]
+fn the_shared_omp_worker_broker_does_not_vouch_for_the_first_worker_it_inherited() {
+    let b = Board::new();
+    let id = b.held_by("b-43r");
+    b.note(&id, "b-43r", "mode:headless log:/tmp/b-43r.log");
+    b.assert_doing(&id, "b-43r");
+    b.release_ok(
+        "lead-x",
+        &id,
+        "b-43r finished; only the shared broker still names it",
+        &[(
+            "TB_REAP_FAKE_PROCS",
+            "18841 omp __omp_worker_daemon_broker \
+             TB_AS=b-43r TB_SESSION=omp-b-43r-3d433aba TB_CARD=fleet#43",
+        )],
+    );
+    b.assert_released(&id, "b-43r");
+}
+
+/// A real omp worker process naming the holder still vouches, even beside the shared
+/// broker: the broker skip must not sweep a live worker away with it.
+#[test]
+fn a_live_omp_worker_still_vouches_beside_the_shared_broker() {
+    let b = Board::new();
+    let id = b.held_by("b-43r");
+    b.note(&id, "b-43r", "mode:headless log:/tmp/b-43r.log");
+    let (code, text) = b.refused_release(
+        "lead-x",
+        &id,
+        "should be refused",
+        &[(
+            "TB_REAP_FAKE_PROCS",
+            "18841 omp __omp_worker_daemon_broker \
+             TB_AS=b-43r;22001 omp --approval-mode yolo --max-time 35m TB_AS=b-43r",
+        )],
+    );
+    assert_eq!(code, "holder_alive", "{text}");
+    assert!(text.contains("process 22001"), "{text}");
+    b.assert_doing(&id, "b-43r");
+}
+
+/// Probe 5 skips ONLY argv[1] exactly `__omp_worker_daemon_broker`. A real worker whose
+/// cmdline holds that string in a LATER arg (`omp -p grep __omp_worker_daemon_broker …`)
+/// is the agent itself, not the broker, and still vouches (Dan: match exact, not contains).
+#[test]
+fn a_real_worker_with_the_broker_string_in_a_later_arg_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-43r");
+    b.note(&id, "b-43r", "mode:headless log:/tmp/b-43r.log");
+    let (code, _) = b.refused_release(
+        "lead-x",
+        &id,
+        "worker grepping the broker string is not the broker",
+        &[(
+            "TB_REAP_FAKE_PROCS",
+            "22002 omp -p grep __omp_worker_daemon_broker src TB_AS=b-43r",
+        )],
+    );
+    assert_eq!(code, "holder_alive");
+    b.assert_doing(&id, "b-43r");
+}
