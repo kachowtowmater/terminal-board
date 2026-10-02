@@ -1,3 +1,8 @@
+# Upgrading to 3.3.1
+
+Nothing to do: boards and the JSON contract are unchanged from 3.3.0. `tb release` and
+`tb-reap` no longer count omp's shared `__omp_worker_daemon_broker` as a live holder.
+
 # Upgrading to 3.3.0
 
 Nothing to do: boards and the JSON contract are unchanged from 3.2.7; the JSON output only
