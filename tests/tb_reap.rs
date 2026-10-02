@@ -246,8 +246,8 @@ fn write_log(f: &Fx, days: i64, board: &str, flagged: &[(i64, &str)]) {
     std::fs::create_dir_all(&f.state).unwrap();
     let detail: Vec<serde_json::Value> =
         flagged.iter().map(|(id, o)| serde_json::json!({"board": board, "id": id, "owner": o})).collect();
-    let empty = serde_json::json!({"liveness": 2, "mode": "dry-run", "dead_owner_cards": 0, "dead_owner_detail": []});
-    let flag = serde_json::json!({"liveness": 2, "mode": "dry-run", "dead_owner_cards": detail.len(), "dead_owner_detail": detail});
+    let empty = serde_json::json!({"liveness": 3, "mode": "dry-run", "dead_owner_cards": 0, "dead_owner_detail": []});
+    let flag = serde_json::json!({"liveness": 3, "mode": "dry-run", "dead_owner_cards": detail.len(), "dead_owner_detail": detail});
     let text = format!("{} {empty}\n{} {flag}\n", iso(days * 86400), iso(0));
     std::fs::write(f.state.join("dry-run.log"), text).unwrap();
 }

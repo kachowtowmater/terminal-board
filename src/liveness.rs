@@ -25,7 +25,7 @@
 //!   6. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
 //!      conservatively alive — for `tb-reap`. An explicit `tb release` treats a no-pid
 //!      headless holder as DEAD (nothing but the note records it; the releaser has checked).
-//! Both keep a no-pid holder alive by every other probe.
+//!      Both keep a no-pid holder alive by every other probe.
 //!
 //! A herdr pane LABEL never vouches for anyone (tb#256): it is display text anyone can set,
 //! so a stopped worker's leftover pane (`b-1069 · glm-5.3-flash · omp · coder ·
