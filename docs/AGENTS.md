@@ -195,8 +195,7 @@ card's PR beyond that page).
 
 Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`; failures `{"ok":false,"error":"…","hint":"…","code":"…"}` and exit non-zero —
 branch on `code`, a stable snake_case symbol (`not_owner`, `wip_full`, `no_card`, …; full list in docs/JSON.md), never on `error`'s prose: rewording is
-not breaking, renaming a shipped `code` is. `tb show ID --json`, `tb board --json`, `tb watch --json`
-(NDJSON) and `tb agents --json` cover the rest. Field names are stable (schema `"v":1`). A `"warnings"` list — or a `tb: …` line on stderr of a
+not breaking, renaming a shipped `code` is. `tb show ID --json`, `tb board --json`, `tb watch --json` (NDJSON) and `tb agents --json` cover the rest. Field names are stable (schema `"v":1`). A `"warnings"` list — or a `tb: …` line on stderr of a
 command that succeeded — is for your operator: pass it on.
 
 ## Common errors
