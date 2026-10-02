@@ -119,10 +119,10 @@ trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   start the verifier in its own session. Nor delete it: `tb rm ID` on a card not in DONE is refused for every agent that is not a REGISTERED
   verifier, `--force` included, logged (`rm_verifier_only`); the way out is a close: `tb note ID "CLOSE: why"`, `tb move ID review`.
-- **A private board keeps a reader list** (`tb config readers NAME,NAME`; a person sets or clears it, `off` drops it — an agent, even one
-  listed, is refused `person_only`). When it is set, EVERY command on that board — read or write, by name or `TB_DB` — is refused to an agent
-  (`not_a_reader`) unless it acts under a listed name (`--as`/`TB_AS`, trimmed, without case); an identity-less agent is refused too, and so is a
-  scrubbed env under an agent's process (the kernel's ancestry still names the agent). A person always passes; a board with no list is unchanged.
+- **A private board keeps a reader list** (`tb config readers NAME,NAME`; a person sets or clears it — `--off`, or `off` as the value — an agent,
+  even one listed, is refused `person_only`). When it is set, EVERY command on that board — read or write, by name or `TB_DB` — is refused to an
+  agent (`not_a_reader`) unless it acts under a listed name (`--as`/`TB_AS`, trimmed, without case); an identity-less agent is refused too, and so
+  is a scrubbed env under an agent's process (the kernel's ancestry still names the agent). A person always passes; a board with no list is unchanged.
   Reader names are self-asserted (an agent can still forge `TB_AS`), so this stops the honest mistake, not a determined agent; the real fix is
   privilege separation.
 
@@ -231,8 +231,8 @@ tb check 1 --add "add screenshots"
 tb check 1 --rm 3
 tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
-tb block 1 "#2"; tb block 1 --clear
-tb prio 2 top
+tb block 1 "#2"
+tb block 1 --clear
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob
