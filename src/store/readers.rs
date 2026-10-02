@@ -138,11 +138,20 @@ impl Store {
     /// Refuse this caller when the board keeps a reader list and they are not on it. The one
     /// check every `Store::open` runs (before the connection is handed back), so no command
     /// — read or write, by name or `TB_DB` — can skip it.
+    ///
+    /// The identity is resolved only when the board actually keeps a list: on a board
+    /// without one (every board until a person sets `config readers`) the check is a single
+    /// config SELECT and asks nobody anything — a herdr pane, in particular, is not asked
+    /// `agent list` for it, so an ordinary command behaves byte-for-byte as it did before.
     pub fn check_readers(&self, actor: &str) -> Result<()> {
+        let readers = readers_of(&self.conn)?;
+        if readers.is_empty() {
+            return Ok(());
+        }
         let who = super::actors::current();
         if may_read(&self.conn, actor, &who)? {
             return Ok(());
         }
-        Err(not_a_reader_err(&self.name, actor, &readers_of(&self.conn)?))
+        Err(not_a_reader_err(&self.name, actor, &readers))
     }
 }
