@@ -62,9 +62,9 @@ pub(super) fn may_read(conn: &Connection, actor: &str, who: &Identity) -> Result
 pub(super) fn not_a_reader_err(board: &str, actor: &str, readers: &[String]) -> BoardError {
     BoardError(
         format!(
-            "board '{board}' is read-only to its reader list ({}) — {actor} is not on it. A person sets the list \
-             ('tb {board} config readers NAME,NAME', or 'off' to drop it); ask one to add you",
-            readers.join(", ")
+            "board '{board}' is read-only to its reader list ({list}) — {actor} is not on it: ask a person to add you \
+             ('tb {board} config readers NAME,NAME', or 'off' to drop it; only a person sets or clears the list)",
+            list = readers.join(", "),
         ),
         Code::NotAReader,
     )

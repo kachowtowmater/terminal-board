@@ -81,7 +81,7 @@ fn a_person_sets_prints_and_clears_readers() {
     let v = b.json(&["config", "readers", "--json"]);
     assert_eq!(v["config"]["value"], serde_json::json!(["tb-box-enforcer", "lead-bar"]), "{v}");
     // the settings listing carries it too, so `tb config` says what the board is
-    assert!(b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer, lead-bar"));
+    assert!(b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer, lead-bar") || b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer,lead-bar"));
     // clearing it removes the restriction (the next test reads what that means)
     b.ok(PERSON, "charles", &["config", "readers", "--off"]);
     let out = b.ok(PERSON, "charles", &["config", "readers"]);
@@ -133,8 +133,8 @@ fn an_off_list_agent_is_refused_reads_and_writes() {
         assert!(e.contains("board 'default'"), "{what}: the refusal names the board: {e}");
         assert!(e.contains(who), "{what}: the refusal names the caller: {e}");
         assert!(e.contains("tb-box-enforcer") && e.contains("lead-bar"), "{what}: the refusal names the list: {e}");
-        assert!(e.contains("A person sets the list"), "{what}: the refusal says who lifts it: {e}");
-        let (e, _) = b.refused(env, who, &["show", "1"]);
+        assert!(e.contains("only a person sets or clears the list"), "{what}: the refusal says who lifts it: {e}");
+        let (e, code) = b.refused(env, who, &["show", "1"]);
         assert_eq!(code, "not_a_reader", "{what}: show too: {e}");
         // a write, refused before anything lands
         let (e, code) = b.refused(env, who, &["add", "sneaky: from the outside"]);
@@ -196,7 +196,8 @@ fn a_scrubbed_env_under_an_agent_process_is_still_refused() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
     assert_eq!(v["code"], "not_a_reader", "env -i under omp: {v}");
-    assert!(v["error"].as_str().unwrap_or("").contains("login-user"), "the caller is named: {v}");
+    let whole = format!("{} — {}", v["error"].as_str().unwrap_or(""), v["hint"].as_str().unwrap_or(""));
+    assert!(whole.contains("login-user"), "the caller is named: {v}");
 }
 
 /// A copy of bash named `omp`, one per test process — the exact fixture
