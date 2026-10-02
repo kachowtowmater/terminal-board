@@ -114,7 +114,8 @@ fn only_a_person_changes_readers() {
     for (what, env, who) in [
         ("a listed agent", AGENT, "tb-box-enforcer"),
         ("an unlisted agent", AGENT, "intruder"),
-        ("an identity-less agent", PERSON, "-"),
+        // no name, but the harness still on record (an agent that never set `--as`): refused
+        ("an identity-less agent", AGENT, "-"),
     ] {
         for args in [&["config", "readers", "intruder"][..], &["config", "readers", "--off"]] {
             // a board with readers refuses the off-list agent at the open (`not_a_reader`)
