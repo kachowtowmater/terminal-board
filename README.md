@@ -473,6 +473,20 @@ On the board, `B` opens the board picker: the same rows as `tb boards` — name,
 and the default board marked — and `enter` switches to the one you choose without quitting
 `tb`. (`TB_DB` pins a single file, so board names, and the picker, are off in that mode.)
 
+**A private board: `tb config readers`.** A board that should be invisible to your agents
+takes a reader list: `tb home config readers tb-box-enforcer,lead-bar`. From then on every
+command on that board — reads and writes alike, whether it is named or reached through
+`TB_DB` — is refused (`not_a_reader`) to any agent not acting under one of those names
+(`--as NAME` / `TB_AS`); an agent that never named itself is refused too, and so is one whose
+environment was scrubbed but whose process ancestry still names an agent binary. You (a
+person) are never refused, and only you may set or clear the list (`tb home config readers
+off` drops it): an agent cannot rewrite the list it was just refused against. A `tb boards`
+listing omits the board for such a caller, the way it omits a board archived mid-listing.
+
+**It stops the honest mistake, not a determined agent.** Like every name in tb, a reader
+name is self-asserted — a worker can still forge `TB_AS` — so this keeps a wandering worker
+out of a private board until privilege separation (#915) makes the check real.
+
 **Retiring a board.** `tb boards archive NAME` moves a board out of the way — a finished
 project, a scratch board — without deleting anything: it prints the one command that brings it
 back.
@@ -716,6 +730,7 @@ tb --version
 | `tb move ID todo "why"` | FAIL a REVIEW card back to TODO, unowned, with the reason (shows r2) |
 | `tb done ID [--force]` | DOING → REVIEW, REVIEW → DONE (only a verifier, never whoever did the work; TODO → DONE is refused) |
 | `tb config verifiers NAME,NAME` / `--off` · `tb config verifier-only on\|off` | names that may verify whatever their role · the verifier rule (on by default); a person only — see [Who closes a card](#who-closes-a-card) |
+| `tb config readers NAME,NAME` / `--off` | who may run commands on this board at all (a person passes; an agent only under a listed name; a person sets it) — see [Boards](#boards) |
 | `tb done ID --approve` | record that you checked a card — any card; it stays in REVIEW (JSON `approved_by`) |
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |

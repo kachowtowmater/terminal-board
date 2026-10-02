@@ -22,7 +22,7 @@ Usage: tb [BOARD] [COMMAND] [--json] [--as NAME] [-b BOARD]   no command: open t
 
 Cards   add \"tag: title\" [-d DESC] [--check ITEM]... | edit ID | rm ID | restore ID | list [filters] | show ID | note ID \"text\" | note ID --file PATH (- = stdin) | --desc-file PATH | check ID N|--add|--rm | block ID \"#7\"|--clear
 Due     add|edit --due YYYY-MM-DD|none   config tz|due-warn|sort
-Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|rules
+Look    config card-line|label|waiting-lane|wip-counts-blocked|done-by|verifiers|verifier-only|readers|rules
 In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--history] | log [--since DATE]
 Flow    next [--review] | claim ID | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID todo \"why\" | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] [--long] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
@@ -876,6 +876,9 @@ fn new_board(name: &str, kind: Option<&str>, from: Option<&str>, actor: &str, js
     // a pinned session cannot make a board under another name (#201): before the file exists
     pin_guards_creation(&path, actor)?;
     let store = Store::open(&path)?.named(name);
+    // the reader list (store/readers.rs): `tb new --from` copies the source's settings, so
+    // the reader list of a private board must not be changed by an agent that copies it
+    store.check_readers(Some(actor))?;
     if store.was_created() {
         store.record_creator(actor)?;
     }
@@ -1061,7 +1064,9 @@ fn list_boards(json_out: bool, long: bool, actor: &str) -> Result<(), BoardError
         ),
         Ok(_) => {}
     }
-    // the same rows the board picker (B) shows inside the TUI
+    // the same rows the board picker (B) shows inside the TUI. The reader check is inside
+    // `rows` (each open asks `Store::open`): a board with a reader list is skipped from the
+    // listing for an agent not on it, exactly like a board archived mid-listing.
     let rows = boards::rows(actor)?;
     if json_out {
         let v: Vec<_> = rows
@@ -1583,6 +1588,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
     // written under the wrong name. The comparison is the same one every stored-name check
     // uses: trimmed, case-insensitive (`eq_ignore_ascii_case`).
     pin_guards_existing(&store, &actor)?;
+    // The board's reader list (store/readers.rs): `Store::open` asked the same question
+    // without a name (and resolved none when the board has no list); this is the same check
+    // with the actor this dispatch really runs under — the one that covers an explicit `--as`
+    // and the in-memory default-board open that skips `open`'s tail. A person passes; an
+    // agent under a listed name passes; any other agent (harness in the identity, or an agent
+    // binary in the kernel's ancestry) is refused everything, read or write.
+    store.check_readers(Some(&actor))?;
     // A session launched against ONE card (`tb-agent-start --card`, exported as
     // `TB_CARD=<board>#<id>`) is that card's builder: every card WRITE it asks for must
     // target its own card. Enforced here — after the board is resolved and opened, beside
@@ -2406,6 +2418,28 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     }
                     ("verifiers".into(), json!(names))
                 }
+                // the board's reader list (store/readers.rs): when set, every command that
+                // opens the board — read or write, by name or TB_DB — is refused for an agent
+                // not acting under a listed name. A person always passes, and only a person
+                // sets or clears the list (an agent, listed or not, is refused: a refusal it
+                // could rewrite would be no refusal at all).
+                ("readers", _) if off => {
+                    store.set_readers(None, &actor)?;
+                    ("readers".into(), serde_json::Value::Null)
+                }
+                ("readers", value) => {
+                    let names = match &value {
+                        // the word a person typed to drop the list: the same clearing `--off` does
+                        Some(v) if v.trim().eq_ignore_ascii_case("off") => store.set_readers(None, &actor)?,
+                        Some(v) => store.set_readers(Some(v), &actor)?,
+                        None => store.readers()?,
+                    };
+                    if value.is_none() && !j {
+                        say!("{}", if names.is_empty() { "readers is off — any agent may open this board".to_string() } else { names.join(",") });
+                        return Ok(());
+                    }
+                    ("readers".into(), json!(names))
+                }
                 ("done-by", _) if off => {
                     store.set_done_by(None)?;
                     ("done-by".into(), serde_json::Value::Null)
@@ -2716,6 +2750,13 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("done-by", serde_json::Value::Null) => say!("done-by is off — anyone may close a card"),
                     ("done-by", n) => say!(
                         "done-by is now {} — only they may close a card. It stops an honest mistake, not an attacker: names are self-asserted and --force is logged but open to all",
+                        n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+                    ),
+                    ("readers", serde_json::Value::Null) => {
+                        say!("readers is off — any agent may open this board again")
+                    }
+                    ("readers", n) => say!(
+                        "readers is now {} — a person passes, and an agent only under one of those names ('--as NAME' / TB_AS); every other agent is refused every command, read or write. It stops an honest mistake, not a determined agent: reader names are self-asserted, so a worker can still forge its name — the real fix is privilege separation",
                         n.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                     ),
                     ("done-needs-link", serde_json::Value::Null) => say!("done-needs-link is off — a card may reach done without a link"),

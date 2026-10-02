@@ -38,11 +38,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
-| claim the top REVIEW card you did not do | `tb next --review --as NAME` |
-| claim exactly that REVIEW card | `tb claim ID` |
+| claim the top REVIEW card you did not do, or exactly one REVIEW card | `tb next --review --as NAME` · `tb claim ID` |
 | take one specific TODO card, or hand it to someone else | `tb take ID` · `tb assign ID NAME` |
-| see every card, by column | `tb list` |
-| one card in full (brief, checklist, notes, history) | `tb show ID` |
+| see every card, by column; one card in full (brief, checklist, notes, history) | `tb list` · `tb show ID` |
 | the whole board as JSON | `tb board --json` |
 | follow changes live (one JSON line per change) | `tb watch --json` |
 | add a note (long ones from a file or a pipe: `--file notes.md`, `--file -`) | `tb note ID "tests pass, opening PR"` |
@@ -77,26 +75,22 @@ tb done ID                   # finished: DOING -> REVIEW
 | finished work older than today | `tb list --done [--since 2026-10-09]` |
 | delete a card you created by mistake | `tb rm ID` (a board set to `tb config rm archive` keeps it: `tb list --archived`, `tb restore ID`) |
 | use another board | `tb NAME next`, `tb -b NAME next`, or `TB_BOARD=NAME` |
-| narrow a list (they combine) | `tb list --tag docs --owner alice --blocked --blocked-on #7 --due-before 2026-10-09 --column todo` · `--group tag` |
-| your work on every board | `tb list --all-boards --owner <your-name>` |
+| narrow a list (they combine) | `tb list --tag docs --owner alice --blocked --blocked-on #7 --due-before 2026-10-09 --column todo` · `--group tag` · your work on every board: `--all-boards --owner <your-name>` |
 | send a card to another board (it gets a NEW id there, with the identity behind each event) | `tb mv ID --to BOARD` (`--force` for a card someone else holds, logged) |
 | list boards with counts; see or set which one plain `tb` opens (saving one is a person's choice) | `tb boards` · `tb boards --long` (who created each) · `tb boards --default` · `tb boards --default NAME` · `--default --clear` |
 | retire a board without deleting it, or bring one back; list what is archived (deleting one is a person's call) | `tb boards archive NAME` (prints the restore line) · `tb boards restore NAME` · `tb boards --archived` |
 | make a board — a `deadline` one sorts by due date, dates its card lines and labels its columns | `tb new NAME [--kind deadline] [--from BOARD]` (`--from` copies settings, never cards) |
-| read the settings (WIP limit, GitHub repo, …) | `tb config` |
-| see the agents and the card each holds | `tb agents` |
+| read the settings (WIP limit, GitHub repo, …); see the agents and the card each holds | `tb config` · `tb agents` |
 
 `tb next` skips blocked cards and fails with a hint when TODO is empty or DOING is full; under `tb config sort due` it takes the nearest due date, not the
 top position (`tb prio` there only orders cards sharing a date). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card;
 `tb move ID todo` clears the owner; sending REVIEW back (to doing, or to todo on a FAIL) needs a reason — keeps the owner going to doing, clears it going to todo — and skips the WIP limit. Text arrives byte for byte from a file, blank space
 trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--desc-file brief.md`; UTF-8, at most 256 KiB; `-` reads a pipe — never a terminal — and waits for it to close,
-`TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings
-alone unless a person asks you to.
+`TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings alone unless a person asks you to.
 
 ## Recipes
 
-- **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`.
-- **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
+- **Stopping early:** `tb note ID "stopped at: …, next: …"`, then `tb drop ID`. **Stuck:** `tb block ID "#12"` (or what you wait on) plus a note why; `--clear` when it moves again. Take something else with `tb next`, or wait.
 - **More work found:** file it instead of doing it silently — `tb add "tag: title" -d "Done = …"`, then `tb note ID "filed #NEW"`. A card too big: add its parts as cards, note their ids, and narrow the original with `tb edit ID --desc "…"`.
 - **Reviewing (verifier):** `tb next --review --as NAME` claims the top REVIEW card you did not do, so two verifiers never take
   the same one (atomic; `tb move ID review` frees a claim). `tb claim ID` claims exactly that REVIEW card instead of the top one.
@@ -105,7 +99,7 @@ alone unless a person asks you to.
   verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check the
   done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
   (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
-- **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
+- **Your card came back:** the last `returned` event in `tb show ID` says what to fix. Refused outright (`not_a_reader`): the board's reader list (above) lacks your name — ask a person to add it, or work elsewhere.
 
 ## Who moves a card
 
@@ -125,12 +119,18 @@ alone unless a person asks you to.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   start the verifier in its own session. Nor delete it: `tb rm ID` on a card not in DONE is refused for every agent that is not a REGISTERED
   verifier, `--force` included, logged (`rm_verifier_only`); the way out is a close: `tb note ID "CLOSE: why"`, `tb move ID review`.
+- **A private board keeps a reader list** (`tb config readers NAME,NAME`; a person sets or clears it — `--off`, or `off` as the value — an agent,
+  even one listed, is refused `person_only`). When it is set, EVERY command on that board — read or write, by name or `TB_DB` — is refused to an
+  agent (`not_a_reader`) unless it acts under a listed name (`--as`/`TB_AS`, trimmed, without case); an identity-less agent is refused too, and so
+  is a scrubbed env under an agent's process (the kernel's ancestry still names the agent). A person always passes; a board with no list is unchanged.
+  Reader names are self-asserted (an agent can still forge `TB_AS`), so this stops the honest mistake, not a determined agent; the real fix is
+  privilege separation.
 
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
 - `doing is full (3/3: …)` is the board-wide limit, `you already hold 1 of 1` this board's per-agent one (`wip-per-owner`); both say what YOU can do — finish one of yours. Never finish or drop someone else's card, and do not raise either limit.
-- A board may keep a list of names (`tb config actors`) and refuse an `--as` it does not know, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write. Neither ever refuses a read.
+- A board may keep a name list (`tb config actors`) and refuse an unknown `--as`, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write; `tb config readers` (below) can refuse every AGENT not on its list. A person's reads are never refused.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
 - Every error message ends with what to run next. Read it and do that.
 - Tick only what is really done, never ahead; leave a note before you stop, drop or block a card.
@@ -193,8 +193,7 @@ card's PR beyond that page).
 
 Every command takes `--json`. Writes answer `{"ok":true,"card":{…}}`; failures `{"ok":false,"error":"…","hint":"…","code":"…"}` and exit non-zero —
 branch on `code`, a stable snake_case symbol (`not_owner`, `wip_full`, `no_card`, …; full list in docs/JSON.md), never on `error`'s prose: rewording is
-not breaking, renaming a shipped `code` is. `tb show ID --json`, `tb board --json`, `tb watch --json`
-(NDJSON) and `tb agents --json` cover the rest. Field names are stable (schema `"v":1`). A `"warnings"` list — or a `tb: …` line on stderr of a
+not breaking, renaming a shipped `code` is. `tb show ID --json`, `tb board --json`, `tb watch --json` (NDJSON) and `tb agents --json` cover the rest. Field names are stable (schema `"v":1`). A `"warnings"` list — or a `tb: …` line on stderr of a
 command that succeeded — is for your operator: pass it on.
 
 ## Common errors
@@ -206,6 +205,7 @@ command that succeeded — is for your operator: pass it on.
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `you already hold 1 of 1 (#3 …)` | this board allows one card per agent: finish yours (the message names it) — do not raise the limit |
 | `'x' is not one of this board's names` | your `--as` is misspelt, or the board keeps a list: check the spelling first |
+| `is read-only to its reader list` (`not_a_reader`) | the board keeps `tb config readers` and you are not on it: ask a person to add your name |
 | `read-only mode: … would change the board` | you are watching, not working: reads only, until `TB_READONLY` is unset |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |
@@ -217,6 +217,7 @@ command that succeeded — is for your operator: pass it on.
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` · `no card #ID`: `tb list` |
 | `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
+| `is read-only to its reader list` (`not_a_reader`) | the board keeps `tb config readers` and you are not on it: ask a person to add your name |
 
 ## Walkthrough (every command above, run in order by the test suite)
 
@@ -232,7 +233,6 @@ tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
 tb block 1 "#2"
 tb block 1 --clear
-tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob
