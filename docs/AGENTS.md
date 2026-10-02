@@ -90,8 +90,7 @@ tb done ID                   # finished: DOING -> REVIEW
 top position (`tb prio` there only orders cards sharing a date). `tb move ID doing` respects the WIP limit and makes you the owner of an unowned card;
 `tb move ID todo` clears the owner; sending REVIEW back (to doing, or to todo on a FAIL) needs a reason — keeps the owner going to doing, clears it going to todo — and skips the WIP limit. Text arrives byte for byte from a file, blank space
 trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--desc-file brief.md`; UTF-8, at most 256 KiB; `-` reads a pipe — never a terminal — and waits for it to close,
-`TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings
-alone unless a person asks you to.
+`TB_STDIN_TIMEOUT` bounds the first byte). Board order: `TB_DB` > a name on the command line > `TB_BOARD` > the saved default > `default`. Leave settings alone unless a person asks you to.
 
 ## Recipes
 
@@ -105,7 +104,7 @@ alone unless a person asks you to.
   verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check the
   done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
   (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
-- **Your card came back:** the last `returned` event in `tb show ID` says what to fix.
+- **Your card came back:** the last `returned` event in `tb show ID` says what to fix. Refused outright (`not_a_reader`): the board's reader list (above) does not have your name — ask a person to add it, or work elsewhere.
 
 ## Who moves a card
 
@@ -125,12 +124,18 @@ alone unless a person asks you to.
 - **Never verify from the builder's session**: a session that took the card or moved it into review cannot close it (`same_session`) —
   start the verifier in its own session. Nor delete it: `tb rm ID` on a card not in DONE is refused for every agent that is not a REGISTERED
   verifier, `--force` included, logged (`rm_verifier_only`); the way out is a close: `tb note ID "CLOSE: why"`, `tb move ID review`.
+- **A private board keeps a reader list** (`tb config readers NAME,NAME`; a person sets or clears it, `off` drops it — an agent, even one
+  listed, is refused `person_only`). When it is set, EVERY command on that board — read or write, by name or `TB_DB` — is refused to an agent
+  (`not_a_reader`) unless it acts under a listed name (`--as`/`TB_AS`, trimmed, without case); an identity-less agent is refused too, and so is a
+  scrubbed env under an agent's process (the kernel's ancestry still names the agent). A person always passes; a board with no list is unchanged.
+  Reader names are self-asserted (an agent can still forge `TB_AS`), so this stops the honest mistake, not a determined agent; the real fix is
+  privilege separation.
 
 ## Rules
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
 - `doing is full (3/3: …)` is the board-wide limit, `you already hold 1 of 1` this board's per-agent one (`wip-per-owner`); both say what YOU can do — finish one of yours. Never finish or drop someone else's card, and do not raise either limit.
-- A board may keep a list of names (`tb config actors`) and refuse an `--as` it does not know, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write. Neither ever refuses a read.
+- A board may keep a name list (`tb config actors`) and refuse an unknown `--as`, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write; `tb config readers` (below) can refuse every AGENT not on its list. A person's reads are never refused.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
 - Every error message ends with what to run next. Read it and do that.
 - Tick only what is really done, never ahead; leave a note before you stop, drop or block a card.
@@ -206,6 +211,7 @@ command that succeeded — is for your operator: pass it on.
 | `doing is full (…: #1 a, …)` | finish a card YOU hold (the message names it), then retry; holding none: wait or ask a holder to finish |
 | `you already hold 1 of 1 (#3 …)` | this board allows one card per agent: finish yours (the message names it) — do not raise the limit |
 | `'x' is not one of this board's names` | your `--as` is misspelt, or the board keeps a list: check the spelling first |
+| `is read-only to its reader list` (`not_a_reader`) | the board keeps `tb config readers` and you are not on it: ask a person to add your name |
 | `read-only mode: … would change the board` | you are watching, not working: reads only, until `TB_READONLY` is unset |
 | `no todo cards` | ask for work, or `tb add` what you found |
 | `card #ID was taken by someone else` | run `tb next` again for another card |

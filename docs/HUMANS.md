@@ -193,6 +193,15 @@ users of the machine, and tb says so until you run `tb config file-mode private`
 `tb config file-mode shared`, if that is what you want). Before a newer tb upgrades an older
 board it writes a backup next to it and tells you where — see the README, "Where your data lives".
 
+**A private board: `tb config readers`.** A board that should be invisible to your agents
+takes a reader list: `tb <name> config readers tb-box-enforcer,lead-bar` — then every command
+on that board (reads and writes alike, by name or `TB_DB`) is refused to any agent not acting
+under one of those names, and a `tb boards` listing simply omits the board for them. You (a
+person) are never refused, and only you may set or clear the list (`tb <name> config readers
+off` drops it): an agent cannot change who may read a board it was just refused. Like every
+name in tb, a reader name is **self-asserted** — a worker can still forge its name — so this
+stops an honest mistake, not a determined agent; that fix is privilege separation.
+
 ```sh
 tb home                      # open the board called "home"
 tb home add "call the plumber"
