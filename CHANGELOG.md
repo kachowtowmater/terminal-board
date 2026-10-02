@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.2 — 2026-10-02
 
 ### Highlights
 

@@ -1,3 +1,9 @@
+# Upgrading to 3.3.2
+
+Nothing to do: boards and the JSON contract are unchanged from 3.3.1. A herdr pane label
+no longer keeps a holder alive for `tb release` / `tb-reap`; tb-reap's liveness version is
+3, so its 7-day `--apply` dry-run proof restarts.
+
 # Upgrading to 3.3.1
 
 Nothing to do: boards and the JSON contract are unchanged from 3.3.0. `tb release` and
