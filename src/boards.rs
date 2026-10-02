@@ -694,6 +694,9 @@ pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
             let store = match Store::open_if_exists(&path) {
                 Ok(Some(s)) => s.named(n),
                 Ok(None) => return None,
+                // a reader list (store/readers.rs) an off-list agent meets is a silent skip,
+                // not a poison row: the listing shows the boards this caller may open
+                Err(e) if e.1 == Code::NotAReader => return None,
                 Err(e) => return Some(Err(e)),
             };
             let snap = match store.snapshot() {
@@ -711,10 +714,12 @@ pub fn rows(actor: &str) -> Result<Vec<BoardRow>> {
 
 /// Who made the board a `rows()` row is: its own record, else `board-creations.log`. `None`
 /// when neither knows, or when the board was archived since `rows()` looked (never
-/// re-created: `open_if_exists`, as in `rows`).
+/// re-created: `open_if_exists`, as in `rows`), or when the board keeps a reader list this
+/// caller is not on — its file may not be opened for them at all (`store/readers.rs`).
 pub fn creator_of(row: &BoardRow) -> Option<Creator> {
     match Store::open_if_exists(&row.path) {
         Ok(Some(s)) => s.named(&row.name).creator(),
+        Err(e) if e.1 == Code::NotAReader => None,
         _ => creator::from_log(&creations_log(), &row.name),
     }
 }

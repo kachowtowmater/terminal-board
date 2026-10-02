@@ -36,6 +36,7 @@ pub mod gate;
 pub mod kinds;
 pub mod links;
 pub mod order;
+pub mod readers;
 pub mod release;
 pub mod rounds;
 pub mod rules;
@@ -138,6 +139,11 @@ pub enum Code {
     /// A setting only a person may change (`config verifiers`, `config verifier-only`) was
     /// changed by an agent — an actor with a harness in its identity (store/verifier.rs).
     PersonOnly,
+    /// The board keeps a reader list (`config readers`) and the caller — an agent (a harness
+    /// in its identity, or an agent binary in its process ancestry) acting under a name that
+    /// is not on it, or an identity-less agent — is refused every command, read or write
+    /// (store/readers.rs). A person passes; only a person changes the list.
+    NotAReader,
     /// `tb rm` on a card whose column is not done, asked by an agent with no registered
     /// verifier session (store/archive.rs `rm_guard`, card #225) — the column, not --force,
     /// is the escape: move it to review with a CLOSE note.
@@ -239,6 +245,7 @@ impl Code {
             Code::AgentAsPerson => "agent_as_person",
             Code::ForceNeedsPerson => "force_needs_person",
             Code::PersonOnly => "person_only",
+            Code::NotAReader => "not_a_reader",
             Code::RmVerifierOnly => "rm_verifier_only",
             Code::DoneNeedsNote => "done_needs_note",
             Code::DoneNeedsLink => "done_needs_link",
@@ -1606,7 +1613,18 @@ impl Store {
         actors::migrate(&conn)?;
         // migration: who made the board (`board_creator`, #137)
         creator::migrate(&conn)?;
-        Ok(Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock, created })
+        // The board's reader list (store/readers.rs): one check at THE open every command
+        // goes through, so no command — read or write, a named board or `TB_DB` — can skip
+        // it. The name resolves the one way every actor resolves (`crate::resolve_actor`:
+        // an explicit `--as` wins, then `TB_AS`, then the herdr pane, then the login name);
+        // `main` re-runs this check after the open with the actor it dispatches under, which
+        // is also what covers the in-memory default-board open that skips this tail. An
+        // agent under a name the list holds passes; every other agent is refused with the
+        // board's own refusal, which names the list and who may change it. A board without a
+        // list passes unchanged.
+        let store = Store { conn, name: crate::boards::DEFAULT_BOARD.into(), _lock, created };
+        store.check_readers(&crate::resolve_actor(None))?;
+        Ok(store)
     }
 
     /// Like [`open`](Self::open), for a caller that must NEVER conjure a missing board:
@@ -1935,6 +1953,7 @@ impl Store {
         all.extend(self.block_settings()?);
         all.extend(self.closing_settings()?);
         all.extend(self.verifier_settings()?);
+        all.extend(self.reader_settings()?);
         all.extend(self.link_settings()?);
         all.extend(self.rounds_settings()?);
         all.extend(self.kind_settings()?);
