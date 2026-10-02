@@ -126,7 +126,8 @@ fn an_off_list_agent_is_refused_reads_and_writes() {
     // a read, by harness and by nothing-but-ancestry-later (this one: harness env)
     for (what, env, who) in [("a harness agent", AGENT, "lead-fleet"), ("no name at all", AGENT, "-")] {
         let who = if who == "-" { "login-user" } else { who }; // USER only: no identity claim
-        let env = if what == "no name at all" { &[][..] } else { env }; // no TB_AS, no name
+        let empty: &[(&str, &str)] = &[];
+        let env = if what == "no name at all" { empty } else { env }; // no TB_AS, no name
         let (e, code) = b.refused(env, who, &["list"]);
         assert_eq!(code, "not_a_reader", "{what}: {e}");
         assert!(e.contains("board 'default'"), "{what}: the refusal names the board: {e}");
@@ -180,7 +181,7 @@ fn a_scrubbed_env_under_an_agent_process_is_still_refused() {
     b.ok(PERSON, "charles", &["config", "readers", "tb-box-enforcer"]);
     // `; true` keeps bash from exec'ing tb in place (which would drop `omp` from the chain);
     // the env is empty apart from what a bare run needs — no TB_AS, no harness marker.
-    let line = format!("'{}' list --json; true", env!("CARGO_BIN_EXE_tb").to_string_lossy());
+    let line = format!("'{}' list --json; true", env!("CARGO_BIN_EXE_tb"));
     let o = Command::new(omp)
         .args(["-c", &line])
         .env_clear()
