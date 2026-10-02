@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Highlights
+
+- **A herdr pane label no longer keeps a holder alive (tb#256).** `tb release` / `tb-reap`
+  no longer treat a pane LABEL naming the holder as liveness: a label is display text
+  anyone can set, so a stopped worker's leftover pane (`b-1069 · … · default#1069`) kept
+  its card held. Liveness comes only from a herdr agent name, a tmux session, a live agent
+  process, an actor session or a headless pid. `tb-reap`'s liveness version is now 3
+  (rules changed; old dry-run lines do not count toward the `--apply` proof).
+  `TB_REAP_FAKE_PANES` still switches fixture mode on but is ignored; a follow-up card
+  (tb#262) removes it.
+
 ## 3.3.1 — 2026-10-02
 
 ### Highlights

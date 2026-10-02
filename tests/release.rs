@@ -107,7 +107,6 @@ fn a_live_holder_is_refused_holder_alive_naming_the_probe() {
     for (var, val, how) in [
         ("TB_REAP_FAKE_AGENTS", "g2", "herdr-agent"),
         ("TB_REAP_FAKE_TMUX", "g2", "tmux"),
-        ("TB_REAP_FAKE_PANES", "worker · g2 · #1", "pane-label"),
         ("TB_REAP_FAKE_PROCS", "4242 omp --as g2", "process 4242"),
     ] {
         let (code, text) = b.refused(&agent("lead"), &[(var, val)], "lead-x", &["release", &id, "try"]);
@@ -115,6 +114,38 @@ fn a_live_holder_is_refused_holder_alive_naming_the_probe() {
         assert!(text.contains(how), "{var}: says how it is alive: {text}");
         assert_eq!(b.state(&id).0, "doing");
     }
+}
+
+/// tb#256: a herdr pane LABEL is display text anyone can set — it never vouches for a
+/// holder, so a released card's holder reads dead while a pane merely carrying its name
+/// in its label exists (default#1069).
+#[test]
+fn a_pane_label_naming_the_holder_never_keeps_the_card_held() {
+    let b = Board::new();
+    let id = b.held_by("g2");
+    let label = "b-g2 · glm-5.3-flash · omp · coder · default#1";
+    let o = b.run(&agent("lead"), &[("TB_REAP_FAKE_PANES", label)], "lead-x", &["release", &id, "leftover pane", "--json"]);
+    assert!(o.status.success(), "a label is not a liveness source: {}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(!format!("{v}").contains("pane-label"), "{v}");
+    assert_eq!(b.state(&id).0, "todo", "label-only holder is released");
+}
+
+/// tb#256: a label plus a LIVE omp process naming the holder (TB_AS) still vouches — probe 4
+/// is gone, the process probe (its replacement in the list) is what keeps the card held.
+#[test]
+fn a_pane_label_plus_a_live_process_with_tb_as_still_keeps_the_card_held() {
+    let b = Board::new();
+    let id = b.held_by("g2");
+    let (code, text) = b.refused(
+        &agent("lead"),
+        &[("TB_REAP_FAKE_PANES", "b-g2 · glm-5.3-flash · omp · coder"), ("TB_REAP_FAKE_PROCS", "4242 omp --approval-mode yolo TB_AS=g2")],
+        "lead-x",
+        &["release", &id, "label + process"],
+    );
+    assert_eq!(code, "holder_alive", "the live process still vouches: {text}");
+    assert!(text.contains("process 4242"), "names the process, not a label: {text}");
+    assert_eq!(b.state(&id).0, "doing");
 }
 
 #[test]

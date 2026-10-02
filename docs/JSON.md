@@ -295,7 +295,7 @@ Everyday failures:
 | `github_error` | a GitHub API/network call failed |
 | `not_in_review` | an approval (`tb done --approve`) outside REVIEW |
 | `not_in_doing` | `tb release ID` on a card that is not in DOING with a holder |
-| `holder_alive` | `tb release ID` refused: a liveness probe (the same ones `tb-reap` uses — herdr agent, tmux session, pane label, agent process, live actor session, headless pid) vouches for the card's holder; `error` names which |
+| `holder_alive` | `tb release ID` refused: a liveness probe (the same ones `tb-reap` uses — herdr agent, tmux session, agent process, live actor session, headless pid) vouches for the card's holder; `error` names which |
 | `not_releaser` | `tb release ID` by an agent whose role (`TB_ROLE`) is not `lead`/`orchestrator` (a person may always release) |
 | `self_approve` | the actor who did the work tried to approve or review their own card (never-approve-your-own-work) |
 | `same_session` | REVIEW -> DONE by a verifier running in the same recorded session (`TB_SESSION`/the harness's session id) as an identity that took the card or moved it into review, in any round; sessions only a harness records, so a person and every old event are never refused (`--force` gets past it, logged) |

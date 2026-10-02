@@ -9,8 +9,7 @@
 //!      identity the caller itself runs as (`TB_AS`);
 //!   2. a herdr agent with that exact name;
 //!   3. a tmux session with that name;
-//!   4. a herdr pane (plain panes included) whose LABEL names the owner as a whole token;
-//!   5. a running agent process (codex / omp / claude / pi / aider / opencode / gemini) whose
+//!   4. a running agent process (codex / omp / claude / pi / aider / opencode / gemini) whose
 //!      argv or environment names the owner as a whole token (`TB_AS=<owner>`, `--as <owner>`).
 //!      A tmux process is NEVER this probe's proof — the SERVER spawned by the first headless
 //!      `tmux new-session -s tbh-<owner> -e TB_AS=<owner> …` (and any tmux client) keeps that
@@ -21,24 +20,31 @@
 //!      long-lived process every omp worker-profile session inherits `TB_AS` from, so its
 //!      cmdline keeps the FIRST worker's `TB_AS=<owner>` forever (match is on argv[1]
 //!      EXACTLY, so a live worker merely holding that string in a later arg still vouches);
-//!   6. one of the owner's tb actor sessions on this card is a live herdr agent's session
+//!   5. one of the owner's tb actor sessions on this card is a live herdr agent's session
 //!      (an orchestrator or headless builder acting under the name);
-//!   7. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
+//!   6. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
 //!      conservatively alive — for `tb-reap`. An explicit `tb release` treats a no-pid
 //!      headless holder as DEAD (nothing but the note records it; the releaser has checked).
-//!      Both keep a no-pid holder alive by every other probe.
+//! Both keep a no-pid holder alive by every other probe.
 //!
-//! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,PANES,SESSIONS,PROCS}` switches every
+//! A herdr pane LABEL never vouches for anyone (tb#256): it is display text anyone can set,
+//! so a stopped worker's leftover pane (`b-1069 · glm-5.3-flash · omp · coder ·
+//! default#1069`) once kept its card held; liveness comes only from the probes above.
+//! The old probe 4 (pane label, whole-token match) is deleted.
+//!
+//! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,SESSIONS,PROCS}` switches every
 //! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
-//! TMUX, SESSIONS are comma lists; PANES (labels) and PROCS (`<pid> <command line>`) are
-//! `;`-separated. A PROCS line whose argv0 is `tmux`, or whose argv[1] is exactly
+//! TMUX, SESSIONS are comma lists; PROCS (`<pid> <command line>`) is `;`-separated.
+//! `TB_REAP_FAKE_PANES` still switches fixture mode on (it stays in the var list so existing
+//! fixtures keep working) but its value is IGNORED: probe 4 is gone, and card tb#262 removes
+//! the var itself. A PROCS line whose argv0 is `tmux`, or whose argv[1] is exactly
 //! `__omp_worker_daemon_broker` (omp's shared worker broker), is skipped by the process
-//! probe (see probe 5), so a test can pin such a line and assert it vouches for nobody. Any one
+//! probe (see probe 4), so a test can pin such a line and assert it vouches for nobody. Any one
 //! of them set (even to "") puts EVERY probe in fixture mode: a test must never half-ask the
 //! real world. Fixture PROCS are NEVER filtered by ancestry — the exclusion is about the
 //! caller's own process tree, which a fixture table does not contain.
 //!
-//! The five probe sources are asked ONCE per run (`World::load`) and the answer reused for
+//! The probe sources are asked ONCE per run (`World::load`) and the answer reused for
 //! every card: a release pass over a board must not re-ask herdr, tmux and the process table
 //! per card.
 
@@ -83,13 +89,6 @@ pub fn eq_ci(a: &str, b: &str) -> bool {
     !a.is_empty() && a.eq_ignore_ascii_case(b)
 }
 
-/// Whole-token match: `text` split on anything that cannot be part of an agent name
-/// (letters, digits, `-`, `_`, `.`) holds `name`. `codex-u5` is in `worker · codex-u5 · #5`
-/// but not in `codex-u55`.
-fn names_token(text: &str, name: &str) -> bool {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.')).any(|t| eq_ci(t, name))
-}
-
 /// Real or fixture herdr agents, asked once per run.
 pub enum Agents {
     Fake(Vec<String>),
@@ -101,7 +100,6 @@ pub enum Agents {
 pub struct World {
     agents: Agents,
     tmux: Vec<String>,
-    pane_labels: Vec<String>,
     /// Session tokens of live herdr agents (same reduction tb applies when it records one).
     sessions: Vec<String>,
     /// `(pid, command line + environment where the OS shows it)`.
@@ -200,7 +198,6 @@ impl World {
             return World {
                 agents: Agents::Fake(fake_split("TB_REAP_FAKE_AGENTS", ',')),
                 tmux: fake_split("TB_REAP_FAKE_TMUX", ','),
-                pane_labels: fake_split("TB_REAP_FAKE_PANES", ';'),
                 sessions: fake_split("TB_REAP_FAKE_SESSIONS", ','),
                 procs,
                 protect,
@@ -211,15 +208,8 @@ impl World {
             AgentsState::Agents(a) => Agents::Real(a),
             _ => Agents::Unavailable,
         };
-        let (mut pane_labels, mut sessions) = (Vec::new(), Vec::new());
+        let mut sessions = Vec::new();
         if herdr::herdr_enabled() {
-            if let Some(v) = herdr_json(&["pane", "list"]) {
-                for p in v.pointer("/result/panes").and_then(|a| a.as_array()).into_iter().flatten() {
-                    if let Some(l) = p.get("label").and_then(|l| l.as_str()) {
-                        pane_labels.push(l.to_string());
-                    }
-                }
-            }
             if let Some(v) = herdr_json(&["agent", "list"]) {
                 for a in v.pointer("/result/agents").and_then(|a| a.as_array()).into_iter().flatten() {
                     if let Some(s) = a.pointer("/agent_session/value").and_then(|s| s.as_str()) {
@@ -232,7 +222,7 @@ impl World {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect(),
             _ => Vec::new(),
         };
-        World { agents, tmux, pane_labels, sessions, procs: load_procs(), protect, me }
+        World { agents, tmux, sessions, procs: load_procs(), protect, me }
     }
 
     pub fn pid_alive(&self, pid: i64) -> bool {
@@ -253,7 +243,7 @@ impl World {
 
     /// Why `owner` of card `id` counts as alive, or None when nothing vouches for it. The
     /// wording is the evidence a refusal or a release note quotes: keep it naming the SOURCE
-    /// (herdr-agent, tmux, pane label, process N, actor-session, headless pid N,
+    /// (herdr-agent, tmux, process N, actor-session, headless pid N,
     /// orchestrator, reaper-caller), not just "alive".
     pub fn alive_by(&self, store: &Store, card: &Card) -> Option<String> {
         self.alive_impl(store, card, Mode::Reap)
@@ -284,9 +274,6 @@ impl World {
         }
         if self.tmux.iter().any(|n| eq_ci(n, o)) {
             return Some("tmux".into());
-        }
-        if self.pane_labels.iter().any(|l| names_token(l, o)) {
-            return Some("pane-label".into());
         }
         if let Some((pid, _)) = self.procs.iter().find(|(_, cmd)| {
             let toks: Vec<&str> = cmd.split(|c: char| c.is_whitespace() || c == '=').collect();
