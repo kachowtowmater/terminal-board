@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.4.0:** a board may refuse agents not on its reader list. `tb config readers
+NAME,NAME` (person-only; `off` clears it) stores a reader list on the board; when set,
+agents not acting under a listed name are refused every command on that board, including
+identity-less agents.
+
 **New in 3.3.2:** a herdr pane label never vouches. `tb release` / `tb-reap` no longer treat
 a pane LABEL naming the holder as liveness — a stopped worker's leftover pane with its card
 name in the label no longer holds it; liveness comes only from agent names, tmux sessions,
@@ -236,7 +241,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.3.2` | install that release instead of the latest (`3.3.2` works too) |
+| `--version v3.4.0` | install that release instead of the latest (`3.4.0` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
