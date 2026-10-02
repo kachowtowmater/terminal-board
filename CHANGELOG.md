@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Highlights
+
+- **A shared omp broker never vouches (#255).** `tb release` / `tb-reap` no longer treat
+  omp's SHARED worker broker (`omp __omp_worker_daemon_broker`, one long-lived process
+  every omp worker-profile session inherits `TB_AS` from) as a live holder: probe 5 skips
+  a process whose argv[1] is exactly `__omp_worker_daemon_broker`, the same way it skips a
+  tmux server, so a dead worker's card can be released while the broker it left behind
+  still runs. A real omp worker naming the holder — including one holding that string in a
+  later arg — still vouches.
+
 ## 3.3.0 — 2026-10-01
 
 ### Highlights

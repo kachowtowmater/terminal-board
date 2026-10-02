@@ -16,7 +16,11 @@
 //!      `tmux new-session -s tbh-<owner> -e TB_AS=<owner> …` (and any tmux client) keeps that
 //!      first session's `-e TB_AS` and agent binary in its cmdline long after that session is
 //!      gone and other agents run on the same server — so a process whose argv0 basename is
-//!      `tmux` is skipped, however agent-shaped its arguments look;
+//!      `tmux` is skipped, however agent-shaped its arguments look; omp's SHARED worker
+//!      broker (`omp __omp_worker_daemon_broker`) is skipped the same way — it is one
+//!      long-lived process every omp worker-profile session inherits `TB_AS` from, so its
+//!      cmdline keeps the FIRST worker's `TB_AS=<owner>` forever (match is on argv[1]
+//!      EXACTLY, so a live worker merely holding that string in a later arg still vouches);
 //!   6. one of the owner's tb actor sessions on this card is a live herdr agent's session
 //!      (an orchestrator or headless builder acting under the name);
 //!   7. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
@@ -27,8 +31,9 @@
 //! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,PANES,SESSIONS,PROCS}` switches every
 //! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
 //! TMUX, SESSIONS are comma lists; PANES (labels) and PROCS (`<pid> <command line>`) are
-//! `;`-separated. A PROCS line whose argv0 is `tmux` is skipped by the process probe (see
-//! probe 5), so a test can pin a tmux server line and assert it vouches for nobody. Any one
+//! `;`-separated. A PROCS line whose argv0 is `tmux`, or whose argv[1] is exactly
+//! `__omp_worker_daemon_broker` (omp's shared worker broker), is skipped by the process
+//! probe (see probe 5), so a test can pin such a line and assert it vouches for nobody. Any one
 //! of them set (even to "") puts EVERY probe in fixture mode: a test must never half-ask the
 //! real world. Fixture PROCS are NEVER filtered by ancestry — the exclusion is about the
 //! caller's own process tree, which a fixture table does not contain.
@@ -299,7 +304,17 @@ impl World {
                 .first()
                 .and_then(|t| t.rsplit('/').next())
                 .is_some_and(|b| b.eq_ignore_ascii_case("tmux"));
-            argv0_agentish && !is_tmux && toks.iter().any(|t| eq_ci(t, o))
+            // omp's SHARED worker broker (`~/.local/bin/omp __omp_worker_daemon_broker`,
+            // ppid 1) is spawned once and inherited by every omp worker-profile session, so
+            // its cmdline keeps the FIRST worker's `TB_AS=<owner>` forever — it names an
+            // owner it merely serves, like a tmux server above. ONLY argv[1] EXACTLY
+            // `__omp_worker_daemon_broker` marks it: a live worker that merely holds that
+            // string in a later arg (e.g. `omp -p grep __omp_worker_daemon_broker …`)
+            // still vouches.
+            let is_omp_broker = toks
+                .get(1)
+                .is_some_and(|t| t.eq_ignore_ascii_case("__omp_worker_daemon_broker"));
+            argv0_agentish && !is_tmux && !is_omp_broker && toks.iter().any(|t| eq_ci(t, o))
         }) {
             return Some(format!("process {pid}"));
         }
