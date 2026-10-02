@@ -34,13 +34,16 @@ impl Board {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
         c.args(args).env_clear();
         c.env("TB_DB", self.db())
-            .env("TB_AS", who)
             .env("TB_NO_HERDR", "1")
             .env("TB_GH", "/nonexistent/gh")
             .env("USER", "login-user")
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
+        // `"-"` = no name at all: no TB_AS, no --as — the identity-less caller
+        if who != "-" {
+            c.env("TB_AS", who);
+        }
         c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
         c.output().unwrap()
     }
@@ -81,7 +84,7 @@ fn a_person_sets_prints_and_clears_readers() {
     let v = b.json(&["config", "readers", "--json"]);
     assert_eq!(v["config"]["value"], serde_json::json!(["tb-box-enforcer", "lead-bar"]), "{v}");
     // the settings listing carries it too, so `tb config` says what the board is
-    assert!(b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer, lead-bar") || b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer,lead-bar"));
+    assert!(b.ok(PERSON, "charles", &["config"]).contains("readers        tb-box-enforcer,lead-bar"));
     // clearing it removes the restriction (the next test reads what that means)
     b.ok(PERSON, "charles", &["config", "readers", "--off"]);
     let out = b.ok(PERSON, "charles", &["config", "readers"]);
@@ -125,13 +128,13 @@ fn an_off_list_agent_is_refused_reads_and_writes() {
 
     // a read, by harness and by nothing-but-ancestry-later (this one: harness env)
     for (what, env, who) in [("a harness agent", AGENT, "lead-fleet"), ("no name at all", AGENT, "-")] {
-        let who = if who == "-" { "login-user" } else { who }; // USER only: no identity claim
         let empty: &[(&str, &str)] = &[];
         let env = if what == "no name at all" { empty } else { env }; // no TB_AS, no name
+        let caller = if who == "-" { "login-user" } else { who }; // the login name is what the refusal can name
         let (e, code) = b.refused(env, who, &["list"]);
         assert_eq!(code, "not_a_reader", "{what}: {e}");
         assert!(e.contains("board 'default'"), "{what}: the refusal names the board: {e}");
-        assert!(e.contains(who), "{what}: the refusal names the caller: {e}");
+        assert!(e.contains(caller), "{what}: the refusal names the caller: {e}");
         assert!(e.contains("tb-box-enforcer") && e.contains("lead-bar"), "{what}: the refusal names the list: {e}");
         assert!(e.contains("only a person sets or clears the list"), "{what}: the refusal says who lifts it: {e}");
         let (e, code) = b.refused(env, who, &["show", "1"]);
