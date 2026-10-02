@@ -300,7 +300,7 @@ fn the_shared_omp_worker_broker_does_not_vouch_for_the_first_worker_it_inherited
         "b-43r finished; only the shared broker still names it",
         &[(
             "TB_REAP_FAKE_PROCS",
-            "18841 /Users/chick/.local/bin/omp __omp_worker_daemon_broker \
+            "18841 omp __omp_worker_daemon_broker \
              TB_AS=b-43r TB_SESSION=omp-b-43r-3d433aba TB_CARD=fleet#43",
         )],
     );
@@ -320,8 +320,8 @@ fn a_live_omp_worker_still_vouches_beside_the_shared_broker() {
         "should be refused",
         &[(
             "TB_REAP_FAKE_PROCS",
-            "18841 /Users/chick/.local/bin/omp __omp_worker_daemon_broker \
-             TB_AS=b-43r;22001 /Users/chick/.local/bin/omp --approval-mode yolo --max-time 35m TB_AS=b-43r",
+            "18841 omp __omp_worker_daemon_broker \
+             TB_AS=b-43r;22001 omp --approval-mode yolo --max-time 35m TB_AS=b-43r",
         )],
     );
     assert_eq!(code, "holder_alive", "{text}");
@@ -343,7 +343,7 @@ fn a_real_worker_with_the_broker_string_in_a_later_arg_still_vouches() {
         "worker grepping the broker string is not the broker",
         &[(
             "TB_REAP_FAKE_PROCS",
-            "22002 /Users/chick/.local/bin/omp -p grep __omp_worker_daemon_broker src TB_AS=b-43r",
+            "22002 omp -p grep __omp_worker_daemon_broker src TB_AS=b-43r",
         )],
     );
     assert_eq!(code, "holder_alive");
