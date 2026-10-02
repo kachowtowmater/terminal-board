@@ -38,11 +38,9 @@ tb done ID                   # finished: DOING -> REVIEW
 | do this | run |
 |---|---|
 | take the top TODO card | `tb next --as NAME` |
-| claim the top REVIEW card you did not do | `tb next --review --as NAME` |
-| claim exactly that REVIEW card | `tb claim ID` |
+| claim the top REVIEW card you did not do, or exactly one REVIEW card | `tb next --review --as NAME` · `tb claim ID` |
 | take one specific TODO card, or hand it to someone else | `tb take ID` · `tb assign ID NAME` |
-| see every card, by column | `tb list` |
-| one card in full (brief, checklist, notes, history) | `tb show ID` |
+| see every card, by column; one card in full (brief, checklist, notes, history) | `tb list` · `tb show ID` |
 | the whole board as JSON | `tb board --json` |
 | follow changes live (one JSON line per change) | `tb watch --json` |
 | add a note (long ones from a file or a pipe: `--file notes.md`, `--file -`) | `tb note ID "tests pass, opening PR"` |
@@ -103,7 +101,7 @@ trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--
   verifier's `tb done` / `tb move` out of REVIEW is refused (`claimed_by_other`); a dead claimant's claim is freed as stale. Check the
   done criteria, then `tb done ID` with a note of what you checked, or send it back: `tb move ID doing "what is missing"`
   (FAIL: `tb move ID todo "why"`). After `--max-rounds` rounds it marks `escalate` (`tb next` skips it; you can still `tb take`/`tb done` it directly).
-- **Your card came back:** the last `returned` event in `tb show ID` says what to fix. Refused outright (`not_a_reader`): the board's reader list (above) does not have your name — ask a person to add it, or work elsewhere.
+- **Your card came back:** the last `returned` event in `tb show ID` says what to fix. Refused outright (`not_a_reader`): the board's reader list (above) lacks your name — ask a person to add it, or work elsewhere.
 
 ## Who moves a card
 
@@ -222,6 +220,7 @@ command that succeeded — is for your operator: pass it on.
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` · `no card #ID`: `tb list` |
 | `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
+| `is read-only to its reader list` (`not_a_reader`) | the board keeps `tb config readers` and you are not on it: ask a person to add your name |
 
 ## Walkthrough (every command above, run in order by the test suite)
 
@@ -235,8 +234,7 @@ tb check 1 --add "add screenshots"
 tb check 1 --rm 3
 tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
-tb block 1 "#2"
-tb block 1 --clear
+tb block 1 "#2" --clear
 tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
