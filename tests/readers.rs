@@ -98,7 +98,7 @@ fn a_person_sets_prints_and_clears_readers() {
 fn only_a_person_changes_readers() {
     let b = Board::new();
     b.ok(PERSON, "charles", &["config", "readers", "tb-box-enforcer"]);
-    for (env, who, what) in [
+    for (what, env, who) in [
         ("a listed agent", AGENT, "tb-box-enforcer"),
         ("an unlisted agent", AGENT, "intruder"),
         ("an identity-less agent", PERSON, "nobody"),
