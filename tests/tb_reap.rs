@@ -149,17 +149,32 @@ fn a_genuinely_dead_owner_is_still_flagged() {
     assert_eq!(dead(&v), 1, "{v}");
 }
 
-/// factory #5: codex-u5 was a plain `codex exec` pane — no herdr agent, but its label names it.
+/// tb#256 (was factory #5): a herdr pane LABEL is display text — it never vouches for a
+/// holder, so the plain pane's leftover label does NOT keep the card alive.
 #[test]
-fn fp_factory5_plain_pane_whose_label_names_the_owner_is_alive() {
+fn a_plain_pane_whose_label_names_the_owner_is_dead() {
     let f = fx();
     doing(&f, "codex-u5", None);
     let label = "worker2 · codex (OpenAI) · codex exec · codex-u5 · U5 queue RED suite r2 (#5)";
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PANES", label)]);
-    assert_eq!(dead(&v), 0, "{v}");
-    // a label that merely CONTAINS the name as a substring of another word does not count
+    assert_eq!(dead(&v), 1, "a label never vouches (tb#256): {v}");
+    // a label that merely CONTAINS the name as a substring of another word never counted
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PANES", "worker2 · codex-u55 · other")]);
     assert_eq!(dead(&v), 1, "substring is not a match: {v}");
+}
+
+/// tb#256: a pane LABEL plus a LIVE omp process naming the owner (TB_AS) still keeps the
+/// card alive — the process probe (4) is what vouches, never the label.
+#[test]
+fn a_pane_label_plus_a_live_process_with_tb_as_is_alive() {
+    let f = fx();
+    doing(&f, "codex-u5", None);
+    let (_, v) = reap(
+        &f,
+        &["--dry-run", "--json"],
+        &[("TB_REAP_FAKE_PANES", "worker2 · codex-u5 · U5 queue"), ("TB_REAP_FAKE_PROCS", "4242 codex exec --full-auto TB_AS=codex-u5 HOME=/x")],
+    );
+    assert_eq!(dead(&v), 0, "the live process vouches, not the label: {v}");
 }
 
 /// factory #5: a running codex process that names the owner (env or args) keeps it alive.
@@ -231,8 +246,8 @@ fn write_log(f: &Fx, days: i64, board: &str, flagged: &[(i64, &str)]) {
     std::fs::create_dir_all(&f.state).unwrap();
     let detail: Vec<serde_json::Value> =
         flagged.iter().map(|(id, o)| serde_json::json!({"board": board, "id": id, "owner": o})).collect();
-    let empty = serde_json::json!({"liveness": 2, "mode": "dry-run", "dead_owner_cards": 0, "dead_owner_detail": []});
-    let flag = serde_json::json!({"liveness": 2, "mode": "dry-run", "dead_owner_cards": detail.len(), "dead_owner_detail": detail});
+    let empty = serde_json::json!({"liveness": 3, "mode": "dry-run", "dead_owner_cards": 0, "dead_owner_detail": []});
+    let flag = serde_json::json!({"liveness": 3, "mode": "dry-run", "dead_owner_cards": detail.len(), "dead_owner_detail": detail});
     let text = format!("{} {empty}\n{} {flag}\n", iso(days * 86400), iso(0));
     std::fs::write(f.state.join("dry-run.log"), text).unwrap();
 }
@@ -326,5 +341,5 @@ fn dry_run_log_lines_carry_the_liveness_version() {
     let line = log.lines().last().unwrap();
     let (_, json) = line.split_once(' ').unwrap();
     let v: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(v["liveness"], 2, "{line}");
+    assert_eq!(v["liveness"], 3, "{line}");
 }

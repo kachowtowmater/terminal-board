@@ -12,11 +12,12 @@
 //!    `TB_ROLE` is `lead` or `orchestrator` — the seats that run workers (`not_releaser`,
 //!    [`may_release`]);
 //! 4. the holder is dead by the SAME probes `tb-reap` uses (`crate::liveness`: herdr agent,
-//!    tmux session, pane label, agent process, live actor session, headless pid) — except a
-//!    no-pid `mode:headless` note, which keeps the holder alive only for `tb-reap`'s
-//!    automatic scan; a hand release with a reason does not trust it alone. While any of
-//!    them vouches for the holder, it is refused (`holder_alive`), naming which one
-//!    ([`holder_alive`]). `TB_REAP_FAKE_*` put the probes in fixture mode, as for tb-reap.
+//!    tmux session, agent process, live actor session, headless pid — a herdr pane label is
+//!    never one of them, tb#256) — except a no-pid `mode:headless` note, which keeps the
+//!    holder alive only for `tb-reap`'s automatic scan; a hand release with a reason does not
+//!    trust it alone. While any of them vouches for the holder, it is refused
+//!    (`holder_alive`), naming which one ([`holder_alive`]). `TB_REAP_FAKE_*` put the probes
+//!    in fixture mode, as for tb-reap.
 //!
 //! There is no `--force` here on purpose: a live holder's card is taken with `tb move ID todo
 //! --force`, which is logged as exactly that. The release itself goes through
@@ -89,7 +90,7 @@ impl Store {
         let evidence = if crate::liveness::fixture_mode() {
             "dead: no probe vouches for it (fixture)"
         } else {
-            "dead: no herdr agent, tmux session, pane label, agent process, live session or headless pid"
+            "dead: no herdr agent, tmux session, agent process, live session or headless pid"
         };
         let text = format!("released {holder} ({evidence}): {reason}");
         self.release_card(id, &holder, &text, actor)

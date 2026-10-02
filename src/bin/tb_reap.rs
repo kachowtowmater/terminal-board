@@ -16,9 +16,10 @@
 //!     (headless workers have none by design); its note's `pid=N`, when present, decides.
 //!
 //! Modes: `--dry-run` (report only, never writes; also appends a dated line carrying
-//! `"liveness":2` to `<state>/dry-run.log`, the 7-day proof) and `--apply`. Neither flag
-//! defaults to `--dry-run`. `--apply` is REFUSED (exit 1, `{"refused":true,...}`) unless
-//! `TB_REAP_MODE=live` AND the dry-run log holds liveness-v2 entries spanning >= 7 days, the
+//! `"liveness":LIVENESS_VERSION` to `<state>/dry-run.log`, the 7-day proof) and `--apply`.
+//! Neither flag defaults to `--dry-run`. `--apply` is REFUSED (exit 1, `{"refused":true,...}`)
+//! unless `TB_REAP_MODE=live` AND the dry-run log holds entries of the CURRENT liveness
+//! version spanning >= 7 days, the
 //! newest < 24 h old, AND 0 false positives: no card the dry run flagged was later written to
 //! by its owner, and `<state>/false-positives.log` (a human-kept ledger) has no entries.
 //! `<state>` = `TB_REAP_STATE_DIR`, else `~/.local/state/tb-reap`. A kill-switch file
@@ -38,7 +39,7 @@ use terminal_board::store::Store;
 
 /// Bumped when the liveness rules change: only dry-run lines written under the current rules
 /// count toward the 7-day proof `--apply` needs.
-const LIVENESS_VERSION: i64 = 2;
+const LIVENESS_VERSION: i64 = 3;
 const APPLY_MIN_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,7 +138,7 @@ fn scan_board(name: &str, mode: Mode, threshold: i64, world: &World) -> Option<B
         for (id, owner) in &r.dead_owner_cards {
             let owner = owner.as_deref().unwrap_or("unknown");
             let reason = format!(
-                "tb-reap: released — owner '{owner}' not alive by any liveness source (herdr agent, tmux, pane label, agent process, actor session, headless pid, orchestrator) for >= {threshold}s"
+                "tb-reap: released — owner '{owner}' not alive by any liveness source (herdr agent, tmux, agent process, actor session, headless pid, orchestrator) for >= {threshold}s"
             );
             // force=true here is a direct library call, never the CLI's `--force` flag: the
             // reaper is the one caller allowed to release a dead owner's card without asking.
@@ -173,7 +174,7 @@ fn apply_refusals() -> (Vec<String>, Vec<serde_json::Value>) {
     if mode != "live" {
         reasons.push(format!("TB_REAP_MODE is '{mode}', not 'live'"));
     }
-    // liveness-v2 dry-run lines: (unix ts, json)
+    // current-liveness dry-run lines: (unix ts, json)
     let text = std::fs::read_to_string(dry_run_log_path()).unwrap_or_default();
     let lines: Vec<(i64, serde_json::Value)> = text
         .lines()
