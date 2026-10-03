@@ -239,3 +239,68 @@ fn an_agent_cannot_close_an_unclaimed_card() {
         assert_eq!(b.reviewer_of(&id), None, "no claim was taken");
     }
 }
+
+/// #236: `tb claim ID` takes the claim only when it is free or STALE. A claim held by a
+/// LIVE verifier is refused `claimed_by_other` — the message names the claimant and the
+/// person's free path. (A stale claim frees and is taken; that is
+/// a_freed_claim_closes…'s lane via `tb move`, and the close-side stale test pins the
+/// same World. Here the claimant is alive: the second claimant is refused.)
+#[test]
+fn a_second_verifier_cannot_claim_a_live_claim() {
+    let b = Board::new();
+    let id = b.in_review("claim: rv-b may not take rv-a's live claim", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    assert!(e.contains("rv-a") && e.contains(&format!("tb move {id} review")), "{e}");
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
+    // the same refusal when rv-b is dead-looking too: liveness answers for the HOLDER,
+    // not the asker
+    let (e, _) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], false);
+    assert!(e.contains("rv-a"), "{e}");
+    // re-claiming your own claim is a no-op success
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+}
+
+/// #236: the claim lock covers every move OUT of review, not just the close. Another
+/// verifier's SEND-BACK (review -> doing, and review -> todo) of a live-claimed card is
+/// refused `claimed_by_other`, the card stays in REVIEW with its claim, and the refusal
+/// names the claimant's own send-back path.
+#[test]
+fn another_verifier_cannot_send_back_a_live_claim() {
+    let b = Board::new();
+    let id = b.in_review("send-back: rv-b may not fail rv-a's claim", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    for args in [
+        vec!["move", id.as_str(), "doing", "tests are missing"],
+        vec!["move", id.as_str(), "todo", "the fix is wrong"],
+    ] {
+        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &args, true);
+        assert_eq!(code, "claimed_by_other", "{args:?}: {e}");
+        assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
+        assert_eq!(b.column(&id), "review", "nothing moved");
+        assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
+    }
+}
+
+/// M4: the claimant's own close never logs "stale claim by <self>". In a fixture where
+/// liveness would call the claimant DEAD (TB_REAP_FAKE_* all empty), the claimant's
+/// `tb done` still proceeds and the card's events carry NO `unclaimed` event — the
+/// lazy World (#237) never asks liveness for the claimant's own moves, so there is no
+/// stale-claim free to log.
+#[test]
+fn the_claimants_own_close_logs_no_stale_claim() {
+    let b = Board::new();
+    let id = b.in_review("own close: no stale claim even with the claimant looking dead", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    // claimant_alive=false: every TB_REAP_FAKE_* var set to empty — nothing vouches for rv-a
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["done", &id], false);
+    assert_eq!(b.column(&id), "done");
+    let events = b.events(&id);
+    let unclaimed: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
+    assert!(unclaimed.is_empty(), "the claimant's own close logged a stale claim: {unclaimed:?}");
+}
