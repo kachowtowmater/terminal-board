@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **The claim lock covers every move out of REVIEW, and each refusal carries its own
+  path (tb#236):** a verifier's send-back (`tb move ID doing "…"`, `tb move ID todo "…"`)
+  of a card whose live `reviewer` claim it does not hold is refused `claimed_by_other`
+  with the send-back wording (the claimant's own send-back paths are named), an agent
+  closing an UNCLAIMED review card is refused `close_needs_claim` until it claims, and
+  `tb claim ID` takes a free or STALE claim (a live claim held by another verifier is
+  refused; a stale one hands off with an `unclaimed` event). The close-form refusal
+  (`"… closes it, or a person frees the claim"`) now scopes to closes only, so a
+  send-back refusal is never worded as a close.
+
 ## 3.4.0 — 2026-10-02
 
 ### Highlights
