@@ -9,8 +9,10 @@
 //!      identity the caller itself runs as (`TB_AS`);
 //!   2. a herdr agent with that exact name;
 //!   3. a tmux session with that name;
-//!   4. a running agent process (codex / omp / claude / pi / aider / opencode / gemini) whose
-//!      argv or environment names the owner as a whole token (`TB_AS=<owner>`, `--as <owner>`).
+//!   4. a running agent process (codex / omp / claude / pi / aider / opencode / gemini)
+//!      that names the owner as its IDENTITY: an env token `TB_AS=<owner>` or the argv pair
+//!      `--as <owner>` (default#993 — a holder named only by `TB_ROLE=<owner>` or prompt
+//!      text is not that process's identity and does not vouch).
 //!      A tmux process is NEVER this probe's proof — the SERVER spawned by the first headless
 //!      `tmux new-session -s tbh-<owner> -e TB_AS=<owner> …` (and any tmux client) keeps that
 //!      first session's `-e TB_AS` and agent binary in its cmdline long after that session is
@@ -22,7 +24,8 @@
 //!      EXACTLY, so a live worker merely holding that string in a later arg still vouches);
 //!   5. one of the owner's tb actor sessions on this card is a live herdr agent's session
 //!      (an orchestrator or headless builder acting under the name);
-//!   6. `mode:headless`: with `pid=N` in the note, alive while pid N runs; with no pid,
+//!   6. `mode:headless`: with `pid=N` in the note, alive while pid N runs the agent and the
+//!      note's `log:` file carries no `[tb-agent-start] … exit=<N>` trailer; with no pid,
 //!      conservatively alive — for `tb-reap`. An explicit `tb release` treats a no-pid
 //!      headless holder as DEAD (nothing but the note records it; the releaser has checked).
 //!      Both keep a no-pid holder alive by every other probe.
@@ -301,7 +304,16 @@ impl World {
             let is_omp_broker = toks
                 .get(1)
                 .is_some_and(|t| t.eq_ignore_ascii_case("__omp_worker_daemon_broker"));
-            argv0_agentish && !is_tmux && !is_omp_broker && toks.iter().any(|t| eq_ci(t, o))
+            // The holder name must be the process's IDENTITY, never a token it merely
+            // mentions (default#993: `claude --agent lead … TB_AS=lead-legal-mcp
+            // TB_ROLE=orchestrator` kept holder `orchestrator` alive by its role token):
+            // an env token `TB_AS=<holder>` or the argv pair `--as <holder>`. Any other
+            // occurrence of the name (a role, prompt text, a card string) changes nothing.
+            let named_as_identity = toks.iter().any(|t| eq_ci(t, &format!("TB_AS={o}")))
+                || toks
+                    .windows(2)
+                    .any(|w| eq_ci(w[0], "--as") && eq_ci(w[1], o));
+            argv0_agentish && !is_tmux && !is_omp_broker && named_as_identity
         }) {
             return Some(format!("process {pid}"));
         }
@@ -319,9 +331,21 @@ impl World {
         // a reaped headless worker can't fight back), but an explicit `tb release` by a
         // lead/orchestrator/person who has already checked the holder is gone treats it as
         // dead: nothing records that worker but this note.
+        //
+        // A pid alone is never enough: the launcher's wrapper appends an `exit=N <name>`
+        // trailer to the note's `log:` file when the agent ends, so a note whose log
+        // carries it names a FINISHED run (the #243 repro), and a pid that now runs
+        // something else (a reused pid — the repro's com.apple.audio.SandboxHelper at
+        // 73509) is not the agent at all. The pid vouches only while the log has no exit
+        // trailer AND the process there is still agent-shaped: an agent binary or the
+        // holder's name as a whole token in its command line.
         if let Some(note) = detail.events.iter().rev().find(|e| e.kind == "note" && e.text.contains("mode:headless")) {
+            let log_path = headless_log(&note.text);
+            let log_trailer = log_path.as_deref().map(log_exit_trailer).unwrap_or(false);
             return match headless_pid(&note.text) {
-                Some(pid) if self.pid_alive(pid) => Some(format!("headless pid {pid}")),
+                Some(pid) if !log_trailer && self.pid_alive(pid) && self.pid_runs_agentish(pid, o) => {
+                    Some(format!("headless pid {pid}"))
+                }
                 Some(_) => None,
                 None => match mode {
                     Mode::Reap => Some("headless (no pid recorded)".into()),
@@ -330,6 +354,22 @@ impl World {
             };
         }
         None
+    }
+
+    /// Does the pid's process still look like the agent named by a `mode:headless` note?
+    /// True only when its command line names an agent binary (as the process probe checks
+    /// argv0 basenames) or the holder's own name as a whole token — a reused pid whose
+    /// command line names neither is NOT the agent and stops vouching (the #243 repro).
+    fn pid_runs_agentish(&self, pid: i64, holder: &str) -> bool {
+        self.procs
+            .iter()
+            .filter(|(p, _)| *p == pid)
+            .any(|(_, cmd)| {
+                cmd.split(|c: char| c.is_whitespace() || c == '=').any(|t| {
+                    let base = t.rsplit('/').next().unwrap_or(t);
+                    AGENT_BINS.iter().any(|b| base.eq_ignore_ascii_case(b)) || eq_ci(t, holder)
+                })
+            })
     }
 }
 
@@ -340,6 +380,38 @@ fn headless_pid(text: &str) -> Option<i64> {
     let rest = lower[i + 3..].trim_start_matches(|c: char| c == '=' || c == ':' || c.is_whitespace());
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// The `log:<path>` token in a `mode:headless` note — the launcher's log file for that run.
+/// Absolute paths only: a relative token names nothing the probe can re-check, and trusting
+/// one would let a note pick a file of its own making.
+fn headless_log(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let i = lower.find("log:")?;
+    let rest = &text[i + 4..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let path = rest[..end].trim();
+    (!path.is_empty() && path.starts_with('/')).then(|| path.to_string())
+}
+
+/// Does `path` end with the wrapper's exit trailer — a line matching
+/// `[tb-agent-start] <date> exit=<N> <holder>`? Read errors count as NO trailer (the file
+/// may be gone; the pid probe still decides), and a successful agent run writes the last
+/// line the wrapper appends.
+fn log_exit_trailer(path: &str) -> bool {
+    let Ok(log) = std::fs::read(path) else { return false };
+    let text = String::from_utf8_lossy(&log);
+    let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim_end) else {
+        return false;
+    };
+    // `[tb-agent-start] <timestamp> exit=<digits> <holder-name>`
+    let mut it = last.split_whitespace();
+    if !eq_ci(it.next().unwrap_or(""), "[tb-agent-start]") {
+        return false;
+    }
+    let _ = it.next(); // the timestamp
+    let Some(exit) = it.next().and_then(|t| t.strip_prefix("exit=")) else { return false };
+    !exit.is_empty() && exit.chars().all(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
