@@ -12,6 +12,17 @@ fn agent(role: &str) -> Vec<(&'static str, String)> {
     vec![("TB_HARNESS", "claude-code".into()), ("TB_MODEL", "m".into()), ("TB_SESSION", format!("s-{role}")), ("TB_ROLE", role.into())]
 }
 
+/// The launcher's headless log: a spawn header and, once the run ends, the exit trailer —
+/// matching what tb-agent-start's HEADLESS_WRAP appends to the file the note's `log:` token
+/// names.
+fn headless_log_start(holder: &str, pid: i64) -> String {
+    format!("[tb-agent-start] 2026-09-26 21:08:21 start {holder} pid={pid}: omp --approval-mode yolo --max-time 35m\n")
+}
+
+fn headless_log_exit(holder: &str) -> String {
+    format!("[tb-agent-start] 2026-09-26 22:03:21 exit=0 {holder}\n")
+}
+
 struct Board {
     dir: tempfile::TempDir,
 }
@@ -348,4 +359,108 @@ fn a_real_worker_with_the_broker_string_in_a_later_arg_still_vouches() {
     );
     assert_eq!(code, "holder_alive");
     b.assert_doing(&id, "b-43r");
+}
+
+/// The #243 repro: the run ended (`exit=0` trailer in the note's log) and the pid was
+/// reused by an unrelated process — the pid must vouch for nobody and the release frees
+/// the card.
+#[test]
+fn a_headless_pid_with_an_exit_trailer_and_a_reused_pid_stops_vouching() {
+    let b = Board::new();
+    let id = b.held_by("b-100");
+    let log = b.dir.path().join("b-100.log");
+    std::fs::write(
+        &log,
+        format!("{}{}", headless_log_start("b-100", 73509), headless_log_exit("b-100")),
+    )
+    .unwrap();
+    b.note(
+        &id,
+        "b-100",
+        &format!("mode:headless pid:73509 log:{} session:tbh-b-100", log.display()),
+    );
+    b.release_ok(
+        "lead-x",
+        &id,
+        "b-100 finished; its pid is now an audio sandbox helper",
+        &[(
+            "TB_REAP_FAKE_PROCS",
+            "73509 /System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper",
+        )],
+    );
+    b.assert_released(&id, "b-100");
+}
+
+/// No log file at all — but the pid now runs something that names neither an agent binary
+/// nor the holder: a reused pid is not the agent and stops vouching.
+#[test]
+fn a_reused_pid_whose_process_names_no_agent_or_holder_stops_vouching() {
+    let b = Board::new();
+    let id = b.held_by("b-100");
+    b.note(&id, "b-100", "mode:headless pid:73509 log:/nonexistent/b-100.log session:tbh-b-100");
+    b.release_ok(
+        "lead-x",
+        &id,
+        "pid 73509 is not an agent any more",
+        &[("TB_REAP_FAKE_PROCS", "73509 com.apple.audio.SandboxHelper")],
+    );
+    b.assert_released(&id, "b-100");
+}
+
+/// A LIVE headless agent: the log has no exit trailer and the pid still runs the wrapper
+/// (holder's name + omp in its command line) — the release stays refused.
+#[test]
+fn a_live_headless_wrapper_with_the_holder_and_no_trailer_still_vouches() {
+    let b = Board::new();
+    let id = b.held_by("b-100");
+    let log = b.dir.path().join("b-100-live.log");
+    std::fs::write(&log, headless_log_start("b-100", 73509)).unwrap();
+    b.note(
+        &id,
+        "b-100",
+        &format!("mode:headless pid:73509 log:{} session:tbh-b-100", log.display()),
+    );
+    let (code, text) = b.refused_release(
+        "lead-x",
+        &id,
+        "should be refused",
+        &[(
+            "TB_REAP_FAKE_PROCS",
+            "73509 bash -c wrap _ /tmp/b-100.log b-100 omp --approval-mode yolo --max-time 35m",
+        )],
+    );
+    assert_eq!(code, "holder_alive", "{text}");
+    assert!(text.contains("headless pid 73509"), "{text}");
+    b.assert_doing(&id, "b-100");
+}
+
+/// The default#993 repro: a lead process whose TB_ROLE token names the holder
+/// `orchestrator` while running as lead-legal-mcp — the role token is not the process's
+/// identity, so the process probe must not vouch and the release frees the card.
+#[test]
+fn a_process_naming_the_holder_only_as_its_role_token_does_not_vouch() {
+    let b = Board::new();
+    let id = b.held_by("orchestrator");
+    b.release_ok(
+        "lead-x",
+        &id,
+        "the role token is not the identity (default#993)",
+        &[("TB_REAP_FAKE_PROCS", "76259 claude --agent lead TB_AS=lead-legal-mcp TB_ROLE=orchestrator")],
+    );
+    b.assert_released(&id, "orchestrator");
+}
+
+/// A holder's name only as prompt text inside an agent process running as someone else is
+/// not its identity either.
+#[test]
+fn a_holder_named_only_in_prompt_text_of_another_agents_process_does_not_vouch() {
+    let b = Board::new();
+    let id = b.held_by("orchestrator");
+    b.release_ok(
+        "lead-x",
+        &id,
+        "prompt text is not the identity",
+        &[("TB_REAP_FAKE_PROCS", "76259 claude -p summarize the orchestrator notes TB_AS=lead-x")],
+    );
+    b.assert_released(&id, "orchestrator");
 }
