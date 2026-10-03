@@ -274,16 +274,16 @@ fn another_verifier_cannot_send_back_a_live_claim() {
     let id = b.in_review("send-back: rv-b may not fail rv-a's claim", "bot-1");
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
-    for args in [
-        vec!["move", id.as_str(), "doing", "tests are missing"],
-        vec!["move", id.as_str(), "todo", "the fix is wrong"],
-    ] {
-        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &args, true);
-        assert_eq!(code, "claimed_by_other", "{args:?}: {e}");
-        assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
-        assert_eq!(b.column(&id), "review", "nothing moved");
-        assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
-    }
+    // review -> doing is the claimant's own send-back (the refusal says so); review -> todo
+    // is a FAIL, its refusal carries the close form (rv-a closes it, or a person frees it)
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "doing", "tests are missing"], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "todo", "the fix is wrong"], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    assert!(e.contains("rv-a"), "{e}");
+    assert_eq!(b.column(&id), "review", "nothing moved");
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
 }
 
 /// M4: the claimant's own close never logs "stale claim by <self>". In a fixture where
