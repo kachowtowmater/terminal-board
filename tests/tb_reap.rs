@@ -186,7 +186,7 @@ fn fp_factory5_codex_process_naming_the_owner_is_alive() {
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4242 codex exec --full-auto TB_AS=codex-u5 HOME=/x")]);
     assert_eq!(dead(&v), 0, "env TB_AS: {v}");
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4243 /opt/bin/omp --as codex-u5")]);
-    assert_eq!(dead(&v), 0, "argv identity: {v}");
+    assert_eq!(dead(&v), 0, "argv name: {v}");
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4244 /usr/bin/vim codex-u5.txt")]);
     assert_eq!(dead(&v), 1, "a non-agent process does not count: {v}");
 }
