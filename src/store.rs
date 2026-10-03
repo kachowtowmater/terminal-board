@@ -545,25 +545,30 @@ fn done_checks(
             }
         }
     }
-    if let Some(r) = c.reviewer.as_deref() {
-        if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
-            // `tb next --review` set this claim (card #169's sibling question: a claim is a
-            // hand-off between sessions, like the verifier registry, not a name a shell can
-            // forge). ANOTHER VERIFIER may not close it — default#813: rv-sweep closed a
-            // card whose claim rv-lead held, and its cleanup tore down rv-lead's in-flight
-            // work. A person's close keeps main's behaviour (a person is the one actor that
-            // can free a claim, and the verifier rule already keeps its closes rare); the
-            // message names the claimant and both ways out.
-            v.push(DoneCheck {
-                rule: "the review claim is someone else's",
-                err: BoardError(
-                    format!(
-                        "#{id} is claimed by {r} ('tb next --review') — {r} closes it, or a person frees the claim with 'tb move {id} review'"
+    // The CLOSE-form claim refusal scopes to closes: a send-back (below) carries its own
+    // form naming the claimant's send-back paths — this rule pushed unconditionally would
+    // shadow it (the duplicate rv-lead-tb found on #236's verify).
+    if target_column == "done" {
+        if let Some(r) = c.reviewer.as_deref() {
+            if verifier::is_agent(&who) && !r.eq_ignore_ascii_case(actor) && claimant_alive != Some(false) {
+                // `tb next --review` set this claim (card #169's sibling question: a claim is a
+                // hand-off between sessions, like the verifier registry, not a name a shell can
+                // forge). ANOTHER VERIFIER may not close it — default#813: rv-sweep closed a
+                // card whose claim rv-lead held, and its cleanup tore down rv-lead's in-flight
+                // work. A person's close keeps main's behaviour (a person is the one actor that
+                // can free a claim, and the verifier rule already keeps its closes rare); the
+                // message names the claimant and both ways out.
+                v.push(DoneCheck {
+                    rule: "the review claim is someone else's",
+                    err: BoardError(
+                        format!(
+                            "#{id} is claimed by {r} ('tb next --review') — {r} closes it, or a person frees the claim with 'tb move {id} review'"
+                        ),
+                        Code::ClaimedByOther,
                     ),
-                    Code::ClaimedByOther,
-                ),
-                forced: format!("closed #{id} claimed by {r}"),
-            });
+                    forced: format!("closed #{id} claimed by {r}"),
+                });
+            }
         }
     }
     // #236: the lock covers every move OUT of review, not just the close — a send-back

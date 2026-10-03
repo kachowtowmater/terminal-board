@@ -255,13 +255,16 @@ fn a_second_verifier_cannot_claim_a_live_claim() {
     assert_eq!(code, "claimed_by_other", "{e}");
     assert!(e.contains("rv-a") && e.contains(&format!("tb move {id} review")), "{e}");
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
-    // the same refusal when rv-b is dead-looking too: liveness answers for the HOLDER,
-    // not the asker
-    let (e, _) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], false);
-    assert!(e.contains("rv-a"), "{e}");
+    // rv-b DEAD-looking (no fixture vouches for rv-a either): liveness answers for the
+    // HOLDER — with the holder dead the claim is STALE, so the claim frees and is TAKEN
+    // (the hand-off `tb claim` exists for), with an `unclaimed` event naming rv-a
+    b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], false);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-b"), "the stale claim passed to rv-b");
+    let unclaimed: Vec<&str> = b.events(&id).iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
+    assert!(unclaimed.iter().any(|t| t.contains("stale") && t.contains("rv-a")), "{unclaimed:?}");
     // re-claiming your own claim is a no-op success
-    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
-    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-b"));
 }
 
 /// #236: the claim lock covers every move OUT of review, not just the close. Another
