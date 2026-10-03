@@ -230,8 +230,9 @@ fn an_agent_cannot_close_an_unclaimed_card() {
     let b = Board::new();
     let id = b.in_review("unclaimed: an agent must claim before closing", "bot-1");
     assert_eq!(b.reviewer_of(&id), None, "no claim at all");
+    // the closer must be a VERIFIER (the verifier rule fires first); it holds no claim
     for args in [vec!["done", id.as_str()], vec!["move", id.as_str(), "done"]] {
-        let (e, code) = b.refused(&AGENT.iter().map(|(k, v)| (*k, v.to_string())).collect::<Vec<_>>(), "bot-2", &args, false);
+        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &args, false);
         assert_eq!(code, "close_needs_claim", "{args:?}: {e}");
         assert!(e.contains("tb claim") || e.contains("tb next --review"), "{e}");
         assert_eq!(b.column(&id), "review", "nothing moved");
