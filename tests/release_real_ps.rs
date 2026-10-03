@@ -177,7 +177,7 @@ fn real_ps_release_succeeds_when_only_an_omp_shell_ancestor_names_the_holder() {
     let tb_bin = b.dir.path().join("tb");
     std::fs::copy(env!("CARGO_BIN_EXE_tb"), &tb_bin).expect("copy tb");
     let sh = retry_exec_busy("release_real_ps exec busy (ETXTBSY) retry backoff", || {
-        omp_command(omp, &b).arg(&format!(
+        omp_command(omp, &b).arg(format!(
             "export {env}; ./tb release {id} 'holder gone' --as lead-x; echo TBRC=$?",
             env = shell_env("lead")
         )).output()
