@@ -41,7 +41,7 @@ fn omp_executable() -> Option<&'static PathBuf> {
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         let omp = dir.path().join("omp");
         std::fs::rename(&tmp, &omp).ok()?;
-        dir.keep().ok().map(|kept| kept.join("omp")) // the dir must outlive every thread
+        Some(dir.keep().join("omp")) // keep() leaks the dir on purpose: outlives every thread
     });
     OMP.as_ref()
 }
