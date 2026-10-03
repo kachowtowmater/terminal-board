@@ -274,14 +274,18 @@ fn another_verifier_cannot_send_back_a_live_claim() {
     let id = b.in_review("send-back: rv-b may not fail rv-a's claim", "bot-1");
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
-    // review -> doing is the claimant's own send-back (the refusal says so); review -> todo
-    // is a FAIL, its refusal carries the close form (rv-a closes it, or a person frees it)
+    // review -> doing and review -> todo are BOTH the claimant's acts; one send-back rule
+    // (store.rs, `target_column != "done" && c.column == "review"`) covers the two, so both
+    // refusals carry the send-back form ("{r} sends it back")
     let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "doing", "tests are missing"], true);
     assert_eq!(code, "claimed_by_other", "{e}");
     assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
     let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "todo", "the fix is wrong"], true);
     assert_eq!(code, "claimed_by_other", "{e}");
-    assert!(e.contains("rv-a"), "{e}");
+    // the same send-back refusal: `claimed_by_other` for ANY move out of review the claimant
+    // did not make, so the message stays the send-back form ("{r} sends it back") — the FAIL
+    // rides the same rule, and the claimant's own send-back paths are both named on the claim
+    assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
     assert_eq!(b.column(&id), "review", "nothing moved");
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
 }
