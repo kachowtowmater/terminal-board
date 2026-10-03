@@ -177,15 +177,16 @@ fn a_pane_label_plus_a_live_process_with_tb_as_is_alive() {
     assert_eq!(dead(&v), 0, "the live process vouches, not the label: {v}");
 }
 
-/// factory #5: a running codex process that names the owner (env or args) keeps it alive.
+/// factory #5: a running codex process that names the owner as its IDENTITY (env
+/// `TB_AS=<owner>` or the argv pair `--as <owner>`, tb#272) keeps it alive.
 #[test]
 fn fp_factory5_codex_process_naming_the_owner_is_alive() {
     let f = fx();
     doing(&f, "codex-u5", None);
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4242 codex exec --full-auto TB_AS=codex-u5 HOME=/x")]);
     assert_eq!(dead(&v), 0, "env TB_AS: {v}");
-    let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4243 /opt/bin/omp --name codex-u5")]);
-    assert_eq!(dead(&v), 0, "argv name: {v}");
+    let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4243 /opt/bin/omp --as codex-u5")]);
+    assert_eq!(dead(&v), 0, "argv identity: {v}");
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PROCS", "4244 /usr/bin/vim codex-u5.txt")]);
     assert_eq!(dead(&v), 1, "a non-agent process does not count: {v}");
 }
