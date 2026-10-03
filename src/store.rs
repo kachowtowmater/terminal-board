@@ -3050,9 +3050,9 @@ impl Store {
         // dead by the same liveness World `tb release` asks (computed above), so nothing is
         // lost by clearing it — the close proceeds and the event log says the claim was
         // stale, not silently dropped. #236: the claimant closing its OWN card never logs
-        // "stale claim by <self>" — its claimant_alive is None by the lazy World (#237), but
-        // a forced close of its own card also passes here with claimant_alive Some(false).
-        if column == "done" && claimant_alive == Some(false) && !c.reviewer.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(actor)) {
+        // "stale claim by <self>" — its claimant_alive is None by the lazy World (#237), so
+        // the claimant's own close never reaches this branch and never logs it.
+        if column == "done" && claimant_alive == Some(false) {
             if let Some(r) = c.reviewer.as_deref() {
                 tx.execute("UPDATE cards SET reviewer=NULL WHERE id=?", [id])?;
                 Self::log(&tx, id, actor, "unclaimed", &format!("stale claim by {r} — the claimant's session is gone; the close proceeds"))?;

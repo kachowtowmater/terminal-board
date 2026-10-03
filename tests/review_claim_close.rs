@@ -201,7 +201,8 @@ fn a_freed_claim_closes_and_an_unclaimed_card_never_refuses() {
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
     // an UNCLAIMED review card still closes without a claim — when a PERSON asks (#236 keeps
-    // that door open); an agent is refused with close_needs_claim (C5, its own test below)
+    // that door open); an agent is refused with close_needs_claim (C5,
+    // an_agent_cannot_close_an_unclaimed_card below)
     let plain = b.in_review("unclaimed: no claim at all", "bot-1");
     b.ok(&person(), "lead", &["done", &plain], true);
     assert_eq!(b.column(&plain), "done");
@@ -218,4 +219,22 @@ fn a_person_closes_over_a_live_claim() {
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
     b.ok(&person(), "lead", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
+}
+
+/// C5 (#236): an AGENT closing an UNCLAIMED review card is refused `close_needs_claim` —
+/// `tb claim` or `tb next --review` takes the claim first; the card stays in REVIEW and
+/// keeps no reviewer. A person's close of the same card still passes (the test above pins
+/// the person door via a live-claim board; this one pins the unclaimed card directly).
+#[test]
+fn an_agent_cannot_close_an_unclaimed_card() {
+    let b = Board::new();
+    let id = b.in_review("unclaimed: an agent must claim before closing", "bot-1");
+    assert_eq!(b.reviewer_of(&id), None, "no claim at all");
+    for args in [vec!["done", id.as_str()], vec!["move", id.as_str(), "done"]] {
+        let (e, code) = b.refused(&AGENT.iter().map(|(k, v)| (*k, v.to_string())).collect::<Vec<_>>(), "bot-2", &args, false);
+        assert_eq!(code, "close_needs_claim", "{args:?}: {e}");
+        assert!(e.contains("tb claim") || e.contains("tb next --review"), "{e}");
+        assert_eq!(b.column(&id), "review", "nothing moved");
+        assert_eq!(b.reviewer_of(&id), None, "no claim was taken");
+    }
 }
