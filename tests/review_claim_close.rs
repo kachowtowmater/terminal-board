@@ -260,7 +260,8 @@ fn a_second_verifier_cannot_claim_a_live_claim() {
     // (the hand-off `tb claim` exists for), with an `unclaimed` event naming rv-a
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], false);
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-b"), "the stale claim passed to rv-b");
-    let unclaimed: Vec<&str> = b.events(&id).iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
+    let events = b.events(&id);
+    let unclaimed: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
     assert!(unclaimed.iter().any(|t| t.contains("stale") && t.contains("rv-a")), "{unclaimed:?}");
     // re-claiming your own claim is a no-op success
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
