@@ -336,9 +336,16 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     let b = board_name(&f);
     write_log(&f, 8, &b, &[(id, "b-51")]);
     // the kernel-recorded agent: a real bash binary copied to a temp path named `omp`,
-    // as the gate's repro does — argv tricks and env scrubs do not change the chain
+    // as the gate's repro does — argv tricks and env scrubs do not change the chain.
+    // macOS refuses to exec a signed system binary moved to a new path (the Launch
+    // Constraint no longer matches, SIGKILL), so the copy is re-signed ad hoc — the same
+    // exec gate verifier_rule's omp copy clears; Linux needs neither step.
     let agent = f._dir.path().join("omp");
     std::fs::copy("/bin/bash", &agent).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&agent).output();
+    }
     let run = |agent_mode: bool| {
         let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
         if agent_mode {
@@ -346,7 +353,13 @@ fn apply_is_refused_inside_an_agent_ancestry() {
         } else {
             c.args(["--apply", "--json"]);
         }
-        c.env("TB_DB", &f.db)
+        c.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("TZ", "UTC")
+            .env("TB_DB", &f.db)
+            .env("TB_NO_HERDR", "1")
+            .env("TB_GH", "/nonexistent/gh")
+            .env("USER", "login-user")
             .env("HOME", &f.home)
             .env("TB_REAP_STATE_DIR", &f.state)
             .env("TB_REAP_KILLSWITCH", f.home.join("no-such-switch"))
@@ -361,9 +374,6 @@ fn apply_is_refused_inside_an_agent_ancestry() {
             .env_remove("TB_BOARD")
             .env_remove("HERDR_AGENT_NAME")
             .env_remove("TB_SESSION");
-        for k in ["CLAUDECODE", "TB_ROLE", "TB_HARNESS", "OMPCODE"] {
-            c.env_remove(k);
-        }
         c.output().unwrap()
     };
     // inside the agent's process: refused, card untouched
