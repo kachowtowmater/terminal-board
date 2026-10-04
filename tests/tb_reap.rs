@@ -409,7 +409,14 @@ fn apply_is_refused_inside_an_agent_ancestry() {
         .env_remove("HERDR_AGENT_NAME")
         .env_remove("TB_SESSION");
     let o = c.output().unwrap();
-    assert!(o.status.success(), "dry-run under an agent is allowed: {}", String::from_utf8_lossy(&o.stderr));
+    // the omp shell's rc stays 0 (the `; true` tail keeps omp as the reaper's ancestor),
+    // so the pin is tb-reap's own JSON: dry-run inside an agent runs and is not refused.
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+    assert!(
+        v["refused"] != serde_json::Value::Bool(true),
+        "dry-run under an agent must stay allowed: {v}"
+    );
+    assert_eq!(v["mode"], "dry-run", "{v}");
 }
 
 #[test]
