@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `tb-reap --apply` refuses to run inside an agent process (tb#232)
+
+`tb-reap --apply` executed from inside an agent's own process (omp / claude / codex / pi in
+the kernel's parent chain — the harness a herdr worker or a cron-launched agent runs under)
+is refused with exit 1 before any probing: the #227 rule never counts tb's own process tree,
+so the holder that launched the reaper is invisible to the probe and a live agent's DOING
+card would be released as dead. A plain-shell `--apply` is unchanged and still releases a
+genuinely dead holder, and `tb release` keeps the #227 rule (it is an explicit person/
+lead decision, not a blind reaper).
+
 ### Liveness: a headless pid no longer vouches once it is stale or reused (tb#243, tb#272)
 
 `tb release`/`tb-reap` probe 7 (`mode:headless` with `pid=N`) no longer keeps a holder alive

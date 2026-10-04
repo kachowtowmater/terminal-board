@@ -253,6 +253,15 @@ pub(super) fn agent_as_person(actor: &str, who: &Identity) -> Option<Vec<String>
     is_agent_ancestry(&ancestry).then_some(ancestry)
 }
 
+/// The same question for the library's other binaries: is THIS process's kernel ancestry an
+/// agent's? `tb-reap --apply` asks it before probing a board (tb#232) — the #227 ancestor
+/// exclusion makes the probe blind to the holder when the reaper itself runs under the
+/// holder's agent, so a live agent's card looks dead and --apply would release it. The
+/// refusal (a person's lane, like every release is) runs from the caller's own terminal.
+pub fn agent_ancestry_is_agent() -> bool {
+    is_agent_ancestry(&crate::proc::ancestry())
+}
+
 /// The 'person' close whose parent chain says agent: the env was scrubbed (`env -u`, a
 /// heredoc script), the kernel's record was not.
 pub(super) fn agent_as_person_err(id: i64, actor: &str, ancestry: &[String]) -> BoardError {
