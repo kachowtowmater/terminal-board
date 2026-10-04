@@ -379,11 +379,12 @@ fn apply_is_refused_inside_an_agent_ancestry() {
             .env_remove("TB_SESSION");
         c.output().unwrap()
     };
-    // inside the agent's process: refused, card untouched
+    // inside the agent's process: refused, card untouched. The refusal's rc rides the
+    // omp shell (`; true` keeps the shell alive as the reaper's ancestor — exec would
+    // drop `omp` from the chain), so the rc itself is 0; the refusal is in the JSON.
     let o = run(true);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
-    assert!(!o.status.success(), "expected refusal, got success: {v} {}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(v["refused"], true, "{v}");
+    assert_eq!(v["refused"], true, "expected refusal, got: {v} {}", String::from_utf8_lossy(&o.stderr));
     assert!(v["reasons"].as_array().is_some_and(|r| r.iter().any(|x| x.as_str().unwrap_or("").contains("ancestry"))), "{v}");
     assert_eq!(column(&f, id), "doing", "the holder's own card must stay DOING");
     // control: the same fixture, from a plain shell — apply runs and releases the card
