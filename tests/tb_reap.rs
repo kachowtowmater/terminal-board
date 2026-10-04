@@ -339,10 +339,14 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     // as the gate's repro does — argv tricks and env scrubs do not change the chain
     let agent = f._dir.path().join("omp");
     std::fs::copy("/bin/bash", &agent).unwrap();
-    let run = |agent_mode: bool, args: &[&str]| {
+    let run = |agent_mode: bool| {
         let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
-        c.args(if agent_mode { vec!["-c".to_string(), format!("exec {} --apply --json", env!("CARGO_BIN_EXE_tb-reap"))] } else { args.to_vec() })
-            .env("TB_DB", &f.db)
+        if agent_mode {
+            c.args(["-c", &format!("exec {} --apply --json", env!("CARGO_BIN_EXE_tb-reap"))]);
+        } else {
+            c.args(["--apply", "--json"]);
+        }
+        c.env("TB_DB", &f.db)
             .env("HOME", &f.home)
             .env("TB_REAP_STATE_DIR", &f.state)
             .env("TB_REAP_KILLSWITCH", f.home.join("no-such-switch"))
@@ -363,7 +367,7 @@ fn apply_is_refused_inside_an_agent_ancestry() {
         c.output().unwrap()
     };
     // inside the agent's process: refused, card untouched
-    let o = run(true, &[]);
+    let o = run(true);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
     assert!(!o.status.success(), "expected refusal, got success: {v} {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(v["refused"], true, "{v}");
