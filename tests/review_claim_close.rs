@@ -71,6 +71,29 @@ impl Board {
         c.output().unwrap()
     }
 
+    /// The same run with NO `TB_AS` in the child's env: identity comes from `--as`
+    /// only, so `World.me` (`#237`) reads None — the exact call the lazy-World
+    /// mutant (M4) would mis-handle by logging a stale claim.
+    fn run_as_only(&self, env: &[(&'static str, String)], who: &str, args: &[&str], claimant_alive: bool) -> Output {
+        let env = self.with_registration(env, who);
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args).args(["--as", who]).env_clear();
+        c.env("TB_DB", self.db())
+            .env("TB_NO_HERDR", "1")
+            .env("TB_GH", "/nonexistent/gh")
+            .env("USER", "login-user")
+            .env("TZ", "UTC")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.dir.path());
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+            c.env(v, "");
+        }
+        c.env("TB_REAP_FAKE_AGENTS", if claimant_alive { "rv-a" } else { "" });
+        c.env("TB_REAP_PROTECT", if claimant_alive { "rv-a" } else { "" });
+        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
+        c.output().unwrap()
+    }
+
     fn ok(&self, env: &[(&'static str, String)], who: &str, args: &[&str], claimant_alive: bool) -> String {
         let o = self.run(env, who, args, claimant_alive);
         assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
@@ -305,8 +328,14 @@ fn the_claimants_own_close_logs_no_stale_claim() {
     let id = b.in_review("own close: no stale claim even with the claimant looking dead", "bot-1");
     b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
-    // claimant_alive=false: every TB_REAP_FAKE_* var set to empty — nothing vouches for rv-a
-    b.ok(verifier(AUUID).as_slice(), "rv-a", &["done", &id], false);
+    // claimant_alive=false: every TB_REAP_FAKE_* var set to empty — nothing vouches for rv-a.
+    // The close runs with `--as rv-a` and NO TB_AS in its env (run_as_only builds
+    // the child without it), the way a bare `--as` caller reaches tb; if the lazy World
+    // were dropped (#237, mutant M4), World.me would be None, the claimant's own
+    // close would look like a stranger's move on a dead claim, and it would log
+    // "stale claim by rv-a" — exactly what this test pins.
+    let o = b.run_as_only(verifier(AUUID).as_slice(), "rv-a", &["done", &id], false);
+    assert!(o.status.success(), "the claimant's own close was refused: {}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(b.column(&id), "done");
     let events = b.events(&id);
     let unclaimed: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
