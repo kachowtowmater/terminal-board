@@ -349,7 +349,10 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     let run = |agent_mode: bool| {
         let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
         if agent_mode {
-            c.args(["-c", &format!("exec {} --apply --json", env!("CARGO_BIN_EXE_tb-reap"))]);
+            // no exec: the omp shell must STAY tb-reap's ancestor (exec would replace it
+            // and drop `omp` from the kernel chain — the same `; true` tail the other
+            // ancestry tests keep their shells alive with)
+            c.args(["-c", &format!("{} --apply --json; true", env!("CARGO_BIN_EXE_tb-reap"))]);
         } else {
             c.args(["--apply", "--json"]);
         }
@@ -389,7 +392,7 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     assert_eq!(column(&f, id), "todo", "the refusal must not be a blanket ban: {v}");
     // dry-run under the agent stays allowed (it writes the proof log, releases nothing)
     let mut c = Command::new(&agent);
-    c.args(["-c", &format!("exec {} --dry-run --json", env!("CARGO_BIN_EXE_tb-reap"))])
+    c.args(["-c", &format!("{} --dry-run --json; true", env!("CARGO_BIN_EXE_tb-reap"))])
         .env("TB_DB", &f.db)
         .env("HOME", &f.home)
         .env("TB_REAP_STATE_DIR", &f.state)
