@@ -248,6 +248,20 @@ fn main() {
     }
 
     if mode == Mode::Apply {
+        // tb#232: `tb-reap --apply` under the holder's own agent process must never run —
+        // the #227 ancestor exclusion hides that agent from the process probe, so the holder
+        // looks dead and the live agent's card would be released. Release is a person's
+        // decision anyway: `tb release` keeps the #227 rule and is unchanged.
+        if terminal_board::store::verifier::agent_ancestry_is_agent() {
+            println!(
+                "{}",
+                json!({"refused": true, "mode": "apply",
+                    "reasons": ["this process runs inside an agent (omp/claude/codex/pi in its ancestry) — \
+tb-reap --apply must not release cards it cannot see: the #227 ancestor exclusion hides the holder's \
+own process tree from the probe. Run it from a plain shell, or use --dry-run here"]}),
+            );
+            std::process::exit(1);
+        }
         let (reasons, fps) = apply_refusals();
         if !reasons.is_empty() {
             println!("{}", json!({"refused": true, "mode": "apply", "reasons": reasons, "false_positives": fps}));

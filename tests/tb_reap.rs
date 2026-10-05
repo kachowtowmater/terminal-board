@@ -321,6 +321,104 @@ fn apply_is_refused_when_the_false_positive_ledger_has_an_entry() {
     assert_eq!(column(&f, id), "doing");
 }
 
+/// tb#232: `--apply` run under an agent's own process is refused before any probing. The
+/// gate's INSIDE repro (red.txt) copies `/bin/bash` to a path named `omp` and runs the
+/// reaper under it: the env is scrubbed (no harness vars), but the KERNEL's parent chain
+/// still names `omp`, so the refusal rides the ancestry, never the environment. A card
+/// held by the agent that launched the reaper must survive it; the same fixture path
+/// driven as a `person` (no agent binary in the chain) still releases the card, so the
+/// refusal is not a blanket ban. `--dry-run` under an agent stays allowed: it writes only
+/// the 7-day proof log and releases nothing.
+#[test]
+fn apply_is_refused_inside_an_agent_ancestry() {
+    let f = fx();
+    let id = doing(&f, "b-51", None);
+    let b = board_name(&f);
+    write_log(&f, 8, &b, &[(id, "b-51")]);
+    // the kernel-recorded agent: a real bash binary copied to a temp path named `omp`,
+    // as the gate's repro does — argv tricks and env scrubs do not change the chain.
+    // macOS refuses to exec a signed system binary moved to a new path (the Launch
+    // Constraint no longer matches, SIGKILL), so the copy is re-signed ad hoc — the same
+    // exec gate verifier_rule's omp copy clears; Linux needs neither step.
+    let agent = f._dir.path().join("omp");
+    std::fs::copy("/bin/bash", &agent).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&agent).output();
+    }
+    let run = |agent_mode: bool| {
+        let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
+        if agent_mode {
+            // no exec: the omp shell must STAY tb-reap's ancestor (exec would replace it
+            // and drop `omp` from the kernel chain — the same `; true` tail the other
+            // ancestry tests keep their shells alive with)
+            c.args(["-c", &format!("{} --apply --json; true", env!("CARGO_BIN_EXE_tb-reap"))]);
+        } else {
+            c.args(["--apply", "--json"]);
+        }
+        c.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("TZ", "UTC")
+            .env("TB_DB", &f.db)
+            .env("TB_NO_HERDR", "1")
+            .env("TB_GH", "/nonexistent/gh")
+            .env("USER", "login-user")
+            .env("HOME", &f.home)
+            .env("TB_REAP_STATE_DIR", &f.state)
+            .env("TB_REAP_KILLSWITCH", f.home.join("no-such-switch"))
+            .env("TB_REAP_DEAD_AFTER", "0")
+            .env("TB_REAP_FAKE_AGENTS", "")
+            .env("TB_REAP_FAKE_TMUX", "")
+            .env("TB_REAP_FAKE_PANES", "")
+            .env("TB_REAP_FAKE_SESSIONS", "")
+            .env("TB_REAP_FAKE_PROCS", "")
+            .env("TB_REAP_MODE", "live")
+            .env_remove("TB_AS")
+            .env_remove("TB_BOARD")
+            .env_remove("HERDR_AGENT_NAME")
+            .env_remove("TB_SESSION");
+        c.output().unwrap()
+    };
+    // inside the agent's process: refused, card untouched. The refusal's rc rides the
+    // omp shell (`; true` keeps the shell alive as the reaper's ancestor — exec would
+    // drop `omp` from the chain), so the rc itself is 0; the refusal is in the JSON.
+    let o = run(true);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+    assert_eq!(v["refused"], true, "expected refusal, got: {v} {}", String::from_utf8_lossy(&o.stderr));
+    assert!(v["reasons"].as_array().is_some_and(|r| r.iter().any(|x| x.as_str().unwrap_or("").contains("ancestry"))), "{v}");
+    assert_eq!(column(&f, id), "doing", "the holder's own card must stay DOING");
+    // control: the same fixture, from a plain shell — apply runs and releases the card
+    let (o, v) = reap(&f, &["--apply", "--json"], &[("TB_REAP_MODE", "live")]);
+    assert!(o.status.success(), "{v} {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(column(&f, id), "todo", "the refusal must not be a blanket ban: {v}");
+    // dry-run under the agent stays allowed (it writes the proof log, releases nothing)
+    let mut c = Command::new(&agent);
+    c.args(["-c", &format!("{} --dry-run --json; true", env!("CARGO_BIN_EXE_tb-reap"))])
+        .env("TB_DB", &f.db)
+        .env("HOME", &f.home)
+        .env("TB_REAP_STATE_DIR", &f.state)
+        .env("TB_REAP_KILLSWITCH", f.home.join("no-such-switch"))
+        .env("TB_REAP_DEAD_AFTER", "0")
+        .env("TB_REAP_FAKE_AGENTS", "")
+        .env("TB_REAP_FAKE_TMUX", "")
+        .env("TB_REAP_FAKE_PANES", "")
+        .env("TB_REAP_FAKE_SESSIONS", "")
+        .env("TB_REAP_FAKE_PROCS", "")
+        .env_remove("TB_AS")
+        .env_remove("TB_BOARD")
+        .env_remove("HERDR_AGENT_NAME")
+        .env_remove("TB_SESSION");
+    let o = c.output().unwrap();
+    // the omp shell's rc stays 0 (the `; true` tail keeps omp as the reaper's ancestor),
+    // so the pin is tb-reap's own JSON: dry-run inside an agent runs and is not refused.
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+    assert!(
+        v["refused"] != serde_json::Value::Bool(true),
+        "dry-run under an agent must stay allowed: {v}"
+    );
+    assert_eq!(v["mode"], "dry-run", "{v}");
+}
+
 #[test]
 fn apply_releases_after_a_clean_7_day_dry_run_in_live_mode() {
     let f = fx();
