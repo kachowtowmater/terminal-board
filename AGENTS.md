@@ -34,7 +34,11 @@ there (it adds a marked block you can re-run safely), or paste
   `shellcheck install.sh tests/install_test.sh scripts/*.sh`,
   `cargo build && tests/install_test.sh target/debug/tb`, `scripts/privacy-check.sh`,
   `bash scripts/commit-identity-check.sh origin/main..HEAD` (your commits must use the
-  no-reply e-mail: `git config user.email "<id>+<user>@users.noreply.github.com"`).
+  no-reply e-mail: agents launched by `tb-agent-start` already get it via the
+  `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL` env it exports; for a one-off use
+  `git -c user.email="<id>+<user>@users.noreply.github.com" commit` or those env vars).
+  Never run `git config user.*` from a linked worktree: in a worktree it writes the
+  repo-wide `.git/config` shared with every other worktree and the main checkout.
 - Layout changes: `tests/layout.rs` renders every view at fixed sizes; the half-h golden is
   `tests/golden/half_h_126x41.txt` (refresh with `TB_UPDATE_GOLDEN=1` only on purpose).
 - Every `tb` line in README.md and the walkthrough in docs/AGENTS.md is executed by
