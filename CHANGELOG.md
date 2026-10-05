@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.4.1 — 2026-10-05
 
 ### `tb-reap --apply` refuses to run inside an agent process (tb#232)
 
