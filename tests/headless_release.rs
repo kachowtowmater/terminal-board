@@ -50,7 +50,7 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
             c.env(v, "");
         }
         c.envs(fake.iter().copied());
@@ -98,7 +98,7 @@ impl Board {
             .env_remove("TB_REAP_MODE")
             .env_remove("TB_REAP_PROTECT")
             .env_remove("HERDR_AGENT_NAME");
-        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
             c.env(v, "");
         }
         let o = c.output().unwrap();

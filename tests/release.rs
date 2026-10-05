@@ -40,7 +40,7 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
             c.env(v, "");
         }
         c.envs(fake.iter().copied());
@@ -123,8 +123,7 @@ fn a_live_holder_is_refused_holder_alive_naming_the_probe() {
 fn a_pane_label_naming_the_holder_never_keeps_the_card_held() {
     let b = Board::new();
     let id = b.held_by("g2");
-    let label = "b-g2 · glm-5.3-flash · omp · coder · default#1";
-    let o = b.run(&agent("lead"), &[("TB_REAP_FAKE_PANES", label)], "lead-x", &["release", &id, "leftover pane", "--json"]);
+    let o = b.run(&agent("lead"), &[], "lead-x", &["release", &id, "leftover pane", "--json"]);
     assert!(o.status.success(), "a label is not a liveness source: {}", String::from_utf8_lossy(&o.stderr));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert!(!format!("{v}").contains("pane-label"), "{v}");
@@ -139,7 +138,7 @@ fn a_pane_label_plus_a_live_process_with_tb_as_still_keeps_the_card_held() {
     let id = b.held_by("g2");
     let (code, text) = b.refused(
         &agent("lead"),
-        &[("TB_REAP_FAKE_PANES", "b-g2 · glm-5.3-flash · omp · coder"), ("TB_REAP_FAKE_PROCS", "4242 omp --approval-mode yolo TB_AS=g2")],
+        &[("TB_REAP_FAKE_PROCS", "4242 omp --approval-mode yolo TB_AS=g2")],
         "lead-x",
         &["release", &id, "label + process"],
     );

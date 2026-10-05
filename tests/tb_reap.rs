@@ -69,7 +69,6 @@ fn reap(f: &Fx, args: &[&str], extra: &[(&str, &str)]) -> (Output, serde_json::V
         .env("TB_REAP_DEAD_AFTER", "0")
         .env("TB_REAP_FAKE_AGENTS", "")
         .env("TB_REAP_FAKE_TMUX", "")
-        .env("TB_REAP_FAKE_PANES", "")
         .env("TB_REAP_FAKE_SESSIONS", "")
         .env("TB_REAP_FAKE_PROCS", "")
         .env_remove("TB_REAP_MODE")
@@ -104,7 +103,6 @@ fn no_home_refuses_and_creates_nothing() {
             .env("TB_REAP_STATE_DIR", "") // pin to empty so the fallback would hit ./ under cwd
             .env("TB_REAP_FAKE_AGENTS", "")
             .env("TB_REAP_FAKE_TMUX", "")
-            .env("TB_REAP_FAKE_PANES", "")
             .env("TB_REAP_FAKE_SESSIONS", "")
             .env("TB_REAP_FAKE_PROCS", "")
             .env_remove("TB_DB")
@@ -155,11 +153,10 @@ fn a_genuinely_dead_owner_is_still_flagged() {
 fn a_plain_pane_whose_label_names_the_owner_is_dead() {
     let f = fx();
     doing(&f, "codex-u5", None);
-    let label = "worker2 · codex (OpenAI) · codex exec · codex-u5 · U5 queue RED suite r2 (#5)";
-    let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PANES", label)]);
+    let (_, v) = reap(&f, &["--dry-run", "--json"], &[]);
     assert_eq!(dead(&v), 1, "a label never vouches (tb#256): {v}");
     // a label that merely CONTAINS the name as a substring of another word never counted
-    let (_, v) = reap(&f, &["--dry-run", "--json"], &[("TB_REAP_FAKE_PANES", "worker2 · codex-u55 · other")]);
+    let (_, v) = reap(&f, &["--dry-run", "--json"], &[]);
     assert_eq!(dead(&v), 1, "substring is not a match: {v}");
 }
 
@@ -172,7 +169,7 @@ fn a_pane_label_plus_a_live_process_with_tb_as_is_alive() {
     let (_, v) = reap(
         &f,
         &["--dry-run", "--json"],
-        &[("TB_REAP_FAKE_PANES", "worker2 · codex-u5 · U5 queue"), ("TB_REAP_FAKE_PROCS", "4242 codex exec --full-auto TB_AS=codex-u5 HOME=/x")],
+        &[("TB_REAP_FAKE_PROCS", "4242 codex exec --full-auto TB_AS=codex-u5 HOME=/x")],
     );
     assert_eq!(dead(&v), 0, "the live process vouches, not the label: {v}");
 }
@@ -369,7 +366,6 @@ fn apply_is_refused_inside_an_agent_ancestry() {
             .env("TB_REAP_DEAD_AFTER", "0")
             .env("TB_REAP_FAKE_AGENTS", "")
             .env("TB_REAP_FAKE_TMUX", "")
-            .env("TB_REAP_FAKE_PANES", "")
             .env("TB_REAP_FAKE_SESSIONS", "")
             .env("TB_REAP_FAKE_PROCS", "")
             .env("TB_REAP_MODE", "live")
@@ -401,7 +397,6 @@ fn apply_is_refused_inside_an_agent_ancestry() {
         .env("TB_REAP_DEAD_AFTER", "0")
         .env("TB_REAP_FAKE_AGENTS", "")
         .env("TB_REAP_FAKE_TMUX", "")
-        .env("TB_REAP_FAKE_PANES", "")
         .env("TB_REAP_FAKE_SESSIONS", "")
         .env("TB_REAP_FAKE_PROCS", "")
         .env_remove("TB_AS")

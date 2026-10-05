@@ -62,7 +62,7 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
             c.env(v, "");
         }
         c.env("TB_REAP_FAKE_AGENTS", if claimant_alive { "rv-a" } else { "" });
@@ -85,7 +85,7 @@ impl Board {
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
-        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
             c.env(v, "");
         }
         c.env("TB_REAP_FAKE_AGENTS", if claimant_alive { "rv-a" } else { "" });
