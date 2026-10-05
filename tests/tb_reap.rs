@@ -8,6 +8,9 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+use common::{agent_shell, retry_exec_busy};
+
 struct Fx {
     _dir: tempfile::TempDir,
     db: PathBuf,
@@ -334,15 +337,11 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     write_log(&f, 8, &b, &[(id, "b-51")]);
     // the kernel-recorded agent: a real bash binary copied to a temp path named `omp`,
     // as the gate's repro does — argv tricks and env scrubs do not change the chain.
-    // macOS refuses to exec a signed system binary moved to a new path (the Launch
-    // Constraint no longer matches, SIGKILL), so the copy is re-signed ad hoc — the same
-    // exec gate verifier_rule's omp copy clears; Linux needs neither step.
-    let agent = f._dir.path().join("omp");
-    std::fs::copy("/bin/bash", &agent).unwrap();
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&agent).output();
-    }
+    // agent_shell copies a shell ONCE per process (race-free: write-temp → close →
+    // chmod → rename, tb#286, the same root fix tb#247 gave release_real_ps) and
+    // re-signs it on macOS, where a moved signed system binary is refused by the
+    // Launch Constraint.
+    let agent = agent_shell("omp");
     let run = |agent_mode: bool| {
         let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
         if agent_mode {
@@ -373,12 +372,15 @@ fn apply_is_refused_inside_an_agent_ancestry() {
             .env_remove("TB_BOARD")
             .env_remove("HERDR_AGENT_NAME")
             .env_remove("TB_SESSION");
-        c.output().unwrap()
+        c.output()
     };
     // inside the agent's process: refused, card untouched. The refusal's rc rides the
     // omp shell (`; true` keeps the shell alive as the reaper's ancestor — exec would
     // drop `omp` from the chain), so the rc itself is 0; the refusal is in the JSON.
-    let o = run(true);
+    // `run` returns io::Result so an ETXTBSY at the exec reaches retry_exec_busy as an
+    // Err to retry, not a panic (17/120 gate hits at this exec before, tb#286).
+    let o = retry_exec_busy("tb_reap exec busy (ETXTBSY) retry backoff", || run(true))
+        .expect("exec omp agent");
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
     assert_eq!(v["refused"], true, "expected refusal, got: {v} {}", String::from_utf8_lossy(&o.stderr));
     assert!(v["reasons"].as_array().is_some_and(|r| r.iter().any(|x| x.as_str().unwrap_or("").contains("ancestry"))), "{v}");
@@ -403,7 +405,11 @@ fn apply_is_refused_inside_an_agent_ancestry() {
         .env_remove("TB_BOARD")
         .env_remove("HERDR_AGENT_NAME")
         .env_remove("TB_SESSION");
-    let o = c.output().unwrap();
+    // The omp path can still exec-busy right after the helper's rename: a forked test
+    // thread's child can hold the pre-rename write fd for its whole lifetime, so the
+    // exec gets the same retry the helper's copy can't give it (17/120 gate hits at
+    // this exec, tb#286).
+    let o = retry_exec_busy("tb_reap exec busy (ETXTBSY) retry backoff", || c.output()).unwrap();
     // the omp shell's rc stays 0 (the `; true` tail keeps omp as the reaper's ancestor),
     // so the pin is tb-reap's own JSON: dry-run inside an agent runs and is not refused.
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);

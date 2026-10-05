@@ -1,6 +1,7 @@
 //! Shared test fixture: a small, neutral board (10 cards across the columns).
 #![allow(dead_code)]
 
+use std::path::PathBuf;
 use terminal_board::store::{Result, Seed, Store};
 
 const M: i64 = 60;
@@ -171,4 +172,68 @@ impl VerifierRegistry {
     pub fn env(&self) -> [(&'static str, String); 1] {
         [("TB_VERIFIERS_DIR", self.dir.path().to_string_lossy().into_owned())]
     }
+}
+
+/// An executable whose argv0 basename is `name` (usually `omp`): a system shell
+/// (`/bin/bash`) copied ONCE per test process — the root fix tb#247 moved into
+/// release_real_ps and tb#286 hoisted here: parallel test threads fork while `fs::copy`
+/// still holds the destination open for writing, a forked child inherits that write fd
+/// and the exec fails ETXTBSY (~1 in 40 runs on Linux, tb#247; tb_reap.rs:376 CI hit,
+/// run 37287163080). The copy lands by write-temp → close → chmod 0755 → rename, so the
+/// exec'd path never has an open writer; the returned path lives in a leaked tempdir so
+/// it outlives every test thread. macOS refuses to exec a signed system binary moved to
+/// a new path (the Launch Constraint no longer matches, SIGKILL), so the copy is
+/// re-signed ad hoc — the same exec gate verifier_rule's omp copy clears; Linux needs
+/// neither step. The source is `/bin/bash`, not `/bin/sh`: macOS `pbi_comm` follows the
+/// copy's file name for a bash copy (`comm=omp`), but bash 3.2 sh-mode (`/bin/sh`)
+/// rewrites its own comm to `bash`, so a `/bin/sh` copy never shows as `omp` in the
+/// ancestry walk and `agent_ancestry_is_agent()` misses it on macOS only (tb#286).
+pub fn agent_shell(name: &str) -> PathBuf {
+    use std::collections::HashMap;
+    use std::os::unix::fs::PermissionsExt;
+    static SHELL: std::sync::LazyLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    let mut shells = SHELL.lock().unwrap();
+    if let Some(p) = shells.get(name) {
+        return p.clone();
+    }
+    let dir = tempfile::tempdir().unwrap(); // leaked below: must outlive every thread
+    let tmp = dir.path().join(format!("{name}.tmp"));
+    std::fs::copy("/bin/bash", &tmp).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let shell = dir.path().join(name);
+    std::fs::rename(&tmp, &shell).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command; // only used by the macOS re-sign
+        let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&shell).output();
+    }
+    let _ = dir.keep(); // leaks the dir on purpose: outlives every thread
+    shells.insert(name.to_string(), shell.clone());
+    shell
+}
+
+/// Retry the spawn on ETXTBSY (`Text file busy`, os error 26): between `agent_shell`'s
+/// rename and the exec, another thread's forked child can still hold a write-mode fd
+/// inherited before the copy closed — the busy window is that forked child's lifetime.
+/// Backs off through `terminal_board::waits::pause` (clippy.toml bans raw sleeps), ~1.4s
+/// total; the last call re-runs the command and fails with the same error if still busy.
+pub fn retry_exec_busy<T>(
+    why: &str,
+    mut run: impl FnMut() -> std::result::Result<T, std::io::Error>,
+) -> std::result::Result<T, std::io::Error> {
+    let mut last = None;
+    for (i, wait) in [0u64, 10, 25, 50, 100, 200, 200, 200, 200, 200].into_iter().enumerate() {
+        if wait > 0 {
+            terminal_board::waits::pause(why, std::time::Duration::from_millis(wait));
+        }
+        match run() {
+            Err(e) if e.raw_os_error() == Some(26) || e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                eprintln!("agent_shell: exec busy (ETXTBSY), retry {}/10", i + 1);
+                last = Some(e);
+            }
+            other => return other,
+        }
+    }
+    Err(last.unwrap())
 }
