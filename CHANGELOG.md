@@ -11,6 +11,7 @@ so the holder that launched the reaper is invisible to the probe and a live agen
 card would be released as dead. A plain-shell `--apply` is unchanged and still releases a
 genuinely dead holder, and `tb release` keeps the #227 rule (it is an explicit person/
 lead decision, not a blind reaper).
+
 ### Liveness: a headless pid no longer vouches once it is stale or reused (tb#243, tb#272)
 
 `tb release`/`tb-reap` probe 7 (`mode:headless` with `pid=N`) no longer keeps a holder alive
