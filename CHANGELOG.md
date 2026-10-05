@@ -15,16 +15,25 @@ lead decision, not a blind reaper).
 ### Liveness: a headless pid no longer vouches once it is stale or reused (tb#243, tb#272)
 
 `tb release`/`tb-reap` probe 7 (`mode:headless` with `pid=N`) no longer keeps a holder alive
-by a stale or recycled pid. When the note's `log:<path>` file exists and ends with the
-`[tb-agent-start] … exit=<N> <holder>` trailer the launcher writes on agent exit, the pid
-does not vouch. When the pid is still in the process table, it vouches only if that
-process's command line names an agent binary (codex / omp / claude / pi / aider / opencode
-/ gemini) or the holder's name as a whole token — a reused pid (e.g. the #243 repro: an
-audio SandboxHelper took pid 73509) no longer vouches; a live wrapper with the holder's
-name and omp still does. The process probe (4) is also tightened: it vouches only when the
-process names the holder as its identity — an env token `TB_AS=<holder>` or the argv pair
-`--as <holder>` — never because the name appears as some other token such as
-`TB_ROLE=<holder>` or prompt text (default#993).
+by a stale or recycled pid. When the note's `log:<path>` file exists and the pid is stale
+in the process table, it does not vouch. When the pid is still in the process table, it
+vouches only if that process's command line names an agent binary (codex / omp / claude /
+pi / aider / opencode / gemini) or the holder's name as a whole token — a reused pid (e.g.
+the #243 repro: an audio SandboxHelper took pid 73509) no longer vouches; a live wrapper
+with the holder's name and omp still does. The process probe (4) is also tightened: it
+vouches only when the process names the holder as its identity — an env token `TB_AS=<holder>`
+or the argv pair `--as <holder>` — never because the name appears as some other token such
+as `TB_ROLE=<holder>` or prompt text (default#993).
+
+- **The claim lock covers every move out of REVIEW, and each refusal carries its own
+  path (tb#236):** a verifier's send-back (`tb move ID doing "…"`, `tb move ID todo "…"`)
+  of a card whose live `reviewer` claim it does not hold is refused `claimed_by_other`
+  with the send-back wording (the claimant's own send-back paths are named), an agent
+  closing an UNCLAIMED review card is refused `close_needs_claim` until it claims, and
+  `tb claim ID` takes a free or STALE claim (a live claim held by another verifier is
+  refused; a stale one hands off with an `unclaimed` event). The close-form refusal
+  (`"… closes it, or a person frees the claim"`) now scopes to closes only, so a
+  send-back refusal is never worded as a close.
 
 ## 3.4.0 — 2026-10-02
 
