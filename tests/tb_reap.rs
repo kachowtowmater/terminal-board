@@ -372,12 +372,15 @@ fn apply_is_refused_inside_an_agent_ancestry() {
             .env_remove("TB_BOARD")
             .env_remove("HERDR_AGENT_NAME")
             .env_remove("TB_SESSION");
-        c.output().unwrap()
+        c.output()
     };
     // inside the agent's process: refused, card untouched. The refusal's rc rides the
     // omp shell (`; true` keeps the shell alive as the reaper's ancestor — exec would
     // drop `omp` from the chain), so the rc itself is 0; the refusal is in the JSON.
-    let o = retry_exec_busy("tb_reap exec busy (ETXTBSY) retry backoff", || run(true)).unwrap();
+    // `run` returns io::Result so an ETXTBSY at the exec reaches retry_exec_busy as an
+    // Err to retry, not a panic (17/120 gate hits at this exec before, tb#286).
+    let o = retry_exec_busy("tb_reap exec busy (ETXTBSY) retry backoff", || run(true))
+        .expect("exec omp agent");
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
     assert_eq!(v["refused"], true, "expected refusal, got: {v} {}", String::from_utf8_lossy(&o.stderr));
     assert!(v["reasons"].as_array().is_some_and(|r| r.iter().any(|x| x.as_str().unwrap_or("").contains("ancestry"))), "{v}");
