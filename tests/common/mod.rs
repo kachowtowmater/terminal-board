@@ -188,7 +188,6 @@ impl VerifierRegistry {
 pub fn agent_shell(name: &str) -> PathBuf {
     use std::collections::HashMap;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
     static SHELL: std::sync::LazyLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
     let mut shells = SHELL.lock().unwrap();
@@ -203,9 +202,10 @@ pub fn agent_shell(name: &str) -> PathBuf {
     std::fs::rename(&tmp, &shell).unwrap();
     #[cfg(target_os = "macos")]
     {
+        use std::process::Command; // only used by the macOS re-sign
         let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&shell).output();
     }
-    dir.keep(); // leaks the dir on purpose: outlives every thread
+    let _ = dir.keep(); // leaks the dir on purpose: outlives every thread
     shells.insert(name.to_string(), shell.clone());
     shell
 }
