@@ -20,7 +20,7 @@ Nothing to do: boards and the JSON contract are unchanged from 3.3.0. `tb releas
 # Upgrading to 3.3.0
 
 Nothing to do: boards and the JSON contract are unchanged from 3.2.7; the JSON output only
-gains the `close_needs_claim` error code. Two behaviour changes for agents:
+gains the `close_needs_claim` error code. Two behaviour changes and one cleanup for agents:
 
 - **Agent verifiers claim before closing.** An agent can no longer close an UNCLAIMED
   REVIEW card — it must hold the claim, via `tb claim ID` (or take one with
@@ -29,9 +29,6 @@ gains the `close_needs_claim` error code. Two behaviour changes for agents:
 - **Send-backs over a live claim.** REVIEW → TODO/DOING by an agent other than the live
   claimant is refused with `claimed_by_other`; the claimant itself, a stale claim (its
   claimant dead, freed on demand), and a claim already sent back behave as before.
-- A pinned session (`TB_AS`) cannot use a different `--as` on a real board file under
-  another name — refused with `as_mismatch` before any board is created (`TB_DB` fixtures
-  and persons unaffected).
 - `tb release` frees a no-pid headless holder (3.2.5's tmux argv0 fix); see its section
   above.
 
