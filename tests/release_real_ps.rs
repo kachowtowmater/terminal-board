@@ -159,7 +159,13 @@ fn real_ps_an_unrelated_live_agent_process_naming_the_holder_still_vouches() {
     let id = b.held_by("b-8");
     let omp = b.dir.path().join("omp");
     std::fs::copy("/bin/sh", &omp).expect("copy /bin/sh as omp");
-    let mut live = Command::new(&omp).arg("-c").arg("sleep 6; true").arg("b-8").spawn().expect("spawn live omp");
+    let mut live = Command::new(&omp)
+        .arg("-c")
+        .arg("sleep 6; true")
+        .arg("--as")
+        .arg("b-8")
+        .spawn()
+        .expect("spawn live omp");
     // spin until the live process is visible in ps (ps is asked whole-table, so one pass
     // has it as soon as it is scheduled; a plain sleep is refused by clippy.toml here)
     for _ in 0..50 {
