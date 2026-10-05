@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.4.1:** liveness hardening and claim-lock fixes. `tb-reap --apply` is refused
+inside an agent process (a live agent's card can no longer be reaped by its own reaper);
+stale or reused headless pids and liveness probes that don't name the holder as its
+identity no longer vouch; and the claim lock covers every move out of REVIEW — a
+verifier's send-back of an unclaimed card is refused `claimed_by_other`.
+
 **New in 3.4.0:** a board may refuse agents not on its reader list. `tb config readers
 NAME,NAME` (person-only; `off` clears it) stores a reader list on the board; when set,
 agents not acting under a listed name are refused every command on that board, including
@@ -241,7 +247,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.4.0` | install that release instead of the latest (`3.4.0` works too) |
+| `--version v3.4.1` | install that release instead of the latest (`3.4.1` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |

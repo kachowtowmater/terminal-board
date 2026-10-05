@@ -1,3 +1,18 @@
+# Upgrading to 3.4.1
+
+Nothing to do: boards and the JSON contract are unchanged. Four behaviour changes:
+
+- `tb-reap --apply` is refused when it runs inside an agent process — a live agent's
+  DOING card can no longer be reaped by a reaper launched from its own harness. A plain
+  shell `--apply` is unchanged, and `tb release` keeps the explicit-release rule.
+- Liveness vouches only on `TB_AS=<holder>` or `--as <holder>` — the process must name the
+  holder as its identity; `TB_ROLE=<holder>` or prompt text does not.
+- A stale or reused headless pid no longer vouches: a pid vouches only while its process
+  names an agent binary or the holder's name as a whole token.
+- Send-backs (`tb move ID doing|todo "…"`) over a live REVIEW claim held by another
+  verifier are refused `claimed_by_other`; an agent closing an unclaimed review card is
+  refused `close_needs_claim` until it claims.
+
 # Upgrading to 3.4.0
 
 Nothing changes until a person sets a reader list. The new person-only setting
