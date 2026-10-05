@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.4.3 — 2026-10-05
+
+### Tests: one race-free agent-shell helper in tests/common (tb#286)
+
+The agent-shell test helper in `tests/common` now writes its pid file before it forks and
+exits, so `tests/tb_reap.rs` no longer hits `ETXTBSY` on Linux when it races the file the
+helper is still executing. Test-only; no shipped behaviour change.
+
+### README: send-back wording under a live verifier claim (tb#281)
+
+The README's 'New in 3.4.1' paragraph now says a send-back is refused `claimed_by_other`
+only when ANOTHER verifier holds a live claim — not on every send-back.
+
 ## 3.4.2 — 2026-10-05
 
 ### Identity guidance: never `git config user.*` from a linked worktree (tb#282)

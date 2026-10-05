@@ -1,3 +1,9 @@
+# Upgrading to 3.4.3
+
+Nothing to do: boards and the JSON contract are unchanged from 3.4.2, and there is no
+behaviour change — the fix is test-infra only (a race-free agent-shell test helper in
+`tests/common`, so `tests/tb_reap.rs` no longer hits `ETXTBSY` on Linux).
+
 # Upgrading to 3.4.2
 
 Nothing to do: boards and the JSON contract are unchanged from 3.4.1. Only fixtures that
