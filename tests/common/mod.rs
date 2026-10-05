@@ -217,8 +217,8 @@ pub fn agent_shell(name: &str) -> PathBuf {
 /// total; the last call re-runs the command and fails with the same error if still busy.
 pub fn retry_exec_busy<T>(
     why: &str,
-    mut run: impl FnMut() -> Result<T, std::io::Error>,
-) -> Result<T, std::io::Error> {
+    mut run: impl FnMut() -> std::result::Result<T, std::io::Error>,
+) -> std::result::Result<T, std::io::Error> {
     let mut last = None;
     for (i, wait) in [0u64, 10, 25, 50, 100, 200, 200, 200, 200, 200].into_iter().enumerate() {
         if wait > 0 {
