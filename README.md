@@ -31,7 +31,8 @@ the shared repo config); use the launcher's `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env
 inside an agent process (a live agent's card can no longer be reaped by its own reaper);
 stale or reused headless pids and liveness probes that don't name the holder as its
 identity no longer vouch; and the claim lock covers every move out of REVIEW — a
-verifier's send-back of an unclaimed card is refused `claimed_by_other`.
+verifier's send-back of a card whose live `reviewer` claim another verifier holds is
+refused `claimed_by_other`.
 
 **New in 3.4.0:** a board may refuse agents not on its reader list. `tb config readers
 NAME,NAME` (person-only; `off` clears it) stores a reader list on the board; when set,
