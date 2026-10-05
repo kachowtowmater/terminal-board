@@ -175,7 +175,7 @@ impl VerifierRegistry {
 }
 
 /// An executable whose argv0 basename is `name` (usually `omp`): a system shell
-/// (`/bin/sh`) copied ONCE per test process — the root fix tb#247 moved into
+/// (`/bin/bash`) copied ONCE per test process — the root fix tb#247 moved into
 /// release_real_ps and tb#286 hoisted here: parallel test threads fork while `fs::copy`
 /// still holds the destination open for writing, a forked child inherits that write fd
 /// and the exec fails ETXTBSY (~1 in 40 runs on Linux, tb#247; tb_reap.rs:376 CI hit,
@@ -184,7 +184,10 @@ impl VerifierRegistry {
 /// it outlives every test thread. macOS refuses to exec a signed system binary moved to
 /// a new path (the Launch Constraint no longer matches, SIGKILL), so the copy is
 /// re-signed ad hoc — the same exec gate verifier_rule's omp copy clears; Linux needs
-/// neither step.
+/// neither step. The source is `/bin/bash`, not `/bin/sh`: macOS `pbi_comm` follows the
+/// copy's file name for a bash copy (`comm=omp`), but bash 3.2 sh-mode (`/bin/sh`)
+/// rewrites its own comm to `bash`, so a `/bin/sh` copy never shows as `omp` in the
+/// ancestry walk and `agent_ancestry_is_agent()` misses it on macOS only (tb#286).
 pub fn agent_shell(name: &str) -> PathBuf {
     use std::collections::HashMap;
     use std::os::unix::fs::PermissionsExt;
@@ -196,7 +199,7 @@ pub fn agent_shell(name: &str) -> PathBuf {
     }
     let dir = tempfile::tempdir().unwrap(); // leaked below: must outlive every thread
     let tmp = dir.path().join(format!("{name}.tmp"));
-    std::fs::copy("/bin/sh", &tmp).unwrap();
+    std::fs::copy("/bin/bash", &tmp).unwrap();
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
     let shell = dir.path().join(name);
     std::fs::rename(&tmp, &shell).unwrap();
