@@ -1,3 +1,10 @@
+# Upgrading to 3.4.2
+
+Nothing to do: boards and the JSON contract are unchanged from 3.4.1. Only fixtures that
+set `TB_REAP_FAKE_PANES` to switch tb-reap's fixture mode on are affected — the var is
+removed (its value was ignored since the pane-label probe was deleted in tb#256), so set
+another `TB_REAP_FAKE_*` var (`TB_REAP_FAKE_{AGENTS,TMUX,SESSIONS,PROCS}`) instead.
+
 # Upgrading to 3.4.1
 
 Nothing to do: boards and the JSON contract are unchanged. Four behaviour changes:
