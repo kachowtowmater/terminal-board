@@ -20,9 +20,10 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
-**New in 3.4.3:** test-infra only. The agent-shell test helper in `tests/common` is now
-race-free — it writes its pid file before forking, so `tests/tb_reap.rs` no longer hits
-`ETXTBSY` on Linux. No shipped behaviour change.
+**New in 3.4.3:** test-infra only. The new agent-shell helper in `tests/common` copies the
+shell once per test process via write-temp → rename, and `tests/tb_reap.rs` retries its
+execs on `ETXTBSY`, so Linux runs no longer lose ~1 in 40 to the copy race. No shipped
+behaviour change.
 
 **New in 3.4.2:** two cleanups. The `TB_REAP_FAKE_PANES` fixture var is gone — it only
 switched tb-reap's fixture mode on, and since the pane-label probe was deleted nothing

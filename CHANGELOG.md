@@ -4,9 +4,11 @@
 
 ### Tests: one race-free agent-shell helper in tests/common (tb#286)
 
-The agent-shell test helper in `tests/common` now writes its pid file before it forks and
-exits, so `tests/tb_reap.rs` no longer hits `ETXTBSY` on Linux when it races the file the
-helper is still executing. Test-only; no shipped behaviour change.
+The new agent-shell helper in `tests/common` (`agent_shell`) copies the shell ONCE per
+test process — a temp file is written, closed, chmodded and renamed, so the exec'd path
+never has an open writer — and `tests/tb_reap.rs` wraps its spawns in `retry_exec_busy`,
+which retries the exec on `ETXTBSY` (`Text file busy`) with backoff. Linux no longer
+loses ~1 in 40 runs to the copy race. Test-only; no shipped behaviour change.
 
 ### README: send-back wording under a live verifier claim (tb#281)
 
