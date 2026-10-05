@@ -20,6 +20,11 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.4.3:** test-infra only. The new agent-shell helper in `tests/common` copies the
+shell once per test process via write-temp → rename, and `tests/tb_reap.rs` retries its
+execs on `ETXTBSY`, so Linux runs no longer lose ~1 in 40 to the copy race. No shipped
+behaviour change.
+
 **New in 3.4.2:** two cleanups. The `TB_REAP_FAKE_PANES` fixture var is gone — it only
 switched tb-reap's fixture mode on, and since the pane-label probe was deleted nothing
 read its value — so fixture scripts set another `TB_REAP_FAKE_*` var instead. And agent
@@ -255,7 +260,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.4.2` | install that release instead of the latest (`3.4.2` works too) |
+| `--version v3.4.3` | install that release instead of the latest (`3.4.3` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |

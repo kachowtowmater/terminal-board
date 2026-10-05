@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.4.3 — 2026-10-05
+
+### Tests: one race-free agent-shell helper in tests/common (tb#286)
+
+The new agent-shell helper in `tests/common` (`agent_shell`) copies the shell ONCE per
+test process — a temp file is written, closed, chmodded and renamed, so the exec'd path
+never has an open writer — and `tests/tb_reap.rs` wraps its spawns in `retry_exec_busy`,
+which retries the exec on `ETXTBSY` (`Text file busy`) with backoff. Linux no longer
+loses ~1 in 40 runs to the copy race. Test-only; no shipped behaviour change.
+
+### README: send-back wording under a live verifier claim (tb#281)
+
+The README's 'New in 3.4.1' paragraph now says a send-back is refused `claimed_by_other`
+only when ANOTHER verifier holds a live claim — not on every send-back.
+
 ## 3.4.2 — 2026-10-05
 
 ### Identity guidance: never `git config user.*` from a linked worktree (tb#282)
