@@ -38,9 +38,7 @@
 //! Fixtures: setting any `TB_REAP_FAKE_{AGENTS,TMUX,SESSIONS,PROCS}` switches every
 //! probe to fixture mode (unset ones are empty) so a test never asks the real world. AGENTS,
 //! TMUX, SESSIONS are comma lists; PROCS (`<pid> <command line>`) is `;`-separated.
-//! `TB_REAP_FAKE_PANES` still switches fixture mode on (it stays in the var list so existing
-//! fixtures keep working) but its value is IGNORED: probe 4 is gone, and card tb#262 removes
-//! the var itself. A PROCS line whose argv0 is `tmux`, or whose argv[1] is exactly
+//! A PROCS line whose argv0 is `tmux`, or whose argv[1] is exactly
 //! `__omp_worker_daemon_broker` (omp's shared worker broker), is skipped by the process
 //! probe (see probe 4), so a test can pin such a line and assert it vouches for nobody. Any one
 //! of them set (even to "") puts EVERY probe in fixture mode: a test must never half-ask the
@@ -61,7 +59,7 @@ use std::process::Command;
 const AGENT_BINS: &[&str] = &["codex", "omp", "claude", "pi", "aider", "opencode", "gemini"];
 
 const FAKE_VARS: &[&str] =
-    &["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"];
+    &["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"];
 
 /// Which caller is asking [`World::alive_by`]: the automatic `tb-reap` scan, or an explicit
 /// `tb release`. They share every probe; only a no-pid `mode:headless` note differs between
