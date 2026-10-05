@@ -71,6 +71,29 @@ impl Board {
         c.output().unwrap()
     }
 
+    /// The same run with NO `TB_AS` in the child's env: identity comes from `--as`
+    /// only, so `World.me` (`#237`) reads None — the exact call the lazy-World
+    /// mutant (M4) would mis-handle by logging a stale claim.
+    fn run_as_only(&self, env: &[(&'static str, String)], who: &str, args: &[&str], claimant_alive: bool) -> Output {
+        let env = self.with_registration(env, who);
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tb"));
+        c.args(args).args(["--as", who]).env_clear();
+        c.env("TB_DB", self.db())
+            .env("TB_NO_HERDR", "1")
+            .env("TB_GH", "/nonexistent/gh")
+            .env("USER", "login-user")
+            .env("TZ", "UTC")
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.dir.path());
+        for v in ["TB_REAP_FAKE_AGENTS", "TB_REAP_FAKE_TMUX", "TB_REAP_FAKE_PANES", "TB_REAP_FAKE_SESSIONS", "TB_REAP_FAKE_PROCS"] {
+            c.env(v, "");
+        }
+        c.env("TB_REAP_FAKE_AGENTS", if claimant_alive { "rv-a" } else { "" });
+        c.env("TB_REAP_PROTECT", if claimant_alive { "rv-a" } else { "" });
+        c.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
+        c.output().unwrap()
+    }
+
     fn ok(&self, env: &[(&'static str, String)], who: &str, args: &[&str], claimant_alive: bool) -> String {
         let o = self.run(env, who, args, claimant_alive);
         assert!(o.status.success(), "{who}: tb {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
@@ -201,7 +224,8 @@ fn a_freed_claim_closes_and_an_unclaimed_card_never_refuses() {
     b.ok(verifier(BUUID).as_slice(), "rv-b", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
     // an UNCLAIMED review card still closes without a claim — when a PERSON asks (#236 keeps
-    // that door open); an agent is refused with close_needs_claim (C5, its own test below)
+    // that door open); an agent is refused with close_needs_claim (C5,
+    // an_agent_cannot_close_an_unclaimed_card below)
     let plain = b.in_review("unclaimed: no claim at all", "bot-1");
     b.ok(&person(), "lead", &["done", &plain], true);
     assert_eq!(b.column(&plain), "done");
@@ -218,4 +242,102 @@ fn a_person_closes_over_a_live_claim() {
     assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
     b.ok(&person(), "lead", &["done", &id], true);
     assert_eq!(b.column(&id), "done");
+}
+
+/// C5 (#236): an AGENT closing an UNCLAIMED review card is refused `close_needs_claim` —
+/// `tb claim` or `tb next --review` takes the claim first; the card stays in REVIEW and
+/// keeps no reviewer. A person's close of the same card still passes (the test above pins
+/// the person door via a live-claim board; this one pins the unclaimed card directly).
+#[test]
+fn an_agent_cannot_close_an_unclaimed_card() {
+    let b = Board::new();
+    let id = b.in_review("unclaimed: an agent must claim before closing", "bot-1");
+    assert_eq!(b.reviewer_of(&id), None, "no claim at all");
+    // the closer must be a VERIFIER (the verifier rule fires first); it holds no claim
+    for args in [vec!["done", id.as_str()], vec!["move", id.as_str(), "done"]] {
+        let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &args, false);
+        assert_eq!(code, "close_needs_claim", "{args:?}: {e}");
+        assert!(e.contains("tb claim") || e.contains("tb next --review"), "{e}");
+        assert_eq!(b.column(&id), "review", "nothing moved");
+        assert_eq!(b.reviewer_of(&id), None, "no claim was taken");
+    }
+}
+
+/// #236: `tb claim ID` takes the claim only when it is free or STALE. A claim held by a
+/// LIVE verifier is refused `claimed_by_other` — the message names the claimant and the
+/// person's free path. (A stale claim frees and is taken; that is
+/// a_freed_claim_closes…'s lane via `tb move`, and the close-side stale test pins the
+/// same World. Here the claimant is alive: the second claimant is refused.)
+#[test]
+fn a_second_verifier_cannot_claim_a_live_claim() {
+    let b = Board::new();
+    let id = b.in_review("claim: rv-b may not take rv-a's live claim", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    assert!(e.contains("rv-a") && e.contains(&format!("tb move {id} review")), "{e}");
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
+    // rv-b DEAD-looking (no fixture vouches for rv-a either): liveness answers for the
+    // HOLDER — with the holder dead the claim is STALE, so the claim frees and is TAKEN
+    // (the hand-off `tb claim` exists for), with an `unclaimed` event naming rv-a
+    b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], false);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-b"), "the stale claim passed to rv-b");
+    let events = b.events(&id);
+    let unclaimed: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
+    assert!(unclaimed.iter().any(|t| t.contains("stale") && t.contains("rv-a")), "{unclaimed:?}");
+    // re-claiming your own claim is a no-op success
+    b.ok(verifier(BUUID).as_slice(), "rv-b", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-b"));
+}
+
+/// #236: the claim lock covers every move OUT of review, not just the close. Another
+/// verifier's SEND-BACK (review -> doing, and review -> todo) of a live-claimed card is
+/// refused `claimed_by_other`, the card stays in REVIEW with its claim, and the refusal
+/// names the claimant's own send-back path.
+#[test]
+fn another_verifier_cannot_send_back_a_live_claim() {
+    let b = Board::new();
+    let id = b.in_review("send-back: rv-b may not fail rv-a's claim", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    // review -> doing and review -> todo are BOTH the claimant's acts; one send-back rule
+    // (store.rs, `target_column != "done" && c.column == "review"`) covers the two, so both
+    // refusals carry the send-back form ("{r} sends it back")
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "doing", "tests are missing"], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
+    let (e, code) = b.refused(verifier(BUUID).as_slice(), "rv-b", &["move", id.as_str(), "todo", "the fix is wrong"], true);
+    assert_eq!(code, "claimed_by_other", "{e}");
+    // the same send-back refusal: `claimed_by_other` for ANY move out of review the claimant
+    // did not make, so the message stays the send-back form ("{r} sends it back") — the FAIL
+    // rides the same rule, and the claimant's own send-back paths are both named on the claim
+    assert!(e.contains("sends it back") && e.contains("rv-a"), "{e}");
+    assert_eq!(b.column(&id), "review", "nothing moved");
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"), "the claim is kept");
+}
+
+/// M4: the claimant's own close never logs "stale claim by <self>". In a fixture where
+/// liveness would call the claimant DEAD (TB_REAP_FAKE_* all empty), the claimant's
+/// `tb done` still proceeds and the card's events carry NO `unclaimed` event — the
+/// lazy World (#237) never asks liveness for the claimant's own moves, so there is no
+/// stale-claim free to log.
+#[test]
+fn the_claimants_own_close_logs_no_stale_claim() {
+    let b = Board::new();
+    let id = b.in_review("own close: no stale claim even with the claimant looking dead", "bot-1");
+    b.ok(verifier(AUUID).as_slice(), "rv-a", &["claim", &id], true);
+    assert_eq!(b.reviewer_of(&id).as_deref(), Some("rv-a"));
+    // claimant_alive=false: every TB_REAP_FAKE_* var set to empty — nothing vouches for rv-a.
+    // The close runs with `--as rv-a` and NO TB_AS in its env (run_as_only builds
+    // the child without it), the way a bare `--as` caller reaches tb; if the lazy World
+    // were dropped (#237, mutant M4), World.me would be None, the claimant's own
+    // close would look like a stranger's move on a dead claim, and it would log
+    // "stale claim by rv-a" — exactly what this test pins.
+    let o = b.run_as_only(verifier(AUUID).as_slice(), "rv-a", &["done", &id], false);
+    assert!(o.status.success(), "the claimant's own close was refused: {}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(b.column(&id), "done");
+    let events = b.events(&id);
+    let unclaimed: Vec<&str> = events.iter().filter(|e| e["kind"] == "unclaimed").filter_map(|e| e["text"].as_str()).collect();
+    assert!(unclaimed.is_empty(), "the claimant's own close logged a stale claim: {unclaimed:?}");
 }
