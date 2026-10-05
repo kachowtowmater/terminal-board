@@ -130,7 +130,7 @@ trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--
 
 - One card at a time. Take the next one only after `tb done` or `tb drop`.
 - `doing is full (3/3: …)` is the board-wide limit, `you already hold 1 of 1` this board's per-agent one (`wip-per-owner`); both say what YOU can do — finish one of yours. Never finish or drop someone else's card, and do not raise either limit.
-- A board may keep a name list (`tb config actors`) and refuse an unknown `--as`, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write; `tb config readers` (below) can refuse every AGENT not on its list. A person's reads are never refused.
+- A board may keep a name list (`tb config actors`) and refuse an unknown `--as`, so a typo cannot invent an agent; `TB_READONLY=1` / `--read-only` refuses every write; `tb config readers` (above) can refuse every AGENT not on its list. A person's reads are never refused.
 - Notes are short and factual, one per step: "repro confirmed", "PR #123 opened" — a board may require one before DONE (`tb config done-needs-note`), written during the stay you are leaving.
 - Every error message ends with what to run next. Read it and do that.
 - Tick only what is really done, never ahead; leave a note before you stop, drop or block a card.
@@ -217,7 +217,6 @@ command that succeeded — is for your operator: pass it on.
 | `#ID has no link labeled 'X'` | attach one: `tb link ID VALUE --label X` |
 | `say why it goes back` | `tb move ID doing "what to fix"` · `no card #ID`: `tb list` |
 | `hook refused` (`hook_refused`) / `changed while the pre-change hook ran` (`hook_race`) | the hint is the hook's reason: fix that · a race: just retry |
-| `is read-only to its reader list` (`not_a_reader`) | the board keeps `tb config readers` and you are not on it: ask a person to add your name |
 
 ## Walkthrough (every command above, run in order by the test suite)
 
@@ -233,6 +232,7 @@ tb edit 1 --title "docs: install guide" --desc "Done = guide merged and linked"
 tb edit 1 --due 2026-10-09
 tb block 1 "#2"
 tb block 1 --clear
+tb prio 2 top
 tb done 1
 TB_ROLE=verifier tb next --review --as bob
 TB_ROLE=verifier tb done 1 --as bob

@@ -177,8 +177,8 @@ fn run_herdr(args: &[&str]) -> Option<String> {
 }
 
 /// `herdr <args>` (1s timeout, `HERDR_BIN_PATH` honoured): its stdout, or None on any failure.
-/// For callers outside the crate that need the raw JSON (`tb-reap` reads pane labels and
-/// agent sessions, which `Agent` does not carry).
+/// For callers outside the crate that need the raw JSON (agent sessions, which `Agent`
+/// does not carry).
 pub fn run(args: &[&str]) -> Option<String> {
     run_herdr(args)
 }
