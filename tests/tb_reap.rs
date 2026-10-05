@@ -8,6 +8,9 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+use common::agent_shell;
+
 struct Fx {
     _dir: tempfile::TempDir,
     db: PathBuf,
@@ -334,15 +337,11 @@ fn apply_is_refused_inside_an_agent_ancestry() {
     write_log(&f, 8, &b, &[(id, "b-51")]);
     // the kernel-recorded agent: a real bash binary copied to a temp path named `omp`,
     // as the gate's repro does — argv tricks and env scrubs do not change the chain.
-    // macOS refuses to exec a signed system binary moved to a new path (the Launch
-    // Constraint no longer matches, SIGKILL), so the copy is re-signed ad hoc — the same
-    // exec gate verifier_rule's omp copy clears; Linux needs neither step.
-    let agent = f._dir.path().join("omp");
-    std::fs::copy("/bin/bash", &agent).unwrap();
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(&agent).output();
-    }
+    // agent_shell copies a shell ONCE per process (race-free: write-temp → close →
+    // chmod → rename, tb#286, the same root fix tb#247 gave release_real_ps) and
+    // re-signs it on macOS, where a moved signed system binary is refused by the
+    // Launch Constraint.
+    let agent = agent_shell("omp");
     let run = |agent_mode: bool| {
         let mut c = Command::new(if agent_mode { agent.clone() } else { "/bin/bash".into() });
         if agent_mode {
