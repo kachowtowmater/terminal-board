@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.4.2 — 2026-10-05
+
+### Identity guidance: never `git config user.*` from a linked worktree (tb#282)
+
+AGENTS.md and `scripts/commit-identity-check.sh` now say agent identity comes from the
+launcher's `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env or a per-commit
+`git -c user.email=… user.name=…` — never `git config user.*`, which in a linked worktree
+writes the repo-wide `.git/config` shared with every other worktree on the machine.
+
+### Liveness: the `TB_REAP_FAKE_PANES` fixture var is removed (tb#262)
+
+It switched tb-reap's fixture mode on, but since tb#256 deleted probe 4 (pane label) its
+value was ignored: no fixture read it. Scripts that set it to switch fixture mode must set
+another `TB_REAP_FAKE_*` var (`TB_REAP_FAKE_{AGENTS,TMUX,SESSIONS,PROCS}`). Dropped from
+the FIXTURE var list, module doc and every test fixture env.
+
 ## 3.4.1 — 2026-10-05
 
 ### `tb-reap --apply` refuses to run inside an agent process (tb#232)

@@ -20,6 +20,13 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.4.2:** two cleanups. The `TB_REAP_FAKE_PANES` fixture var is gone — it only
+switched tb-reap's fixture mode on, and since the pane-label probe was deleted nothing
+read its value — so fixture scripts set another `TB_REAP_FAKE_*` var instead. And agent
+identity guidance is fixed: never `git config user.*` from a linked worktree (it rewrites
+the shared repo config); use the launcher's `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env or
+`git -c`.
+
 **New in 3.4.1:** liveness hardening and claim-lock fixes. `tb-reap --apply` is refused
 inside an agent process (a live agent's card can no longer be reaped by its own reaper);
 stale or reused headless pids and liveness probes that don't name the holder as its
@@ -247,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.4.1` | install that release instead of the latest (`3.4.1` works too) |
+| `--version v3.4.2` | install that release instead of the latest (`3.4.2` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
