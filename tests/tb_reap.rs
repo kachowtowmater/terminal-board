@@ -153,7 +153,6 @@ fn a_genuinely_dead_owner_is_still_flagged() {
 fn a_plain_pane_whose_label_names_the_owner_is_dead() {
     let f = fx();
     doing(&f, "codex-u5", None);
-    let label = "worker2 · codex (OpenAI) · codex exec · codex-u5 · U5 queue RED suite r2 (#5)";
     let (_, v) = reap(&f, &["--dry-run", "--json"], &[]);
     assert_eq!(dead(&v), 1, "a label never vouches (tb#256): {v}");
     // a label that merely CONTAINS the name as a substring of another word never counted
