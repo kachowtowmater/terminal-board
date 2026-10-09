@@ -20,6 +20,12 @@ the live status of your agents.
 - A live view of your AI agents, and simple `tb` commands they use to take and finish work.
 - It fits whatever space you give it: half the screen, a third, or a small corner.
 
+**New in 3.5.0:** a board may name an ordered LIST of pre-change hooks. `tb config hook
+a,b` runs `a` then `b` before every column change, each handed the same proposal, and the
+FIRST refusal wins: later hooks are not run and nothing is written. Each name keeps its own
+`tb trust` pin, so a changed or untrusted member refuses naming THAT member. A single name
+behaves exactly as before.
+
 **New in 3.4.3:** test-infra only. The new agent-shell helper in `tests/common` copies the
 shell once per test process via write-temp → rename, and `tests/tb_reap.rs` retries its
 execs on `ETXTBSY`, so Linux runs no longer lose ~1 in 40 to the copy race. No shipped
@@ -260,7 +266,7 @@ curl -fsSL https://raw.githubusercontent.com/kachowtowmater/terminal-board/main/
 | option | what it does |
 |---|---|
 | `--prefix DIR` | install `tb` into DIR instead of `~/.local/bin` |
-| `--version v3.4.3` | install that release instead of the latest (`3.4.3` works too) |
+| `--version v3.5.0` | install that release instead of the latest (`3.5.0` works too) |
 | `--no-setup` | install only; run `tb setup` yourself later |
 | `--yes` | ask nothing, take the defaults (also passed to `tb setup`) |
 | `--github OWNER/REPO`, `--no-github`, `--agents`, `--no-agents`, `--agents-md PATH` | passed to `tb setup` (see below) |
