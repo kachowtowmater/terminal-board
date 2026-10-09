@@ -3234,28 +3234,39 @@ impl Store {
         let live = !sync && nested.is_none();
         let asks = (self.hook(hooks::Event::PreChange)?, self.hook(hooks::Event::PostChange)?);
         let nested = nested.filter(|_| asks.0.is_some() || asks.1.is_some());
-        let (pre_name, post_name) = if live { asks } else { (None, None) };
-        if live && pre_name.is_none() && matches!(gate, HookGate::BreakGlass(_)) {
+        let (pre_names, post_name) = if live {
+            (asks.0.as_deref().map(crate::store::gate::hook_names).unwrap_or_default(), asks.1)
+        } else {
+            (Vec::new(), None)
+        };
+        if live && pre_names.is_empty() && matches!(gate, HookGate::BreakGlass(_)) {
             return Err(gate::no_gate_err());
         }
-        let before = if pre_name.is_some() || post_name.is_some() { Some(self.probe(change)?) } else { None };
-        // (id, from-column, from-owner, the run to log once the change is committed) — kept
-        // only when a pre-change hook actually ran and approved; `None` for break-glass, sync,
+        let before = if !pre_names.is_empty() || post_name.is_some() { Some(self.probe(change)?) } else { None };
+        // (id, from-column, from-owner, the runs to log once the change is committed) — kept
+        // only when pre-change hooks actually ran and approved; `None` for break-glass, sync,
         // nested and "no hook configured" alike, so nothing extra is logged for any of them.
-        let mut approved: Option<(i64, String, Option<String>, hooks::Run)> = None;
+        let mut approved: Option<(i64, String, Option<String>, Vec<hooks::Run>)> = None;
         // (hook name, why) — kept only for a break-glass that reaches a real change: logging it
         // against a change the OTHER guards (holder, self-approval, WIP, …) went on to refuse
         // anyway would be a false record that a gate was skipped when nothing moved at all.
         let mut break_glass: Option<(String, String)> = None;
-        if let (Some(name), Some((card, to))) = (&pre_name, &before) {
+        if let (true, Some((card, to))) = (!pre_names.is_empty(), &before) {
             match gate {
-                HookGate::BreakGlass(why) => break_glass = Some((name.clone(), why.to_string())),
+                HookGate::BreakGlass(why) => break_glass = Some((pre_names[0].clone(), why.to_string())),
                 HookGate::Normal | HookGate::Sync => {
                     let payload = crate::contract::card_by_id(&*self, card.id)?;
                     let payload = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
                     let text = hooks::payload(hooks::Event::PreChange, &self.name, &payload, &card.column, to, actor, now(), force, None);
-                    let run = hooks::fire(hooks::Event::PreChange, name, &text, &board)?;
-                    approved = Some((card.id, card.column.clone(), card.owner.clone(), run));
+                    let mut runs = Vec::with_capacity(pre_names.len());
+                    for name in &pre_names {
+                        // the FIRST refusal wins: `?` returns it with that hook's own words as
+                        // the hint and stops the list (later hooks are not run); nothing has
+                        // been written, so the refused change leaves the board untouched
+                        let run = hooks::fire(hooks::Event::PreChange, name, &text, &board)?;
+                        runs.push(run);
+                    }
+                    approved = Some((card.id, card.column.clone(), card.owner.clone(), runs));
                 }
             }
         }
@@ -3293,10 +3304,13 @@ impl Store {
         if let (Ok(c), Some(n)) = (&result, &nested) {
             let _ = self.log_nested(c.id, actor, n);
         }
-        if let (Ok(c), Some((_, _, _, run))) = (&result, &approved) {
+        if let (Ok(c), Some((_, _, _, runs))) = (&result, &approved) {
             // best-effort: the change itself already succeeded and must not be undone by a
-            // failure to write one more log line about it
-            let _ = self.log_hook(c.id, actor, &run.line());
+            // failure to write one more log line about it — one `hook` event per run, in the
+            // order the hooks ran
+            for run in runs {
+                let _ = self.log_hook(c.id, actor, &run.line());
+            }
         }
         if let (Ok(c), Some(name)) = (&result, &post_name) {
             let card_v = crate::contract::card_by_id(&*self, c.id)
