@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.5.0 — 2026-10-09
+
+### Hooks: a board may name an ordered LIST of pre-change hooks (tb#270, #259)
 
 - **A board may name an ordered LIST of pre-change hooks:** `tb config hook a,b` (comma-
   separated, the same list syntax as `config actors`) runs `a` then `b` before every column

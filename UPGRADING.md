@@ -1,3 +1,13 @@
+# Upgrading to 3.5.0
+
+Nothing to do: a board with one pre-change hook (`tb config hook NAME`) stores, prints and
+runs it exactly as in 3.4.3, and the JSON contract is unchanged. To chain hooks, set a
+comma-separated list (`tb config hook a,b`) and pin each member with `tb trust`; the first
+refusal wins, `--off` clears the whole list, and `--break-glass` skips the whole list.
+Upgrade every machine that opens the board before setting a list: tb 3.4.3 and older read
+`a,b` as one hook name the machine does not know and refuse every move on that board
+(`--break-glass` still gets past it, logged).
+
 # Upgrading to 3.4.3
 
 Nothing to do: boards and the JSON contract are unchanged from 3.4.2, and there is no
