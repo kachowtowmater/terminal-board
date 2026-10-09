@@ -17,10 +17,21 @@ use crate::hooks::Event;
 use rusqlite::{Connection, OptionalExtension};
 
 /// The hook name a board asks for at this event, read inside whatever transaction is open.
+///
+/// The value is a comma-separated LIST of names (`"a"` for the single-hook boards that
+/// predate lists, `"a,b"` when more than one is asked for) — kept as one string so a single
+/// hook reads and writes exactly as it always did.
 pub fn hook_of(conn: &Connection, event: Event) -> Result<Option<String>> {
     let v: Option<String> =
         conn.query_row("SELECT value FROM config WHERE key=?", [event.key()], |r| r.get(0)).optional()?;
     Ok(v.filter(|s| !s.trim().is_empty()))
+}
+
+/// The names a stored hook value asks for, in the order given: split on commas, trimmed,
+/// empty members dropped (`"a,,b"` asks for `a` then `b`). A single name yields one element,
+/// so every caller below speaks lists only.
+pub fn hook_names(stored: &str) -> Vec<String> {
+    stored.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect()
 }
 
 impl Store {
@@ -29,22 +40,29 @@ impl Store {
         hook_of(&self.conn, event)
     }
 
-    /// `tb config hook NAME` / `--off`. The name is checked here, but what it runs — and
-    /// whether this machine is willing to run it — is not: a board is written on one machine
-    /// and opened on another, and it is the opening machine that decides.
+    /// `tb config hook NAME[,NAME…]` / `--off`. Each comma-separated name is checked here
+    /// (a single name is the unchanged one-name case), but what they run — and whether this
+    /// machine is willing to run any of it — is not: a board is written on one machine and
+    /// opened on another, and it is the opening machine that decides.
     pub fn set_hook(&self, event: Event, name: Option<&str>, actor: &str) -> Result<String> {
         let old = self.hook(event)?;
         let new = match name.map(str::trim) {
             None | Some("") => None,
-            Some(n) if crate::hooks::valid_name(n) => Some(n.to_string()),
             Some(n) => {
-                return err(
-                    format!(
-                        "'{n}' is not a hook name (a-z 0-9 _ -, up to 32) — name one this machine knows, e.g. 'tb config {} approve'",
-                        event.key()
-                    ),
-                    Code::InvalidValue,
-                )
+                let names = hook_names(n);
+                if names.is_empty() {
+                    None
+                } else if let Some(bad) = names.iter().find(|n| !crate::hooks::valid_name(n)) {
+                    return err(
+                        format!(
+                            "'{bad}' is not a hook name (a-z 0-9 _ -, up to 32) — name ones this machine knows, e.g. 'tb config {k} approve' or, for several, 'tb config {k} approve,commit-note'",
+                            k = event.key()
+                        ),
+                        Code::InvalidValue,
+                    )
+                } else {
+                    Some(names.join(","))
+                }
             }
         };
         match &new {
@@ -61,12 +79,14 @@ impl Store {
     }
 
     /// The `hook` / `hook-after` rows of `tb config`: listed once the board asks for one, so a
-    /// board that asks for none lists exactly what it always did.
+    /// board that asks for none lists exactly what it always did. A list is shown in the order
+    /// it was given (`hook  first, second`), a single hook exactly as before.
     pub(super) fn hook_settings(&self) -> Result<Vec<(String, String)>> {
         let mut v = Vec::new();
         for e in Event::all() {
             if let Some(name) = self.hook(e)? {
-                v.push((e.key().to_string(), name));
+                let shown = hook_names(&name).join(", ");
+                v.push((e.key().to_string(), shown));
             }
         }
         Ok(v)

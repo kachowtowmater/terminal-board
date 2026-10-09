@@ -759,7 +759,7 @@ tb --version
 | `tb config done-by NAME,NAME` / `--off` | who may close a card — an honest-mistake stop, **not security**; see [Who closes a card](#who-closes-a-card) |
 | `tb config done-needs-link LABEL` / `--off` | refuse DONE until the card carries a link with that label — see [Evidence links](#evidence-links) |
 | `tb config done-needs-note on\|off` | require a note written during the stay being left before a card may reach DONE — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
-| `tb config hook NAME` / `hook-after NAME` / `--off` | ask this machine to gate (or, after the fact, hear about) every move — see [Hooks](#hooks-this-machines-own-gate-on-a-move) |
+| `tb config hook NAME[,NAME…]` / `hook-after NAME` / `--off` | ask this machine to gate (or, after the fact, hear about) every move — several pre-change names run in order, first refusal wins; see [Hooks](#hooks-this-machines-own-gate-on-a-move) |
 | `tb trust NAME -- COMMAND ARGS…` / `--sha256 HEX` / `--timeout SECS` / `--off` | record, confirm, re-time or forget what NAME runs on this machine; `tb trust` alone lists them |
 | `tb move\|done\|take\|next\|drop … --break-glass "why"` | skip this board's pre-change hook, logged on the card and the board |
 | `tb config max-rounds N` / `--off` | a card sent back more than N times is marked `escalate` and skipped by `tb next` / `tb next --review` — see [Rework rounds and a closing note](#rework-rounds-and-a-closing-note) |
@@ -1214,6 +1214,7 @@ every machine that opens the board.
 <!-- no-test -->
 ```sh
 tb config hook approve
+tb config hook approve,commit-note
 tb trust approve -- /usr/local/bin/check-move.sh
 tb trust approve --sha256 <the hash tb just printed>
 tb trust
@@ -1222,12 +1223,17 @@ tb take 1 --break-glass "approve is down, ops said go"
 tb config hook --off
 ```
 
-`tb config hook NAME` (pre-change) and `tb config hook-after NAME` (post-change) name the
-event; `tb trust NAME -- COMMAND ARGS…` records what NAME runs on THIS machine and prints the
-file it resolved to and that file's sha256 — the hook stays **untrusted** until
-`tb trust NAME --sha256 HEX` echoes that hash back, so nothing is trusted blind and no step
-needs a terminal (agents run this too). `tb trust` alone lists every hook this machine knows,
-and its state: `trusted`, `NOT TRUSTED`, `MISSING` (the file moved or is gone), `CHANGED`
+`tb config hook NAME[,NAME…]` (pre-change) and `tb config hook-after NAME` (post-change) name
+the event; the pre-change hook may be a comma-separated LIST, run in the order given: each
+hook is handed the same proposal, and the FIRST refusal wins — later hooks are not run, the
+change is refused with that hook's own words, and nothing is written. Each name keeps its own
+`tb trust` pin: a member whose file changed, was never trusted, or is unknown to this machine
+refuses the change naming THAT member, and the other members keep their trust. One name
+behaves exactly as it always did. `tb trust NAME -- COMMAND ARGS…` records what NAME runs on
+THIS machine and prints the file it resolved to and that file's sha256 — the hook stays
+**untrusted** until `tb trust NAME --sha256 HEX` echoes that hash back, so nothing is trusted
+blind and no step needs a terminal (agents run this too). `tb trust` alone lists every hook
+this machine knows, and its state: `trusted`, `NOT TRUSTED`, `MISSING` (the file moved or is gone), `CHANGED`
 (re-hashed and it no longer matches) or `UNSAFE` (the command, or the settings file, is
 writable by someone other than its owner). Every run is re-resolved and re-hashed first, and
 the file that runs is the very file that was hashed, not the path looked up again: on Linux tb

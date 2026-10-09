@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **A board may name an ordered LIST of pre-change hooks:** `tb config hook a,b` (comma-
+  separated, the same list syntax as `config actors`) runs `a` then `b` before every column
+  change, each handed the same proposal; the FIRST refusal wins — later hooks are not run,
+  the change is refused with that hook's own last line (`hook_refused`, nothing written).
+  Each name keeps its own `tb trust` pin: a changed, untrusted or unknown member refuses
+  naming THAT member and the other members keep their trust. A single name (`config hook
+  solo`) is stored, printed and runs exactly as before; `--off` clears the whole list;
+  `--force` skips no member; `--break-glass` skips the whole list and is logged as before.
+  Replaces the fleet-side hook-chain wrapper (tb#270).
+
 ## 3.4.3 — 2026-10-05
 
 ### Tests: one race-free agent-shell helper in tests/common (tb#286)

@@ -144,9 +144,9 @@ trimmed and a leading byte-order mark dropped (`tb note ID --file notes.md`, `--
   overrides, and is logged; the full-screen board asks y/n). `note` stays open to everyone — it adds to a card, it does not take it over.
   `github` is tb's own sync: never act under it. `tb assign ID NAME` is `tb take` for someone else (TODO only, no `--force`); the log
   splits who assigned it from who holds it. A board's rules (`tb config rules`) print with `tb guide` and show once, on your next `tb next` after they change.
-- A board may name a hook (`tb config hook NAME`): a command THIS machine runs before every move, once trusted (`tb trust NAME -- CMD`,
-  then `tb trust NAME --sha256 HEX`; `tb trust` lists them). Unknown, untrusted, changed, timed out or failing, it REFUSES the move
-  (`hook_refused`, nothing written); `--force` never skips it, `--break-glass "why"` does and is logged — only when a person says so.
+- A board may name a hook (`tb config hook NAME`, or a comma-separated LIST `NAME,NAME` run in order, first refusal wins): a command THIS machine runs
+  before every move, once trusted (`tb trust NAME -- CMD`, then `tb trust NAME --sha256 HEX`; `tb trust` lists them). Unknown, untrusted, changed,
+  timed out or failing, it REFUSES the move (`hook_refused`, nothing written); `--force` never skips it, `--break-glass "why"` does and is logged — only when a person says so.
 
 ## Environment variables and identity
 

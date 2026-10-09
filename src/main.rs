@@ -27,7 +27,7 @@ In/out  import FILE|- | edit --from FILE|- [--dry-run] | export --json|--csv [--
 Flow    next [--review] | claim ID | take ID | assign ID NAME | done ID [--force] | drop ID | move ID todo|doing|review|done | move ID todo \"why\" | move ID doing \"why\" | prio ID top|bottom|up|down
 Boards  boards [--default [NAME|--clear]] | boards [--archived] [--long] | boards archive|restore|delete NAME | new NAME [--kind K|--from BOARD] | mv ID --to BOARD | board | watch [--json|--events]
 Config  config [wip N|theme T|layout L|github OWNER/REPO|--off|file-mode M|github-panel|agents-panel shown|hidden|rm delete|archive]
-Hooks   config hook|hook-after NAME|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
+Hooks   config hook|hook-after NAME[,NAME...]|--off | trust [NAME [-- CMD ARG...] [--sha256 HEX|--timeout SECS|--off]] | move|done|take|next|drop ... --break-glass \"why\"
 GitHub  github [--refresh] | github repos | sync
 Agents  agents
 Setup   setup [--yes] [--github R|--no-github] [--agents-md PATH] [--dry-run]
@@ -2691,8 +2691,9 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                     ("file-mode".into(), json!(store.file_mode_text()?))
                 }
                 // the pre/post-change hook (`crate::hooks`, store/gate.rs): the board stores a
-                // NAME only — what it runs, and whether this machine trusts it, is `tb trust`'s
-                // business, on the machine that opens the board, never this one's
+                // NAME, or a comma-separated LIST of names for the pre-change hook — what they
+                // run, and whether this machine trusts them, is `tb trust`'s business, on the
+                // machine that opens the board, never this one's
                 (k @ ("hook" | "hook-after"), _) if off => {
                     let event = if k == "hook" { terminal_board::hooks::Event::PreChange } else { terminal_board::hooks::Event::PostChange };
                     store.set_hook(event, None, &actor)?;
@@ -2808,10 +2809,15 @@ fn run(mut cli: Cli, positional: Option<String>) -> Result<(), BoardError> {
                         v.as_array().map(|a| a.iter().filter_map(|n| n.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                     ),
                     (kk @ ("hook" | "hook-after"), serde_json::Value::Null) => say!("{kk} is off"),
-                    (kk @ ("hook" | "hook-after"), name) => say!(
-                        "{kk} is now {} — this machine (and any other that opens this board) must 'tb trust {}' it before it can run",
-                        name.as_str().unwrap_or(""), name.as_str().unwrap_or("")
-                    ),
+                    (kk @ ("hook" | "hook-after"), name) => {
+                        let names: Vec<&str> = name.as_str().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                        let each = names.join("' / 'tb trust ");
+                        say!(
+                            "{kk} is now {} — this machine (and any other that opens this board) must 'tb trust {}' it before it can run",
+                            names.join(", "),
+                            each
+                        )
+                    }
                     (k, v) => say!("{k} is now {}", v.as_str().unwrap_or("")),
                 }
             }
